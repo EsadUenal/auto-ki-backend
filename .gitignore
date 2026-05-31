@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Datenbank (lokal, nicht ins Repo)
+db/auto_ki.db
+db/chroma/
+
+# Secrets
+.env
+
+# IDE
+.vscode/
+.idea/
