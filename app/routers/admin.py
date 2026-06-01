@@ -3,8 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel
 
+from fastapi.responses import StreamingResponse
+
 from app.auth import verify_api_key
-from app.admin_llm import entwurf_erstellen, generationen_auflisten
+from app.admin_llm import entwurf_erstellen, entwurf_stream, generationen_auflisten
 from app.db_writer import save_fahrzeug
 from app.utf8 import UTF8JSONResponse
 from app.gemini_retry import RateLimitExhausted
@@ -43,7 +45,7 @@ def _llm_error(exc: Exception) -> HTTPException:
     )
 
 
-@router.post("/entwurf", summary="LLM erstellt Schema-Entwurf (noch nicht gespeichert)")
+@router.post("/entwurf", summary="LLM erstellt Schema-Entwurf — vollständig (non-streaming)")
 async def entwurf(body: EntwurfRequest, request: Request):
     verify_api_key(request)
     try:
@@ -51,6 +53,22 @@ async def entwurf(body: EntwurfRequest, request: Request):
     except Exception as e:
         raise _llm_error(e)
     return {"entwurf": data}
+
+
+async def _sse_entwurf(marke: str, modell: str, generation: str):
+    async for fragment in entwurf_stream(marke, modell, generation):
+        yield f"data: {fragment}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/entwurf-stream", summary="LLM erstellt Schema-Entwurf — SSE-Streaming")
+async def entwurf_stream_endpoint(body: EntwurfRequest, request: Request):
+    verify_api_key(request)
+    return StreamingResponse(
+        _sse_entwurf(body.marke, body.modell, body.generation),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/batch", summary="LLM listet Generationen auf (Batch-Vorbereitung)")

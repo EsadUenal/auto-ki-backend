@@ -1,22 +1,24 @@
 """
 LLM-gestützte Admin-Funktionen:
-  - entwurf_erstellen(): Fahrzeug-Schema-Entwurf für 1 Generation
-  - generationen_auflisten(): Batch — listet alle Generationen einer Baureihe auf
+  - entwurf_erstellen()   : Fahrzeug-Schema-Entwurf (einmalig, non-streaming)
+  - entwurf_stream()      : Fahrzeug-Schema-Entwurf als SSE-Stream
+  - generationen_auflisten(): Batch — schnelle Liste via Flash-Lite
 """
 from __future__ import annotations
 
 import json
 import re
 from datetime import date
+from typing import AsyncGenerator
 
 from google.genai import types as genai_types
 
 from app.llm import _get_client
-from app.config import LLM_MODEL
-from app.gemini_retry import with_retry_sync, RateLimitExhausted  # noqa: F401 (re-export)
+from app.config import LLM_MODEL, FAST_LLM_MODEL
+from app.gemini_retry import with_retry_sync, RateLimitExhausted  # noqa: F401
 
 # ------------------------------------------------------------------ #
-#  System-Prompt für Schema-Generierung                               #
+#  System-Prompts                                                     #
 # ------------------------------------------------------------------ #
 
 _SCHEMA_SYSTEM = """Du bist ein präziser Automobil-Datenbankassistent.
@@ -98,70 +100,133 @@ AUSGABE-SCHEMA (exakt diese Struktur, alle Felder vorhanden):
   "hinweise": {}
 }"""
 
-_BATCH_SYSTEM = """Du bist ein Automobil-Experte.
-Deine Aufgabe: Für eine gegebene Modellreihe alle offiziellen Baureihen-Generationen auflisten.
-
-Antworte NUR mit einem JSON-Array, kein Text davor oder danach, keine Markdown-Fences.
-Format: [{"marke":"...","modell":"...","generation":"...","baujahr_von":YYYY,"baujahr_bis":YYYY_oder_null}]
-Nur tatsächliche Generationen, keine Facelift-Varianten als eigene Generation."""
+# Flash-Lite braucht nur minimale Instruktionen — kein großes Schema
+_BATCH_SYSTEM = (
+    "Antworte NUR mit einem JSON-Array, keine Markdown-Fences, kein Text.\n"
+    'Format: [{"marke":"...","modell":"...","generation":"...","baujahr_von":YYYY,"baujahr_bis":YYYY_oder_null}]\n'
+    "Nur eigenständige Generationen, keine Facelift-Unterversionen."
+)
 
 
 def _extract_json(text: str) -> dict | list:
-    """Extrahiert JSON aus der LLM-Antwort, auch wenn Markdown-Fences vorhanden sind."""
     text = text.strip()
-    # Markdown-Fences entfernen
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return json.loads(text)
 
 
+def _entwurf_cfg() -> genai_types.GenerateContentConfig:
+    """Konfiguration für Entwurf-Calls: kein Thinking, Token-Cap."""
+    return genai_types.GenerateContentConfig(
+        system_instruction=_SCHEMA_SYSTEM,
+        temperature=0.1,
+        max_output_tokens=4096,
+        # thinking_budget=0 deaktiviert das interne Reasoning von gemini-2.5-flash
+        # → deutlich schneller für strukturierte JSON-Aufgaben
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+    )
+
+
+# ------------------------------------------------------------------ #
+#  Entwurf (non-streaming, für direkte JSON-Rückgabe)                 #
+# ------------------------------------------------------------------ #
+
 async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
-    """Lässt Gemini ein vollständiges Fahrzeug-Schema ausfüllen."""
     client = _get_client()
     heute  = date.today().strftime("%Y-%m")
+    prompt = _entwurf_prompt(marke, modell, generation, heute)
 
-    prompt = (
-        f"Erstelle ein vollständiges Datenprofil für: {marke} {modell} {generation}.\n"
-        f"Heutiges Datum (für letzte_aktualisierung): {heute}.\n"
-        "Fülle alle Felder die du kennst aus. Unbekannte Felder → null. "
-        "Unsichere Zahlen (Preis, Verbrauch, CO2) in 'hinweise' markieren."
-    )
-
-    cfg = genai_types.GenerateContentConfig(
-        system_instruction=_SCHEMA_SYSTEM, temperature=0.1
-    )
     response = with_retry_sync(lambda: client.models.generate_content(
         model=LLM_MODEL,
         contents=[{"role": "user", "parts": [{"text": prompt}]}],
-        config=cfg,
+        config=_entwurf_cfg(),
     ))
 
-    data = _extract_json(response.text)
+    return _finalize(response.text, marke, modell, generation, heute)
 
-    # Sicherheitsnetz: Pflichtfelder erzwingen
-    data.setdefault("marke", marke)
-    data.setdefault("modell", modell)
-    data.setdefault("generation", generation)
-    data.setdefault("hinweise", {})
-    data.setdefault("letzte_aktualisierung", heute)
 
-    return data
+# ------------------------------------------------------------------ #
+#  Entwurf Streaming (SSE — gibt rohen JSON-Text häppchenweise aus)   #
+# ------------------------------------------------------------------ #
 
+async def entwurf_stream(
+    marke: str, modell: str, generation: str
+) -> AsyncGenerator[str, None]:
+    """
+    Streamt den rohen JSON-Text als Fragmente.
+    Letztes Event: {"done": true, "json": <geparstes Dict>}
+    Bei Fehler: {"error": "..."}
+    """
+    client  = _get_client()
+    heute   = date.today().strftime("%Y-%m")
+    prompt  = _entwurf_prompt(marke, modell, generation, heute)
+    cfg     = _entwurf_cfg()
+    buffer  = []
+
+    try:
+        stream = with_retry_sync(lambda: client.models.generate_content_stream(
+            model=LLM_MODEL,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config=cfg,
+        ))
+
+        for chunk in stream:
+            if chunk.text:
+                buffer.append(chunk.text)
+                yield json.dumps({"delta": chunk.text}, ensure_ascii=False)
+
+        full_text = "".join(buffer)
+        try:
+            data = _finalize(full_text, marke, modell, generation, heute)
+            yield json.dumps({"done": True, "json": data}, ensure_ascii=False)
+        except json.JSONDecodeError as e:
+            yield json.dumps({"error": f"JSON-Parse-Fehler: {e}. Roher Text: {full_text[:200]}"})
+
+    except RateLimitExhausted as e:
+        yield json.dumps({"error": str(e)})
+
+
+# ------------------------------------------------------------------ #
+#  Generationen-Liste (Flash-Lite, schnell)                           #
+# ------------------------------------------------------------------ #
 
 async def generationen_auflisten(anfrage: str) -> list[dict]:
     """
-    Für Batch-Modus: 'alle BMW 4er Generationen' →
-    [{"marke":"BMW","modell":"4er","generation":"F32","baujahr_von":2013,"baujahr_bis":2020}, ...]
+    Nutzt gemini-2.0-flash-lite — kein Thinking-Overhead, < 2 s für eine Liste.
     """
     client = _get_client()
 
     cfg = genai_types.GenerateContentConfig(
-        system_instruction=_BATCH_SYSTEM, temperature=0.1
+        system_instruction=_BATCH_SYSTEM,
+        temperature=0.0,       # maximale Determiniertheit für Faktenlisten
+        max_output_tokens=400, # eine Liste mit 15 Generationen braucht ~200 Token
     )
     response = with_retry_sync(lambda: client.models.generate_content(
-        model=LLM_MODEL,
+        model=FAST_LLM_MODEL,
         contents=[{"role": "user", "parts": [{"text": anfrage}]}],
         config=cfg,
     ))
 
     return _extract_json(response.text)
+
+
+# ------------------------------------------------------------------ #
+#  Hilfsfunktionen                                                    #
+# ------------------------------------------------------------------ #
+
+def _entwurf_prompt(marke: str, modell: str, generation: str, heute: str) -> str:
+    return (
+        f"Erstelle ein vollständiges Datenprofil für: {marke} {modell} {generation}.\n"
+        f"Heutiges Datum (letzte_aktualisierung): {heute}.\n"
+        "Unbekannte Felder → null. Unsichere Zahlen in 'hinweise' markieren."
+    )
+
+
+def _finalize(text: str, marke: str, modell: str, generation: str, heute: str) -> dict:
+    data = _extract_json(text)
+    data.setdefault("marke", marke)
+    data.setdefault("modell", modell)
+    data.setdefault("generation", generation)
+    data.setdefault("hinweise", {})
+    data.setdefault("letzte_aktualisierung", heute)
+    return data

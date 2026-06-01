@@ -93,6 +93,14 @@ input:focus { outline: none; border-color: #3b82f6; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #334155;
            border-top-color: #3b82f6; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Streaming-Vorschau */
+#stream-preview { display: none; background: #020817; border: 1px solid #1e40af;
+  border-radius: 8px; padding: 14px; margin-bottom: 20px; font-family: monospace;
+  font-size: 12px; color: #60a5fa; white-space: pre-wrap; word-break: break-all;
+  max-height: 260px; overflow-y: auto; }
+#stream-preview .sp-label { font-family: system-ui; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 1px; color: #3b82f6; margin-bottom: 8px; display: block; }
 </style>
 </head>
 <body>
@@ -142,6 +150,10 @@ input:focus { outline: none; border-color: #3b82f6; }
 
 <!-- ===== HAUPT-EDITOR ===== -->
 <div id="main">
+  <div id="stream-preview">
+    <span class="sp-label">Gemini generiert JSON <span id="sp-tokens">0</span> Zeichen...</span><span id="sp-text"></span>
+  </div>
+
   <div id="editor-area">
     <h2 id="editor-title">Entwurf</h2>
     <div id="hints-container"></div>
@@ -168,7 +180,7 @@ function setStatus(msg, type="info") {
 }
 
 // ================================================================
-//  ENTWURF ERSTELLEN
+//  ENTWURF ERSTELLEN — SSE-Streaming
 // ================================================================
 async function entwurfErstellen(marke, modell, generation) {
   marke      = marke      || document.getElementById("s-marke").value.trim();
@@ -177,19 +189,77 @@ async function entwurfErstellen(marke, modell, generation) {
   if (!marke || !modell || !generation) { setStatus("Marke, Modell und Generation eingeben.", "err"); return; }
 
   document.getElementById("btn-entwurf").disabled = true;
-  setStatus("LLM erstellt Entwurf…", "info");
+  document.getElementById("btn-speichern").disabled = true;
+
+  // Vorschau einblenden, Editor ausblenden
+  const preview   = document.getElementById("stream-preview");
+  const spText    = document.getElementById("sp-text");
+  const spTokens  = document.getElementById("sp-tokens");
+  preview.style.display = "block";
+  spText.textContent = "";
+  spTokens.textContent = "0";
+  document.getElementById("editor-area").style.display = "none";
+  document.getElementById("empty-hint").style.display = "none";
+  setStatus(`Gemini generiert ${marke} ${modell} ${generation}…`, "info");
 
   try {
-    const r = await fetch(`${API}/admin/entwurf`, {
+    const resp = await fetch(`${API}/admin/entwurf-stream`, {
       method: "POST", headers: headers(),
       body: JSON.stringify({ marke, modell, generation }),
     });
-    const j = await r.json();
-    if (!r.ok) { setStatus(j?.fehler?.nachricht || "Fehler", "err"); return; }
-    ladeEntwurf(j.entwurf);
-    setStatus(`Entwurf geladen: ${marke} ${modell} ${generation}`, "ok");
+
+    if (!resp.ok) {
+      const err = await resp.json();
+      setStatus(err?.fehler?.nachricht || "Fehler " + resp.status, "err");
+      return;
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    let charCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split("\n\n");
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (raw === "[DONE]") continue;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.delta !== undefined) {
+          // Rohen JSON-Text in Vorschau zeigen
+          charCount += evt.delta.length;
+          spText.textContent += evt.delta;
+          spTokens.textContent = charCount;
+          // Auto-scroll nach unten
+          preview.scrollTop = preview.scrollHeight;
+        }
+
+        if (evt.done && evt.json) {
+          // JSON vollständig → Formular befüllen
+          preview.style.display = "none";
+          ladeEntwurf(evt.json);
+          setStatus(`Entwurf fertig: ${marke} ${modell} ${generation}`, "ok");
+        }
+
+        if (evt.error) {
+          setStatus("Fehler: " + evt.error, "err");
+          preview.style.display = "none";
+        }
+      }
+    }
   } catch(e) {
     setStatus("Verbindungsfehler: " + e.message, "err");
+    preview.style.display = "none";
   } finally {
     document.getElementById("btn-entwurf").disabled = false;
   }
