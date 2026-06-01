@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -23,6 +24,14 @@ app = FastAPI(
     description="Auf Autos spezialisierte Wissens-KI. Phase 1.",
     version="0.1.0",
     default_response_class=UTF8JSONResponse,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # Testphase: alle Origins (file://, localhost, etc.)
+    allow_methods=["*"],          # OPTIONS-Preflight + POST/GET
+    allow_headers=["*"],          # Authorization, Content-Type usw.
+    allow_credentials=False,      # muss False bleiben wenn allow_origins="*"
 )
 
 app.state.limiter = limiter
