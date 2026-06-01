@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS baureihe (
     marke                   TEXT NOT NULL,
     modell                  TEXT NOT NULL,
     generation              TEXT NOT NULL,
-    bauzeitraum_von         INTEGER NOT NULL,
+    bauzeitraum_von         INTEGER,                -- null erlaubt (Admin-Entwurf noch unvollständig)
     bauzeitraum_bis         INTEGER,                -- null = aktuell
-    karosserie              TEXT NOT NULL,          -- JSON-Array, z.B. '["Coupé","Cabrio"]'
+    karosserie              TEXT,                   -- JSON-Array, z.B. '["Coupé","Cabrio"]'
     segment                 TEXT,
     vorgaenger              TEXT,
 
