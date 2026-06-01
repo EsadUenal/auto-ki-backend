@@ -7,6 +7,7 @@ from app.auth import verify_api_key
 from app.admin_llm import entwurf_erstellen, generationen_auflisten
 from app.db_writer import save_fahrzeug
 from app.utf8 import UTF8JSONResponse
+from app.gemini_retry import RateLimitExhausted
 
 router = APIRouter(prefix="/admin", default_response_class=UTF8JSONResponse)
 
@@ -29,16 +30,26 @@ class SpeichernRequest(BaseModel):
 
 # ---------- Endpunkte ----------
 
+def _llm_error(exc: Exception) -> HTTPException:
+    """Wandelt LLM-Fehler in passende HTTP-Fehler um."""
+    if isinstance(exc, RateLimitExhausted):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"fehler": {"code": "rate_limit", "nachricht": str(exc)}},
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail={"fehler": {"code": "llm_fehler", "nachricht": str(exc)}},
+    )
+
+
 @router.post("/entwurf", summary="LLM erstellt Schema-Entwurf (noch nicht gespeichert)")
 async def entwurf(body: EntwurfRequest, request: Request):
     verify_api_key(request)
     try:
         data = await entwurf_erstellen(body.marke, body.modell, body.generation)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"fehler": {"code": "llm_fehler", "nachricht": str(e)}},
-        )
+        raise _llm_error(e)
     return {"entwurf": data}
 
 
@@ -48,10 +59,7 @@ async def batch(body: BatchRequest, request: Request):
     try:
         generationen = await generationen_auflisten(body.anfrage)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"fehler": {"code": "llm_fehler", "nachricht": str(e)}},
-        )
+        raise _llm_error(e)
     return {"generationen": generationen}
 
 

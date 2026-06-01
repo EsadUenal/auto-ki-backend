@@ -13,6 +13,7 @@ from google.genai import types as genai_types
 
 from app.llm import _get_client
 from app.config import LLM_MODEL
+from app.gemini_retry import with_retry_sync, RateLimitExhausted  # noqa: F401 (re-export)
 
 # ------------------------------------------------------------------ #
 #  System-Prompt für Schema-Generierung                               #
@@ -126,14 +127,14 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
         "Unsichere Zahlen (Preis, Verbrauch, CO2) in 'hinweise' markieren."
     )
 
-    response = client.models.generate_content(
+    cfg = genai_types.GenerateContentConfig(
+        system_instruction=_SCHEMA_SYSTEM, temperature=0.1
+    )
+    response = with_retry_sync(lambda: client.models.generate_content(
         model=LLM_MODEL,
         contents=[{"role": "user", "parts": [{"text": prompt}]}],
-        config=genai_types.GenerateContentConfig(
-            system_instruction=_SCHEMA_SYSTEM,
-            temperature=0.1,   # möglichst deterministisch
-        ),
-    )
+        config=cfg,
+    ))
 
     data = _extract_json(response.text)
 
@@ -154,13 +155,13 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
     """
     client = _get_client()
 
-    response = client.models.generate_content(
+    cfg = genai_types.GenerateContentConfig(
+        system_instruction=_BATCH_SYSTEM, temperature=0.1
+    )
+    response = with_retry_sync(lambda: client.models.generate_content(
         model=LLM_MODEL,
         contents=[{"role": "user", "parts": [{"text": anfrage}]}],
-        config=genai_types.GenerateContentConfig(
-            system_instruction=_BATCH_SYSTEM,
-            temperature=0.1,
-        ),
-    )
+        config=cfg,
+    ))
 
     return _extract_json(response.text)

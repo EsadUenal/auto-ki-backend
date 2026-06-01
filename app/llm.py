@@ -23,6 +23,7 @@ from google.genai import types as genai_types
 
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH
 from app.database import get_baureihe, search_baureihen
+from app.gemini_retry import with_retry_sync, RateLimitExhausted
 
 import chromadb
 
@@ -234,16 +235,21 @@ async def chat_stream(
         history.append({"role": role, "parts": [{"text": msg.get("text", "")}]})
 
     client = _get_client()
-
-    # Streaming-Anfrage
-    response = client.models.generate_content_stream(
-        model=LLM_MODEL,
-        contents=history + [{"role": "user", "parts": [{"text": message}]}],
-        config=genai_types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-        ),
+    contents = history + [{"role": "user", "parts": [{"text": message}]}]
+    cfg = genai_types.GenerateContentConfig(
+        system_instruction=system, temperature=0.3
     )
+
+    # Streaming-Anfrage mit automatischem 429-Retry
+    try:
+        response = with_retry_sync(lambda: client.models.generate_content_stream(
+            model=LLM_MODEL, contents=contents, config=cfg,
+        ))
+    except RateLimitExhausted as exc:
+        yield {"type": "text", "delta": str(exc)}
+        yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
+               "vertrauen": "niedrig", "belege": []}
+        return
 
     for chunk in response:
         if chunk.text:
