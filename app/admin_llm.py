@@ -168,10 +168,10 @@ def _entwurf_cfg() -> genai_types.GenerateContentConfig:
     return genai_types.GenerateContentConfig(
         system_instruction=_SCHEMA_SYSTEM,
         temperature=0.1,
-        max_output_tokens=8192,   # 4096 reicht für Modelle mit vielen Varianten nicht
-        # thinking_budget=0 deaktiviert das interne Reasoning von gemini-2.5-flash
-        # → deutlich schneller für strukturierte JSON-Aufgaben
-        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        # E46 brauchte 7193 Output + 995 Thinking = 8188 → 8192er-Limit gerissen.
+        # 16384 gibt genug Puffer für große Baureihen (viele Motoren/Schwachstellen).
+        max_output_tokens=16384,
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=1024),
     )
 
 
