@@ -39,6 +39,11 @@ def _llm_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={"fehler": {"code": "rate_limit", "nachricht": str(exc)}},
         )
+    if isinstance(exc, ValueError) and "unvollständig" in str(exc):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"fehler": {"code": "antwort_unvollstaendig", "nachricht": str(exc)}},
+        )
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail={"fehler": {"code": "llm_fehler", "nachricht": str(exc)}},

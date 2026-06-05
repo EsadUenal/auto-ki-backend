@@ -7,9 +7,12 @@ LLM-gestützte Admin-Funktionen:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date
 from typing import AsyncGenerator
+
+log = logging.getLogger(__name__)
 
 from google.genai import types as genai_types
 
@@ -180,14 +183,30 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
     client = _get_client()
     heute  = date.today().strftime("%Y-%m")
     prompt = _entwurf_prompt(marke, modell, generation, heute)
+    cfg    = _entwurf_cfg()
 
-    response = with_retry_sync(lambda: client.models.generate_content(
-        model=LLM_MODEL,
-        contents=[{"role": "user", "parts": [{"text": prompt}]}],
-        config=_entwurf_cfg(),
-    ))
+    last_err: Exception | None = None
+    for versuch in range(1, 3):   # max. 2 Versuche
+        response = with_retry_sync(lambda: client.models.generate_content(
+            model=LLM_MODEL,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config=cfg,
+        ))
+        text = response.text or ""
+        if not text.strip():
+            last_err = ValueError("Leere Antwort vom Modell")
+            log.warning("Entwurf Versuch %d/%d: leere Antwort – wiederhole.", versuch, 2)
+            continue
+        try:
+            return _finalize(text, marke, modell, generation, heute)
+        except json.JSONDecodeError as e:
+            last_err = e
+            log.warning("Entwurf Versuch %d/%d: JSON-Fehler (%s) – wiederhole.", versuch, 2, e)
 
-    return _finalize(response.text, marke, modell, generation, heute)
+    raise ValueError(
+        f"Antwort unvollständig, bitte erneut versuchen. "
+        f"(Details: {last_err})"
+    ) from last_err
 
 
 # ------------------------------------------------------------------ #
@@ -221,11 +240,14 @@ async def entwurf_stream(
                 yield json.dumps({"delta": chunk.text}, ensure_ascii=False)
 
         full_text = "".join(buffer)
+        if not full_text.strip():
+            yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen. (Leere Antwort)"})
+            return
         try:
             data = _finalize(full_text, marke, modell, generation, heute)
             yield json.dumps({"done": True, "json": data}, ensure_ascii=False)
         except json.JSONDecodeError as e:
-            yield json.dumps({"error": f"JSON-Parse-Fehler: {e}. Roher Text: {full_text[:200]}"})
+            yield json.dumps({"error": f"Antwort unvollständig, bitte erneut versuchen. (JSON: {e})"})
 
     except RateLimitExhausted as e:
         yield json.dumps({"error": str(e)})
