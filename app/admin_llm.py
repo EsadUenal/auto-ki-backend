@@ -109,9 +109,54 @@ _BATCH_SYSTEM = (
 
 
 def _extract_json(text: str) -> dict | list:
+    """
+    Extrahiert das erste vollständige JSON-Objekt oder -Array aus dem Text.
+    Robust gegen Markdown-Fences, Präambel-Text und Nachtext.
+    """
     text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
+
+    # 1. Markdown-Code-Block bevorzugt (```json ... ```)
+    m = re.search(r"```(?:json)?\s*([\[{].*?)\s*```", text, re.DOTALL)
+    if m:
+        return json.loads(m.group(1))
+
+    # 2. Früheste öffnende Klammer ({  oder [) bestimmen — nicht die Reihenfolge in der Schleife
+    pos_obj = text.find("{")
+    pos_arr = text.find("[")
+    if pos_obj == -1 and pos_arr == -1:
+        return json.loads(text)  # letzter Ausweg
+
+    if pos_arr == -1 or (pos_obj != -1 and pos_obj < pos_arr):
+        candidates = [("{", "}")]
+    elif pos_obj == -1 or pos_arr < pos_obj:
+        candidates = [("[", "]")]
+    else:
+        candidates = [("{", "}")]  # gleichauf: Dict bevorzugen
+
+    for start_char, end_char in candidates:
+        idx = text.find(start_char)
+        depth = 0
+        in_str = False
+        escape = False
+        for i, ch in enumerate(text[idx:], start=idx):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == start_char:
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[idx : i + 1])
+
     return json.loads(text)
 
 
@@ -120,7 +165,7 @@ def _entwurf_cfg() -> genai_types.GenerateContentConfig:
     return genai_types.GenerateContentConfig(
         system_instruction=_SCHEMA_SYSTEM,
         temperature=0.1,
-        max_output_tokens=4096,
+        max_output_tokens=8192,   # 4096 reicht für Modelle mit vielen Varianten nicht
         # thinking_budget=0 deaktiviert das interne Reasoning von gemini-2.5-flash
         # → deutlich schneller für strukturierte JSON-Aufgaben
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),

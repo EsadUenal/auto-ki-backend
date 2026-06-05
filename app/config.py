@@ -11,4 +11,4 @@ RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 LLM_MODEL      = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
-FAST_LLM_MODEL = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.0-flash-lite")
+FAST_LLM_MODEL = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.5-flash-lite")
