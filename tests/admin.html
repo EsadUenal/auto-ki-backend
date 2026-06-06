@@ -257,6 +257,10 @@ async function entwurfErstellen(marke, modell, generation) {
           setStatus(`Antwort unvollständig — wiederhole (Versuch ${evt.versuch + 1}/2)…`, "info");
         }
 
+        if (evt.status === "motoren") {
+          setStatus("Baureihe geladen — lade Motorvarianten…", "info");
+        }
+
         if (evt.error) {
           setStatus("Fehler: " + evt.error, "err");
           preview.style.display = "none";

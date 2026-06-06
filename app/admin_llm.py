@@ -20,103 +20,6 @@ from app.llm import _get_client
 from app.config import LLM_MODEL, FAST_LLM_MODEL
 from app.gemini_retry import with_retry_sync, RateLimitExhausted  # noqa: F401
 
-# ------------------------------------------------------------------ #
-#  System-Prompts                                                     #
-# ------------------------------------------------------------------ #
-
-_SCHEMA_SYSTEM = """Du bist ein präziser Automobil-Datenbankassistent.
-Deine Aufgabe: Ein vollständiges Fahrzeug-Datenprofil als valides JSON erstellen.
-
-PFLICHTREGELN:
-1. Antworte NUR mit einem einzigen JSON-Objekt, kein Text davor oder danach, keine Markdown-Fences.
-2. Unsichere oder geschätzte Werte (Preise, Verbrauch, CO2): als Zahl eintragen UND den Schlüssel "hinweise" im Wurzelobjekt mit einem Eintrag ergänzen, z.B. {"neupreis_ca_eur": "ca."}.
-3. Unbekannte Felder → null. Niemals raten oder erfinden. Lieber null als falsch.
-4. Harte Zahlen (PS, kW, Nm, Hubraum, 0-100, Vmax) nur eintragen, wenn du sie mit hoher Sicherheit kennst. Sonst null.
-5. IDs automatisch generieren: baureihe_id = "{marke}-{modell}-{generation}" in Kleinbuchstaben mit Bindestrichen. variante_id = "{baureihe_id}-{bezeichnung-slug}".
-6. Das Feld "letzte_aktualisierung" immer auf das heutige Datum (YYYY-MM) setzen.
-7. "kraftstoff" nur aus: Benzin, Diesel, Elektro, Plug-in-Hybrid, Mild-Hybrid.
-8. "antrieb" nur aus: Heck, Front, Allrad.
-9. "schweregrad" in schwachstellen_baureihe nur aus: gering, mittel, hoch.
-10. "typ" in ausstattungslinien nur aus: Basis, Ausstattungslinie, M Performance, Echtes M-Modell.
-
-OPTISCHE FELDER — BESONDERE PFLICHTREGELN (häufigste Fehlerquelle):
-11. "erkennung_generation": NIEMALS nur ein interner Baucode (z.B. "F48" oder "G01"). IMMER ein
-    ausführlicher Fließtext mit mind. 2–3 konkreten, sichtbaren Merkmalen, z.B.:
-    Scheinwerferform, Niere/Grille-Design, Karosserieproportionen, Heckleuchtenform,
-    markante Unterscheidung zum Vorgänger. Beispiel für guten Wert:
-    "Charakteristisch sind die flachen, schmalen Scheinwerfer mit L-förmigem Tagfahrlicht,
-    die breite zweigeteilte Niere und der coupéartige Dachabschluss. Gegenüber dem E84
-    deutlich keilförmigere Silhouette mit höherer Gürtellinie."
-12. "facelift_merkmale": Ebenso konkreter Fließtext — welche Teile wurden neu gestaltet,
-    was änderte sich sichtbar? Kein null wenn ein Facelift stattfand.
-13. "optische_unterscheidung" bei Motorvarianten: Beschreibt sichtbare Unterschiede zur
-    Basisvariante (andere Endrohre, Stoßstänger, Felgen, Embleme). Kein null wenn Unterschiede
-    existieren, kein Baucode.
-
-AUSGABE-SCHEMA (exakt diese Struktur, alle Felder vorhanden):
-{
-  "id": "...",
-  "marke": "...",
-  "modell": "...",
-  "generation": "...",
-  "bauzeitraum_von": <Zahl|null>,
-  "bauzeitraum_bis": <Zahl|null>,
-  "karosserie": ["..."],
-  "segment": "...",
-  "vorgaenger": <"..."|null>,
-  "erkennung_generation": "...",
-  "facelift_merkmale": <"..."|null>,
-  "adac_pannenkennziffer": <"..."|null>,
-  "tuev_maengelquote": <"..."|null>,
-  "dekra_urteil": <"..."|null>,
-  "euro_ncap_sterne": <0-5|null>,
-  "euro_ncap_jahr": <Zahl|null>,
-  "wartung_oel_km": <Zahl|null>,
-  "wartung_hu_intervall": <"..."|null>,
-  "kaufberatung": <"..."|null>,
-  "letzte_aktualisierung": "YYYY-MM",
-  "ausstattungslinien": [
-    {"name":"...","typ":"...","optische_merkmale":"...","abgrenzung":<"..."|null>}
-  ],
-  "schwachstellen_baureihe": [
-    {"bauteil":"...","beschreibung":"...","betroffene_baujahre":"...","schweregrad":"gering|mittel|hoch"}
-  ],
-  "rueckrufe": [
-    {"datum":"...","betroffene_baujahre":"...","mangel":"...","abhilfe":"...","kba_referenz":<"..."|null>}
-  ],
-  "quellen": [],
-  "motoren": [
-    {
-      "variante_id": "...",
-      "bezeichnung": "...",
-      "motorcode": <"..."|null>,
-      "kraftstoff": "...",
-      "hubraum_ccm": <Zahl|null>,
-      "zylinder": <Zahl|null>,
-      "leistung_ps": <Zahl|null>,
-      "leistung_kw": <Zahl|null>,
-      "drehmoment_nm": <Zahl|null>,
-      "getriebe": ["..."],
-      "antrieb": "Heck|Front|Allrad",
-      "beschleunigung_0_100": <Zahl|null>,
-      "vmax_kmh": <Zahl|null>,
-      "verbrauch_wltp": <Zahl|null>,
-      "verbrauch_real": <Zahl|null>,
-      "co2_g_km": <Zahl|null>,
-      "neupreis_ca_eur": <Zahl|null>,
-      "heck_emblem": <"..."|null>,
-      "optische_unterscheidung": <"..."|null>,
-      "schwachstellen_motor": [
-        {"bauteil":"...","beschreibung":"...","baujahre":<"..."|null>,"kosten_ca":<"..."|null>}
-      ],
-      "kritische_wartung": [
-        {"bauteil":"...","intervall":"...","hinweis":<"..."|null>}
-      ]
-    }
-  ],
-  "hinweise": {}
-}"""
-
 # Flash-Lite braucht nur minimale Instruktionen — kein großes Schema
 _BATCH_SYSTEM = (
     "Antworte NUR mit einem JSON-Array, keine Markdown-Fences, kein Text.\n"
@@ -177,115 +80,247 @@ def _extract_json(text: str) -> dict | list:
     return json.loads(text)
 
 
-def _entwurf_cfg() -> genai_types.GenerateContentConfig:
-    """Konfiguration für Entwurf-Calls: kein Thinking, Token-Cap."""
+# ------------------------------------------------------------------ #
+#  Zwei-Call-Konfigurationen                                          #
+# ------------------------------------------------------------------ #
+
+_CALL_CFG = genai_types.GenerateContentConfig(
+    # Gemeinsame Einstellungen für beide fokussierten Calls.
+    # Kein globaler system_instruction — wird per-Call gesetzt.
+    temperature=0.1,
+    max_output_tokens=6144,      # pro Call max. 6 k Tokens → weit unter Limit
+    thinking_config=genai_types.ThinkingConfig(thinking_budget=512),
+)
+
+_SYS_EBENE1 = """Du bist ein präziser Automobil-Datenbankassistent.
+Antworte NUR mit einem JSON-Objekt, keine Markdown-Fences, kein Text davor/danach.
+
+PFLICHTREGELN:
+1. Unbekannte Felder → null. Niemals raten.
+2. Unsichere Zahlen (Preise, CO2): Zahl eintragen + Feld in "hinweise" vermerken.
+3. id = "{marke}-{modell}-{generation}" in Kleinbuchstaben/Bindestrichen.
+4. "erkennung_generation": mind. 2–3 konkrete sichtbare Merkmale (Scheinwerfer, Niere,
+   Karosserie, Unterschied zum Vorgänger). NIEMALS nur ein Baucode.
+5. "facelift_merkmale": konkreter Fließtext, null nur wenn kein Facelift stattfand.
+6. "kraftstoff": Benzin|Diesel|Elektro|Plug-in-Hybrid|Mild-Hybrid
+7. "schweregrad": gering|mittel|hoch
+8. "typ" (Ausstattungslinie): Basis|Ausstattungslinie|M Performance|Echtes M-Modell
+
+Ausgabe-Schema (OHNE motoren-Feld):
+{"id":"...","marke":"...","modell":"...","generation":"...",
+ "bauzeitraum_von":ZAHL_ODER_NULL,"bauzeitraum_bis":ZAHL_ODER_NULL,
+ "karosserie":["..."],"segment":"...","vorgaenger":"..._oder_null",
+ "erkennung_generation":"PFLICHT_FLIESSTEXT","facelift_merkmale":"..._oder_null",
+ "adac_pannenkennziffer":null,"tuev_maengelquote":null,"dekra_urteil":null,
+ "euro_ncap_sterne":ZAHL_ODER_NULL,"euro_ncap_jahr":ZAHL_ODER_NULL,
+ "wartung_oel_km":ZAHL_ODER_NULL,"wartung_hu_intervall":"..._oder_null",
+ "kaufberatung":null,"letzte_aktualisierung":"YYYY-MM",
+ "ausstattungslinien":[{"name":"...","typ":"...","optische_merkmale":"...","abgrenzung":null}],
+ "schwachstellen_baureihe":[{"bauteil":"...","beschreibung":"...","betroffene_baujahre":"...","schweregrad":"..."}],
+ "rueckrufe":[{"datum":"...","betroffene_baujahre":"...","mangel":"...","abhilfe":"...","kba_referenz":null}],
+ "quellen":[],"hinweise":{}}"""
+
+_SYS_MOTOREN = """Du bist ein präziser Automobil-Datenbankassistent.
+Antworte NUR mit einem JSON-Array von Motorvarianten, keine Markdown-Fences, kein Text davor/danach.
+
+PFLICHTREGELN:
+1. Unbekannte Zahlen → null. Nur sichere Werte eintragen.
+2. variante_id = "{baureihe_id}-{bezeichnung-slug}" in Kleinbuchstaben/Bindestrichen.
+3. "kraftstoff": Benzin|Diesel|Elektro|Plug-in-Hybrid|Mild-Hybrid
+4. "antrieb": Heck|Front|Allrad
+5. "optische_unterscheidung": sichtbare Unterschiede zur Basis (Endrohre, Embleme, Stoßstänger).
+   Kein null wenn Unterschiede existieren, niemals nur ein Baucode.
+
+Ausgabe-Schema (Array):
+[{"variante_id":"...","bezeichnung":"...","motorcode":null,"kraftstoff":"...",
+  "hubraum_ccm":null,"zylinder":null,"leistung_ps":null,"leistung_kw":null,
+  "drehmoment_nm":null,"getriebe":["..."],"antrieb":"...","beschleunigung_0_100":null,
+  "vmax_kmh":null,"verbrauch_wltp":null,"verbrauch_real":null,"co2_g_km":null,
+  "neupreis_ca_eur":null,"heck_emblem":null,"optische_unterscheidung":null,
+  "schwachstellen_motor":[{"bauteil":"...","beschreibung":"...","baujahre":null,"kosten_ca":null}],
+  "kritische_wartung":[{"bauteil":"...","intervall":"...","hinweis":null}]}]"""
+
+
+def _cfg_with(system: str) -> genai_types.GenerateContentConfig:
+    """Erstellt eine Call-Config mit spezifischem System-Prompt."""
+    import dataclasses
     return genai_types.GenerateContentConfig(
-        system_instruction=_SCHEMA_SYSTEM,
-        temperature=0.1,
-        # E46 brauchte 7193 Output + 995 Thinking = 8188 → 8192er-Limit gerissen.
-        # 16384 gibt genug Puffer für große Baureihen (viele Motoren/Schwachstellen).
-        max_output_tokens=16384,
-        thinking_config=genai_types.ThinkingConfig(thinking_budget=1024),
+        system_instruction=system,
+        temperature=_CALL_CFG.temperature,
+        max_output_tokens=_CALL_CFG.max_output_tokens,
+        thinking_config=_CALL_CFG.thinking_config,
     )
 
 
+def _call_sync(client, prompt: str, system: str) -> str:
+    """Führt einen einzelnen Generate-Call aus, bis zu 2 Versuche bei leerem Text."""
+    cfg = _cfg_with(system)
+    contents = [{"role": "user", "parts": [{"text": prompt}]}]
+    for versuch in range(1, 3):
+        resp = with_retry_sync(lambda: client.models.generate_content(
+            model=LLM_MODEL, contents=contents, config=cfg,
+        ))
+        text = resp.text or ""
+        if text.strip():
+            return text
+        log.warning("_call_sync Versuch %d/2: leere Antwort.", versuch)
+    raise ValueError("Leere Antwort nach 2 Versuchen.")
+
+
 # ------------------------------------------------------------------ #
-#  Entwurf (non-streaming, für direkte JSON-Rückgabe)                 #
+#  Entwurf — zwei fokussierte Calls, dann zusammenführen             #
 # ------------------------------------------------------------------ #
 
 async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
+    """
+    Zwei separate, fokussierte LLM-Calls:
+      Call A — Ebene-1-Daten (ohne Motoren): ~1500–2500 Token Output
+      Call B — Motorvarianten-Array:          ~1500–3000 Token Output
+
+    Jeder Call ist kleiner, unabhängiger Retry-fähig und deutlich unter
+    dem 6144-Token-Limit. Zusammen zuverlässiger als ein großer Monolith-Call.
+    """
     client = _get_client()
     heute  = date.today().strftime("%Y-%m")
-    prompt = _entwurf_prompt(marke, modell, generation, heute)
-    cfg    = _entwurf_cfg()
+    bid    = f"{marke}-{modell}-{generation}".lower().replace(" ", "-")
 
+    prompt_e1 = (
+        f"Erstelle Ebene-1-Daten (OHNE Motoren) für: {marke} {modell} {generation}.\n"
+        f"id={bid}, letzte_aktualisierung={heute}.\n"
+        "Unbekannte Felder → null. Unsichere Zahlen in 'hinweise' vermerken."
+    )
+    prompt_mo = (
+        f"Liste alle Motorvarianten des {marke} {modell} {generation} auf.\n"
+        f"baureihe_id für variante_id-Prefix: {bid}\n"
+        "Unbekannte Zahlen → null."
+    )
+
+    # Call A — Ebene 1
     last_err: Exception | None = None
-    for versuch in range(1, 3):   # max. 2 Versuche
-        response = with_retry_sync(lambda: client.models.generate_content(
-            model=LLM_MODEL,
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config=cfg,
-        ))
-        text = response.text or ""
-        if not text.strip():
-            last_err = ValueError("Leere Antwort vom Modell")
-            log.warning("Entwurf Versuch %d/%d: leere Antwort – wiederhole.", versuch, 2)
-            continue
+    ebene1: dict | None = None
+    for _ in range(2):
         try:
-            return _finalize(text, marke, modell, generation, heute)
-        except json.JSONDecodeError as e:
+            text = _call_sync(client, prompt_e1, _SYS_EBENE1)
+            ebene1 = _extract_json(text)
+            break
+        except Exception as e:
             last_err = e
-            log.warning("Entwurf Versuch %d/%d: JSON-Fehler (%s) – wiederhole.", versuch, 2, e)
+            log.warning("Ebene-1-Call fehlgeschlagen: %s – wiederhole.", e)
 
-    raise ValueError(
-        f"Antwort unvollständig, bitte erneut versuchen. "
-        f"(Details: {last_err})"
-    ) from last_err
+    if ebene1 is None:
+        raise ValueError(f"Antwort unvollständig, bitte erneut versuchen. (Ebene 1: {last_err})")
+
+    # Call B — Motoren
+    motoren: list = []
+    for _ in range(2):
+        try:
+            text = _call_sync(client, prompt_mo, _SYS_MOTOREN)
+            motoren = _extract_json(text)
+            break
+        except Exception as e:
+            last_err = e
+            log.warning("Motoren-Call fehlgeschlagen: %s – wiederhole.", e)
+            motoren = []   # lieber leer als falsch
+
+    # Zusammenführen
+    ebene1["motoren"] = motoren if isinstance(motoren, list) else []
+    ebene1.setdefault("marke", marke)
+    ebene1.setdefault("modell", modell)
+    ebene1.setdefault("generation", generation)
+    ebene1.setdefault("hinweise", {})
+    ebene1.setdefault("letzte_aktualisierung", heute)
+    return ebene1
 
 
 # ------------------------------------------------------------------ #
-#  Entwurf Streaming (SSE — gibt rohen JSON-Text häppchenweise aus)   #
+#  Entwurf Streaming — streamt Ebene 1, dann Motoren, dann done      #
 # ------------------------------------------------------------------ #
 
 async def entwurf_stream(
     marke: str, modell: str, generation: str
 ) -> AsyncGenerator[str, None]:
     """
-    Streamt den rohen JSON-Text als Fragmente.
-    Letztes Event: {"done": true, "json": <geparstes Dict>}
-    Bei Fehler: {"error": "..."}
-
-    Interner Retry-Loop (bis 2 Versuche) bei leerem oder nicht-parsebarem Text.
-    503-Transients werden durch with_retry_sync bereits abgefangen.
+    Zwei-Phasen-Stream:
+      Phase 1: Ebene-1-Daten streamen (sofortiges Feedback)
+      Phase 2: Motoren non-streaming (einfacher, robuster)
+      Letztes Event: {"done": true, "json": <zusammengeführtes Dict>}
     """
-    client  = _get_client()
-    heute   = date.today().strftime("%Y-%m")
-    prompt  = _entwurf_prompt(marke, modell, generation, heute)
-    cfg     = _entwurf_cfg()
-    contents = [{"role": "user", "parts": [{"text": prompt}]}]
+    client = _get_client()
+    heute  = date.today().strftime("%Y-%m")
+    bid    = f"{marke}-{modell}-{generation}".lower().replace(" ", "-")
+
+    prompt_e1 = (
+        f"Erstelle Ebene-1-Daten (OHNE Motoren) für: {marke} {modell} {generation}.\n"
+        f"id={bid}, letzte_aktualisierung={heute}.\n"
+        "Unbekannte Felder → null. Unsichere Zahlen in 'hinweise' vermerken."
+    )
+    prompt_mo = (
+        f"Liste alle Motorvarianten des {marke} {modell} {generation} auf.\n"
+        f"baureihe_id für variante_id-Prefix: {bid}\n"
+        "Unbekannte Zahlen → null."
+    )
+    cfg_e1 = _cfg_with(_SYS_EBENE1)
+    cfg_mo = _cfg_with(_SYS_MOTOREN)
+    contents_e1 = [{"role": "user", "parts": [{"text": prompt_e1}]}]
+
+    # ---- Phase 1: Ebene-1 streamen ----
+    buffer: list[str] = []
+    ebene1: dict | None = None
 
     for versuch in range(1, 3):
-        buffer: list[str] = []
+        buffer = []
         try:
             stream = with_retry_sync(lambda: client.models.generate_content_stream(
-                model=LLM_MODEL, contents=contents, config=cfg,
+                model=LLM_MODEL, contents=contents_e1, config=cfg_e1,
             ))
-
             for chunk in stream:
                 if chunk.text:
                     buffer.append(chunk.text)
-                    # Nur beim ersten Versuch streamen — beim Retry ohne delta-Events
                     if versuch == 1:
                         yield json.dumps({"delta": chunk.text}, ensure_ascii=False)
 
-            full_text = "".join(buffer)
-
-            if not full_text.strip():
-                log.warning("Stream Versuch %d/2: leere Antwort – wiederhole.", versuch)
-                if versuch == 1:
-                    yield json.dumps({"status": "retry", "versuch": versuch})
+            full = "".join(buffer)
+            if not full.strip():
+                log.warning("Stream E1 Versuch %d/2: leer.", versuch)
+                yield json.dumps({"status": "retry", "versuch": versuch})
                 continue
 
-            try:
-                data = _finalize(full_text, marke, modell, generation, heute)
-                yield json.dumps({"done": True, "json": data}, ensure_ascii=False)
-                return
-            except json.JSONDecodeError as e:
-                log.warning("Stream Versuch %d/2: JSON-Fehler – wiederhole. %s", versuch, e)
-                if versuch == 1:
-                    yield json.dumps({"status": "retry", "versuch": versuch})
-                continue
+            ebene1 = _extract_json(full)
+            break
 
         except RateLimitExhausted as e:
             yield json.dumps({"error": str(e)})
             return
+        except json.JSONDecodeError as e:
+            log.warning("Stream E1 Versuch %d/2: JSON-Fehler – %s", versuch, e)
+            yield json.dumps({"status": "retry", "versuch": versuch})
         except Exception as e:
-            log.warning("Stream Versuch %d/2: Fehler – %s", versuch, e)
-            if versuch == 1:
-                yield json.dumps({"status": "retry", "versuch": versuch})
-            continue
+            log.warning("Stream E1 Versuch %d/2: Fehler – %s", versuch, e)
+            yield json.dumps({"status": "retry", "versuch": versuch})
 
-    yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
+    if ebene1 is None:
+        yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
+        return
+
+    # ---- Phase 2: Motoren (non-streaming, robuster) ----
+    yield json.dumps({"status": "motoren"})   # Browser: "Lade Motorvarianten…"
+    motoren: list = []
+    try:
+        text = _call_sync(client, prompt_mo, cfg_mo.system_instruction)
+        motoren = _extract_json(text)
+    except Exception as e:
+        log.warning("Stream Motoren-Call fehlgeschlagen: %s", e)
+        motoren = []
+
+    # ---- Zusammenführen und done senden ----
+    ebene1["motoren"] = motoren if isinstance(motoren, list) else []
+    ebene1.setdefault("marke", marke)
+    ebene1.setdefault("modell", modell)
+    ebene1.setdefault("generation", generation)
+    ebene1.setdefault("hinweise", {})
+    ebene1.setdefault("letzte_aktualisierung", heute)
+
+    yield json.dumps({"done": True, "json": ebene1}, ensure_ascii=False)
 
 
 # ------------------------------------------------------------------ #
