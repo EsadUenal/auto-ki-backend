@@ -251,6 +251,12 @@ async function entwurfErstellen(marke, modell, generation) {
           setStatus(`Entwurf fertig: ${marke} ${modell} ${generation}`, "ok");
         }
 
+        if (evt.status === "retry") {
+          spText.textContent = "";
+          charCount = 0;
+          setStatus(`Antwort unvollständig — wiederhole (Versuch ${evt.versuch + 1}/2)…`, "info");
+        }
+
         if (evt.error) {
           setStatus("Fehler: " + evt.error, "err");
           preview.style.display = "none";

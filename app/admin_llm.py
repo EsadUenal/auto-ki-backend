@@ -234,37 +234,58 @@ async def entwurf_stream(
     Streamt den rohen JSON-Text als Fragmente.
     Letztes Event: {"done": true, "json": <geparstes Dict>}
     Bei Fehler: {"error": "..."}
+
+    Interner Retry-Loop (bis 2 Versuche) bei leerem oder nicht-parsebarem Text.
+    503-Transients werden durch with_retry_sync bereits abgefangen.
     """
     client  = _get_client()
     heute   = date.today().strftime("%Y-%m")
     prompt  = _entwurf_prompt(marke, modell, generation, heute)
     cfg     = _entwurf_cfg()
-    buffer  = []
+    contents = [{"role": "user", "parts": [{"text": prompt}]}]
 
-    try:
-        stream = with_retry_sync(lambda: client.models.generate_content_stream(
-            model=LLM_MODEL,
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config=cfg,
-        ))
-
-        for chunk in stream:
-            if chunk.text:
-                buffer.append(chunk.text)
-                yield json.dumps({"delta": chunk.text}, ensure_ascii=False)
-
-        full_text = "".join(buffer)
-        if not full_text.strip():
-            yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen. (Leere Antwort)"})
-            return
+    for versuch in range(1, 3):
+        buffer: list[str] = []
         try:
-            data = _finalize(full_text, marke, modell, generation, heute)
-            yield json.dumps({"done": True, "json": data}, ensure_ascii=False)
-        except json.JSONDecodeError as e:
-            yield json.dumps({"error": f"Antwort unvollständig, bitte erneut versuchen. (JSON: {e})"})
+            stream = with_retry_sync(lambda: client.models.generate_content_stream(
+                model=LLM_MODEL, contents=contents, config=cfg,
+            ))
 
-    except RateLimitExhausted as e:
-        yield json.dumps({"error": str(e)})
+            for chunk in stream:
+                if chunk.text:
+                    buffer.append(chunk.text)
+                    # Nur beim ersten Versuch streamen — beim Retry ohne delta-Events
+                    if versuch == 1:
+                        yield json.dumps({"delta": chunk.text}, ensure_ascii=False)
+
+            full_text = "".join(buffer)
+
+            if not full_text.strip():
+                log.warning("Stream Versuch %d/2: leere Antwort – wiederhole.", versuch)
+                if versuch == 1:
+                    yield json.dumps({"status": "retry", "versuch": versuch})
+                continue
+
+            try:
+                data = _finalize(full_text, marke, modell, generation, heute)
+                yield json.dumps({"done": True, "json": data}, ensure_ascii=False)
+                return
+            except json.JSONDecodeError as e:
+                log.warning("Stream Versuch %d/2: JSON-Fehler – wiederhole. %s", versuch, e)
+                if versuch == 1:
+                    yield json.dumps({"status": "retry", "versuch": versuch})
+                continue
+
+        except RateLimitExhausted as e:
+            yield json.dumps({"error": str(e)})
+            return
+        except Exception as e:
+            log.warning("Stream Versuch %d/2: Fehler – %s", versuch, e)
+            if versuch == 1:
+                yield json.dumps({"status": "retry", "versuch": versuch})
+            continue
+
+    yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
 
 
 # ------------------------------------------------------------------ #
