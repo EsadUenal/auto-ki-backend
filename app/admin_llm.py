@@ -39,6 +39,20 @@ PFLICHTREGELN:
 9. "schweregrad" in schwachstellen_baureihe nur aus: gering, mittel, hoch.
 10. "typ" in ausstattungslinien nur aus: Basis, Ausstattungslinie, M Performance, Echtes M-Modell.
 
+OPTISCHE FELDER — BESONDERE PFLICHTREGELN (häufigste Fehlerquelle):
+11. "erkennung_generation": NIEMALS nur ein interner Baucode (z.B. "F48" oder "G01"). IMMER ein
+    ausführlicher Fließtext mit mind. 2–3 konkreten, sichtbaren Merkmalen, z.B.:
+    Scheinwerferform, Niere/Grille-Design, Karosserieproportionen, Heckleuchtenform,
+    markante Unterscheidung zum Vorgänger. Beispiel für guten Wert:
+    "Charakteristisch sind die flachen, schmalen Scheinwerfer mit L-förmigem Tagfahrlicht,
+    die breite zweigeteilte Niere und der coupéartige Dachabschluss. Gegenüber dem E84
+    deutlich keilförmigere Silhouette mit höherer Gürtellinie."
+12. "facelift_merkmale": Ebenso konkreter Fließtext — welche Teile wurden neu gestaltet,
+    was änderte sich sichtbar? Kein null wenn ein Facelift stattfand.
+13. "optische_unterscheidung" bei Motorvarianten: Beschreibt sichtbare Unterschiede zur
+    Basisvariante (andere Endrohre, Stoßstänger, Felgen, Embleme). Kein null wenn Unterschiede
+    existieren, kein Baucode.
+
 AUSGABE-SCHEMA (exakt diese Struktur, alle Felder vorhanden):
 {
   "id": "...",
