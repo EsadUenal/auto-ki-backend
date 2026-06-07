@@ -337,7 +337,10 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
     cfg = genai_types.GenerateContentConfig(
         system_instruction=_BATCH_SYSTEM,
         temperature=0.0,
-        max_output_tokens=400,
+        max_output_tokens=800,   # 400 → 800: Puffer falls Thinking Tokens abgezogen werden
+        # Thinking explizit deaktivieren — sonst frisst es das Token-Budget und
+        # hinterlässt keinen Platz für die eigentliche Ausgabe → leerer resp.text
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
     contents = [{"role": "user", "parts": [{"text": anfrage}]}]
 
