@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import logging
+import traceback
+
 from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel
 
 from fastapi.responses import StreamingResponse
+from google.genai.errors import ServerError
 
 from app.auth import verify_api_key
 from app.admin_llm import entwurf_erstellen, entwurf_stream, generationen_auflisten
 from app.db_writer import save_fahrzeug
 from app.utf8 import UTF8JSONResponse
 from app.gemini_retry import RateLimitExhausted
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", default_response_class=UTF8JSONResponse)
 
@@ -33,7 +39,12 @@ class SpeichernRequest(BaseModel):
 # ---------- Endpunkte ----------
 
 def _llm_error(exc: Exception) -> HTTPException:
-    """Wandelt LLM-Fehler in passende HTTP-Fehler um."""
+    """Wandelt LLM-Fehler in passende HTTP-Fehler um. Loggt immer den vollen Traceback."""
+    log.error(
+        "Admin-LLM-Fehler [%s]: %s\n%s",
+        type(exc).__name__, exc, traceback.format_exc(),
+    )
+
     if isinstance(exc, RateLimitExhausted):
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -43,6 +54,12 @@ def _llm_error(exc: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"fehler": {"code": "antwort_unvollstaendig", "nachricht": str(exc)}},
+        )
+    if isinstance(exc, ServerError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"fehler": {"code": "llm_nicht_erreichbar",
+                               "nachricht": f"Gemini nicht erreichbar: {exc}"}},
         )
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,

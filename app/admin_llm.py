@@ -329,22 +329,38 @@ async def entwurf_stream(
 
 async def generationen_auflisten(anfrage: str) -> list[dict]:
     """
-    Nutzt gemini-2.0-flash-lite — kein Thinking-Overhead, < 2 s für eine Liste.
+    Nutzt FAST_LLM_MODEL (gemini-2.5-flash-lite) — kein Thinking-Overhead, < 3 s.
+    Retry-Loop: bis zu 2 Versuche bei leerer oder nicht-parsebarer Antwort.
     """
     client = _get_client()
 
     cfg = genai_types.GenerateContentConfig(
         system_instruction=_BATCH_SYSTEM,
-        temperature=0.0,       # maximale Determiniertheit für Faktenlisten
-        max_output_tokens=400, # eine Liste mit 15 Generationen braucht ~200 Token
+        temperature=0.0,
+        max_output_tokens=400,
     )
-    response = with_retry_sync(lambda: client.models.generate_content(
-        model=FAST_LLM_MODEL,
-        contents=[{"role": "user", "parts": [{"text": anfrage}]}],
-        config=cfg,
-    ))
+    contents = [{"role": "user", "parts": [{"text": anfrage}]}]
 
-    return _extract_json(response.text)
+    last_err: Exception | None = None
+    for versuch in range(1, 3):
+        response = with_retry_sync(lambda: client.models.generate_content(
+            model=FAST_LLM_MODEL, contents=contents, config=cfg,
+        ))
+        text = response.text or ""
+        if not text.strip():
+            last_err = ValueError("Leere Antwort")
+            log.warning("generationen_auflisten Versuch %d/2: leere Antwort.", versuch)
+            continue
+        try:
+            return _extract_json(text)
+        except Exception as e:
+            last_err = e
+            log.warning("generationen_auflisten Versuch %d/2: Parse-Fehler %s.", versuch, e)
+
+    raise ValueError(
+        f"Generationen-Liste konnte nicht geladen werden, bitte erneut versuchen. "
+        f"(Details: {last_err})"
+    ) from last_err
 
 
 # ------------------------------------------------------------------ #
