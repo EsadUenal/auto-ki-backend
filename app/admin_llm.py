@@ -210,20 +210,31 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
     if ebene1 is None:
         raise ValueError(f"Antwort unvollständig, bitte erneut versuchen. (Ebene 1: {last_err})")
 
-    # Call B — Motoren
+    # Call B — Motoren (Fehler werden NICHT still geschluckt)
+    motoren_err: str | None = None
     motoren: list = []
-    for _ in range(2):
+    for versuch in range(1, 3):
         try:
             text = _call_sync(client, prompt_mo, _SYS_MOTOREN)
-            motoren = _extract_json(text)
-            break
+            result = _extract_json(text)
+            if isinstance(result, list):
+                motoren = result
+                motoren_err = None
+                break
+            else:
+                raise ValueError(f"Motorenliste ist kein Array: {type(result)}")
         except Exception as e:
             last_err = e
-            log.warning("Motoren-Call fehlgeschlagen: %s – wiederhole.", e)
-            motoren = []   # lieber leer als falsch
+            motoren_err = str(e)
+            log.warning("Motoren-Call Versuch %d/2 fehlgeschlagen: %s", versuch, e)
 
-    # Zusammenführen
-    ebene1["motoren"] = motoren if isinstance(motoren, list) else []
+    # Zusammenführen — Motorenfehler als eigenes Feld mitgeben (nicht still verwerfen)
+    ebene1["motoren"] = motoren
+    if motoren_err and not motoren:
+        ebene1["_motorenfehler"] = (
+            "Motorvarianten konnten nicht geladen werden, bitte Entwurf neu versuchen. "
+            f"(Details: {motoren_err})"
+        )
     ebene1.setdefault("marke", marke)
     ebene1.setdefault("modell", modell)
     ebene1.setdefault("generation", generation)
@@ -302,23 +313,39 @@ async def entwurf_stream(
         yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
         return
 
-    # ---- Phase 2: Motoren (non-streaming, robuster) ----
-    yield json.dumps({"status": "motoren"})   # Browser: "Lade Motorvarianten…"
+    # ---- Phase 2: Motoren (non-streaming, Fehler werden sichtbar) ----
+    yield json.dumps({"status": "motoren"})
     motoren: list = []
-    try:
-        text = _call_sync(client, prompt_mo, cfg_mo.system_instruction)
-        motoren = _extract_json(text)
-    except Exception as e:
-        log.warning("Stream Motoren-Call fehlgeschlagen: %s", e)
-        motoren = []
+    motoren_err: str | None = None
+
+    for versuch in range(1, 3):
+        try:
+            text = _call_sync(client, prompt_mo, cfg_mo.system_instruction)
+            result = _extract_json(text)
+            if isinstance(result, list):
+                motoren = result
+                motoren_err = None
+                break
+            else:
+                raise ValueError(f"Kein Array: {type(result)}")
+        except Exception as e:
+            motoren_err = str(e)
+            log.warning("Stream Motoren-Call Versuch %d/2: %s", versuch, e)
 
     # ---- Zusammenführen und done senden ----
-    ebene1["motoren"] = motoren if isinstance(motoren, list) else []
+    ebene1["motoren"] = motoren
     ebene1.setdefault("marke", marke)
     ebene1.setdefault("modell", modell)
     ebene1.setdefault("generation", generation)
     ebene1.setdefault("hinweise", {})
     ebene1.setdefault("letzte_aktualisierung", heute)
+
+    if motoren_err and not motoren:
+        # Motorenfehler sichtbar machen — done wird trotzdem gesendet, aber
+        # mit _motorenfehler-Flag damit admin.html Speichern blockieren kann
+        ebene1["_motorenfehler"] = (
+            "Motorvarianten konnten nicht geladen werden, bitte Entwurf neu versuchen."
+        )
 
     yield json.dumps({"done": True, "json": ebene1}, ensure_ascii=False)
 
