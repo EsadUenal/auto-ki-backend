@@ -197,11 +197,23 @@ def save_fahrzeug(data: dict) -> str:
 # ---------- ChromaDB ----------
 
 def _update_chroma(bid: str, data: dict):
+    """
+    Aktualisiert ChromaDB für eine Baureihe.
+
+    ID-Schema: "{bid}__o_{n}" für optisches Wissen,
+               "{bid}__t_{n}" für technisches Wissen.
+    n ist ein globaler Laufindex — garantiert eindeutig innerhalb eines Aufrufs,
+    unabhängig von Motorcode oder Inhalt.
+
+    Ablauf:
+      1. Alte Einträge dieser baureihe_id löschen (sauberer Ausgangspunkt)
+      2. Neue Einträge via upsert schreiben (idempotent, nie Duplikatfehler)
+    """
     client = chromadb.PersistentClient(path=str(CHROMA_PATH))
     optik   = client.get_or_create_collection("optisches_wissen",   metadata={"hnsw:space": "cosine"})
     technik = client.get_or_create_collection("technisches_wissen", metadata={"hnsw:space": "cosine"})
 
-    # Alte Einträge dieser Baureihe löschen
+    # Alte Einträge dieser Baureihe vollständig löschen
     for col in [optik, technik]:
         existing = col.get(where={"baureihe_id": bid})
         if existing["ids"]:
@@ -216,58 +228,69 @@ def _update_chroma(bid: str, data: dict):
 
     # -- Optisches Wissen --
     o_docs, o_ids, o_metas = [], [], []
+    o_idx = 0  # globaler Laufindex — verhindert ID-Kollisionen
 
-    def _oadd(suffix: str, text: str, feld: str, extra: dict | None = None):
+    def _oadd(text: str, feld: str, extra: dict | None = None):
+        nonlocal o_idx
         o_docs.append(text)
-        o_ids.append(f"{bid}__{suffix}")
+        o_ids.append(f"{bid}__o_{o_idx}")
         o_metas.append({**meta_base, "feld": feld, **(extra or {})})
+        o_idx += 1
 
     if data.get("erkennung_generation"):
-        _oadd("erkennung", data["erkennung_generation"], "erkennung_generation")
+        _oadd(data["erkennung_generation"], "erkennung_generation")
     if data.get("facelift_merkmale"):
-        _oadd("facelift", data["facelift_merkmale"], "facelift_merkmale")
-    for i, l in enumerate(data.get("ausstattungslinien", [])):
+        _oadd(data["facelift_merkmale"], "facelift_merkmale")
+    for l in data.get("ausstattungslinien", []):
         parts = [f"{l.get('name')} ({l.get('typ')})"]
         if l.get("optische_merkmale"):
             parts.append(l["optische_merkmale"])
         if l.get("abgrenzung"):
             parts.append(f"Abgrenzung: {l['abgrenzung']}")
-        _oadd(f"linie_{i}", " — ".join(parts), "ausstattungslinie", {"name": l.get("name", "")})
+        _oadd(" — ".join(parts), "ausstattungslinie", {"name": l.get("name", "")})
 
     if o_docs:
-        optik.add(documents=o_docs, ids=o_ids, metadatas=o_metas)
+        # upsert statt add → kein Fehler bei erneutem Speichern derselben Baureihe
+        optik.upsert(documents=o_docs, ids=o_ids, metadatas=o_metas)
 
     # -- Technisches Wissen --
     t_docs, t_ids, t_metas = [], [], []
+    t_idx = 0       # globaler Laufindex
+    seen_text: set[str] = set()  # identische Texte überspringen
 
-    def _tadd(suffix: str, text: str, feld: str, extra: dict | None = None):
+    def _tadd(text: str, feld: str, extra: dict | None = None):
+        nonlocal t_idx
+        # Inhaltsbasierte Deduplizierung (gleiche Beschreibung mehrerer Motoren)
+        if text in seen_text:
+            return
+        seen_text.add(text)
         t_docs.append(text)
-        t_ids.append(f"{bid}__{suffix}")
+        t_ids.append(f"{bid}__t_{t_idx}")
         t_metas.append({**meta_base, "feld": feld, **(extra or {})})
+        t_idx += 1
 
-    for i, s in enumerate(data.get("schwachstellen_baureihe", [])):
-        _tadd(f"sw_baureihe_{i}",
-              f"Schwachstelle: {s.get('bauteil')}. {s.get('beschreibung')} "
-              f"(Baujahre: {s.get('betroffene_baujahre')}, Schweregrad: {s.get('schweregrad')})",
-              "schwachstelle_baureihe", {"schweregrad": s.get("schweregrad", "")})
+    for s in data.get("schwachstellen_baureihe", []):
+        _tadd(
+            f"Schwachstelle: {s.get('bauteil')}. {s.get('beschreibung')} "
+            f"(Baujahre: {s.get('betroffene_baujahre')}, Schweregrad: {s.get('schweregrad')})",
+            "schwachstelle_baureihe", {"schweregrad": s.get("schweregrad", "")},
+        )
 
-    for i, r in enumerate(data.get("rueckrufe", [])):
-        _tadd(f"rueckruf_{i}",
-              f"Rückruf {r.get('datum')}: {r.get('mangel')} "
-              f"(betroffen: {r.get('betroffene_baujahre')}, Abhilfe: {r.get('abhilfe')})",
-              "rueckruf")
+    for r in data.get("rueckrufe", []):
+        _tadd(
+            f"Rückruf {r.get('datum')}: {r.get('mangel')} "
+            f"(betroffen: {r.get('betroffene_baujahre')}, Abhilfe: {r.get('abhilfe')})",
+            "rueckruf",
+        )
 
-    seen = set()
     for m in data.get("motoren", []):
-        for j, s in enumerate(m.get("schwachstellen_motor", [])):
-            key = (s.get("bauteil"), s.get("beschreibung"))
-            if key in seen:
-                continue
-            seen.add(key)
-            _tadd(f"sw_motor_{m.get('motorcode','')}_{j}",
-                  f"Motorproblem ({m.get('motorcode')}): {s.get('bauteil')}. {s.get('beschreibung')} "
-                  f"(Baujahre: {s.get('baujahre')}, Kosten ca.: {s.get('kosten_ca')})",
-                  "schwachstelle_motor", {"motorcode": m.get("motorcode", "")})
+        for s in m.get("schwachstellen_motor", []):
+            _tadd(
+                f"Motorproblem ({m.get('motorcode')}): {s.get('bauteil')}. {s.get('beschreibung')} "
+                f"(Baujahre: {s.get('baujahre')}, Kosten ca.: {s.get('kosten_ca')})",
+                "schwachstelle_motor", {"motorcode": m.get("motorcode", "")},
+            )
 
     if t_docs:
-        technik.add(documents=t_docs, ids=t_ids, metadatas=t_metas)
+        # upsert statt add → idempotent, kein Duplikatfehler
+        technik.upsert(documents=t_docs, ids=t_ids, metadatas=t_metas)
