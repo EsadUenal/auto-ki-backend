@@ -503,46 +503,96 @@ async def entwurf_stream(
 
 
 # ------------------------------------------------------------------ #
-#  Generationen-Liste (Flash-Lite, schnell)                           #
+#  Generationen-Liste (Flash-Lite primär, Flash-Fallback)            #
 # ------------------------------------------------------------------ #
 
 async def generationen_auflisten(anfrage: str) -> list[dict]:
     """
-    Nutzt FAST_LLM_MODEL (gemini-2.5-flash-lite) — kein Thinking-Overhead, < 3 s.
-    Retry-Loop: bis zu 2 Versuche bei leerer oder nicht-parsebarer Antwort.
+    Listet Generationen für einen Batch-Prompt auf.
+
+    Strategie (analog zu _call_motoren):
+      1. Primär:  FAST_LLM_MODEL (flash-lite), thinking_budget=0 → schnell, < 3 s
+      2. Fallback: LLM_MODEL (flash), thinking_budget=0, mehr Output-Tokens
+         — greift automatisch wenn flash-lite leer/nicht-JSON/503 liefert
+
+    JSON-Validierung: Antwort muss '[' oder '{' enthalten UND parsebar sein.
     """
     client = _get_client()
-
-    cfg = genai_types.GenerateContentConfig(
-        system_instruction=_BATCH_SYSTEM,
-        temperature=0.0,
-        max_output_tokens=800,   # 400 → 800: Puffer falls Thinking Tokens abgezogen werden
-        # Thinking explizit deaktivieren — sonst frisst es das Token-Budget und
-        # hinterlässt keinen Platz für die eigentliche Ausgabe → leerer resp.text
-        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-    )
     contents = [{"role": "user", "parts": [{"text": anfrage}]}]
 
-    last_err: Exception | None = None
-    for versuch in range(1, 3):
-        response = with_retry_sync(lambda: client.models.generate_content(
-            model=FAST_LLM_MODEL, contents=contents, config=cfg,
-        ))
-        text = response.text or ""
-        if not text.strip():
-            last_err = ValueError("Leere Antwort")
-            log.warning("generationen_auflisten Versuch %d/2: leere Antwort.", versuch)
-            continue
-        try:
-            return _extract_json(text)
-        except Exception as e:
-            last_err = e
-            log.warning("generationen_auflisten Versuch %d/2: Parse-Fehler %s.", versuch, e)
+    def _versuche(model: str, max_output_tokens: int) -> list | None:
+        """
+        Bis zu 2 Versuche mit einem Modell.
+        Gibt die Liste zurück oder None wenn alle Versuche scheitern.
+        """
+        cfg = genai_types.GenerateContentConfig(
+            system_instruction=_BATCH_SYSTEM,
+            temperature=0.0,
+            max_output_tokens=max_output_tokens,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        )
+        for versuch in range(1, 3):
+            try:
+                resp = with_retry_sync(
+                    lambda m=model, c=cfg: client.models.generate_content(
+                        model=m, contents=contents, config=c,
+                    )
+                )
+                text = resp.text or ""
+                stripped = text.strip()
+
+                # 1. Leer?
+                if not stripped:
+                    log.warning(
+                        "generationen_auflisten [%s] Versuch %d/2: leere Antwort.", model, versuch
+                    )
+                    continue
+
+                # 2. Kein JSON-Marker → kein JSON
+                if "{" not in stripped and "[" not in stripped:
+                    log.warning(
+                        "generationen_auflisten [%s] Versuch %d/2: kein JSON: %r",
+                        model, versuch, stripped[:100],
+                    )
+                    continue
+
+                # 3. Parsebar und Liste?
+                result = _extract_json(stripped)
+                if isinstance(result, list):
+                    log.info(
+                        "generationen_auflisten [%s] OK: %d Generationen.", model, len(result)
+                    )
+                    return result
+                log.warning(
+                    "generationen_auflisten [%s] Versuch %d/2: kein Array (%s).",
+                    model, versuch, type(result).__name__,
+                )
+
+            except Exception as exc:
+                log.warning(
+                    "generationen_auflisten [%s] Versuch %d/2: %s", model, versuch, exc
+                )
+
+        return None  # beide Versuche gescheitert
+
+    # ── Primär: Flash-Lite (schnell) ──────────────────────────────────
+    result = _versuche(FAST_LLM_MODEL, max_output_tokens=800)
+    if result is not None:
+        return result
+
+    log.warning(
+        "generationen_auflisten: %s fehlgeschlagen — Fallback auf %s.",
+        FAST_LLM_MODEL, LLM_MODEL,
+    )
+
+    # ── Fallback: Flash (mehr Kapazität) ──────────────────────────────
+    result = _versuche(LLM_MODEL, max_output_tokens=1600)
+    if result is not None:
+        return result
 
     raise ValueError(
-        f"Generationen-Liste konnte nicht geladen werden, bitte erneut versuchen. "
-        f"(Details: {last_err})"
-    ) from last_err
+        "Generationen-Liste konnte nicht geladen werden — bitte erneut versuchen."
+    )
 
 
 # ------------------------------------------------------------------ #
