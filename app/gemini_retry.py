@@ -20,10 +20,10 @@ from google.genai.errors import ClientError, ServerError
 log = logging.getLogger(__name__)
 
 MAX_RETRIES_429         = 3     # 429: 1 original + 2 Wiederholungen
-MAX_RETRIES_503         = 3     # 503: bis zu 3 Versuche
+MAX_RETRIES_503         = 5     # 503: bis zu 5 Versuche (robuster bei Überlast)
 DAILY_LIMIT_THRESHOLD_S = 3600  # retryDelay > 1 h → Tageslimit
 DEFAULT_RETRY_S_429     = 60    # Fallback wenn keine retryDelay im Fehler
-RETRY_DELAY_503_S       = 8     # kurze Wartezeit bei 503 (transient overload)
+RETRY_DELAY_503_S       = 15    # 15s Wartezeit bei 503 (vorher 8s)
 
 
 class RateLimitExhausted(Exception):

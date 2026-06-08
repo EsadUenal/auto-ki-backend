@@ -15,6 +15,7 @@ from typing import AsyncGenerator
 log = logging.getLogger(__name__)
 
 from google.genai import types as genai_types
+from google.genai.errors import ServerError
 
 from app.llm import _get_client
 from app.config import LLM_MODEL, FAST_LLM_MODEL
@@ -142,13 +143,24 @@ Ausgabe-Schema (Array):
 
 
 def _cfg_with(system: str) -> genai_types.GenerateContentConfig:
-    """Erstellt eine Call-Config mit spezifischem System-Prompt."""
+    """Erstellt eine Call-Config mit spezifischem System-Prompt (Haupt-Modell)."""
     import dataclasses
     return genai_types.GenerateContentConfig(
         system_instruction=system,
         temperature=_CALL_CFG.temperature,
         max_output_tokens=_CALL_CFG.max_output_tokens,
         thinking_config=_CALL_CFG.thinking_config,
+    )
+
+
+def _cfg_fallback(system: str) -> genai_types.GenerateContentConfig:
+    """Config für Fallback-Modell (flash-lite) — Thinking deaktiviert, kein Budget-Fraß.
+    max_output_tokens=16384: BMW 1er F20 generiert 14000+ Zeichen (~5000+ Tokens) für alle Varianten."""
+    return genai_types.GenerateContentConfig(
+        system_instruction=system,
+        temperature=0.1,
+        max_output_tokens=16384,
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
 
 
@@ -167,6 +179,129 @@ def _call_sync(client, prompt: str, system: str) -> str:
     raise ValueError("Leere Antwort nach 2 Versuchen.")
 
 
+def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
+    """
+    Streaming-Generate-Call — sammelt vollständigen Text aus dem Stream.
+
+    Streaming ist bei Gemini-Überlast robuster als non-streaming:
+    der erste Token kommt schneller durch, bevor der 503 greift.
+    Bis zu 2 Versuche bei leerem oder nicht-JSON-haltigem Ergebnis.
+    """
+    cfg = _cfg_with(system) if model == LLM_MODEL else _cfg_fallback(system)
+    contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    for versuch in range(1, 3):
+        buffer: list[str] = []
+        # Default-Argument-Trick: model/cfg/contents werden zum Lambda-Erstellungszeitpunkt
+        # gebunden, nicht erst bei Aufruf durch with_retry_sync.
+        stream = with_retry_sync(
+            lambda m=model, c=cfg, ct=contents: client.models.generate_content_stream(
+                model=m, contents=ct, config=c,
+            )
+        )
+        for chunk in stream:
+            if chunk.text:
+                buffer.append(chunk.text)
+        text = "".join(buffer)
+        stripped = text.strip()
+        if not stripped:
+            log.warning(
+                "_call_stream_collect [%s] Versuch %d/2: leere Antwort.", model, versuch
+            )
+            continue
+        if "{" not in stripped and "[" not in stripped:
+            log.warning(
+                "_call_stream_collect [%s] Versuch %d/2: kein JSON in Antwort: %r",
+                model, versuch, stripped[:120],
+            )
+            continue
+        # Vollständigkeitsprüfung: parsbares JSON → kein abgeschnittenes Chunk zurückgeben
+        try:
+            _extract_json(stripped)
+            return text  # valides, vollständiges JSON
+        except Exception as json_err:
+            log.warning(
+                "_call_stream_collect [%s] Versuch %d/2: JSON-Fehler (abgeschnitten?): %s | len=%d",
+                model, versuch, json_err, len(stripped),
+            )
+
+    raise ValueError(f"Kein valides JSON nach 2 Versuchen ({model}).")
+
+
+def _call_sync_fallback(client, prompt: str, system: str) -> str:
+    """
+    Non-streaming Fallback-Call mit FAST_LLM_MODEL (flash-lite).
+
+    Non-streaming ist für flash-lite zuverlässiger: das Modell ist weniger
+    ausgelastet als flash, und die Antwort kann in einem Block abgerufen werden.
+    thinking_budget=0 verhindert Token-Fraß.
+    Bis zu 2 Versuche bei leerem oder nicht-JSON-haltigem Ergebnis.
+    """
+    cfg = _cfg_fallback(system)
+    contents = [{"role": "user", "parts": [{"text": prompt}]}]
+    for versuch in range(1, 3):
+        resp = with_retry_sync(lambda: client.models.generate_content(
+            model=FAST_LLM_MODEL, contents=contents, config=cfg,
+        ))
+        text = resp.text or ""
+        stripped = text.strip()
+        if not stripped:
+            log.warning("_call_sync_fallback Versuch %d/2: leere Antwort.", versuch)
+            continue
+        if "{" not in stripped and "[" not in stripped:
+            log.warning(
+                "_call_sync_fallback Versuch %d/2: kein JSON in Antwort: %r",
+                versuch, stripped[:120],
+            )
+            continue
+        # Vollständigkeitsprüfung: parsbares JSON oder abgeschnitten?
+        try:
+            _extract_json(stripped)
+            return text  # valides, vollständiges JSON
+        except Exception as json_err:
+            log.warning(
+                "_call_sync_fallback Versuch %d/2: JSON-Fehler (abgeschnitten?): %s",
+                versuch, json_err,
+            )
+    raise ValueError(f"Kein valides JSON nach 2 Versuchen ({FAST_LLM_MODEL}).")
+
+
+def _call_motoren(client, prompt: str) -> str:
+    """
+    Motoren-Call mit automatischem Fallback auf FAST_LLM_MODEL.
+
+    Strategie:
+      1. Primär: LLM_MODEL (gemini-2.5-flash) via Streaming + with_retry_sync (5×15s)
+         Streaming übersteht 503-Überlast besser als non-streaming.
+      2. Fallback bei 503 ODER leerem/ungültigem JSON:
+         FAST_LLM_MODEL (gemini-2.5-flash-lite) non-streaming, thinking_budget=0.
+         Flash-Lite ist weniger ausgelastet → zuverlässigerer Fallback.
+    """
+    # Primär: Flash via Streaming
+    primary_exc: Exception | None = None
+    try:
+        return _call_stream_collect(client, prompt, _SYS_MOTOREN, LLM_MODEL)
+    except ServerError as exc:
+        if exc.code != 503:
+            raise  # andere 5xx (401, 400 …) sofort weitergeben
+        primary_exc = exc
+        log.warning(
+            "Motoren-Call %s nach allen Retries 503 — Fallback auf %s.",
+            LLM_MODEL, FAST_LLM_MODEL,
+        )
+    except ValueError as exc:
+        # Leere Antwort oder kein JSON vom primären Modell → auch Fallback
+        primary_exc = exc
+        log.warning(
+            "Motoren-Call %s kein valides JSON (%s) — Fallback auf %s.",
+            LLM_MODEL, exc, FAST_LLM_MODEL,
+        )
+
+    # Fallback: Flash-Lite non-streaming (thinking_budget=0 → kein Token-Fraß)
+    log.info("Motoren-Fallback: %s (non-streaming)", FAST_LLM_MODEL)
+    return _call_sync_fallback(client, prompt, _SYS_MOTOREN)
+
+
 # ------------------------------------------------------------------ #
 #  Entwurf — zwei fokussierte Calls, dann zusammenführen             #
 # ------------------------------------------------------------------ #
@@ -174,10 +309,10 @@ def _call_sync(client, prompt: str, system: str) -> str:
 async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
     """
     Zwei separate, fokussierte LLM-Calls:
-      Call A — Ebene-1-Daten (ohne Motoren): ~1500–2500 Token Output
-      Call B — Motorvarianten-Array:          ~1500–3000 Token Output
+      Call A — Ebene-1-Daten (ohne Motoren): non-streaming
+      Call B — Motorvarianten-Array:          Streaming + Fallback-Modell bei 503
 
-    Jeder Call ist kleiner, unabhängiger Retry-fähig und deutlich unter
+    Jeder Call ist kleiner, unabhängig retry-fähig und deutlich unter
     dem 6144-Token-Limit. Zusammen zuverlässiger als ein großer Monolith-Call.
     """
     client = _get_client()
@@ -195,9 +330,10 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
         "Unbekannte Zahlen → null."
     )
 
-    # Call A — Ebene 1
+    # Call A — Ebene 1 (non-streaming, 2 Versuche, dann flash-lite Fallback)
     last_err: Exception | None = None
     ebene1: dict | None = None
+
     for _ in range(2):
         try:
             text = _call_sync(client, prompt_e1, _SYS_EBENE1)
@@ -207,26 +343,36 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
             last_err = e
             log.warning("Ebene-1-Call fehlgeschlagen: %s – wiederhole.", e)
 
+    # Fallback: flash-lite wenn primäres Modell nach 2 Versuchen scheitert
+    if ebene1 is None:
+        log.warning(
+            "Ebene-1-Call %s erschöpft — Fallback auf %s. (Fehler: %s)",
+            LLM_MODEL, FAST_LLM_MODEL, last_err,
+        )
+        try:
+            text = _call_sync_fallback(client, prompt_e1, _SYS_EBENE1)
+            ebene1 = _extract_json(text)
+        except Exception as e:
+            last_err = e
+            log.warning("Ebene-1-Call Fallback fehlgeschlagen: %s", e)
+
     if ebene1 is None:
         raise ValueError(f"Antwort unvollständig, bitte erneut versuchen. (Ebene 1: {last_err})")
 
-    # Call B — Motoren (Fehler werden NICHT still geschluckt)
+    # Call B — Motoren als Streaming + Fallback-Modell bei 503
     motoren_err: str | None = None
     motoren: list = []
-    for versuch in range(1, 3):
-        try:
-            text = _call_sync(client, prompt_mo, _SYS_MOTOREN)
-            result = _extract_json(text)
-            if isinstance(result, list):
-                motoren = result
-                motoren_err = None
-                break
-            else:
-                raise ValueError(f"Motorenliste ist kein Array: {type(result)}")
-        except Exception as e:
-            last_err = e
-            motoren_err = str(e)
-            log.warning("Motoren-Call Versuch %d/2 fehlgeschlagen: %s", versuch, e)
+    try:
+        text = _call_motoren(client, prompt_mo)
+        result = _extract_json(text)
+        if isinstance(result, list):
+            motoren = result
+        else:
+            raise ValueError(f"Motorenliste ist kein Array: {type(result)}")
+    except Exception as e:
+        last_err = e
+        motoren_err = str(e)
+        log.warning("Motoren-Call fehlgeschlagen (inkl. Fallback): %s", e)
 
     # Zusammenführen — Motorenfehler als eigenes Feld mitgeben (nicht still verwerfen)
     ebene1["motoren"] = motoren
@@ -253,7 +399,7 @@ async def entwurf_stream(
     """
     Zwei-Phasen-Stream:
       Phase 1: Ebene-1-Daten streamen (sofortiges Feedback)
-      Phase 2: Motoren non-streaming (einfacher, robuster)
+      Phase 2: Motoren als Streaming + Fallback-Modell bei 503
       Letztes Event: {"done": true, "json": <zusammengeführtes Dict>}
     """
     client = _get_client()
@@ -271,7 +417,6 @@ async def entwurf_stream(
         "Unbekannte Zahlen → null."
     )
     cfg_e1 = _cfg_with(_SYS_EBENE1)
-    cfg_mo = _cfg_with(_SYS_MOTOREN)
     contents_e1 = [{"role": "user", "parts": [{"text": prompt_e1}]}]
 
     # ---- Phase 1: Ebene-1 streamen ----
@@ -309,28 +454,35 @@ async def entwurf_stream(
             log.warning("Stream E1 Versuch %d/2: Fehler – %s", versuch, e)
             yield json.dumps({"status": "retry", "versuch": versuch})
 
+    # Fallback: flash-lite wenn primäres Modell für Phase 1 gescheitert ist
     if ebene1 is None:
-        yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
-        return
+        log.warning(
+            "Stream E1 %s erschöpft — Fallback auf %s (non-streaming).", LLM_MODEL, FAST_LLM_MODEL
+        )
+        yield json.dumps({"status": "fallback", "modell": FAST_LLM_MODEL})
+        try:
+            text = _call_sync_fallback(client, prompt_e1, _SYS_EBENE1)
+            ebene1 = _extract_json(text)
+        except Exception as e:
+            log.warning("Stream E1 Fallback fehlgeschlagen: %s", e)
+            yield json.dumps({"error": f"Antwort unvollständig, bitte erneut versuchen. ({e})"})
+            return
 
-    # ---- Phase 2: Motoren (non-streaming, Fehler werden sichtbar) ----
+    # ---- Phase 2: Motoren — Streaming + Fallback-Modell bei 503 ----
     yield json.dumps({"status": "motoren"})
     motoren: list = []
     motoren_err: str | None = None
 
-    for versuch in range(1, 3):
-        try:
-            text = _call_sync(client, prompt_mo, cfg_mo.system_instruction)
-            result = _extract_json(text)
-            if isinstance(result, list):
-                motoren = result
-                motoren_err = None
-                break
-            else:
-                raise ValueError(f"Kein Array: {type(result)}")
-        except Exception as e:
-            motoren_err = str(e)
-            log.warning("Stream Motoren-Call Versuch %d/2: %s", versuch, e)
+    try:
+        text = _call_motoren(client, prompt_mo)
+        result = _extract_json(text)
+        if isinstance(result, list):
+            motoren = result
+        else:
+            raise ValueError(f"Kein Array: {type(result)}")
+    except Exception as e:
+        motoren_err = str(e)
+        log.warning("Stream Motoren-Call fehlgeschlagen (inkl. Fallback): %s", e)
 
     # ---- Zusammenführen und done senden ----
     ebene1["motoren"] = motoren
