@@ -5,6 +5,8 @@ Dieselbe Logik wie seed_data.py / seed_vectors.py, aber als wiederverwendbare Fu
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -12,6 +14,8 @@ from pathlib import Path
 import chromadb
 
 from app.config import DB_PATH, CHROMA_PATH
+
+log = logging.getLogger(__name__)
 
 
 # ---------- Hilfsfunktionen ----------
@@ -194,16 +198,176 @@ def save_fahrzeug(data: dict) -> str:
     return bid
 
 
+# ---------- ChromaDB — Hilfsfunktionen ----------
+
+def _is_chroma_index_error(exc: Exception) -> bool:
+    """Erkennt korrupte HNSW-Index-Fehler von ChromaDB."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in [
+        "hnsw", "segment reader", "backfill", "compactor",
+        "error loading", "error constructing",
+    ])
+
+
+def _rebuild_chroma_from_sqlite() -> dict:
+    """
+    Vollständiger Neuaufbau der ChromaDB aus SQLite-Daten.
+
+    Löscht das komplette chroma/-Verzeichnis und befüllt beide Collections
+    (optisches_wissen, technisches_wissen) neu aus allen Baureihen in SQLite.
+    Nutzt dasselbe ID-Schema wie _update_chroma: {bid}__o_{n} / {bid}__t_{n}.
+
+    Gibt Statistik zurück: {"baureihen": K, "optisch": N, "technisch": M}
+    Sicher bei laufendem Server — SQLite bleibt unangetastet.
+    """
+    log.warning("ChromaDB-Neuaufbau gestartet — lösche: %s", CHROMA_PATH)
+    shutil.rmtree(CHROMA_PATH, ignore_errors=True)
+    CHROMA_PATH.mkdir(parents=True, exist_ok=True)
+
+    chroma  = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    optik   = chroma.get_or_create_collection("optisches_wissen",   metadata={"hnsw:space": "cosine"})
+    technik = chroma.get_or_create_collection("technisches_wissen", metadata={"hnsw:space": "cosine"})
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    baureihen = conn.execute("SELECT * FROM baureihe ORDER BY id").fetchall()
+
+    total_o = 0
+    total_t = 0
+
+    for b in baureihen:
+        bid = b["id"]
+        meta_base = {
+            "baureihe_id": bid,
+            "marke":       b["marke"],
+            "modell":      b["modell"],
+            "generation":  b["generation"],
+        }
+
+        # -- Optisches Wissen --
+        o_docs, o_ids, o_metas = [], [], []
+        o_idx = 0
+
+        def _oadd_r(text: str, feld: str, extra: dict | None = None):
+            nonlocal o_idx
+            o_docs.append(text)
+            o_ids.append(f"{bid}__o_{o_idx}")
+            o_metas.append({**meta_base, "feld": feld, **(extra or {})})
+            o_idx += 1
+
+        if b["erkennung_generation"]:
+            _oadd_r(b["erkennung_generation"], "erkennung_generation")
+        if b["facelift_merkmale"]:
+            _oadd_r(b["facelift_merkmale"], "facelift_merkmale")
+
+        for l in conn.execute(
+            "SELECT * FROM ausstattungslinie WHERE baureihe_id=?", (bid,)
+        ).fetchall():
+            parts = [f"{l['name']} ({l['typ']})"]
+            if l["optische_merkmale"]:
+                parts.append(l["optische_merkmale"])
+            if l["abgrenzung"]:
+                parts.append(f"Abgrenzung: {l['abgrenzung']}")
+            _oadd_r(" — ".join(parts), "ausstattungslinie", {"name": l["name"] or ""})
+
+        if o_docs:
+            optik.upsert(documents=o_docs, ids=o_ids, metadatas=o_metas)
+            total_o += len(o_docs)
+
+        # -- Technisches Wissen --
+        t_docs, t_ids, t_metas = [], [], []
+        t_idx = 0
+        seen_t: set[str] = set()
+
+        def _tadd_r(text: str, feld: str, extra: dict | None = None):
+            nonlocal t_idx
+            if text in seen_t:
+                return
+            seen_t.add(text)
+            t_docs.append(text)
+            t_ids.append(f"{bid}__t_{t_idx}")
+            t_metas.append({**meta_base, "feld": feld, **(extra or {})})
+            t_idx += 1
+
+        for s in conn.execute(
+            "SELECT * FROM schwachstelle_baureihe WHERE baureihe_id=?", (bid,)
+        ).fetchall():
+            _tadd_r(
+                f"Schwachstelle: {s['bauteil']}. {s['beschreibung']} "
+                f"(Baujahre: {s['betroffene_baujahre']}, Schweregrad: {s['schweregrad']})",
+                "schwachstelle_baureihe", {"schweregrad": s["schweregrad"] or ""},
+            )
+
+        for r in conn.execute(
+            "SELECT * FROM rueckruf WHERE baureihe_id=?", (bid,)
+        ).fetchall():
+            _tadd_r(
+                f"Rückruf {r['datum']}: {r['mangel']} "
+                f"(betroffen: {r['betroffene_baujahre']}, Abhilfe: {r['abhilfe']})",
+                "rueckruf",
+            )
+
+        for s in conn.execute(
+            """SELECT sm.*, mv.bezeichnung, mv.motorcode
+               FROM schwachstelle_motor sm
+               JOIN motorvariante mv ON sm.variante_id = mv.variante_id
+               WHERE mv.baureihe_id=?""",
+            (bid,),
+        ).fetchall():
+            _tadd_r(
+                f"Motorproblem ({s['motorcode']}): {s['bauteil']}. {s['beschreibung']} "
+                f"(Baujahre: {s['baujahre']}, Kosten ca.: {s['kosten_ca']})",
+                "schwachstelle_motor", {"motorcode": s["motorcode"] or ""},
+            )
+
+        if t_docs:
+            technik.upsert(documents=t_docs, ids=t_ids, metadatas=t_metas)
+            total_t += len(t_docs)
+
+    conn.close()
+    stats = {"baureihen": len(baureihen), "optisch": total_o, "technisch": total_t}
+    log.info("ChromaDB-Neuaufbau abgeschlossen: %s", stats)
+    return stats
+
+
 # ---------- ChromaDB ----------
 
 def _update_chroma(bid: str, data: dict):
     """
-    Aktualisiert ChromaDB für eine Baureihe.
+    Aktualisiert ChromaDB für eine Baureihe (mit automatischer HNSW-Reparatur).
+
+    Bei korruptem HNSW-Index (InternalError) wird automatisch ein vollständiger
+    Neuaufbau aus SQLite gestartet — kein manuelles Eingreifen nötig.
+    SQLite ist bereits gespeichert, daher ist der Rebuild vollständig.
+    """
+    try:
+        _update_chroma_inner(bid, data)
+    except Exception as exc:
+        if _is_chroma_index_error(exc):
+            log.error(
+                "ChromaDB HNSW-Fehler beim Schreiben von '%s' — starte automatischen "
+                "Neuaufbau aus SQLite. Fehler: %s", bid, exc,
+            )
+            try:
+                stats = _rebuild_chroma_from_sqlite()
+                log.info("ChromaDB-Neuaufbau erfolgreich nach Fehler: %s", stats)
+            except Exception as rebuild_exc:
+                log.error("ChromaDB-Neuaufbau fehlgeschlagen: %s", rebuild_exc)
+                raise RuntimeError(
+                    f"ChromaDB-Index korrupt und Neuaufbau fehlgeschlagen. "
+                    f"Bitte manuell: python rebuild_chroma.py\n({rebuild_exc})"
+                ) from rebuild_exc
+        else:
+            raise
+
+
+def _update_chroma_inner(bid: str, data: dict):
+    """
+    Interner ChromaDB-Schreibvorgang für eine Baureihe.
 
     ID-Schema: "{bid}__o_{n}" für optisches Wissen,
                "{bid}__t_{n}" für technisches Wissen.
-    n ist ein globaler Laufindex — garantiert eindeutig innerhalb eines Aufrufs,
-    unabhängig von Motorcode oder Inhalt.
+    n ist ein globaler Laufindex — garantiert eindeutig innerhalb eines Aufrufs.
 
     Ablauf:
       1. Alte Einträge dieser baureihe_id löschen (sauberer Ausgangspunkt)
