@@ -142,6 +142,64 @@ Ausgabe-Schema (Array):
   "kritische_wartung":[{"bauteil":"...","intervall":"...","hinweis":null}]}]"""
 
 
+def _resp_diagnose(resp) -> str:
+    """
+    Extrahiert diagnostisch relevante Felder aus einem GenerateContentResponse
+    und gibt einen kompakten Log-String zurück, z.B.:
+
+      "text=None | finish=SAFETY | safety[DANGEROUS_CONTENT]=HIGH+BLOCKED | block=SAFETY"
+      "text='' | finish=MAX_TOKENS | tokens_out=800"
+      "text=ok(len=312) | finish=STOP"
+
+    Zweck: überall wo resp.text leer/None ist, den WAHREN Grund loggen
+    statt nur "leere Antwort". Deckt Safety-Filter, MAX_TOKENS-Abschnitte
+    und fehlende Candidates ab.
+    """
+    parts: list[str] = []
+
+    # ── resp.text ─────────────────────────────────────────────────────────
+    raw = getattr(resp, "text", "<kein .text>")
+    if raw is None:
+        parts.append("text=None")          # Safety-Block oder kein Content-Part
+    elif raw == "":
+        parts.append("text=''")            # leerer String
+    else:
+        parts.append(f"text=ok(len={len(raw)})")
+
+    # ── candidates[0] ────────────────────────────────────────────────────
+    cands = getattr(resp, "candidates", None) or []
+    if not cands:
+        parts.append("candidates=LEER")
+    else:
+        c = cands[0]
+        fr = getattr(c, "finish_reason", None)
+        parts.append(f"finish={fr!r}" if fr is not None else "finish=?")
+
+        for r in getattr(c, "safety_ratings", []):
+            prob = str(getattr(r, "probability", "?")).replace("HarmProbability.", "")
+            blocked = getattr(r, "blocked", False)
+            # Nur auffällige Werte loggen (NEGLIGIBLE/LOW/UNSPECIFIED überspringen)
+            if prob not in ("NEGLIGIBLE", "LOW", "UNSPECIFIED"):
+                cat = str(getattr(r, "category", "?")).replace("HarmCategory.", "")
+                parts.append(f"safety[{cat}]={prob}" + ("+BLOCKED" if blocked else ""))
+
+    # ── prompt_feedback ──────────────────────────────────────────────────
+    pf = getattr(resp, "prompt_feedback", None)
+    if pf:
+        br = getattr(pf, "block_reason", None)
+        if br:
+            parts.append(f"block_reason={br!r}")
+
+    # ── Token-Counts (MAX_TOKENS-Diagnose) ────────────────────────────────
+    um = getattr(resp, "usage_metadata", None)
+    if um:
+        out = getattr(um, "candidates_token_count", None)
+        if out is not None:
+            parts.append(f"tokens_out={out}")
+
+    return " | ".join(parts)
+
+
 def _cfg_with(system: str) -> genai_types.GenerateContentConfig:
     """Erstellt eine Call-Config mit spezifischem System-Prompt (Haupt-Modell)."""
     import dataclasses
@@ -175,8 +233,11 @@ def _call_sync(client, prompt: str, system: str) -> str:
         text = resp.text or ""
         if text.strip():
             return text
-        log.warning("_call_sync Versuch %d/2: leere Antwort.", versuch)
-    raise ValueError("Leere Antwort nach 2 Versuchen.")
+        log.warning(
+            "_call_sync [%s] Versuch %d/2: leere/None Antwort. %s",
+            LLM_MODEL, versuch, _resp_diagnose(resp),
+        )
+    raise ValueError(f"Leere Antwort nach 2 Versuchen ({LLM_MODEL}).")
 
 
 def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
@@ -192,6 +253,7 @@ def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
 
     for versuch in range(1, 3):
         buffer: list[str] = []
+        last_chunk = None   # letzter Chunk → enthält finish_reason / usage_metadata
         # Default-Argument-Trick: model/cfg/contents werden zum Lambda-Erstellungszeitpunkt
         # gebunden, nicht erst bei Aufruf durch with_retry_sync.
         stream = with_retry_sync(
@@ -200,19 +262,23 @@ def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
             )
         )
         for chunk in stream:
+            last_chunk = chunk
             if chunk.text:
                 buffer.append(chunk.text)
         text = "".join(buffer)
         stripped = text.strip()
         if not stripped:
+            diag = _resp_diagnose(last_chunk) if last_chunk else "kein Chunk empfangen"
             log.warning(
-                "_call_stream_collect [%s] Versuch %d/2: leere Antwort.", model, versuch
+                "_call_stream_collect [%s] Versuch %d/2: leere/None Antwort. %s",
+                model, versuch, diag,
             )
             continue
         if "{" not in stripped and "[" not in stripped:
+            diag = _resp_diagnose(last_chunk) if last_chunk else ""
             log.warning(
-                "_call_stream_collect [%s] Versuch %d/2: kein JSON in Antwort: %r",
-                model, versuch, stripped[:120],
+                "_call_stream_collect [%s] Versuch %d/2: kein JSON in Antwort: %r  %s",
+                model, versuch, stripped[:120], diag,
             )
             continue
         # Vollständigkeitsprüfung: parsbares JSON → kein abgeschnittenes Chunk zurückgeben
@@ -220,9 +286,10 @@ def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
             _extract_json(stripped)
             return text  # valides, vollständiges JSON
         except Exception as json_err:
+            diag = _resp_diagnose(last_chunk) if last_chunk else ""
             log.warning(
-                "_call_stream_collect [%s] Versuch %d/2: JSON-Fehler (abgeschnitten?): %s | len=%d",
-                model, versuch, json_err, len(stripped),
+                "_call_stream_collect [%s] Versuch %d/2: JSON-Fehler (abgeschnitten?): %s | len=%d  %s",
+                model, versuch, json_err, len(stripped), diag,
             )
 
     raise ValueError(f"Kein valides JSON nach 2 Versuchen ({model}).")
@@ -246,12 +313,15 @@ def _call_sync_fallback(client, prompt: str, system: str) -> str:
         text = resp.text or ""
         stripped = text.strip()
         if not stripped:
-            log.warning("_call_sync_fallback Versuch %d/2: leere Antwort.", versuch)
+            log.warning(
+                "_call_sync_fallback [%s] Versuch %d/2: leere/None Antwort. %s",
+                FAST_LLM_MODEL, versuch, _resp_diagnose(resp),
+            )
             continue
         if "{" not in stripped and "[" not in stripped:
             log.warning(
-                "_call_sync_fallback Versuch %d/2: kein JSON in Antwort: %r",
-                versuch, stripped[:120],
+                "_call_sync_fallback [%s] Versuch %d/2: kein JSON: %r  %s",
+                FAST_LLM_MODEL, versuch, stripped[:120], _resp_diagnose(resp),
             )
             continue
         # Vollständigkeitsprüfung: parsbares JSON oder abgeschnitten?
@@ -260,8 +330,8 @@ def _call_sync_fallback(client, prompt: str, system: str) -> str:
             return text  # valides, vollständiges JSON
         except Exception as json_err:
             log.warning(
-                "_call_sync_fallback Versuch %d/2: JSON-Fehler (abgeschnitten?): %s",
-                versuch, json_err,
+                "_call_sync_fallback [%s] Versuch %d/2: JSON-Fehler: %s  %s",
+                FAST_LLM_MODEL, versuch, json_err, _resp_diagnose(resp),
             )
     raise ValueError(f"Kein valides JSON nach 2 Versuchen ({FAST_LLM_MODEL}).")
 
@@ -541,18 +611,19 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
                 text = resp.text or ""
                 stripped = text.strip()
 
-                # 1. Leer?
+                # 1. Leer (text=None oder text="") → wahren Grund loggen
                 if not stripped:
                     log.warning(
-                        "generationen_auflisten [%s] Versuch %d/2: leere Antwort.", model, versuch
+                        "generationen_auflisten [%s] Versuch %d/2: leere/None Antwort. %s",
+                        model, versuch, _resp_diagnose(resp),
                     )
                     continue
 
-                # 2. Kein JSON-Marker → kein JSON
+                # 2. Kein JSON-Marker → Modell hat Prosa geantwortet
                 if "{" not in stripped and "[" not in stripped:
                     log.warning(
-                        "generationen_auflisten [%s] Versuch %d/2: kein JSON: %r",
-                        model, versuch, stripped[:100],
+                        "generationen_auflisten [%s] Versuch %d/2: kein JSON-Marker: %r  %s",
+                        model, versuch, stripped[:100], _resp_diagnose(resp),
                     )
                     continue
 
@@ -564,13 +635,15 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
                     )
                     return result
                 log.warning(
-                    "generationen_auflisten [%s] Versuch %d/2: kein Array (%s).",
-                    model, versuch, type(result).__name__,
+                    "generationen_auflisten [%s] Versuch %d/2: kein Array (%s).  %s",
+                    model, versuch, type(result).__name__, _resp_diagnose(resp),
                 )
 
             except Exception as exc:
+                # Fehlertyp explizit loggen (ServerError 503, JSONDecodeError, etc.)
                 log.warning(
-                    "generationen_auflisten [%s] Versuch %d/2: %s", model, versuch, exc
+                    "generationen_auflisten [%s] Versuch %d/2: %s: %s",
+                    model, versuch, type(exc).__name__, exc,
                 )
 
         return None  # beide Versuche gescheitert
