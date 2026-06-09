@@ -240,15 +240,33 @@ def _call_sync(client, prompt: str, system: str) -> str:
     raise ValueError(f"Leere Antwort nach 2 Versuchen ({LLM_MODEL}).")
 
 
-def _call_stream_collect(client, prompt: str, system: str, model: str) -> str:
+def _call_stream_collect(
+    client,
+    prompt: str,
+    system: str,
+    model: str,
+    max_output_tokens: int | None = None,
+) -> str:
     """
     Streaming-Generate-Call — sammelt vollständigen Text aus dem Stream.
 
     Streaming ist bei Gemini-Überlast robuster als non-streaming:
     der erste Token kommt schneller durch, bevor der 503 greift.
     Bis zu 2 Versuche bei leerem oder nicht-JSON-haltigem Ergebnis.
+
+    max_output_tokens: überschreibt _CALL_CFG.max_output_tokens wenn angegeben.
+    Notwendig für den Motoren-Call: E30 & Co brauchen >14.000 Zeichen (~5.000 Token),
+    der Standard-Wert von 6144 führt zu finish_reason=MAX_TOKENS und abgeschnittenem JSON.
     """
-    cfg = _cfg_with(system) if model == LLM_MODEL else _cfg_fallback(system)
+    if model == LLM_MODEL and max_output_tokens is not None:
+        cfg = genai_types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=_CALL_CFG.temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_config=_CALL_CFG.thinking_config,
+        )
+    else:
+        cfg = _cfg_with(system) if model == LLM_MODEL else _cfg_fallback(system)
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
 
     for versuch in range(1, 3):
@@ -350,7 +368,8 @@ def _call_motoren(client, prompt: str) -> str:
     # Primär: Flash via Streaming
     primary_exc: Exception | None = None
     try:
-        return _call_stream_collect(client, prompt, _SYS_MOTOREN, LLM_MODEL)
+        return _call_stream_collect(client, prompt, _SYS_MOTOREN, LLM_MODEL,
+                                    max_output_tokens=16384)
     except ServerError as exc:
         if exc.code != 503:
             raise  # andere 5xx (401, 400 …) sofort weitergeben
