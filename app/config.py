@@ -3,18 +3,39 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
 
-DB_PATH = BASE_DIR / "db" / "auto_ki.db"
+# ---------------------------------------------------------------------------
+# Datenbankpfade
+# ---------------------------------------------------------------------------
+# Sowohl SQLite als auch ChromaDB werden ausserhalb von OneDrive gespeichert.
+# Begründung:
+#   - ChromaDB: OneDrive entfernt HNSW-Binärdateien → Index-Korruption
+#   - SQLite (WAL-Modus): OneDrive kann -wal/-shm-Dateien inkonsistent synchen →
+#     Backup-Restore liefert korrupte oder veraltete Daten
+#
+# Standard für beide: %LOCALAPPDATA%\auto-ki-backend\  (nicht synchronisiert)
+# Überschreiben: Umgebungsvariablen AUTO_KI_DB_PATH / AUTO_KI_CHROMA_PATH
+#
+# Backup:
+#   Nach jedem erfolgreichen Save wird eine konsistente Sicherungskopie nach
+#   DB_BACKUP_PATH geschrieben (via sqlite3.Connection.backup()).
+#   Diese Kopie liegt IN OneDrive und wird automatisch in die Cloud synchronisiert.
+#   Im Notfall (Datenverlust): DB_BACKUP_PATH → DB_PATH kopieren.
+# ---------------------------------------------------------------------------
 
-# ChromaDB ausserhalb von OneDrive/Cloud-Sync speichern —
-# HNSW-Binärdateien werden von OneDrive als temporäre Dateien behandelt
-# und entfernt, was zur Index-Korruption führt.
-# Standard: %LOCALAPPDATA%\auto-ki-backend\chroma  (nicht synchronisiert)
-# Überschreiben: Umgebungsvariable AUTO_KI_CHROMA_PATH setzen.
-_chroma_default = (
-    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    / "auto-ki-backend"
-    / "chroma"
-)
+_local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "auto-ki-backend"
+
+# Live-Datenbank — ausserhalb OneDrive (kein Sync-Risiko)
+_db_default = _local / "auto_ki.db"
+DB_PATH = Path(os.environ.get("AUTO_KI_DB_PATH", str(_db_default)))
+
+# Ursprünglicher Pfad in OneDrive — wird für automatische Migration benötigt
+DB_LEGACY_PATH = BASE_DIR / "db" / "auto_ki.db"
+
+# Backup-Ziel IN OneDrive — wird nach jedem Save aktualisiert (Cloud-Sicherung)
+DB_BACKUP_PATH = BASE_DIR / "db" / "auto_ki_backup.db"
+
+# ChromaDB — ausserhalb OneDrive (HNSW-Binärdateien)
+_chroma_default = _local / "chroma"
 CHROMA_PATH = Path(os.environ.get("AUTO_KI_CHROMA_PATH", str(_chroma_default)))
 
 API_KEY = os.environ.get("AUTO_KI_API_KEY", "dev-key-change-in-prod")

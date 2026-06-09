@@ -13,9 +13,84 @@ from pathlib import Path
 
 import chromadb
 
-from app.config import DB_PATH, CHROMA_PATH
+from app.config import DB_PATH, DB_LEGACY_PATH, DB_BACKUP_PATH, CHROMA_PATH
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SQLite-Migration und Backup
+# ---------------------------------------------------------------------------
+
+def _ensure_db_migrated() -> None:
+    """
+    Stellt sicher, dass die Live-Datenbank am richtigen Ort (DB_PATH) liegt.
+
+    Falls DB_PATH noch nicht existiert, aber DB_LEGACY_PATH (alter OneDrive-
+    Pfad) vorhanden ist, wird die Datenbank automatisch migriert:
+      1. DB_PATH-Verzeichnis anlegen
+      2. Konsistente Kopie via sqlite3.Connection.backup()
+      3. Integritätsprüfung der neuen Kopie
+    """
+    if DB_PATH.exists():
+        return  # bereits migriert
+
+    if not DB_LEGACY_PATH.exists():
+        # Frische Installation — Verzeichnis anlegen, DB wird bei erster
+        # Verbindung durch schema.sql initialisiert
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log.info("Neues DB-Verzeichnis angelegt: %s", DB_PATH.parent)
+        return
+
+    # Legacy-Datenbank vorhanden → migrieren
+    log.warning(
+        "SQLite-Migration: %s → %s",
+        DB_LEGACY_PATH, DB_PATH,
+    )
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(DB_LEGACY_PATH)
+    dst = sqlite3.connect(DB_PATH)
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    # Integritätsprüfung
+    check = sqlite3.connect(DB_PATH)
+    result = check.execute("PRAGMA integrity_check").fetchone()[0]
+    n = check.execute("SELECT COUNT(*) FROM baureihe").fetchone()[0]
+    check.close()
+
+    if result != "ok":
+        DB_PATH.unlink(missing_ok=True)
+        raise RuntimeError(f"SQLite-Migration fehlgeschlagen: integrity_check={result!r}")
+
+    log.info(
+        "SQLite-Migration abgeschlossen: %d Baureihen, integrity=%s",
+        n, result,
+    )
+
+
+def _backup_sqlite() -> None:
+    """
+    Schreibt eine konsistente Sicherungskopie der Live-DB nach DB_BACKUP_PATH
+    (liegt in OneDrive → automatische Cloud-Synchronisation).
+
+    Verwendet sqlite3.Connection.backup() — der Snapshot ist immer atomar
+    und konsistent, auch wenn die Quell-DB gerade in WAL-Modus ist.
+    Fehler werden nur geloggt, nie weitergeworfen (Backup darf Save nicht
+    blockieren).
+    """
+    try:
+        DB_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(DB_BACKUP_PATH)
+        src.backup(dst)
+        dst.close()
+        src.close()
+        sz = DB_BACKUP_PATH.stat().st_size
+        log.info("SQLite-Backup aktualisiert: %s (%d KB)", DB_BACKUP_PATH.name, sz // 1024)
+    except Exception as exc:
+        log.warning("SQLite-Backup fehlgeschlagen (Daten in DB_PATH sicher): %s", exc)
 
 
 # ---------- Hilfsfunktionen ----------
@@ -50,7 +125,11 @@ def save_fahrzeug(data: dict) -> str:
     Schreibt das Fahrzeug-Dict in SQLite und ChromaDB.
     Gibt die baureihe_id zurück.
     Idempotent: existierende Einträge werden überschrieben (INSERT OR REPLACE).
+
+    Nach erfolgreichem Speichern wird automatisch ein konsistenter Backup
+    der SQLite-Datenbank nach DB_BACKUP_PATH (OneDrive) geschrieben.
     """
+    _ensure_db_migrated()   # transparente Migration aus Legacy-Pfad
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys=ON")
 
@@ -191,7 +270,12 @@ def save_fahrzeug(data: dict) -> str:
     conn.close()
 
     # ------------------------------------------------------------------
-    # 8. ChromaDB aktualisieren
+    # 8. SQLite-Backup nach OneDrive (konsistente Cloud-Sicherung)
+    # ------------------------------------------------------------------
+    _backup_sqlite()
+
+    # ------------------------------------------------------------------
+    # 9. ChromaDB aktualisieren
     # ------------------------------------------------------------------
     _update_chroma(bid, data)
 
