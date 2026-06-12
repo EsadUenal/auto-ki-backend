@@ -9,7 +9,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.config import RATE_LIMIT
-from app.routers import fahrzeug, chat, admin
+from app.routers import fahrzeug, chat, admin, kaufcheck
 from app.utf8 import UTF8JSONResponse
 
 
@@ -59,9 +59,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return _utf8_json(exc.status_code, content)
 
 
-app.include_router(fahrzeug.router, prefix="/api/v1")
-app.include_router(chat.router, prefix="/api/v1")
-app.include_router(admin.router, prefix="/api/v1")
+app.include_router(fahrzeug.router,   prefix="/api/v1")
+app.include_router(chat.router,       prefix="/api/v1")
+app.include_router(admin.router,      prefix="/api/v1")
+app.include_router(kaufcheck.router,  prefix="/api/v1")
 
 
 @app.get("/health")
