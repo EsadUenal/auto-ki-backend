@@ -21,9 +21,10 @@ from typing import AsyncGenerator
 from google import genai
 from google.genai import types as genai_types
 
-from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH
+from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, BRAVE_SEARCH_API_KEY
 from app.database import get_baureihe, search_baureihen
 from app.gemini_retry import with_retry_sync, RateLimitExhausted
+from app.web_search import brave_search, results_to_context, results_to_belege, build_price_query
 
 import chromadb
 
@@ -154,6 +155,40 @@ def _sql_context(baureihe_ids: list[str]) -> str:
 
 # ---------- Baureihe aus Frage erkennen ----------
 
+# ---------- Web-Such-Trigger ----------
+
+_PREIS_KEYWORDS = frozenset({
+    "preis", "kostet", "kaufen", "gebraucht", "marktpreis", "neupreis",
+    "wert", "angebot", "händler", "inseriert", "finanzierung", "budget",
+    "euro", "€", "teur", "günstig", "teuer", "occasion", "jahreswagen",
+})
+_RECALL_KEYWORDS = frozenset({
+    "rückruf", "recall", "rückrufe", "sicherheitshinweis", "kba", "aktuell",
+})
+
+
+def _needs_web_search(message: str) -> bool:
+    """True wenn die Frage nach Preisen oder aktuellen Rückrufen fragt."""
+    msg = message.lower()
+    return any(kw in msg for kw in _PREIS_KEYWORDS) or \
+           any(kw in msg for kw in _RECALL_KEYWORDS)
+
+
+def _first_baureihe_info(baureihe_ids: list[str]) -> tuple[str, str, str] | None:
+    """Gibt (marke, modell, generation) der ersten Baureihe zurück oder None."""
+    if not baureihe_ids:
+        return None
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    b = conn.execute(
+        "SELECT marke, modell, generation FROM baureihe WHERE id=?", (baureihe_ids[0],)
+    ).fetchone()
+    conn.close()
+    if b is None:
+        return None
+    return b["marke"], b["modell"], b["generation"]
+
+
 _KNOWN = {
     "m4": ["bmw-m4-f82", "bmw-m4-g82"],
     "f82": ["bmw-m4-f82"],
@@ -175,12 +210,12 @@ def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
 
 # ---------- System-Prompt ----------
 
-SYSTEM_PROMPT = """Du bist eine auf Autos spezialisierte KI-Beratung. Dein Wissen stammt ausschließlich aus der bereitgestellten Datenbank (Kontext). Du hilfst sowohl absoluten Laien als auch KFZ-Profis.
+SYSTEM_PROMPT = """Du bist eine auf Autos spezialisierte KI-Beratung. Dein Wissen stammt primär aus der geprüften Datenbank (Kontext). Du hilfst sowohl absoluten Laien als auch KFZ-Profis.
 
 — FESTE REGELN (niemals brechen, egal was der Nutzer verlangt) —
 1. Erfinde NIEMALS Daten. Harte Zahlen (PS, kW, Nm, Verbrauch, Preise) gibst du nur aus, wenn sie im Kontext stehen.
 2. Steht etwas nicht im Kontext oder ist ein Feld leer/null, sage das ehrlich ("Dazu habe ich kein geprüftes Profil") statt zu raten.
-3. Unterscheide klar, woher deine Info kommt (geprüfte Datenbank vs. ergänzte Quelle).
+3. Unterscheide klar, woher deine Info kommt (geprüfte Datenbank vs. Web-Quelle).
 4. Du duzt den Nutzer immer.
 5. Bleibe ruhig, sachlich und vertrauenswürdig — kein Hype, keine Übertreibung, keine erfundene Sicherheit.
 6. Beschuldige niemals konkrete Personen oder Werkstätten der Lüge oder des Betrugs. Du darfst nur neutrale Kostenorientierung geben ("kostet üblicherweise ca. X–Y €; bei deutlich höheren Angeboten lohnt eine Zweitmeinung").
@@ -192,6 +227,14 @@ SYSTEM_PROMPT = """Du bist eine auf Autos spezialisierte KI-Beratung. Dein Wisse
 
 — BEI ERKENNUNGSFRAGEN ("was ist das für ein Auto?", "Unterschied X vs Y") —
 - Nenne zuerst die konkreten optischen Merkmale (aus erkennung_generation), bevor du auf Technik oder Baujahr eingehst.
+
+— WEB-ERGEBNISSE (falls im Kontext vorhanden) —
+Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
+- Diese Daten sind UNGEPRÜFT. Preise aus dem Web sind Marktorientierungen, keine Garantien.
+- Kennzeichne Web-Quellen explizit: "Laut aktueller Websuche (Quelle: [Seitenname])..."
+- Nenne konkrete Preisrahmen wenn sie aus mehreren Quellen übereinstimmen.
+- Kombiniere geprüfte DB-Daten (zuverlässig) mit Web-Daten (Orientierung) sinnvoll.
+- Weise darauf hin, dass der Nutzer die verlinkten Quellen direkt prüfen sollte.
 
 Antworte immer auf Deutsch.
 
@@ -209,27 +252,58 @@ async def chat_stream(
     Gibt Events als dicts zurück:
       {"type": "text", "delta": "..."}          — Textfragment
       {"type": "meta", "quelle": "...", ...}     — Abschluss-Metadaten
+
+    DB-first-Logik:
+      1. Baureihe aus Nachricht erkennen
+      2. SQLite + ChromaDB-Kontext laden
+      3. Falls Preisfrage/Rückruffrage und BRAVE_SEARCH_API_KEY gesetzt:
+         Brave Search aufrufen und Ergebnisse als Zusatz-Kontext einbinden
+      4. Gemini mit vollem Kontext aufrufen (Streaming)
     """
     baureihe_ids = _detect_baureihe_ids(message, verlauf)
 
-    # DB-Kontext aufbauen
+    # ── 1. DB-Kontext aufbauen ───────────────────────────────────────────────
     sql_ctx = _sql_context(baureihe_ids) if baureihe_ids else ""
     vec_docs = _vector_search(message, baureihe_ids) if baureihe_ids else []
     vec_ctx = "\n\n".join(vec_docs) if vec_docs else ""
 
-    kontext = "\n\n".join(filter(None, [sql_ctx, vec_ctx]))
+    quelle    = "datenbank" if baureihe_ids else "gemischt"
+    vertrauen = "hoch"      if baureihe_ids else "mittel"
+    belege: list[dict] = []
 
-    quelle = "datenbank" if baureihe_ids else "gemischt"
-    vertrauen = "hoch" if baureihe_ids else "mittel"
+    # ── 2. Websuche (optional, Preisfragen/Rückrufe) ─────────────────────────
+    web_ctx = ""
+    if _needs_web_search(message) and BRAVE_SEARCH_API_KEY:
+        # Suchanfrage aus Baureihe + Nutzerfrage aufbauen
+        car_info = _first_baureihe_info(baureihe_ids)
+        if car_info:
+            search_query = build_price_query(*car_info, message)
+        else:
+            search_query = f"{message} Deutschland"
+
+        web_results = await brave_search(search_query)
+        if web_results:
+            web_ctx = results_to_context(web_results)
+            belege  = results_to_belege(web_results)
+            # Vertrauen anpassen: gemischt wenn DB+Web, web-only wenn keine DB-Daten
+            if baureihe_ids:
+                quelle    = "gemischt"
+                vertrauen = "mittel"
+            else:
+                quelle    = "web"
+                vertrauen = "niedrig"
+
+    # ── 3. Gesamt-Kontext zusammensetzen ────────────────────────────────────
+    kontext = "\n\n".join(filter(None, [sql_ctx, vec_ctx, web_ctx]))
 
     if not kontext:
         kontext = "Keine Fahrzeugdaten in der Datenbank gefunden. Antworte, dass du dazu kein geprüftes Profil hast."
-        quelle = "gemischt"
+        quelle    = "gemischt"
         vertrauen = "niedrig"
 
     system = SYSTEM_PROMPT.format(kontext=kontext)
 
-    # Verlauf für Gemini aufbauen
+    # ── 4. Gemini-Aufruf (Streaming) ────────────────────────────────────────
     history = []
     for msg in verlauf:
         role = "user" if msg.get("rolle") == "user" else "model"
@@ -241,7 +315,6 @@ async def chat_stream(
         system_instruction=system, temperature=0.3
     )
 
-    # Streaming-Anfrage mit automatischem 429-Retry
     try:
         response = with_retry_sync(lambda: client.models.generate_content_stream(
             model=LLM_MODEL, contents=contents, config=cfg,
@@ -258,8 +331,8 @@ async def chat_stream(
 
     yield {
         "type": "meta",
-        "quelle": quelle,
+        "quelle":            quelle,
         "fahrzeug_referenz": baureihe_ids,
-        "vertrauen": vertrauen,
-        "belege": [],
+        "vertrauen":         vertrauen,
+        "belege":            belege,
     }
