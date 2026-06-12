@@ -21,10 +21,10 @@ from typing import AsyncGenerator
 from google import genai
 from google.genai import types as genai_types
 
-from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, BRAVE_SEARCH_API_KEY
+from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen
 from app.gemini_retry import with_retry_sync, RateLimitExhausted
-from app.web_search import brave_search, results_to_context, results_to_belege, build_price_query
+from app.web_search import tavily_search, results_to_context, results_to_belege, build_price_query
 
 import chromadb
 
@@ -256,7 +256,7 @@ async def chat_stream(
     DB-first-Logik:
       1. Baureihe aus Nachricht erkennen
       2. SQLite + ChromaDB-Kontext laden
-      3. Falls Preisfrage/Rückruffrage und BRAVE_SEARCH_API_KEY gesetzt:
+      3. Falls Preisfrage/Rückruffrage und TAVILY_API_KEY gesetzt:
          Brave Search aufrufen und Ergebnisse als Zusatz-Kontext einbinden
       4. Gemini mit vollem Kontext aufrufen (Streaming)
     """
@@ -273,7 +273,7 @@ async def chat_stream(
 
     # ── 2. Websuche (optional, Preisfragen/Rückrufe) ─────────────────────────
     web_ctx = ""
-    if _needs_web_search(message) and BRAVE_SEARCH_API_KEY:
+    if _needs_web_search(message) and TAVILY_API_KEY:
         # Suchanfrage aus Baureihe + Nutzerfrage aufbauen
         car_info = _first_baureihe_info(baureihe_ids)
         if car_info:
@@ -281,7 +281,7 @@ async def chat_stream(
         else:
             search_query = f"{message} Deutschland"
 
-        web_results = await brave_search(search_query)
+        web_results = await tavily_search(search_query)
         if web_results:
             web_ctx = results_to_context(web_results)
             belege  = results_to_belege(web_results)

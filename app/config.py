@@ -51,8 +51,8 @@ GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
 FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.5-flash-lite")
 
-# Brave Search — optional, aktiviert Echtzeit-Websuche für Preise/Rückrufe
-# Kostenlos: 2.000 Abfragen/Monat — https://api.search.brave.com/
-# Windows/PowerShell: $env:BRAVE_SEARCH_API_KEY = "BSA..."
-# Dauerhaft: In .env eintragen: BRAVE_SEARCH_API_KEY=BSA...
-BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+# Tavily Search — optional, aktiviert Echtzeit-Websuche für Preise/Rückrufe
+# Free-Plan: 1.000 Abfragen/Monat, kein Kreditkarte — https://app.tavily.com/
+# Windows/PowerShell: $env:TAVILY_API_KEY = "tvly-..."
+# Dauerhaft: In .env eintragen: TAVILY_API_KEY=tvly-...
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
