@@ -31,7 +31,13 @@ DB_PATH = Path(os.environ.get("AUTO_KI_DB_PATH", str(_db_default)))
 # Ursprünglicher Pfad in OneDrive — wird für automatische Migration benötigt
 DB_LEGACY_PATH = BASE_DIR / "db" / "auto_ki.db"
 
-# Backup-Ziel IN OneDrive — wird nach jedem Save aktualisiert (Cloud-Sicherung)
+# Backup-Verzeichnis IN OneDrive — datierte Kopien, letzte 10 Versionen behalten.
+# Jedes Backup bekommt einen eigenen Zeitstempel: auto_ki_backup_YYYY-MM-DD_HHMM.db
+# → ein gutes Backup kann nie von einem schlechten überschrieben werden.
+DB_BACKUP_DIR  = BASE_DIR / "db" / "backups"
+
+# Legacy-Einzeldatei — nicht mehr beschrieben, bleibt für migrate_db.py --restore
+# als letzter Fallback wenn DB_BACKUP_DIR leer ist.
 DB_BACKUP_PATH = BASE_DIR / "db" / "auto_ki_backup.db"
 
 # ChromaDB — ausserhalb OneDrive (HNSW-Binärdateien)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import chromadb
 
-from app.config import DB_PATH, DB_LEGACY_PATH, DB_BACKUP_PATH, CHROMA_PATH
+from app.config import DB_PATH, DB_LEGACY_PATH, DB_BACKUP_DIR, CHROMA_PATH
 
 log = logging.getLogger(__name__)
 
@@ -70,25 +70,43 @@ def _ensure_db_migrated() -> None:
     )
 
 
+_BACKUP_KEEP = 10  # Anzahl datierter Backups, die behalten werden
+
+
 def _backup_sqlite() -> None:
     """
-    Schreibt eine konsistente Sicherungskopie der Live-DB nach DB_BACKUP_PATH
-    (liegt in OneDrive → automatische Cloud-Synchronisation).
+    Erstellt eine datierte Sicherungskopie in DB_BACKUP_DIR (OneDrive):
+      auto_ki_backup_YYYY-MM-DD_HHMM.db
 
-    Verwendet sqlite3.Connection.backup() — der Snapshot ist immer atomar
-    und konsistent, auch wenn die Quell-DB gerade in WAL-Modus ist.
-    Fehler werden nur geloggt, nie weitergeworfen (Backup darf Save nicht
-    blockieren).
+    Gleicher Zeitstempel innerhalb einer Minute → vorhandene Datei wird
+    überschrieben (gewolltes Verhalten bei schnellen Mehrfach-Saves).
+    Nach dem Schreiben werden ältere Dateien gelöscht, sodass nur die
+    letzten _BACKUP_KEEP Versionen erhalten bleiben.
+
+    Fehler werden nur geloggt, nie weitergeworfen.
     """
     try:
-        DB_BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        DB_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        dst_path = DB_BACKUP_DIR / f"auto_ki_backup_{ts}.db"
+
         src = sqlite3.connect(DB_PATH)
-        dst = sqlite3.connect(DB_BACKUP_PATH)
+        dst = sqlite3.connect(dst_path)
         src.backup(dst)
         dst.close()
         src.close()
-        sz = DB_BACKUP_PATH.stat().st_size
-        log.info("SQLite-Backup aktualisiert: %s (%d KB)", DB_BACKUP_PATH.name, sz // 1024)
+
+        sz = dst_path.stat().st_size
+        log.info("SQLite-Backup erstellt: %s (%d KB)", dst_path.name, sz // 1024)
+
+        # Rotation: nur letzte _BACKUP_KEEP Dateien behalten
+        all_backups = sorted(DB_BACKUP_DIR.glob("auto_ki_backup_*.db"))
+        for old in all_backups[:-_BACKUP_KEEP]:
+            old.unlink(missing_ok=True)
+            log.info("Altes Backup gelöscht: %s", old.name)
+
     except Exception as exc:
         log.warning("SQLite-Backup fehlgeschlagen (Daten in DB_PATH sicher): %s", exc)
 

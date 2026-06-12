@@ -8,6 +8,7 @@ venv/
 # Datenbank (lokal, nicht ins Repo)
 db/auto_ki.db
 db/auto_ki_backup.db
+db/backups/
 db/chroma/
 
 # Secrets
