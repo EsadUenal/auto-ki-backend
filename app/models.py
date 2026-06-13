@@ -75,3 +75,36 @@ class KaufCheckResponse(BaseModel):
     quelle: str                                    # "datenbank" | "web" | "gemischt"
     vertrauen: str                                 # "hoch" | "mittel" | "niedrig"
     belege: list[Any] = Field(default_factory=list)
+
+
+# ---------- Verkaufs-Check ----------
+
+class VerkaufsCheckRequest(BaseModel):
+    marke: str | None = None
+    modell: str | None = None
+    baujahr: int | None = None
+    kilometerstand: int | None = None
+    motor: str | None = None
+    kraftstoff: str | None = None
+    ausstattung: list[str] = Field(default_factory=list)
+    beschreibung: str | None = None        # Zustand, Besonderheiten (Nichtraucher, Scheckheft, ...)
+    maengel: list[str] = Field(default_factory=list)  # bekannte Mängel / anstehende Reparaturen
+    preis_vorstellung: int | None = None   # eigene Preisvorstellung des Verkäufers (optional)
+    freitext: str | None = None            # alternative Freitexteingabe
+    bild_base64: str | None = None
+
+
+class VerkaufsCheckResponse(BaseModel):
+    bericht: str                                   # Markdown-Bericht
+    schnellverkaufs_preis: int | None = None       # unteres Ende — zügiger Verkauf
+    maximal_preis: int | None = None               # oberes realistisches Ende
+    empfohlener_preis: int | None = None           # empfohlene Mitte
+    verkaufsdauer_tage_schnell: int | None = None  # geschätzte Tage bei Schnellverkauf
+    verkaufsdauer_tage_maximal: int | None = None  # geschätzte Tage bei Maximalpreis
+    marktpreis_min: int | None = None              # Markt-Untergrenze aus Web
+    marktpreis_max: int | None = None              # Markt-Obergrenze aus Web
+    baureihe_erkannt: str | None = None
+    motor_erkannt: str | None = None
+    quelle: str
+    vertrauen: str
+    belege: list[Any] = Field(default_factory=list)
