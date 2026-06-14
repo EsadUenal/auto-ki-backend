@@ -21,7 +21,10 @@ async def _sse_generator(message: str, verlauf: list[dict]):
     meta = {}
 
     async for event in chat_stream(message, verlauf):
-        if event["type"] == "text":
+        if event["type"] == "status":
+            data = json.dumps({"status": event["text"]}, ensure_ascii=False)
+            yield f"data: {data}\n\n"
+        elif event["type"] == "text":
             full_text.append(event["delta"])
             data = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
             yield f"data: {data}\n\n"
