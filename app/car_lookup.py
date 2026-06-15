@@ -100,56 +100,60 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None) -> str:
         return "Kein geprüftes DB-Profil für dieses Fahrzeug vorhanden."
 
     lines = [
-        f"## DB-Profil: {baureihe['marke']} {baureihe['modell']} {baureihe['generation']}",
-        f"Bauzeitraum: {baureihe['bauzeitraum_von']}–{baureihe['bauzeitraum_bis'] or 'heute'}",
-        f"Karosserie: {', '.join(baureihe['karosserie'])}",
-        f"TÜV-Mängelquote: {baureihe['tuev_maengelquote'] or 'nicht erfasst'}",
-        f"ADAC-Pannenkennziffer: {baureihe['adac_pannenkennziffer'] or 'nicht erfasst'}",
+        f"## DB-Profil: {baureihe.get('marke','')} {baureihe.get('modell','')} {baureihe.get('generation','')}",
+        f"Bauzeitraum: {baureihe.get('bauzeitraum_von','?')}–{baureihe.get('bauzeitraum_bis') or 'heute'}",
+        f"Karosserie: {', '.join(baureihe.get('karosserie') or [])}",
+        f"TÜV-Mängelquote: {baureihe.get('tuev_maengelquote') or 'nicht erfasst'}",
+        f"ADAC-Pannenkennziffer: {baureihe.get('adac_pannenkennziffer') or 'nicht erfasst'}",
         "",
     ]
 
     if baureihe.get("ausstattungslinien"):
         lines.append("Ausstattungslinien:")
         for a in baureihe["ausstattungslinien"]:
-            lines.append(f"  {a['name']} ({a['typ']}): {a['abgrenzung'] or ''}")
+            lines.append(f"  {a.get('name','?')} ({a.get('typ','?')}): {a.get('abgrenzung') or ''}")
         lines.append("")
 
-    motoren = [motor_match] if motor_match else baureihe["motoren"][:5]
+    motoren = [motor_match] if motor_match else baureihe.get("motoren", [])[:5]
     for m in motoren:
         lines += [
-            f"### Motor: {m['bezeichnung']} | {m.get('motorcode', '?')} | {m['kraftstoff']}",
-            f"Leistung: {m['leistung_ps']} PS / {m['leistung_kw']} kW | Drehmoment: {m['drehmoment_nm']} Nm",
-            f"0–100: {m['beschleunigung_0_100']} s | Vmax: {m['vmax_kmh']} km/h",
-            f"Verbrauch WLTP: {m['verbrauch_wltp'] or 'kein WLTP'} l/100km | Real: {m['verbrauch_real'] or '?'} l/100km",
-            f"Neupreis ca.: {m['neupreis_ca_eur'] or 'nicht erfasst'} EUR",
+            f"### Motor: {m.get('bezeichnung','?')} | {m.get('motorcode','?')} | {m.get('kraftstoff','?')}",
+            f"Leistung: {m.get('leistung_ps','?')} PS / {m.get('leistung_kw','?')} kW | Drehmoment: {m.get('drehmoment_nm','?')} Nm",
+            f"0–100: {m.get('beschleunigung_0_100','?')} s | Vmax: {m.get('vmax_kmh','?')} km/h",
+            f"Verbrauch WLTP: {m.get('verbrauch_wltp') or 'kein WLTP'} l/100km | Real: {m.get('verbrauch_real','?')} l/100km",
+            f"Neupreis ca.: {m.get('neupreis_ca_eur') or 'nicht erfasst'} EUR",
         ]
-        if m["schwachstellen_motor"]:
+        # schwachstelle_motor hat KEIN schweregrad-Feld — nur bauteil/beschreibung/baujahre/kosten_ca
+        if m.get("schwachstellen_motor"):
             lines.append("Motorprobleme:")
             for s in m["schwachstellen_motor"]:
                 lines.append(
-                    f"  [{s['schweregrad']}] {s['bauteil']}: {s['beschreibung']} "
-                    f"(Baujahre: {s['baujahre']}, Kosten ca.: {s['kosten_ca']})"
+                    f"  {s.get('bauteil','?')}: {s.get('beschreibung','?')} "
+                    f"(Baujahre: {s.get('baujahre','?')}, Kosten ca.: {s.get('kosten_ca','?')})"
                 )
-        if m["kritische_wartung"]:
+        if m.get("kritische_wartung"):
             lines.append("Kritische Wartung:")
             for w in m["kritische_wartung"]:
-                lines.append(f"  - {w['bauteil']}: {w['intervall']} — {w['hinweis']}")
+                lines.append(f"  - {w.get('bauteil','?')}: {w.get('intervall','?')} — {w.get('hinweis','?')}")
         lines.append("")
 
-    if baureihe["schwachstellen_baureihe"]:
+    # schwachstelle_baureihe HAT schweregrad — trotzdem .get() für Robustheit
+    if baureihe.get("schwachstellen_baureihe"):
         lines.append("### Schwachstellen Baureihe:")
         for s in baureihe["schwachstellen_baureihe"]:
+            schweregrad = s.get("schweregrad")
+            prefix = f"[{schweregrad}] " if schweregrad else ""
             lines.append(
-                f"  [{s['schweregrad']}] {s['bauteil']}: {s['beschreibung']} "
-                f"(Baujahre: {s['betroffene_baujahre']})"
+                f"  {prefix}{s.get('bauteil','?')}: {s.get('beschreibung','?')} "
+                f"(Baujahre: {s.get('betroffene_baujahre','?')})"
             )
         lines.append("")
 
-    if baureihe["rueckrufe"]:
+    if baureihe.get("rueckrufe"):
         lines.append("### KBA-Rückrufe:")
         for r in baureihe["rueckrufe"]:
             lines.append(
-                f"  {r['datum']}: {r['mangel']} — {r['abhilfe']} (Ref: {r['kba_referenz']})"
+                f"  {r.get('datum','?')}: {r.get('mangel','?')} — {r.get('abhilfe','?')} (Ref: {r.get('kba_referenz','?')})"
             )
 
     return "\n".join(lines)

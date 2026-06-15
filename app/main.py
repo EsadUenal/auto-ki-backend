@@ -8,8 +8,9 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT
-from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck
+from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH
+from app.database import ensure_tables
+from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks
 from app.utf8 import UTF8JSONResponse
 
 
@@ -28,14 +29,20 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Testphase: alle Origins (file://, localhost, etc.)
-    allow_methods=["*"],          # OPTIONS-Preflight + POST/GET
-    allow_headers=["*"],          # Authorization, Content-Type usw.
-    allow_credentials=False,      # muss False bleiben wenn allow_origins="*"
+    allow_origins=CORS_ORIGINS,   # konkrete Origins nötig damit Cookies funktionieren
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,       # httpOnly-Cookie wird mitgeschickt
 )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    """Tabellen anlegen (idempotent) + DB-Pfad loggen."""
+    ensure_tables()
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -59,13 +66,28 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return _utf8_json(exc.status_code, content)
 
 
-app.include_router(fahrzeug.router,   prefix="/api/v1")
-app.include_router(chat.router,       prefix="/api/v1")
-app.include_router(admin.router,      prefix="/api/v1")
-app.include_router(kaufcheck.router,    prefix="/api/v1")
+app.include_router(fahrzeug.router,      prefix="/api/v1")
+app.include_router(chat.router,          prefix="/api/v1")
+app.include_router(admin.router,         prefix="/api/v1")
+app.include_router(kaufcheck.router,     prefix="/api/v1")
 app.include_router(verkaufscheck.router, prefix="/api/v1")
+app.include_router(user_auth.router,     prefix="/api/v1")
+app.include_router(conversations.router, prefix="/api/v1")
+app.include_router(checks.router,        prefix="/api/v1")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    import sqlite3
+    db_path = str(DB_PATH)
+    try:
+        conn = sqlite3.connect(db_path)
+        tables = sorted(
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        )
+        conn.close()
+    except Exception as e:
+        tables = [f"FEHLER: {e}"]
+    return {"status": "ok", "db_path": db_path, "tables": tables}

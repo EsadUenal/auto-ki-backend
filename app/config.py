@@ -47,6 +47,17 @@ CHROMA_PATH = Path(os.environ.get("AUTO_KI_CHROMA_PATH", str(_chroma_default)))
 API_KEY = os.environ.get("AUTO_KI_API_KEY", "dev-key-change-in-prod")
 RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 
+# --- Auth (Phase 2b) ---
+# In Produktion: langen Zufalls-String setzen, z.B. `openssl rand -hex 32`
+JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", "dev-jwt-secret-change-in-prod")
+JWT_EXPIRE_DAYS = int(os.environ.get("AUTO_KI_JWT_EXPIRE_DAYS", "7"))
+
+# CORS-Origins die Cookies senden dürfen (komma-getrennt in Env-Var)
+_cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
+CORS_ORIGINS: list[str] = [
+    o.strip() for o in os.environ.get("AUTO_KI_CORS_ORIGINS", _cors_default).split(",") if o.strip()
+]
+
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
 FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.5-flash-lite")

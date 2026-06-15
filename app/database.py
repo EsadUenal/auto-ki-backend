@@ -1,9 +1,83 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import json
 from contextlib import contextmanager
 from app.config import DB_PATH
+
+log = logging.getLogger(__name__)
+
+# ── Schema ────────────────────────────────────────────────────────────────────
+# Alle CREATE TABLE IF NOT EXISTS hier gebündelt.
+# ensure_tables() wird beim App-Start aufgerufen → Tabellen existieren IMMER,
+# egal auf welche DB_PATH zeigt oder ob Migrationen vorher liefen.
+
+_SCHEMA_SQL = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS users (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    email               TEXT    UNIQUE NOT NULL,
+    password_hash       TEXT    NOT NULL,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    abo_typ             TEXT    NOT NULL DEFAULT 'none'
+                                CHECK(abo_typ IN ('none','light','pro','max')),
+    checks_verbleibend  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title       TEXT    NOT NULL DEFAULT 'Neuer Chat',
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role            TEXT    NOT NULL CHECK(role IN ('user','assistant')),
+    content         TEXT    NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+
+CREATE TABLE IF NOT EXISTS checks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    typ         TEXT    NOT NULL CHECK(typ IN ('kauf','verkauf')),
+    titel       TEXT    NOT NULL,
+    eingabe     TEXT    NOT NULL,
+    ergebnis    TEXT    NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_checks_user_id ON checks(user_id);
+"""
+
+
+def ensure_tables() -> None:
+    """Erstellt beim App-Start alle Tabellen (idempotent, CREATE IF NOT EXISTS).
+    Loggt den exakten DB-Pfad — so ist immer nachvollziehbar, welche Datei geöffnet wird."""
+    db_path = str(DB_PATH)
+    log.info("=== DB_PATH (aktiv): %s ===", db_path)
+    print(f"[DB] Aktiver Pfad: {db_path}")   # auch ohne Log-Config sichtbar
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(_SCHEMA_SQL)
+        conn.commit()
+        tables = sorted(
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        )
+        log.info("DB-Tabellen nach ensure_tables(): %s", tables)
+        print(f"[DB] Tabellen: {tables}")
+    finally:
+        conn.close()
 
 
 @contextmanager
