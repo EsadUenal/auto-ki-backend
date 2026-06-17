@@ -707,3 +707,86 @@ def _finalize(text: str, marke: str, modell: str, generation: str, heute: str) -
     data.setdefault("hinweise", {})
     data.setdefault("letzte_aktualisierung", heute)
     return data
+
+
+# ------------------------------------------------------------------ #
+#  Lücken-Entwurf — nur fehlende Felder per Gemini generieren        #
+# ------------------------------------------------------------------ #
+
+_SYS_LUECKEN = """Du bist ein präziser Automobil-Datenbankassistent.
+Antworte NUR mit einem JSON-Objekt, keine Markdown-Fences, kein Text davor/danach.
+Erzeuge exakt die angeforderten Felder — nichts anderes.
+
+PFLICHTREGELN:
+1. Nur gesicherte, bekannte Fakten. Bei Unsicherheit → leeres Array oder null, NIEMALS raten.
+2. kaufberatung: Deutscher Fließtext als Markdown (~200–350 Wörter). Praktische Hinweise
+   für den Gebrauchtkauf — worauf prüfen, typische Mängel, Laufleistungs-Erwartung,
+   welche Ausstattung bevorzugen, Preiseinschätzung.
+3. schwachstellen_baureihe: Array mit bekannten, dokumentierten Serienfehlern.
+   Format: {"bauteil":"...","beschreibung":"...","betroffene_baujahre":"...","schweregrad":"gering|mittel|hoch"}
+   Nur echte, belegte Schwachstellen. Wenn keine bekannt → [].
+4. rueckrufe: Bekannte KBA-Rückrufe in Deutschland.
+   Format: {"datum":"MM/YYYY","betroffene_baujahre":"...","mangel":"...","abhilfe":"...","kba_referenz":null}
+   Wenn keine bekannt → [].
+
+Ausgabe-Schema — enthält nur die angeforderten Felder:
+{"kaufberatung": null_oder_text, "schwachstellen_baureihe": [], "rueckrufe": []}
+Felder die NICHT angefordert wurden: weglassen."""
+
+
+async def luecken_entwurf_erstellen(
+    marke: str,
+    modell: str,
+    generation: str,
+    fehlende_felder: list[str],
+    kontext: dict,
+) -> dict:
+    """
+    Generiert via Gemini NUR die fehlenden Felder einer bestehenden Baureihe.
+
+    `fehlende_felder`: Liste der zu generierenden Felder
+        ("kaufberatung", "schwachstellen_baureihe", "rueckrufe")
+    `kontext`: Vorhandene Baureihen-Daten aus der DB (bauzeitraum, segment, …)
+        als Anker — verhindert, dass Gemini falsches Modell generiert.
+    """
+    client = _get_client()
+
+    # Kontext-Zusammenfassung für den Prompt
+    bj_von = kontext.get("bauzeitraum_von") or "?"
+    bj_bis = kontext.get("bauzeitraum_bis") or "heute"
+    segment = kontext.get("segment") or "?"
+    erk = kontext.get("erkennung_generation") or ""
+
+    kontext_block = (
+        f"Fahrzeug: {marke} {modell} {generation}\n"
+        f"Bauzeitraum: {bj_von}–{bj_bis} | Segment: {segment}\n"
+    )
+    if erk:
+        kontext_block += f"Erkennungsmerkmale: {erk}\n"
+
+    felder_block = ", ".join(fehlende_felder)
+    prompt = (
+        f"{kontext_block}\n"
+        f"Erzeuge folgende fehlende Felder: {felder_block}\n"
+        "Nur belegte Fakten. Leeres Array wenn unklar. Kein Erfinden."
+    )
+
+    log.info(
+        "luecken_entwurf_erstellen: %s %s %s — Felder: %s",
+        marke, modell, generation, felder_block,
+    )
+
+    # Primär: Haupt-Modell (streaming für Robustheit)
+    try:
+        text = _call_stream_collect(client, prompt, _SYS_LUECKEN, LLM_MODEL,
+                                    max_output_tokens=4096)
+        return _extract_json(text)
+    except Exception as exc:
+        log.warning(
+            "luecken_entwurf %s fehlgeschlagen — Fallback auf %s. (%s)",
+            LLM_MODEL, FAST_LLM_MODEL, exc,
+        )
+
+    # Fallback: Flash-Lite
+    text = _call_sync_fallback(client, prompt, _SYS_LUECKEN)
+    return _extract_json(text)

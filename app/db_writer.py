@@ -136,6 +136,99 @@ def _j(value) -> str | None:
     return value
 
 
+# ---------- Lücken-Patch — nur fehlende Felder nachfüllen ----------
+
+def patch_luecken(bid: str, daten: dict) -> None:
+    """
+    Füllt gezielt fehlende Felder einer bestehenden Baureihe nach.
+    Berührt KEINE bestehenden Motoren, Ausstattungslinien o.ä.
+
+    Unterstützte Felder in `daten`:
+      "kaufberatung"            → UPDATE baureihe (Textfeld)
+      "schwachstellen_baureihe" → DELETE + INSERT in schwachstelle_baureihe
+      "rueckrufe"               → DELETE + INSERT in rueckruf
+
+    Nur Felder, die in `daten` vorhanden UND nicht leer/null sind, werden geschrieben.
+    """
+    _ensure_db_migrated()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys=ON")
+    heute = date.today().strftime("%Y-%m")
+
+    # 1. Kaufberatung (einfaches UPDATE — kein Löschen nötig)
+    if "kaufberatung" in daten and daten["kaufberatung"]:
+        conn.execute(
+            "UPDATE baureihe SET kaufberatung=?, letzte_aktualisierung=? WHERE id=?",
+            (daten["kaufberatung"], heute, bid),
+        )
+
+    # 2. Schwachstellen Baureihe — nur wenn mindestens ein Eintrag vorhanden
+    schw_neu = [s for s in daten.get("schwachstellen_baureihe", []) if s.get("bauteil")]
+    if schw_neu:
+        conn.execute("DELETE FROM schwachstelle_baureihe WHERE baureihe_id=?", (bid,))
+        for s in schw_neu:
+            conn.execute(
+                "INSERT INTO schwachstelle_baureihe "
+                "(baureihe_id,bauteil,beschreibung,betroffene_baujahre,schweregrad) "
+                "VALUES (?,?,?,?,?)",
+                (bid, s.get("bauteil"), s.get("beschreibung"),
+                 s.get("betroffene_baujahre"), s.get("schweregrad", "gering")),
+            )
+
+    # 3. Rückrufe — nur wenn mindestens ein Eintrag vorhanden
+    ruf_neu = [r for r in daten.get("rueckrufe", []) if r.get("mangel")]
+    if ruf_neu:
+        conn.execute("DELETE FROM rueckruf WHERE baureihe_id=?", (bid,))
+        for r in ruf_neu:
+            conn.execute(
+                "INSERT INTO rueckruf "
+                "(baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz) "
+                "VALUES (?,?,?,?,?,?)",
+                (bid, r.get("datum"), r.get("betroffene_baujahre"),
+                 r.get("mangel"), r.get("abhilfe"), r.get("kba_referenz")),
+            )
+
+    conn.commit()
+
+    # Backup
+    _backup_sqlite()
+
+    # ChromaDB aktualisieren (nur wenn technische Felder geändert wurden)
+    if schw_neu or ruf_neu:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM baureihe WHERE id=?", (bid,)).fetchone()
+        if row:
+            b = dict(row)
+            schw_all = [dict(r) for r in conn.execute(
+                "SELECT * FROM schwachstelle_baureihe WHERE baureihe_id=?", (bid,)
+            ).fetchall()]
+            ruf_all = [dict(r) for r in conn.execute(
+                "SELECT * FROM rueckruf WHERE baureihe_id=?", (bid,)
+            ).fetchall()]
+            ausstatt_all = [dict(r) for r in conn.execute(
+                "SELECT * FROM ausstattungslinie WHERE baureihe_id=?", (bid,)
+            ).fetchall()]
+            motoren_rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM motorvariante WHERE baureihe_id=?", (bid,)
+            ).fetchall()]
+            for m in motoren_rows:
+                m["schwachstellen_motor"] = [dict(r) for r in conn.execute(
+                    "SELECT * FROM schwachstelle_motor WHERE variante_id=?", (m["variante_id"],)
+                ).fetchall()]
+            chroma_data = {
+                "marke": b["marke"], "modell": b["modell"], "generation": b["generation"],
+                "erkennung_generation": b.get("erkennung_generation"),
+                "facelift_merkmale":    b.get("facelift_merkmale"),
+                "ausstattungslinien":   ausstatt_all,
+                "schwachstellen_baureihe": schw_all,
+                "rueckrufe":            ruf_all,
+                "motoren":              motoren_rows,
+            }
+            _update_chroma(bid, chroma_data)
+
+    conn.close()
+
+
 # ---------- Haupt-Funktion ----------
 
 def save_fahrzeug(data: dict) -> str:

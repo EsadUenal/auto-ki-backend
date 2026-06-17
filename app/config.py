@@ -53,7 +53,7 @@ JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", "dev-jwt-secret-change-in-prod
 JWT_EXPIRE_DAYS = int(os.environ.get("AUTO_KI_JWT_EXPIRE_DAYS", "7"))
 
 # CORS-Origins die Cookies senden dürfen (komma-getrennt in Env-Var)
-_cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
+_cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:5173,null"
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.environ.get("AUTO_KI_CORS_ORIGINS", _cors_default).split(",") if o.strip()
 ]
