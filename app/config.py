@@ -58,6 +58,17 @@ CORS_ORIGINS: list[str] = [
     o.strip() for o in os.environ.get("AUTO_KI_CORS_ORIGINS", _cors_default).split(",") if o.strip()
 ]
 
+# Stripe — Phase 2d
+# Testmodus-Keys unter https://dashboard.stripe.com/test/apikeys
+# Webhook-Secret via: stripe listen --forward-to localhost:8000/api/v1/payments/webhook
+STRIPE_SECRET_KEY       = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_LIGHT      = os.environ.get("STRIPE_PRICE_LIGHT", "")       # price_xxx
+STRIPE_PRICE_PRO        = os.environ.get("STRIPE_PRICE_PRO", "")         # price_xxx
+STRIPE_PRICE_MAX        = os.environ.get("STRIPE_PRICE_MAX", "")         # price_xxx
+STRIPE_PRICE_EINZELKAUF = os.environ.get("STRIPE_PRICE_EINZELKAUF", "")  # price_xxx (one_time)
+FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
 FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.5-flash-lite")

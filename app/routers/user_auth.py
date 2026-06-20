@@ -106,7 +106,7 @@ def register(body: RegisterBody, response: Response):
     try:
         with get_conn() as conn:
             cursor = conn.execute(
-                "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+                "INSERT INTO users (email, password_hash, checks_verbleibend) VALUES (?, ?, 1)",
                 (body.email, hashed),
             )
             conn.commit()
@@ -118,7 +118,7 @@ def register(body: RegisterBody, response: Response):
         )
 
     _set_auth_cookie(response, _make_token(user_id, body.email))
-    return {"id": user_id, "email": body.email, "abo_typ": "none", "checks_verbleibend": 0}
+    return {"id": user_id, "email": body.email, "abo_typ": "none", "checks_verbleibend": 1}
 
 
 @router.post("/login")

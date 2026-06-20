@@ -23,3 +23,6 @@ httpx>=0.27
 # Auth — Phase 2b
 passlib[bcrypt]>=1.7.4
 python-jose[cryptography]>=3.3.0
+
+# Zahlungen — Phase 2d
+stripe>=7.0.0

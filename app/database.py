@@ -55,7 +55,22 @@ CREATE TABLE IF NOT EXISTS checks (
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_checks_user_id ON checks(user_id);
+
+CREATE TABLE IF NOT EXISTS stripe_events (
+    event_id     TEXT PRIMARY KEY,
+    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Fügt neue Spalten zur users-Tabelle hinzu (idempotent, sicher mehrfach ausführbar)."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "stripe_customer_id" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+    if "stripe_subscription_id" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT")
+    conn.commit()
 
 
 def ensure_tables() -> None:
@@ -69,6 +84,7 @@ def ensure_tables() -> None:
     try:
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
+        _migrate_schema(conn)
         tables = sorted(
             r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"

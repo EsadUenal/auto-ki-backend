@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH
 from app.database import ensure_tables
-from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks
+from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments
 from app.utf8 import UTF8JSONResponse
 
 
@@ -74,6 +74,7 @@ app.include_router(verkaufscheck.router, prefix="/api/v1")
 app.include_router(user_auth.router,     prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(checks.router,        prefix="/api/v1")
+app.include_router(payments.router,      prefix="/api/v1")
 
 
 @app.get("/health")
