@@ -11,7 +11,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt
-from fastapi import APIRouter, Cookie, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from jose import JWTError, jwt
 from pydantic import BaseModel, field_validator
 
@@ -67,6 +67,22 @@ class LoginBody(BaseModel):
     password: str
 
 
+class ChangePwBody(BaseModel):
+    old_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _new_pw(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Neues Passwort muss mindestens 8 Zeichen haben")
+        return v
+
+
+class DeleteAccountBody(BaseModel):
+    password: str
+
+
 # ── JWT helpers ───────────────────────────────────────────────────────────────
 
 def _make_token(user_id: int, email: str) -> str:
@@ -95,6 +111,19 @@ def _set_auth_cookie(response: Response, token: str) -> None:
         max_age=JWT_EXPIRE_DAYS * 86_400,
         **COOKIE_OPTS,
     )
+
+
+# ── Shared Auth-Dependency (für andere Router) ────────────────────────────────
+
+def get_current_user_id(auth_token: str | None = Cookie(default=None)) -> int:
+    """FastAPI-Dependency: liest Auth-Cookie, gibt user_id zurück oder 401."""
+    if not auth_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"fehler": {"code": "unauthorized", "nachricht": "Nicht eingeloggt."}},
+        )
+    payload = _decode_token(auth_token)
+    return int(payload["sub"])
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -126,7 +155,7 @@ def login(body: LoginBody, response: Response):
     """Einloggen. Gibt User-Daten + setzt Auth-Cookie."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, abo_typ, checks_verbleibend "
+            "SELECT id, email, password_hash, abo_typ, checks_verbleibend, deleted_at "
             "FROM users WHERE email = ?",
             (body.email.strip().lower(),),
         ).fetchone()
@@ -138,12 +167,19 @@ def login(body: LoginBody, response: Response):
             detail={"fehler": {"code": "invalid_credentials", "nachricht": "E-Mail oder Passwort falsch."}},
         )
 
+    if row["deleted_at"] is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={"fehler": {"code": "account_deactivated", "nachricht": "Dieses Konto wurde deaktiviert."}},
+        )
+
     _set_auth_cookie(response, _make_token(row["id"], row["email"]))
     return {
         "id": row["id"],
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "abo_kuendigt_zum": None,
     }
 
 
@@ -160,11 +196,12 @@ def me(auth_token: str | None = Cookie(default=None)):
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, abo_typ, checks_verbleibend FROM users WHERE id = ?",
+            "SELECT id, email, abo_typ, checks_verbleibend, deleted_at, abo_kuendigt_zum "
+            "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
 
-    if row is None:
+    if row is None or row["deleted_at"] is not None:
         raise HTTPException(
             status_code=401,
             detail={"fehler": {"code": "unauthorized", "nachricht": "Nutzer nicht gefunden."}},
@@ -174,6 +211,7 @@ def me(auth_token: str | None = Cookie(default=None)):
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "abo_kuendigt_zum": row["abo_kuendigt_zum"],
     }
 
 
@@ -184,14 +222,59 @@ def logout(response: Response):
     return {"ok": True}
 
 
-# ── Shared Auth-Dependency (für andere Router) ────────────────────────────────
+@router.post("/change-password")
+def change_password(
+    body: ChangePwBody,
+    user_id: int = Depends(get_current_user_id),
+):
+    """Passwort ändern — altes PW prüfen, neues hashen und speichern."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id=? AND deleted_at IS NULL", (user_id,)
+        ).fetchone()
 
-def get_current_user_id(auth_token: str | None = Cookie(default=None)) -> int:
-    """FastAPI-Dependency: liest Auth-Cookie, gibt user_id zurück oder 401."""
-    if not auth_token:
+    if not row or not _verify_pw(body.old_password, row["password_hash"]):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"fehler": {"code": "unauthorized", "nachricht": "Nicht eingeloggt."}},
+            status_code=400,
+            detail={"fehler": {"code": "wrong_password", "nachricht": "Aktuelles Passwort ist falsch."}},
         )
-    payload = _decode_token(auth_token)
-    return int(payload["sub"])
+
+    new_hash = _hash_pw(body.new_password)
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET password_hash=? WHERE id=?", (new_hash, user_id))
+        conn.commit()
+
+    return {"ok": True}
+
+
+@router.delete("/delete-account")
+def delete_account(
+    body: DeleteAccountBody,
+    response: Response,
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    Konto deaktivieren (Soft Delete).
+    Setzt deleted_at — Login gesperrt, Daten bleiben erhalten (Geschäftsdaten).
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id=? AND deleted_at IS NULL", (user_id,)
+        ).fetchone()
+
+    if not row or not _verify_pw(body.password, row["password_hash"]):
+        raise HTTPException(
+            status_code=400,
+            detail={"fehler": {"code": "wrong_password", "nachricht": "Passwort ist falsch."}},
+        )
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET deleted_at=CURRENT_TIMESTAMP WHERE id=?", (user_id,)
+        )
+        conn.commit()
+
+    response.delete_cookie(COOKIE_NAME, **COOKIE_OPTS)
+    return {"ok": True}
+
+

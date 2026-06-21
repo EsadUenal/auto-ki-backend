@@ -26,3 +26,6 @@ python-jose[cryptography]>=3.3.0
 
 # Zahlungen — Phase 2d
 stripe>=7.0.0
+
+# Umgebungsvariablen aus .env laden
+python-dotenv>=1.0.0

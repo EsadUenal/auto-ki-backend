@@ -60,7 +60,71 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     event_id     TEXT PRIMARY KEY,
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS poster (
+    id           TEXT PRIMARY KEY,
+    titel        TEXT NOT NULL,
+    beschreibung TEXT NOT NULL DEFAULT '',
+    preis_normal REAL NOT NULL,
+    preis_abo    REAL NOT NULL,
+    bildpfad     TEXT,
+    aktiv        INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS poster_bestellung (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    poster_id                TEXT    NOT NULL REFERENCES poster(id),
+    preis_bezahlt            REAL    NOT NULL,
+    stripe_session_id        TEXT    UNIQUE NOT NULL,
+    stripe_payment_intent_id TEXT,
+    status                   TEXT    NOT NULL DEFAULT 'offen'
+                                     CHECK(status IN ('offen','bezahlt','versendet','storniert','erstattet')),
+    paid_at                  DATETIME,
+    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+    adresse_name             TEXT    NOT NULL,
+    adresse_strasse          TEXT    NOT NULL,
+    adresse_plz              TEXT    NOT NULL,
+    adresse_ort              TEXT    NOT NULL,
+    adresse_land             TEXT    NOT NULL DEFAULT 'DE'
+);
+CREATE INDEX IF NOT EXISTS idx_poster_bestellung_user ON poster_bestellung(user_id);
+CREATE INDEX IF NOT EXISTS idx_poster_bestellung_session ON poster_bestellung(stripe_session_id);
+
+CREATE TABLE IF NOT EXISTS gespeicherte_adresse (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    strasse    TEXT NOT NULL,
+    plz        TEXT NOT NULL,
+    ort        TEXT NOT NULL,
+    land       TEXT NOT NULL DEFAULT 'DE',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+
+_POSTER_SEED = [
+    ("bmw-m3",              "BMW M3 — Iconic Stance",            "Minimalistisches Kunstposter des BMW M3 in klassischer Seitenansicht. Hochformat, Druckqualität 300 dpi.",                          24.99, 19.99),
+    ("porsche-911",         "Porsche 911 — Timeless",            "Das ikonische Silhouetten-Poster des Porsche 911. Schlichte Linien, maximale Wirkung.",                                             24.99, 19.99),
+    ("mercedes-amg-gt",     "Mercedes-AMG GT — Black Series",    "Dramatische Frontalansicht des AMG GT Black Series in Studiobeleuchtung.",                                                          29.99, 23.99),
+    ("audi-r8",             "Audi R8 — Quattro Legend",          "Der R8 in einer dramatischen Dreiviertelansicht. Perfekt für Technik-Enthusiasten.",                                               24.99, 19.99),
+    ("lamborghini-huracan", "Lamborghini Huracán — Fire & Form", "Futuristisches Design-Poster mit dem Huracán als skulpturales Objekt. Limitierte Auflage.",                                       34.99, 27.99),
+    ("ferrari-488",         "Ferrari 488 — Rosso Corsa",         "Ferrari 488 in Rosso Corsa auf neutralem Hintergrund. Klassisches Rennfoto-Feeling.",                                             34.99, 27.99),
+    ("mclaren-720s",        "McLaren 720S — Speed Art",          "Aerodynamische Formsprache des 720S in abstrakter Darstellung. Für moderne Wände.",                                               29.99, 23.99),
+    ("nissan-gtr",          "Nissan GT-R — Godzilla",            "Der legendäre GT-R in nächtlicher Kulisse. Neonakzente treffen Motorsport-Erbe.",                                                 22.99, 17.99),
+]
+
+
+def _seed_poster(conn: sqlite3.Connection) -> None:
+    """Füllt poster-Tabelle mit Initialdaten (nur wenn leer)."""
+    if conn.execute("SELECT COUNT(*) FROM poster").fetchone()[0] > 0:
+        return
+    conn.executemany(
+        "INSERT INTO poster (id, titel, beschreibung, preis_normal, preis_abo) VALUES (?,?,?,?,?)",
+        _POSTER_SEED,
+    )
+    conn.commit()
+    log.info("Poster-Seed: %d Einträge angelegt.", len(_POSTER_SEED))
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -70,6 +134,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
     if "stripe_subscription_id" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT")
+    if "deleted_at" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN deleted_at DATETIME")
+    if "abo_kuendigt_zum" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN abo_kuendigt_zum TEXT")
     conn.commit()
 
 
@@ -80,20 +148,29 @@ def ensure_tables() -> None:
     log.info("=== DB_PATH (aktiv): %s ===", db_path)
     print(f"[DB] Aktiver Pfad: {db_path}")   # auch ohne Log-Config sichtbar
 
+    # Schritt 1: Schema via executescript (eigene Connection, danach schließen)
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
-        _migrate_schema(conn)
+    finally:
+        conn.close()
+
+    # Schritt 2: Spalten-Migration + Seed in FRISCHER Connection (vermeidet sqlite3-Modul-Bug
+    # nach executescript, bei dem DDL-Statements in derselben Connection ignoriert werden)
+    conn2 = sqlite3.connect(db_path)
+    try:
+        _migrate_schema(conn2)
+        _seed_poster(conn2)
         tables = sorted(
-            r[0] for r in conn.execute(
+            r[0] for r in conn2.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         )
         log.info("DB-Tabellen nach ensure_tables(): %s", tables)
         print(f"[DB] Tabellen: {tables}")
     finally:
-        conn.close()
+        conn2.close()
 
 
 @contextmanager

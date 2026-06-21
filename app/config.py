@@ -1,7 +1,13 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).parent.parent
+
+# .env im Backend-Ordner laden (vor allen os.environ.get()-Aufrufen).
+# override=False: bereits gesetzte Systemvariablen haben Vorrang.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 # ---------------------------------------------------------------------------
 # Datenbankpfade

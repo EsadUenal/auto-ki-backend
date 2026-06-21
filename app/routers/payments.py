@@ -14,6 +14,8 @@ Sicherheit:
 from __future__ import annotations
 
 import stripe
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -59,6 +61,46 @@ class CheckoutBody(BaseModel):
 
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
+
+import logging
+log = logging.getLogger(__name__)
+
+
+def _period_end_ts(sub) -> int | None:
+    """
+    Liest den Periodenend-Timestamp robust aus einem Stripe-Subscription-Objekt.
+
+    Reihenfolge der Fallbacks:
+      1. sub.cancel_at          — explizit gesetzt wenn cancel_at_period_end=True (zuverlässigst)
+      2. sub.current_period_end — Top-Level-Feld (API < 2024-09-30 / SDK <= 14.x)
+      3. sub.items.data[0].current_period_end — neues API-Format (2024-09-30+)
+    """
+    # 1. cancel_at (gesetzt bei cancel_at_period_end=True)
+    ts = getattr(sub, "cancel_at", None)
+    if ts:
+        return int(ts)
+
+    # 2. Top-Level current_period_end (ältere API-Versionen)
+    ts = getattr(sub, "current_period_end", None)
+    if ts:
+        return int(ts)
+
+    # 3. Items-Ebene (Stripe API 2024-09-30+)
+    try:
+        items = getattr(sub, "items", None)
+        data = getattr(items, "data", None) if items else None
+        if not data and isinstance(items, list):
+            data = items
+        if data:
+            ts = getattr(data[0], "current_period_end", None)
+            if ts:
+                return int(ts)
+    except Exception:
+        pass
+
+    log.warning("Stripe: current_period_end nicht gefunden auf sub %s", getattr(sub, "id", "?"))
+    return None
+
 
 def _get_or_create_customer(user_id: int) -> str:
     """Liest vorhandene stripe_customer_id oder erstellt neuen Stripe-Kunden."""
@@ -177,19 +219,31 @@ async def stripe_webhook(request: Request):
 
     # ── checkout.session.completed ─────────────────────────────────────────────
     if event_type == "checkout.session.completed":
+        # obj.metadata ist StripeObject (Stripe 15.x) — kein .get(), kein dict().
+        # Sicher über getattr() zugreifen; _data-Dict als Fallback.
         meta    = obj.metadata or {}
-        user_id = int(meta.get("user_id", 0))
-        typ     = meta.get("typ", "")
+        _m      = meta._data if hasattr(meta, "_data") else (meta if isinstance(meta, dict) else {})
+        user_id = int(_m.get("user_id", 0) or 0)
+        typ     = _m.get("typ", "")
 
         if typ == "abo":
-            abo_typ = meta.get("abo_typ", "")
+            abo_typ = _m.get("abo_typ", "")
             sub_id  = getattr(obj, "subscription", None)
             checks  = _ABO_CHECKS.get(abo_typ, 0)
             with get_conn() as conn:
+                # abo_typ + checks immer schreiben (Kern-Freischaltung)
                 conn.execute(
-                    "UPDATE users SET abo_typ=?, checks_verbleibend=?, stripe_subscription_id=? WHERE id=?",
-                    (abo_typ, checks, sub_id, user_id),
+                    "UPDATE users SET abo_typ=?, checks_verbleibend=? WHERE id=?",
+                    (abo_typ, checks, user_id),
                 )
+                # stripe_subscription_id separat — Spalte könnte bei alten DBs fehlen
+                try:
+                    conn.execute(
+                        "UPDATE users SET stripe_subscription_id=? WHERE id=?",
+                        (sub_id, user_id),
+                    )
+                except Exception:
+                    pass
                 conn.commit()
 
         elif typ == "einzelkauf":
@@ -199,6 +253,35 @@ async def stripe_webhook(request: Request):
                     (user_id,),
                 )
                 conn.commit()
+
+        elif typ == "poster":
+            poster_id        = _m.get("poster_id", "")
+            preis_bezahlt    = float(_m.get("preis_bezahlt", "0") or "0")
+            adresse_name     = _m.get("adresse_name", "")
+            adresse_strasse  = _m.get("adresse_strasse", "")
+            adresse_plz      = _m.get("adresse_plz", "")
+            adresse_ort      = _m.get("adresse_ort", "")
+            adresse_land     = _m.get("adresse_land", "DE")
+            session_id       = getattr(obj, "id", "")
+            payment_intent   = getattr(obj, "payment_intent", None)
+            paid_at          = None
+            created_ts       = getattr(obj, "created", None)
+            if created_ts:
+                from datetime import datetime, timezone
+                paid_at = datetime.fromtimestamp(created_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+            if user_id and poster_id and session_id:
+                with get_conn() as conn:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO poster_bestellung
+                           (user_id, poster_id, preis_bezahlt, stripe_session_id,
+                            stripe_payment_intent_id, status, paid_at,
+                            adresse_name, adresse_strasse, adresse_plz, adresse_ort, adresse_land)
+                           VALUES (?,?,?,?,?,'bezahlt',?,?,?,?,?,?)""",
+                        (user_id, poster_id, preis_bezahlt, session_id, payment_intent,
+                         paid_at, adresse_name, adresse_strasse, adresse_plz, adresse_ort, adresse_land),
+                    )
+                    conn.commit()
 
     # ── invoice.paid — monatlicher Reset ──────────────────────────────────────
     elif event_type == "invoice.paid":
@@ -228,7 +311,8 @@ async def stripe_webhook(request: Request):
         if sub_id:
             with get_conn() as conn:
                 conn.execute(
-                    "UPDATE users SET abo_typ='none', checks_verbleibend=0, stripe_subscription_id=NULL "
+                    "UPDATE users SET abo_typ='none', checks_verbleibend=0, "
+                    "stripe_subscription_id=NULL, abo_kuendigt_zum=NULL "
                     "WHERE stripe_subscription_id=?",
                     (sub_id,),
                 )
@@ -237,12 +321,49 @@ async def stripe_webhook(request: Request):
     return {"ok": True}
 
 
+@router.post("/cancel-subscription")
+def cancel_subscription(user_id: int = Depends(get_current_user_id)):
+    """
+    Abo kündigen — cancel_at_period_end=True bei Stripe.
+    Das Abo läuft bis Periodenende, danach setzt der webhook abo_typ='none'.
+    Speichert abo_kuendigt_zum für die UI-Anzeige.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT stripe_subscription_id, abo_typ FROM users WHERE id=? AND deleted_at IS NULL",
+            (user_id,),
+        ).fetchone()
+
+    if not row or row["abo_typ"] == "none" or not row["stripe_subscription_id"]:
+        raise HTTPException(
+            status_code=400,
+            detail={"fehler": {"code": "kein_abo", "nachricht": "Kein aktives Abo gefunden."}},
+        )
+
+    sub = stripe.Subscription.modify(
+        row["stripe_subscription_id"],
+        cancel_at_period_end=True,
+    )
+    ts = _period_end_ts(sub)
+    kuendigt_zum = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else None
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET abo_kuendigt_zum=? WHERE id=?",
+            (kuendigt_zum, user_id),
+        )
+        conn.commit()
+
+    return {"ok": True, "abo_kuendigt_zum": kuendigt_zum}
+
+
 @router.get("/status")
 def payment_status(user_id: int = Depends(get_current_user_id)):
     """Gibt aktuellen Abo-Status des eingeloggten Nutzers zurück."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT abo_typ, checks_verbleibend FROM users WHERE id=?", (user_id,)
+            "SELECT abo_typ, checks_verbleibend, abo_kuendigt_zum FROM users WHERE id=?",
+            (user_id,),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=401)
@@ -250,4 +371,5 @@ def payment_status(user_id: int = Depends(get_current_user_id)):
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
         "hat_abo": row["abo_typ"] != "none",
+        "abo_kuendigt_zum": row["abo_kuendigt_zum"],
     }
