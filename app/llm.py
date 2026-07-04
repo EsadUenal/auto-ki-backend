@@ -183,6 +183,23 @@ def _sql_context(baureihe_ids: list[str]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+# ---------- Interne Begriffe aus Modell-Antworten filtern (Defense in Depth) ----------
+# Der System-Prompt weist das Modell an, Begriffe wie "ungeprüft"/"Vertrauen" nie im
+# Fließtext zu verwenden — LLMs befolgen das nicht 100% zuverlässig. Dieser Filter
+# entfernt bekannte interne Begriffe zusätzlich auf Code-Ebene, als Sicherheitsnetz.
+_JARGON_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\s*\(?ungeprüft\)?", re.IGNORECASE), ""),
+    (re.compile(r"\b(niedriges|mittleres|hohes)\s+vertrauen\b", re.IGNORECASE), ""),
+    (re.compile(r"\bVertrauen(sstufe)?\s*[:=]\s*\w+", re.IGNORECASE), ""),
+]
+
+
+def _scrub_jargon(text: str) -> str:
+    for pattern, repl in _JARGON_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 # ---------- Baureihe aus Frage erkennen ----------
 
 # ---------- Web-Such-Trigger ----------
@@ -224,6 +241,15 @@ _AUTO_KEYWORDS = frozenset({
     "3er", "5er", "7er", "a-klasse", "c-klasse", "e-klasse",
     "motoren", "motore",
 })
+# Allgemeine Fahrzeugfragen ohne Auto-Keyword (z.B. "Was hältst du vom Rimac Nevera?") —
+# der Modellname selbst ist kein generisches Auto-Wort, die Frage ist aber eindeutig
+# Kfz-bezogen (die App ist rein automotiv). Ohne diesen Trigger bliebe die KI bei
+# reinem Konversationswissen hängen, statt selbstständig Fakten nachzuladen.
+_ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS = frozenset({
+    "was hältst du", "wie findest du", "kennst du", "was ist das für",
+    "was weißt du über", "wie ist der", "wie gut ist der", "erzähl mir über",
+    "erzähl mir von", "was sagst du zu", "meinung zu", "meinung zum",
+})
 
 
 def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict] | None = None) -> bool:
@@ -248,7 +274,11 @@ def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict]
     if any(kw in msg for kw in _SPEC_KEYWORDS):
         return True
     # Web-Fallback: nur wenn kein DB-Treffer UND aktuelle Nachricht ist Kfz-relevant
-    if not baureihe_ids and any(kw in msg for kw in _AUTO_KEYWORDS):
+    # (klassisches Auto-Keyword ODER allgemeine Fahrzeugfrage-Formulierung)
+    if not baureihe_ids and (
+        any(kw in msg for kw in _AUTO_KEYWORDS)
+        or any(kw in msg for kw in _ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS)
+    ):
         return True
     return False
 
@@ -342,13 +372,28 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 - Antworte kompakt: 1–3 Sätze oder eine kurze Liste. Keine Einleitung, keine Wiederholung der Frage, keine unaufgeforderte Zusatz-Erklärung.
 - Ausführliche Antworten mit Zwischenüberschriften sind nur für komplexe Anfragen angemessen (Vergleiche, Kaufberatung, umfassende Erklärungen wie "Erzähl mir alles über…").
 
+— DIAGNOSE-MODUS (Geräusche, Warnleuchten, Leistungsverlust, Startprobleme, "mein Auto macht komische Sachen" o. ä.) —
+Du bist hier ein Diagnose-Assistent, kein Lexikon. Bei einer unklaren Problembeschreibung NIEMALS sofort eine lange Liste möglicher Ursachen aufzählen — das hilft dem Nutzer nicht und wirkt wie ein Ursachen-Dump.
+1. Reicht die Beschreibung nicht für eine sinnvolle Eingrenzung, stelle ZUERST 2–4 gezielte Rückfragen — kompakt, keine Einleitung, keine Vorab-Ursachenliste. Passe die Fragen dynamisch an das Problem an, z. B.:
+   - Geräusch: Art (Klopfen/Quietschen/Klappern/Pfeifen/Schleifen), wann (Kaltstart, Bremsen, Lenken, Beschleunigen, Kurvenfahrt), Lokalisierung (vorne/hinten/Motor/Rad), seit wann, wird es schlimmer.
+   - Warnleuchte: IMMER sofort nach Farbe (gelb/orange/rot), Symbol und Verhalten (leuchtet dauerhaft oder blinkt) fragen — das ist die wichtigste Information, ohne sie ist jede Einschätzung reine Spekulation.
+   - Leistungsverlust: wann tritt es auf (unter Last, Autobahn, Kaltstart), ruckelt/stottert der Motor, ist eine Kontrollleuchte an, seit wann.
+   - Startprobleme: dreht der Anlasser durch oder passiert gar nichts, Klick-Geräusch beim Startversuch, Batterie/Kälte-Zusammenhang, seit wann.
+2. Erst wenn genug Antworten vorliegen (aus dieser Nachricht oder dem Verlauf), grenze auf die 1–3 wahrscheinlichsten Ursachen ein — keine erschöpfende Liste aller theoretisch denkbaren Defekte.
+3. Umgangssprachliche Beschreibungen ("der spinnt", "komisches Geräusch") verstehst du inhaltlich genauso, gehst aber identisch vor: zuerst gezielt nachfragen, nicht raten.
+4. Auch wenn Web-Ergebnisse zum Symptom im Kontext stehen: nutze sie erst NACH den Rückfragen zur Einordnung, nicht um vorab eine lange Ursachenliste zu generieren.
+
+— KAUFBERATUNG IM GESPRÄCH (z. B. "Welches Auto soll ich kaufen?", nicht der separate Kauf-Check-Tab) —
+Frage zuerst nur die wichtigsten Eckdaten kompakt ab (z. B. Budget, Nutzung/km pro Jahr, gewünschte Fahrzeugklasse, neu oder gebraucht) statt sofort eine lange Empfehlungsliste zu liefern. Erst mit diesen Angaben eine konkrete, kurze Empfehlung geben.
+
 — BEI ERKENNUNGSFRAGEN ("was ist das für ein Auto?", "Unterschied X vs Y") —
 - Nenne zuerst die konkreten optischen Merkmale (aus erkennung_generation), bevor du auf Technik oder Baujahr eingehst.
 
 — WEB-ERGEBNISSE (falls im Kontext vorhanden) —
 Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
 - Diese Daten sind intern als ungeprüft markiert — Preise aus dem Web sind Marktorientierungen, keine Garantien. Das ist eine interne Einordnung für DICH, kein Textbaustein für die Antwort.
-- Kennzeichne Web-Quellen nutzerfreundlich in natürlicher Sprache: "Laut aktueller Websuche (Quelle: [Seitenname])..." oder "Aktuelle Angebote im Netz zeigen …".
+- Erwähne Quellen NIEMALS als Klammer-Verweise im Fließtext, z. B. NICHT "(Quelle [2] Reddit, [3] YouTube)", NICHT "[1]", NICHT Aufzählungen von Quellennamen mitten im Text. Die konkreten Quellen werden dem Nutzer bereits automatisch unterhalb der Antwort im Quellenbereich angezeigt — dopple sie nicht im Fließtext.
+- Höchstens EIN natürlicher, unaufdringlicher Hinweis pro Antwort reicht, z. B. "Laut aktueller Websuche..." oder "Aktuelle Angebote im Netz zeigen…" — ganz ohne Klammern, Nummern oder Seitennamen-Aufzählung.
 - Verwende in der Antwort NIEMALS interne Fachbegriffe wie "ungeprüft", "Vertrauen", "niedriges/mittleres/hohes Vertrauen" oder "Quelle: Web" als wörtliches Label — das sind Entwicklerbegriffe, keine Nutzersprache.
 - Formuliere Unsicherheit stattdessen konkret und hilfreich, z. B. "Die genauen Werte für dein Modell solltest du beim Händler/in den Fahrzeugpapieren bestätigen."
 - Nenne konkrete Preisrahmen wenn sie aus mehreren Quellen übereinstimmen.
@@ -389,8 +434,11 @@ async def chat_stream(
     print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids}", flush=True)
 
     # ── 1. DB-Kontext aufbauen ───────────────────────────────────────────────
-    yield {"type": "status", "text": "Prüfe Datenbank…"}
-    await asyncio.sleep(0)
+    # Status nur zeigen wenn tatsächlich eine Baureihe erkannt wurde — bei normalem
+    # Smalltalk bleibt die neutrale "Denke nach…"-Ladeanimation ohne technisches Label.
+    if baureihe_ids:
+        yield {"type": "status", "text": "Prüfe Datenbank…"}
+        await asyncio.sleep(0)
 
     t_db = time.perf_counter()
     sql_ctx = _sql_context(baureihe_ids) if baureihe_ids else ""
@@ -409,17 +457,25 @@ async def chat_stream(
         await asyncio.sleep(0)
 
         car_info = _first_baureihe_info(baureihe_ids)
-        # Kurze Such-Query bauen — nie den vollen Prompt übergeben (HTTP 400 bei >400 Zeichen)
-        first_line = message.split('\n')[0][:80]
+        # Such-Query bauen — nie den vollen Prompt übergeben (HTTP 400 bei >400 Zeichen).
+        # Ganze Nachricht (Zeilenumbrüche zu Leerzeichen geglättet) statt nur der ersten
+        # Zeile nutzen — sonst geht bei mehrteiligen/mehrzeiligen Fragen der Kontext
+        # der übrigen Zeilen für die Suche verloren.
+        flat_msg = " ".join(message.split())[:150]
         if car_info:
             marke, modell, generation = car_info
-            search_query = f"{marke} {modell} {generation} {first_line}"[:200]
+            search_query = f"{marke} {modell} {generation} {flat_msg}"[:250]
         else:
             verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
-            search_query = f"{first_line} {verlauf_text} Deutschland"[:200]
+            search_query = f"{flat_msg} {verlauf_text} Deutschland"[:250]
 
         t_web = time.perf_counter()
         web_results = await tavily_search(search_query)
+        # Robuster Fallback: liefert die spezifische Query nichts, mit breiterer Query
+        # nachsuchen (z.B. ohne Generation/Zusatzfrage) statt komplett leer zu bleiben.
+        if not web_results and car_info:
+            marke, modell, _ = car_info
+            web_results = await tavily_search(f"{marke} {modell} Deutschland")
         print(f"[TIMING] tavily: {_ms(t_web)} -> {len(web_results) if web_results else 0} Ergebnisse", flush=True)
 
         if web_results:
@@ -491,6 +547,11 @@ async def chat_stream(
     first_token = True
     t_first_token = time.perf_counter()
     token_count = 0
+    # Rolling-Buffer: Text wird erst geflusht wenn genug Puffer vorhanden ist, damit
+    # ein Jargon-Begriff (z.B. "ungeprüft") nicht über zwei Chunks hinweg zerschnitten
+    # und dadurch am Filter vorbeigeschmuggelt wird. FLUSH_TAIL > längster Begriff.
+    _FLUSH_TAIL = 24
+    scrub_buf = ""
     try:
         for chunk in response:
             if chunk.text:
@@ -498,12 +559,18 @@ async def chat_stream(
                     print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
                     first_token = False
                 token_count += 1
-                yield {"type": "text", "delta": chunk.text}
-                await asyncio.sleep(0)
+                scrub_buf += chunk.text
+                if len(scrub_buf) > _FLUSH_TAIL * 2:
+                    safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
+                    yield {"type": "text", "delta": _scrub_jargon(safe)}
+                    await asyncio.sleep(0)
     except GeminiServerError as exc:
         msg = "KI momentan ausgelastet, bitte nochmal versuchen." if exc.code == 503 else f"Gemini-Fehler: {exc}"
-        yield {"type": "text", "delta": f"\n\n*{msg}*"}
+        scrub_buf += f"\n\n*{msg}*"
         print(f"[TIMING] GeminiServerError {exc.code} nach {_ms(t0)}", flush=True)
+
+    if scrub_buf:
+        yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
 
     print(f"[TIMING] GESAMT: {_ms(t0)} ({token_count} chunks, quelle={quelle})", flush=True)
 

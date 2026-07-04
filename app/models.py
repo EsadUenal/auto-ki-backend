@@ -57,6 +57,12 @@ class KaufCheckRequest(BaseModel):
     ausstattung: list[str] = Field(default_factory=list)
     beschreibung: str | None = None   # Freitext-Beschreibung aus dem Inserat
 
+    # Zusätzliche Angaben — deutlich relevant für die Risikoeinschätzung
+    unfallfrei: str | None = None      # "ja" | "nein" | "unbekannt"
+    vorbesitzer: int | None = None     # Anzahl Vorbesitzer laut Inserat
+    tuev_bis: str | None = None        # z.B. "06/2027"
+    scheckheftgepflegt: bool | None = None
+
     # Alternativ: Volltext des Inserats (Copy-Paste von mobile.de / AutoScout)
     freitext: str | None = None
 
@@ -66,8 +72,8 @@ class KaufCheckRequest(BaseModel):
 
 class KaufCheckResponse(BaseModel):
     bericht: str                                   # Markdown-Bericht
-    empfehlung: str                                # "kaufen" | "verhandeln" | "finger_weg" | "unbekannt"
-    preis_bewertung: str                           # "guter_deal" | "fair" | "zu_teuer" | "unbekannt"
+    empfehlung: str                                # "kaufen" | "kaufen_nach_besichtigung" | "nur_mit_werkstattpruefung" | "preis_nachverhandeln" | "hohes_risiko" | "finger_weg" | "unbekannt"
+    preis_bewertung: str                           # "extrem_guenstig" | "guenstig" | "marktgerecht" | "teuer" | "extrem_teuer" | "unbekannt"
     marktpreis_min: int | None = None              # EUR
     marktpreis_max: int | None = None              # EUR
     baureihe_erkannt: str | None = None            # DB-ID der erkannten Baureihe
@@ -90,6 +96,13 @@ class VerkaufsCheckRequest(BaseModel):
     beschreibung: str | None = None        # Zustand, Besonderheiten (Nichtraucher, Scheckheft, ...)
     maengel: list[str] = Field(default_factory=list)  # bekannte Mängel / anstehende Reparaturen
     preis_vorstellung: int | None = None   # eigene Preisvorstellung des Verkäufers (optional)
+
+    # Zusätzliche Angaben — verbessern die Preiseinschätzung deutlich
+    unfallfrei: str | None = None      # "ja" | "nein" | "unbekannt"
+    vorbesitzer: int | None = None
+    tuev_bis: str | None = None        # z.B. "06/2027"
+    scheckheftgepflegt: bool | None = None
+
     freitext: str | None = None            # alternative Freitexteingabe
     bild_base64: str | None = None
 

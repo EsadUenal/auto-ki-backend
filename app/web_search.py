@@ -74,6 +74,28 @@ async def tavily_search(
     return []
 
 
+async def tavily_search_with_fallback(
+    queries: list[str],
+    count: int = 5,
+    include_domains: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Probiert mehrere Suchanfragen der Reihe nach, bis eine Ergebnisse liefert.
+
+    Macht die Marktpreis-/Informationssuche robuster: liefert die spezifischste
+    Query (z.B. mit Motor + Baujahr + Kilometerstand) nichts, wird automatisch
+    mit einer breiteren Query (z.B. nur Marke + Modell) nachgesucht — damit auch
+    für seltene/exotische Fahrzeuge möglichst immer eine Marktpreisspanne entsteht.
+    """
+    for q in queries:
+        if not q or not q.strip():
+            continue
+        results = await tavily_search(q, count=count, include_domains=include_domains)
+        if results:
+            return results
+    return []
+
+
 def results_to_context(results: list[dict]) -> str:
     """
     Wandelt Tavily-Suchergebnisse in einen LLM-Kontext-Block um.

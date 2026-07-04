@@ -16,7 +16,7 @@ from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gem
 from app.config import TAVILY_API_KEY
 from app.gemini_retry import RateLimitExhausted
 from app.models import VerkaufsCheckRequest
-from app.web_search import tavily_search, results_to_context, results_to_belege
+from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ Du bist ein erfahrener KFZ-Verkaufsberater. Du hilfst dem Nutzer, seinen Wagen o
 Du erhältst:
 1. FAHRZEUG-DATEN — Angaben des Eigentümers über sein Fahrzeug und dessen Zustand
 2. DB-PROFIL — geprüfte Fakten (Neupreis, Specs, Ausstattungslinien) — zuverlässig
-3. WEB-ERGEBNISSE — aktuelle Marktpreise vergleichbarer Fahrzeuge aus Tavily — Orientierung, ungeprüft
+3. WEB-ERGEBNISSE — aktuelle Marktpreise vergleichbarer Fahrzeuge aus Tavily — Orientierung
 
 AUSGABE: Ausschließlich gültiges JSON. WICHTIG: Zuerst die Zahlfelder, dann "bericht".
 
@@ -41,14 +41,22 @@ AUSGABE: Ausschließlich gültiges JSON. WICHTIG: Zuerst die Zahlfelder, dann "b
   "bericht": "<vollständiger Markdown-Bericht — Struktur unten>"
 }
 
-BERICHT-STRUKTUR (Markdown im "bericht"-Feld, Zeilenumbrüche als \\n):
+— FEHLENDE ODER FEHLERHAFTE EINGABEN (prüfe das ZUERST) —
+- Fehlen Kernangaben (Marke, Modell, Baujahr ODER Kilometerstand): Antworte NUR mit einer kompakten Rückfrage (2–3 Sätze), was konkret noch gebraucht wird, alle Zahlfelder null. Keine volle Struktur.
+- Widersprechen sich Angaben technisch UNMÖGLICH (z.B. Motorvariante existierte für dieses Baujahr nachweislich nicht): kompakte, technisch begründete Rückfrage statt voller Bericht.
+- Wirkt ein Wert wie ein Zahlen-/Schreibfehler: kurz benennen ("vermutlich Tippfehler — meintest du X?") statt kommentarlos zu übernehmen.
+- Ungewöhnliche, aber real mögliche Werte (z.B. sehr hohe Laufleistung, sehr junges Fahrzeug mit hohem km-Stand durch Vielfahrer) sind KEIN Fehler — als "selten, aber möglich" einordnen und in der Preisspanne berücksichtigen, nicht ablehnen.
+- Nur bei ausreichenden, plausiblen Kerndaten die volle Struktur unten schreiben.
+- Preisfelder (marktpreis_min/max, schnellverkaufs_preis, empfohlener_preis, maximal_preis) NUR dann komplett null lassen, wenn wirklich KEIN Preishinweis aus DB-Neupreis oder Web-Ergebnissen ableitbar ist. Enthält auch nur eines der Web-Ergebnisse eine ungefähre Preisangabe zu einem vergleichbaren Fahrzeug, leite daraus eine grobe Spanne ab (auch mit Unsicherheit) statt vorschnell null zu setzen.
+
+BERICHT-STRUKTUR (Markdown im "bericht"-Feld, Zeilenumbrüche als \\n) — nur bei ausreichenden, plausiblen Kerndaten:
 
 ## Fahrzeug erkannt
 Baureihe, Motor, Baujahr — eine Zeile.
 
 ## (a) Marktvergleich
-Aktuelle Vergleichspreise aus den Web-Quellen (immer "laut Websuche (ungeprüft)" kennzeichnen).
-Einordnung dieses Fahrzeugs in den Markt: Was hebt es hervor, was drückt den Preis?
+Aktuelle Vergleichspreise aus den Web-Quellen (transparent als "laut aktueller Websuche" kennzeichnen).
+Einordnung dieses Fahrzeugs in den Markt: technische Gründe, was den Preis hebt oder drückt (Ausstattung, Laufleistung, Zustand, Marktnachfrage) — keine Marketing-Formulierungen.
 
 ## (b) Empfohlene Preisspanne
 
@@ -79,10 +87,11 @@ Zu teure Maßnahmen im Verhältnis zum Mehrwert.
 
 REGELN:
 1. Neupreis und Specs nur aus DB-Profil.
-2. Web-Preise immer als "laut Websuche (ungeprüft)" kennzeichnen.
+2. Web-Preise transparent als Websuche-Ergebnis kennzeichnen, ohne interne Begriffe wie "ungeprüft" oder "Vertrauen" im Text zu verwenden — das sind Entwicklerbegriffe, keine Nutzersprache. Keine Klammer-Quellenverweise wie "(Quelle [1])" im Fließtext — Quellen erscheinen automatisch im Quellenbereich.
 3. Konkrete Zahlen — keine "könnte"-Phrasen ohne Zahl.
 4. Alle Zahlfelder MÜSSEN als Integer stehen — nicht im Bericht verstecken.
-5. Auf Deutsch schreiben.\
+5. Sachlich und neutral bleiben — Begründungen immer technisch (Zustand, Laufleistung, Marktdaten, Ausstattung), nie werblich/emotional ("toller Wagen", "beliebtes Modell").
+6. Auf Deutsch schreiben.\
 """
 
 
@@ -101,6 +110,11 @@ def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
     if req.beschreibung:     lines.append(f"Zustand:            {req.beschreibung}")
     if req.maengel:          lines.append(f"Bekannte Mängel:    {', '.join(req.maengel)}")
     if req.preis_vorstellung:lines.append(f"Preisvorstellung:   {req.preis_vorstellung:,} €".replace(",", "."))
+    if req.unfallfrei:       lines.append(f"Unfallfrei:         {req.unfallfrei}")
+    if req.vorbesitzer is not None: lines.append(f"Vorbesitzer:        {req.vorbesitzer}")
+    if req.tuev_bis:         lines.append(f"TÜV bis:            {req.tuev_bis}")
+    if req.scheckheftgepflegt is not None:
+        lines.append(f"Scheckheftgepflegt: {'ja' if req.scheckheftgepflegt else 'nein'}")
     return "\n".join(lines)
 
 
@@ -112,17 +126,22 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # 2. DB-Kontext
     db_ctx = build_db_context(baureihe, motor_match)
 
-    # 3. Marktpreise per Tavily (vergleichbare Angebote)
+    # 3. Marktpreise per Tavily (vergleichbare Angebote) — kaskadierende Queries:
+    #    spezifisch → breiter, damit auch bei seltenen Modellen Ergebnisse kommen.
     web_results: list[dict] = []
-    if TAVILY_API_KEY:
-        q_parts: list[str] = []
-        if req.marke:          q_parts.append(req.marke)
-        if req.modell:         q_parts.append(req.modell)
-        if req.motor:          q_parts.append(req.motor)
-        if req.baujahr:        q_parts.append(str(req.baujahr))
-        if req.kilometerstand: q_parts.append(f"{req.kilometerstand // 1000 * 1000} km")
-        q_parts.append("Gebrauchtpreis verkaufen Deutschland")
-        web_results = await tavily_search(" ".join(q_parts), count=5)
+    if TAVILY_API_KEY and req.marke and req.modell:
+        q_spezifisch = " ".join(filter(None, [
+            req.marke, req.modell, req.motor,
+            str(req.baujahr) if req.baujahr else None,
+            f"{req.kilometerstand // 1000 * 1000} km" if req.kilometerstand else None,
+            "Gebrauchtpreis verkaufen Deutschland",
+        ]))
+        q_mittel = " ".join(filter(None, [
+            req.marke, req.modell, str(req.baujahr) if req.baujahr else None,
+            "Gebrauchtpreis Deutschland",
+        ]))
+        q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
+        web_results = await tavily_search_with_fallback([q_spezifisch, q_mittel, q_breit], count=5)
 
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
