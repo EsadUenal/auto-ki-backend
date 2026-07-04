@@ -496,8 +496,14 @@ def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
         return ids
 
     # Verlauf nur hinzuziehen wenn die aktuelle Nachricht Kfz-Kontext zeigt
-    # (echte Folgefrage wie "Motoren?", nicht Smalltalk wie "bro wie gehts?")
-    if not any(kw in msg_lower for kw in _AUTO_KEYWORDS):
+    # (echte Folgefrage wie "Motoren?"/"Und wie groß ist der Tank?", nicht Smalltalk
+    # wie "bro wie gehts?"). Auch Spec-/Preis-/Rückruf-Keywords zählen als Kfz-Kontext —
+    # sonst verliert eine reine Folgefrage wie "Und der Tank?" (kein klassisches
+    # Auto-Keyword) den Fahrzeugbezug aus dem Verlauf komplett.
+    if not any(
+        kw in msg_lower
+        for kw in (*_AUTO_KEYWORDS, *_SPEC_KEYWORDS, *_PREIS_KEYWORDS, *_RECALL_KEYWORDS)
+    ):
         return []
 
     verlauf_text = " ".join(m.get("text", "") for m in verlauf).lower()
