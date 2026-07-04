@@ -574,9 +574,24 @@ Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
 - Prüfe, ob die Web-Quelle zur RICHTIGEN Modellgeneration passt (z.B. nicht Vorgänger- oder Nachfolgegeneration verwechseln) — steht die Generation im DB-Kontext, gleiche sie mit der Quelle ab, bevor du den Wert übernimmst.
 
 Antworte immer auf Deutsch.
-
+{web_hinweis}
 KONTEXT AUS GEPRÜFTER DATENBANK:
 {kontext}"""
+
+# Wird nur angehängt, wenn tatsächlich ein Web-Ergebnisblock im Kontext steht (hat_web=True).
+# Direkt vor dem Kontext platziert (höchste Recency im Prompt) statt nur in Regel 8/9 weiter
+# oben — bei langen System-Prompts verlieren frühere Anweisungen an Gewicht gegenüber dem,
+# was unmittelbar vor dem eigentlichen Kontext steht. Das war die eigentliche Ursache dafür,
+# dass das Modell trotz vorhandener Web-Ergebnisse gelegentlich "kein geprüftes Profil"/
+# "nicht erfasst" antwortete, obwohl weiter oben (Regel 9) bereits das Gegenteil gefordert war.
+_WEB_HINWEIS = """
+— LETZTER UND WICHTIGSTER HINWEIS VOR DEM KONTEXT —
+Der Kontext unten enthält einen Block "=== AKTUELLE WEB-ERGEBNISSE ===". Prüfe ihn für JEDES
+angefragte Datenfeld, das im DB-Teil als "nicht erfasst" markiert ist oder dort ganz fehlt.
+Enthält der Web-Block einen verwertbaren Hinweis zu genau diesem Feld, MUSST du ihn in deiner
+Antwort verwenden (klar als Web-Quelle gekennzeichnet) — auch wenn er nur ungefähr ist.
+"Kein geprüftes Profil" oder "nicht erfasst" als Antwort ist in diesem Fall NICHT erlaubt.
+"""
 
 
 # ---------- Haupt-Funktion: Chat (Streaming) ----------
@@ -704,7 +719,10 @@ async def chat_stream(
 
     print(f"[TIMING] kontext fertig: {_ms(t0)} (quelle={quelle}, hat_db={hat_db}, hat_web={hat_web})", flush=True)
 
-    system = SYSTEM_PROMPT.format(kontext=kontext)
+    system = SYSTEM_PROMPT.format(
+        kontext=kontext,
+        web_hinweis=_WEB_HINWEIS if hat_web else "",
+    )
 
     # ── 4. Gemini-Aufruf (Streaming) ────────────────────────────────────────
     history = []
