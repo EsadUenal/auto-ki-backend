@@ -12,7 +12,7 @@ Ablauf:
 
 import logging
 
-from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
+from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
 from app.gemini_retry import RateLimitExhausted
 from app.models import KaufCheckRequest
@@ -54,6 +54,7 @@ Bevor du die volle Struktur schreibst, prüfe die Inserat-Daten:
   - "unbekannt": keine Marktspanne aus dem Web ableitbar.
 WICHTIGER SELBST-CHECK vor der Ausgabe: Liegt der Preis UNTER der Marktspanne, MUSS die Bewertung "extrem_guenstig" oder "guenstig" sein — niemals "teuer" oder "extrem_teuer". Verwechsle die Richtung nicht.
 "unbekannt" NUR wenn die Web-Ergebnisse WIRKLICH KEINEN Preishinweis zu vergleichbaren Fahrzeugen enthalten. Enthält auch nur eines der Web-Ergebnisse eine ungefähre Preisangabe zu einem vergleichbaren Fahrzeug, leite daraus eine grobe marktpreis_min/max-Spanne ab (auch mit Unsicherheitsspanne, z.B. ±15%) statt vorschnell "unbekannt" zu setzen.
+KONSISTENZ-PFLICHT: Schreibst du im "bericht"-Feld einen Abschnitt "## Preis-Einschätzung" mit einer konkreten Kategorie (z.B. "marktgerecht") und/oder einer Marktspanne, MUSS das strukturierte Feld "preis_bewertung" exakt dieselbe Kategorie tragen — niemals "unbekannt", wenn der Bericht bereits eine konkrete Einschätzung nennt. Dasselbe gilt für "empfehlung": Steht im Bericht z.B. "**NUR MIT WERKSTATTPRÜFUNG**", MUSS "empfehlung" = "nur_mit_werkstattpruefung" sein, niemals "unbekannt".
 
 — KAUFEMPFEHLUNG: sechs Risikostufen statt Ja/Nein —
   - "kaufen": keine relevanten Risiken, Preis marktgerecht oder günstiger, Inserat plausibel.
@@ -168,6 +169,26 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     except RateLimitExhausted as exc:
         result = {"bericht": f"Gemini-Tageslimit erreicht: {exc}",
                   "empfehlung": "unbekannt", "preis_bewertung": "unbekannt"}
+
+    # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
+    # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,
+    # setzt die STRUKTURIERTEN Felder aber trotzdem auf "unbekannt" (kein Parse-Fehler —
+    # das JSON war syntaktisch gültig, nur inhaltlich inkonsistent zum eigenen Bericht).
+    # Bei einem erkennbar vollständigen Bericht (> 200 Zeichen, enthält "Kaufempfehlung")
+    # wird dann per Regex aus dem Bericht selbst nachgezogen statt "unbekannt" stehen
+    # zu lassen.
+    bericht_text = result.get("bericht", "")
+    ist_voller_bericht = len(bericht_text) > 200 and "kaufempfehlung" in bericht_text.lower()
+    if ist_voller_bericht:
+        nachtrag = _notfall_extraktion(bericht_text)
+        if result.get("empfehlung") in (None, "", "unbekannt"):
+            result["empfehlung"] = nachtrag.get("empfehlung", result.get("empfehlung", "unbekannt"))
+        if result.get("preis_bewertung") in (None, "", "unbekannt"):
+            result["preis_bewertung"] = nachtrag.get("preis_bewertung", result.get("preis_bewertung", "unbekannt"))
+        if result.get("marktpreis_min") is None:
+            result["marktpreis_min"] = nachtrag.get("marktpreis_min")
+        if result.get("marktpreis_max") is None:
+            result["marktpreis_max"] = nachtrag.get("marktpreis_max")
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"

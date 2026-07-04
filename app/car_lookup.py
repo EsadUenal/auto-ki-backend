@@ -182,25 +182,47 @@ def get_gemini_client() -> genai.Client:
     return _client
 
 
+_JSON_STRING_ENDE = re.compile(r'^\s*[,\]\}:]')
+
+
 def _escape_json_strings(raw: str) -> str:
     """
     Escapt literal Newlines/Tabs die INNERHALB von JSON-String-Werten stehen.
     Gemini gibt bei langen Texten manchmal raw \\n statt \\\\n aus.
-    Einfache State-Machine: verfolgt ob wir in einem String sind.
+
+    Behandelt außerdem nicht escapte Anführungszeichen MITTEN in einem String
+    (z.B. schreibt Gemini im Fließtext `auf "Vollausstattung" prüfen` mit
+    literalen Zitat-Anführungszeichen statt `\\"Vollausstattung\\"`). Ein reines
+    Toggle bei jedem `"` würde den String an dieser Stelle fälschlich beenden und
+    den Rest des JSON zerstören. Deshalb: bei einem `"` innerhalb eines bereits
+    offenen Strings nur dann wirklich schließen, wenn direkt danach (ggf. nach
+    Leerraum) ein JSON-Strukturzeichen (`,` `]` `}` `:`) oder das Textende folgt —
+    sonst ist es ein literales Zitat-Zeichen und wird escaped.
     """
     out: list[str] = []
     in_str = False
     i = 0
-    while i < len(raw):
+    n = len(raw)
+    while i < n:
         ch = raw[i]
-        if ch == "\\" and in_str and i + 1 < len(raw):
+        if ch == "\\" and in_str and i + 1 < n:
             out.append(ch)
             out.append(raw[i + 1])
             i += 2
             continue
         if ch == '"':
-            in_str = not in_str
-            out.append(ch)
+            if not in_str:
+                in_str = True
+                out.append(ch)
+            else:
+                rest = raw[i + 1:]
+                if rest.strip() == "" or _JSON_STRING_ENDE.match(rest):
+                    in_str = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+            i += 1
+            continue
         elif in_str and ch == "\n":
             out.append("\\n")
         elif in_str and ch == "\r":
@@ -211,6 +233,60 @@ def _escape_json_strings(raw: str) -> str:
             out.append(ch)
         i += 1
     return "".join(out)
+
+
+# Fängt den Fall ab, dass Gemini trotz response_mime_type=json gelegentlich reines
+# Markdown ohne JSON-Hülle liefert. Die Informationen stehen dann trotzdem im Text —
+# nur nicht in den strukturierten Feldern. Statt alles auf "unbekannt" fallen zu lassen,
+# versuchen wir sie per Regex aus dem Markdown-Bericht selbst zu rekonstruieren.
+_EMPFEHLUNG_MUSTER: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"finger\s*weg", re.IGNORECASE), "finger_weg"),
+    (re.compile(r"hohes?\s*risiko", re.IGNORECASE), "hohes_risiko"),
+    (re.compile(r"preis\s*nachverhandeln", re.IGNORECASE), "preis_nachverhandeln"),
+    (re.compile(r"nur\s*mit\s*werkstattpr[üu]fung", re.IGNORECASE), "nur_mit_werkstattpruefung"),
+    (re.compile(r"kaufen\s*nach\s*besichtigung", re.IGNORECASE), "kaufen_nach_besichtigung"),
+    (re.compile(r"\bkaufen\b", re.IGNORECASE), "kaufen"),
+]
+_PREIS_BEWERTUNG_MUSTER: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"extrem\s*g[üu]nstig", re.IGNORECASE), "extrem_guenstig"),
+    (re.compile(r"extrem\s*teuer", re.IGNORECASE), "extrem_teuer"),
+    (re.compile(r"\bg[üu]nstig\b", re.IGNORECASE), "guenstig"),
+    (re.compile(r"marktgerecht", re.IGNORECASE), "marktgerecht"),
+    (re.compile(r"\bteuer\b", re.IGNORECASE), "teuer"),
+]
+_MARKTPREIS_SPANNE_MUSTER = re.compile(
+    r"(\d[\d.]{2,7})\s*(?:€|eur)?\s*(?:bis|und|–|-)\s*(\d[\d.]{2,7})\s*(?:€|eur)"
+)
+
+
+def _notfall_extraktion(raw: str) -> dict:
+    """Best-effort Rekonstruktion der Strukturfelder aus reinem Markdown-Text,
+    wenn beide JSON-Parse-Versuche fehlschlagen (siehe call_gemini_json)."""
+    ergebnis: dict = {"bericht": raw or "Analyse fehlgeschlagen."}
+
+    empf_abschnitt_match = re.search(r"##\s*Kaufempfehlung(.{0,200})", raw, re.IGNORECASE | re.DOTALL)
+    such_text_empf = empf_abschnitt_match.group(1) if empf_abschnitt_match else raw
+    for pattern, wert in _EMPFEHLUNG_MUSTER:
+        if pattern.search(such_text_empf):
+            ergebnis["empfehlung"] = wert
+            break
+
+    preis_abschnitt_match = re.search(r"##\s*Preis-Einsch[äa]tzung(.{0,300})", raw, re.IGNORECASE | re.DOTALL)
+    such_text_preis = preis_abschnitt_match.group(1) if preis_abschnitt_match else raw
+    for pattern, wert in _PREIS_BEWERTUNG_MUSTER:
+        if pattern.search(such_text_preis):
+            ergebnis["preis_bewertung"] = wert
+            break
+
+    spanne_match = _MARKTPREIS_SPANNE_MUSTER.search(such_text_preis)
+    if spanne_match:
+        try:
+            ergebnis["marktpreis_min"] = int(spanne_match.group(1).replace(".", ""))
+            ergebnis["marktpreis_max"] = int(spanne_match.group(2).replace(".", ""))
+        except ValueError:
+            pass
+
+    return ergebnis
 
 
 async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
@@ -243,4 +319,4 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
             return json.loads(_escape_json_strings(raw))
         except json.JSONDecodeError:
             log.warning("Gemini JSON-Parsing fehlgeschlagen (beide Versuche). Raw[:300]: %s", raw[:300])
-            return {"bericht": raw or "Analyse fehlgeschlagen."}
+            return _notfall_extraktion(raw)
