@@ -30,6 +30,15 @@ from app.database import get_baureihe, search_baureihen
 from app.gemini_retry import with_retry_sync, RateLimitExhausted
 from app.web_search import tavily_search, results_to_context, results_to_belege
 
+# US-zentrierte Auto-Portale liefern oft abweichende US-Modelljahre/-Ausstattungen/
+# -Einheiten (mph, US-Gallonen) statt der hierzulande relevanten EU-Spezifikationen —
+# gezielt ausschließen, damit europäische/deutsche Quellen bevorzugt werden.
+_US_QUELLEN_AUSSCHLUSS = [
+    "caranddriver.com", "motortrend.com", "edmunds.com", "cars.com",
+    "kbb.com", "autotrader.com", "consumerreports.org", "roadandtrack.com",
+    "carsguide.com.au", "carexpert.com.au",
+]
+
 import chromadb
 
 # ---------- Gemini Client ----------
@@ -254,33 +263,32 @@ _ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS = frozenset({
 
 def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict] | None = None) -> bool:
     """
-    True wenn die Websuche benötigt wird:
-    - Preisfragen oder aktuelle Rückrufe (immer, egal ob DB oder nicht)
-    - Standard-Spezifikationsfragen (Tank, Kofferraum, Anhängelast, Batterie, Abgasnorm,
-      Felgengröße) — IMMER, auch wenn die Baureihe erkannt ist. Grund: diese Felder sind
-      erst kürzlich eingeführt worden und in vielen bestehenden DB-Profilen noch leer;
-      ohne diesen Fallback würde die KI trotz erkanntem Fahrzeug fälschlich ablehnen.
-    - Fahrzeug nicht in der DB UND aktuelle Nachricht hat Kfz-Kontext
+    Entscheidet OB überhaupt eine Kfz-relevante Frage vorliegt — NICHT mehr, ob ein
+    bestimmtes Themenfeld (Preis/Spec/Rückruf) betroffen ist.
 
-    Wichtig: nur die AKTUELLE Nachricht auf Auto-Keywords prüfen, NICHT den Verlauf.
-    Verhindert, dass Smalltalk ("bro wie gehts?") nach einem Kfz-Gespräch
-    fälschlicherweise eine Web-Suche auslöst.
+    Frühere Version prüfte nur enge Keyword-Kategorien (Preis/Rückruf/Standard-Spec)
+    und ließ die Websuche bei allem anderen aus — z.B. bei "Welche Ausstattungslinien
+    gab es?" oder "Wie schnell ist der 0-100?", wenn genau dieses Feld in der DB
+    "nicht erfasst" war. Ergebnis: Die KI beendete die Antwort mit "nicht erfasst"/
+    "kein geprüftes Profil", OBWOHL die Info öffentlich verfügbar gewesen wäre, weil
+    schlicht nie eine Websuche ausgeführt wurde.
+
+    Neue Regel: Ist die Nachricht überhaupt Kfz-relevant (Baureihe erkannt ODER
+    Auto-Keyword/allgemeine Fahrzeugfrage vorhanden), wird IMMER zusätzlich das Web
+    durchsucht. Das Ergebnis landet als Kontext-Block im Prompt; die KI entscheidet
+    dann (siehe SYSTEM_PROMPT Regel 8/9), ob und wie sie DB- und Web-Daten kombiniert.
+    Nur echter Smalltalk ganz ohne Kfz-Bezug bleibt ausgenommen (kein unnötiger Call).
     """
     msg = message.lower()
-    if any(kw in msg for kw in _PREIS_KEYWORDS):
-        return True
-    if any(kw in msg for kw in _RECALL_KEYWORDS):
-        return True
-    if any(kw in msg for kw in _SPEC_KEYWORDS):
-        return True
-    # Web-Fallback: nur wenn kein DB-Treffer UND aktuelle Nachricht ist Kfz-relevant
-    # (klassisches Auto-Keyword ODER allgemeine Fahrzeugfrage-Formulierung)
-    if not baureihe_ids and (
-        any(kw in msg for kw in _AUTO_KEYWORDS)
+    if baureihe_ids:
+        return True  # Fahrzeug erkannt → IMMER ergänzend das Web prüfen (siehe oben)
+    return (
+        any(kw in msg for kw in _PREIS_KEYWORDS)
+        or any(kw in msg for kw in _RECALL_KEYWORDS)
+        or any(kw in msg for kw in _SPEC_KEYWORDS)
+        or any(kw in msg for kw in _AUTO_KEYWORDS)
         or any(kw in msg for kw in _ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS)
-    ):
-        return True
-    return False
+    )
 
 
 def _first_baureihe_info(baureihe_ids: list[str]) -> tuple[str, str, str] | None:
@@ -298,45 +306,202 @@ def _first_baureihe_info(baureihe_ids: list[str]) -> tuple[str, str, str] | None
     return b["marke"], b["modell"], b["generation"]
 
 
-_KNOWN = {
-    "m4": ["bmw-m4-f82", "bmw-m4-g82"],
-    "f82": ["bmw-m4-f82"],
-    "g82": ["bmw-m4-g82"],
-    "s55": ["bmw-m4-f82"],
-    "s58": ["bmw-m4-g82"],
+# Marken-Aliase für Text-Matching (Nutzer schreibt oft Kurzform/Alias statt DB-Wert)
+_MARKEN_ALIAS = {
+    "vw": "volkswagen",
+    "mercedes": "mercedes-benz",
+    "merc": "mercedes-benz",
+    "benz": "mercedes-benz",
+    "skoda": "škoda",
 }
+_ROEMISCH = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6",
+             "vii": "7", "viii": "8", "ix": "9", "x": "10", "xi": "11", "xii": "12"}
+_ROEMISCH_INV = {v: k for k, v in _ROEMISCH.items()}
+# Manche Marken (Skoda, Ford, Seat, Hyundai) speichern Generationen als ausgeschriebenes
+# Ordinalwort statt Chassis-Code/Ziffer — Nutzer schreiben aber meist die Ziffer
+# ("Octavia 3" statt "Octavia Dritte Generation").
+_ORDINAL_DE = {"1": "erste", "2": "zweite", "3": "dritte", "4": "vierte", "5": "fünfte",
+               "6": "sechste", "7": "siebte", "8": "achte", "9": "neunte", "10": "zehnte"}
+_ORDINAL_DE_INV = {v: k for k, v in _ORDINAL_DE.items()}
+_ORDINAL_EN_INV = {"first": "1", "second": "2", "third": "3", "fourth": "4",
+                    "fifth": "5", "sixth": "6", "seventh": "7", "eighth": "8"}
+_MK_MUSTER = re.compile(r"^mk\s*(\d+)", re.IGNORECASE)
+
+
+def _wort_in_text(wort: str, text: str) -> bool:
+    """Ganzwort-Suche (verhindert dass z.B. 'a4' fälschlich in 'a45' matched)."""
+    if not wort:
+        return False
+    return re.search(r"(?<![a-z0-9])" + re.escape(wort) + r"(?![a-z0-9])", text) is not None
+
+
+def _gen_varianten(generation: str) -> set[str]:
+    """Alle Schreibweisen einer Generation, unter denen Nutzer sie typischerweise erwähnen."""
+    varianten = {generation} if generation else set()
+    if generation in _ROEMISCH:
+        varianten.add(_ROEMISCH[generation])
+    if generation in _ROEMISCH_INV:
+        varianten.add(_ROEMISCH_INV[generation])
+    for wort, ziffer in {**_ORDINAL_DE_INV, **_ORDINAL_EN_INV}.items():
+        if generation.startswith(wort):
+            varianten.add(ziffer)
+    mk = _MK_MUSTER.match(generation)
+    if mk:
+        varianten.add(mk.group(1))
+    return varianten
+
+
+def _marke_treffer(marke: str, text: str) -> bool:
+    return _wort_in_text(marke, text) or any(
+        _wort_in_text(alias, text) for alias, kanon in _MARKEN_ALIAS.items() if kanon == marke
+    )
+
+
+# Generische Motor-/Kraftstoff-Familienkürzel — kommen in Bezeichnungen wie "2.0 TDI",
+# "2.0TDI" (ohne Leerzeichen) oder "1.6 TSI 150 PS" vor und sind KEINE eindeutige
+# Kennung, egal wie sie geschrieben werden. Deshalb Blacklist statt Form-Heuristik.
+_GENERISCHE_MOTORFAMILIEN = frozenset({
+    "tdi", "tsi", "tfsi", "fsi", "cdi", "hdi", "dci", "crdi", "vtec",
+    "mpi", "tce", "cdti", "dtec", "bluehdi", "bluetdi", "cgi", "tdci",
+})
+
+
+def _ist_distinktive_bezeichnung(bez: str) -> bool:
+    """
+    Nur eine eindeutige Modellbezeichnung mit Ziffer (z.B. "320d", "c220d", "m340i")
+    gilt als verlässliche Kennung. Enthält die Bezeichnung ein generisches Kraftstoff-
+    /Motorfamilien-Kürzel (siehe _GENERISCHE_MOTORFAMILIEN) — egal ob mit oder ohne
+    Leerzeichen geschrieben — ist sie KEINE eindeutige Kennung: praktisch jede Marke im
+    VW-Konzern (VW/Audi/Seat/Škoda) verbaut z.B. "2.0 TDI"/"2.0TDI" in Dutzenden
+    Baureihen. Ohne diesen Filter würde z.B. eine Tiguan-Frage mit "2.0 TDI" auch
+    Seat Leon, Audi A6 usw. fälschlich mit-matchen.
+    """
+    if len(bez) < 3 or not any(c.isdigit() for c in bez):
+        return False
+    # Reine Hubraum-Angabe ohne jede weitere Kennung (z.B. "2.0", "1.6", "1,9") ist
+    # genauso generisch wie "2.0 TDI" — nur ohne Kraftstoff-Suffix im Text.
+    if re.fullmatch(r"\d[.,]\d+\s*(l|liter)?", bez.strip()):
+        return False
+    normalisiert = bez.replace(" ", "").replace(".", "").replace(",", "")
+    return not any(fam in normalisiert for fam in _GENERISCHE_MOTORFAMILIEN)
+
+
+def _suche_baureihen_in_text(text: str) -> list[str]:
+    """
+    Findet Baureihen-IDs per DB-Abgleich gegen ALLE Baureihen (nicht nur eine feste
+    Handvoll) — Marke, Modell, Generation/Chassis-Code UND Motorbezeichnung/-code
+    (z.B. "320d", "EA888"), damit Anfragen zu jeder der Baureihen in der DB erkannt
+    werden, nicht nur zu einem einzelnen fest verdrahteten Modell.
+
+    Match-Regel:
+      - Modell-Name als eigenständiges Wort im Text (z.B. "Golf", "Octavia") ODER
+      - Marke UND Generation/Chassis-Code beide im Text — nur wenn dieser Code für
+        diese Marke eindeutig einem Modell zugeordnet ist (siehe gen_ambig unten;
+        verhindert dass z.B. Audis "C7" bei A6/RS6/RS7 alle drei mit-matcht)
+    Wird beim Modell-Treffer ZUSÄTZLICH eine konkrete Generation im Text genannt
+    (z.B. "Golf 7"), wird innerhalb dieser Modell-Gruppe auf die genannte Generation
+    eingegrenzt — sonst würden pauschal alle 8 Golf-Generationen zurückkommen.
+    Motorbezeichnung/-code wird analog behandelt: nur mit Markentreffer + eindeutiger
+    (nicht generischer) Bezeichnung, ebenfalls generationsweise eingegrenzt.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    baureihen = conn.execute("SELECT id, marke, modell, generation FROM baureihe").fetchall()
+    motoren = conn.execute(
+        "SELECT baureihe_id, bezeichnung, motorcode FROM motorvariante"
+    ).fetchall()
+    conn.close()
+
+    marke_by_id = {b["id"]: (b["marke"] or "").lower() for b in baureihen}
+    generation_by_id = {b["id"]: (b["generation"] or "").lower() for b in baureihen}
+
+    # Mehrdeutige (marke, generation)-Paare ermitteln: derselbe Chassis-Code über
+    # mehrere Modelle hinweg (z.B. Audi "C7" bei A6, RS6 Avant, RS7 Sportback).
+    # Dort reicht Marke+Generation allein nicht — das Modell muss zusätzlich genannt werden.
+    gen_modelle: dict[tuple[str, str], set[str]] = {}
+    for b in baureihen:
+        key = ((b["marke"] or "").lower(), (b["generation"] or "").lower())
+        gen_modelle.setdefault(key, set()).add((b["modell"] or "").lower())
+
+    # Kandidaten je (marke, modell)-Gruppe sammeln, um pro Gruppe auf eine im
+    # Text genannte Generation eingrenzen zu können.
+    gruppen: dict[tuple[str, str], list[dict]] = {}
+    einzel_treffer: set[str] = set()  # marke+generation-Treffer ohne Modell-Erwähnung
+
+    for b in baureihen:
+        marke = (b["marke"] or "").lower()
+        modell = (b["modell"] or "").lower()
+        generation = (b["generation"] or "").lower()
+
+        # Ganzwort-Suche (nicht nur Substring!) — sonst würden kurze Modellnamen wie
+        # "A6", "X1", "Q3" (2 Zeichen) nie zuverlässig matchen oder fälschlich in
+        # längeren Zahlenfolgen anschlagen. len>=2 lässt genau diese kurzen, aber
+        # eindeutigen Kennungen zu.
+        modell_treffer = len(modell) >= 2 and _wort_in_text(modell, text)
+        marke_treffer = _marke_treffer(marke, text)
+        gen_treffer = any(_wort_in_text(gv, text) for gv in _gen_varianten(generation) if gv)
+
+        if modell_treffer:
+            gruppen.setdefault((marke, modell), []).append({"id": b["id"], "gen_treffer": gen_treffer})
+        elif marke_treffer and gen_treffer and len(gen_modelle.get((marke, generation), set())) <= 1:
+            einzel_treffer.add(b["id"])
+
+    ids: set[str] = set(einzel_treffer)
+    for rows in gruppen.values():
+        gen_matches = [r for r in rows if r["gen_treffer"]]
+        chosen = gen_matches if gen_matches else rows
+        ids.update(r["id"] for r in chosen)
+
+    # Motorbezeichnung/-code abgleichen (z.B. "320d", "EA888") — nur wenn die
+    # zugehörige Marke im Text vorkommt UND die Bezeichnung eindeutig ist (siehe
+    # _ist_distinktive_bezeichnung). Ergebnisse werden wie bei Modell-Treffern je
+    # (marke, bezeichnung)-Gruppe auf eine genannte Generation eingegrenzt.
+    motor_gruppen: dict[tuple[str, str], list[dict]] = {}
+    for m in motoren:
+        bez  = (m["bezeichnung"] or "").strip().lower()
+        code = (m["motorcode"] or "").strip().lower()
+        bez_treffer  = _ist_distinktive_bezeichnung(bez) and _wort_in_text(bez, text)
+        code_treffer = len(code) >= 4 and _wort_in_text(code, text)
+        if not (bez_treffer or code_treffer):
+            continue
+        b_marke = marke_by_id.get(m["baureihe_id"], "")
+        if not _marke_treffer(b_marke, text):
+            continue
+        b_generation = generation_by_id.get(m["baureihe_id"], "")
+        gen_treffer_motor = any(_wort_in_text(gv, text) for gv in _gen_varianten(b_generation) if gv)
+        motor_gruppen.setdefault((b_marke, bez or code), []).append(
+            {"id": m["baureihe_id"], "gen_treffer": gen_treffer_motor}
+        )
+
+    for rows in motor_gruppen.values():
+        gen_matches = [r for r in rows if r["gen_treffer"]]
+        chosen = gen_matches if gen_matches else rows
+        ids.update(r["id"] for r in chosen)
+
+    return list(ids)
 
 
 def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
     """
-    Erkennt bekannte Fahrzeug-IDs aus der Nachricht und ggf. dem Verlauf.
+    Erkennt Fahrzeuge aus der Nachricht per DB-Abgleich (siehe _suche_baureihen_in_text).
 
     Verlauf wird NUR einbezogen wenn die aktuelle Nachricht selbst Kfz-Kontext
     hat (Auto-Keyword vorhanden) — verhindert falsche DB-Badges bei Smalltalk
     wie 'bro wie gehts?' nach einem vorherigen Kfz-Gespräch.
     """
     msg_lower = message.lower()
-    ids: set[str] = set()
 
-    # 1. Aktuelle Nachricht prüfen
-    for keyword, bid_list in _KNOWN.items():
-        if keyword in msg_lower:
-            ids.update(bid_list)
-
+    ids = _suche_baureihen_in_text(msg_lower)
     if ids:
-        return list(ids)
+        return ids
 
-    # 2. Verlauf nur hinzuziehen wenn die Nachricht Kfz-Kontext zeigt
-    #    (echte Folgefrage wie "Motoren?", nicht Smalltalk wie "bro wie gehts?")
+    # Verlauf nur hinzuziehen wenn die aktuelle Nachricht Kfz-Kontext zeigt
+    # (echte Folgefrage wie "Motoren?", nicht Smalltalk wie "bro wie gehts?")
     if not any(kw in msg_lower for kw in _AUTO_KEYWORDS):
         return []
 
     verlauf_text = " ".join(m.get("text", "") for m in verlauf).lower()
-    for keyword, bid_list in _KNOWN.items():
-        if keyword in verlauf_text:
-            ids.update(bid_list)
-
-    return list(ids)
+    return _suche_baureihen_in_text(verlauf_text)
 
 
 # ---------- System-Prompt ----------
@@ -355,7 +520,8 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 5. Bleibe ruhig, sachlich und vertrauenswürdig — kein Hype, keine Übertreibung, keine erfundene Sicherheit.
 6. Beschuldige niemals konkrete Personen oder Werkstätten der Lüge oder des Betrugs. Du darfst nur neutrale Kostenorientierung geben ("kostet üblicherweise ca. X–Y €; bei deutlich höheren Angeboten lohnt eine Zweitmeinung").
 7. Unterscheide bei jeder Antwort präzise zwischen allgemeinen (baureihenweiten) Aussagen und motorspezifischen Aussagen. Unterscheidet sich ein Wert zwischen Motorisierungen, Baujahren oder Ausstattungslinien, nenne die Werte je Variante statt einer Pauschalaussage. Ist die Frage mehrdeutig und der Unterschied dabei relevant (z. B. deutlich abweichende Anhängelast zwischen Front- und Allradversion), stelle eine kurze, gezielte Rückfrage statt zu raten oder willkürlich eine Variante auszuwählen.
-8. Standard-Spezifikationen (Tankgröße, Kofferraumvolumen, Batteriekapazität, Anhängelast, Abgasnorm, Felgengröße): Nutze zuerst die harten Zahlen aus dem DB-Kontext je Motorvariante. Steht dort "nicht erfasst", aber ein Block "=== AKTUELLE WEB-ERGEBNISSE ===" ist vorhanden, verwende den Web-Wert und kennzeichne ihn klar als Web-Quelle (siehe Abschnitt WEB-ERGEBNISSE) — antworte in diesem Fall NICHT mit "kein geprüftes Profil". Nur wenn weder DB noch Web einen Wert liefern, sage das ehrlich in einem Satz statt zu raten.
+8. JEDES konkret angefragte Datenfeld (nicht nur Tankgröße/Kofferraum/Anhängelast — das gilt für JEDE Zahl oder Eigenschaft, z. B. auch 0–100-Zeit, Vmax, Ausstattungslinien, Getriebeoptionen, Rückrufe, Motorcodes): Nutze zuerst die harten Zahlen aus dem DB-Kontext. Steht dort "nicht erfasst" oder fehlt das Feld komplett, prüfe IMMER zuerst den Block "=== AKTUELLE WEB-ERGEBNISSE ===" (dieser ist bei jeder Kfz-Frage automatisch mitgeliefert, sobald ein Fahrzeug erkannt wurde) und übernimm den Web-Wert, klar als Web-Quelle gekennzeichnet.
+9. ABSOLUTES VERBOT: Beende eine Antwort NIEMALS mit "nicht erfasst", "kein geprüftes Profil" o. ä., ohne vorher den Web-Ergebnisse-Block im Kontext tatsächlich geprüft und genutzt zu haben. Ist ein Web-Block vorhanden und enthält irgendeinen brauchbaren Hinweis zum gefragten Wert, MUSST du ihn verwenden — auch wenn er nur ungefähr oder aus einer Quelle mit geringerer Sicherheit stammt. "Kein geprüftes Profil"/"nicht erfasst" ist NUR erlaubt, wenn WEDER die Datenbank NOCH der Web-Block (falls vorhanden) einen verwertbaren Hinweis zum konkret gefragten Feld liefern.
 
 — GESPRÄCHSGEDÄCHTNIS (wichtig) —
 - Du hast Zugriff auf den bisherigen Gesprächsverlauf. Nutze ihn aktiv.
@@ -398,6 +564,8 @@ Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
 - Formuliere Unsicherheit stattdessen konkret und hilfreich, z. B. "Die genauen Werte für dein Modell solltest du beim Händler/in den Fahrzeugpapieren bestätigen."
 - Nenne konkrete Preisrahmen wenn sie aus mehreren Quellen übereinstimmen.
 - Kombiniere geprüfte DB-Daten (zuverlässig) mit Web-Daten (Orientierung) sinnvoll.
+- Bevorzuge europäische/deutsche Spezifikationen (WLTP, EU-Ausstattung, km/h, Liter) gegenüber US-Marktdaten (mph, US-Gallonen, US-Ausstattungslinien) — diese unterscheiden sich häufig vom hiesigen Modell. Wirkt ein Web-Ergebnis wie eine US-spezifische Angabe, kennzeichne das kurz oder nutze es nicht.
+- Prüfe, ob die Web-Quelle zur RICHTIGEN Modellgeneration passt (z.B. nicht Vorgänger- oder Nachfolgegeneration verwechseln) — steht die Generation im DB-Kontext, gleiche sie mit der Quelle ab, bevor du den Wert übernimmst.
 
 Antworte immer auf Deutsch.
 
@@ -464,18 +632,30 @@ async def chat_stream(
         flat_msg = " ".join(message.split())[:150]
         if car_info:
             marke, modell, generation = car_info
-            search_query = f"{marke} {modell} {generation} {flat_msg}"[:250]
+            # "Deutschland" explizit ergänzen, damit europäische statt US-Marktdaten
+            # bevorzugt werden (US-Modelljahre/-Ausstattungen weichen oft ab).
+            search_query = f"{marke} {modell} {generation} {flat_msg} Deutschland"[:250]
         else:
             verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
             search_query = f"{flat_msg} {verlauf_text} Deutschland"[:250]
 
         t_web = time.perf_counter()
-        web_results = await tavily_search(search_query)
+        web_results = await tavily_search(search_query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
         # Robuster Fallback: liefert die spezifische Query nichts, mit breiterer Query
         # nachsuchen (z.B. ohne Generation/Zusatzfrage) statt komplett leer zu bleiben.
         if not web_results and car_info:
             marke, modell, _ = car_info
-            web_results = await tavily_search(f"{marke} {modell} Deutschland")
+            web_results = await tavily_search(
+                f"{marke} {modell} Deutschland", exclude_domains=_US_QUELLEN_AUSSCHLUSS
+            )
+        # Zweiter Fallback: manche Anfragen (z.B. reine Motorcode-Fragen) profitieren
+        # von einer knapperen, stärker technisch orientierten Query ohne Fahrzeugnamen-
+        # Wiederholung aus der Originalnachricht.
+        if not web_results and car_info:
+            marke, modell, generation = car_info
+            web_results = await tavily_search(
+                f"{marke} {modell} {generation} technische Daten", exclude_domains=_US_QUELLEN_AUSSCHLUSS
+            )
         print(f"[TIMING] tavily: {_ms(t_web)} -> {len(web_results) if web_results else 0} Ergebnisse", flush=True)
 
         if web_results:

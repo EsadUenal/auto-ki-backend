@@ -29,6 +29,7 @@ async def tavily_search(
     query: str,
     count: int = 5,
     include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Ruft die Tavily Search API auf (POST, JSON-Body).
@@ -39,6 +40,8 @@ async def tavily_search(
 
     search_depth="basic": 1 Credit pro Abfrage — sparsamster Modus.
     include_domains: optional — beschränkt die Suche auf bestimmte Shops/Quellen.
+    exclude_domains: optional — blendet z.B. US-zentrierte Auto-Portale aus,
+      deren Modelljahre/Ausstattungen vom europäischen Markt abweichen.
     """
     if not TAVILY_API_KEY:
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
@@ -55,6 +58,8 @@ async def tavily_search(
     }
     if include_domains:
         body["include_domains"] = include_domains
+    if exclude_domains:
+        body["exclude_domains"] = exclude_domains
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -78,6 +83,7 @@ async def tavily_search_with_fallback(
     queries: list[str],
     count: int = 5,
     include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Probiert mehrere Suchanfragen der Reihe nach, bis eine Ergebnisse liefert.
@@ -90,7 +96,7 @@ async def tavily_search_with_fallback(
     for q in queries:
         if not q or not q.strip():
             continue
-        results = await tavily_search(q, count=count, include_domains=include_domains)
+        results = await tavily_search(q, count=count, include_domains=include_domains, exclude_domains=exclude_domains)
         if results:
             return results
     return []
