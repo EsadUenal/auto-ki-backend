@@ -122,7 +122,16 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None) -> str:
             f"0–100: {m.get('beschleunigung_0_100','?')} s | Vmax: {m.get('vmax_kmh','?')} km/h",
             f"Verbrauch WLTP: {m.get('verbrauch_wltp') or 'kein WLTP'} l/100km | Real: {m.get('verbrauch_real','?')} l/100km",
             f"Neupreis ca.: {m.get('neupreis_ca_eur') or 'nicht erfasst'} EUR",
+            f"Tankgröße: {m.get('tankgroesse_liter') or 'nicht erfasst'} Liter | "
+                f"Kofferraum: {m.get('kofferraum_liter') or 'nicht erfasst'} Liter",
+            f"Anhängelast: {m.get('anhaengelast_gebremst_kg') or 'nicht erfasst'} kg gebremst / "
+                f"{m.get('anhaengelast_ungebremst_kg') or 'nicht erfasst'} kg ungebremst | "
+                f"Abgasnorm: {m.get('abgasnorm') or 'nicht erfasst'}",
         ]
+        if m.get("batteriekapazitaet_kwh"):
+            lines.append(f"Batteriekapazität: {m['batteriekapazitaet_kwh']} kWh")
+        if m.get("felgengroesse_serie"):
+            lines.append(f"Felgen (Serie): {m['felgengroesse_serie']}")
         # schwachstelle_motor hat KEIN schweregrad-Feld — nur bauteil/beschreibung/baujahre/kosten_ca
         if m.get("schwachstellen_motor"):
             lines.append("Motorprobleme:")

@@ -350,8 +350,11 @@ def save_fahrzeug(data: dict) -> str:
                 hubraum_ccm, zylinder, leistung_ps, leistung_kw, drehmoment_nm,
                 getriebe, antrieb, beschleunigung_0_100, vmax_kmh,
                 verbrauch_wltp, verbrauch_real, co2_g_km, neupreis_ca_eur,
-                heck_emblem, optische_unterscheidung)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                heck_emblem, optische_unterscheidung,
+                tankgroesse_liter, kofferraum_liter, batteriekapazitaet_kwh,
+                anhaengelast_gebremst_kg, anhaengelast_ungebremst_kg,
+                abgasnorm, felgengroesse_serie)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 vid, bid,
                 m.get("bezeichnung"), m.get("motorcode"), m.get("kraftstoff"),
@@ -362,6 +365,9 @@ def save_fahrzeug(data: dict) -> str:
                 m.get("verbrauch_wltp"), m.get("verbrauch_real"),
                 m.get("co2_g_km"), m.get("neupreis_ca_eur"),
                 m.get("heck_emblem"), m.get("optische_unterscheidung"),
+                m.get("tankgroesse_liter"), m.get("kofferraum_liter"), m.get("batteriekapazitaet_kwh"),
+                m.get("anhaengelast_gebremst_kg"), m.get("anhaengelast_ungebremst_kg"),
+                m.get("abgasnorm"), m.get("felgengroesse_serie"),
             ),
         )
 

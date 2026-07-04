@@ -131,6 +131,13 @@ PFLICHTREGELN:
 4. "antrieb": Heck|Front|Allrad
 5. "optische_unterscheidung": sichtbare Unterschiede zur Basis (Endrohre, Embleme, Stoßstänger).
    Kein null wenn Unterschiede existieren, niemals nur ein Baucode.
+6. Standard-Fahrzeugdaten — häufig gefragte Werte, ausfüllen wenn bekannt (sonst null):
+   - "tankgroesse_liter": Kraftstofftank in Litern (bei Elektro: null)
+   - "kofferraum_liter": Kofferraumvolumen in Litern (Basis-Konfiguration)
+   - "batteriekapazitaet_kwh": Batteriekapazität in kWh — NUR bei Elektro/Plug-in-Hybrid, sonst null
+   - "anhaengelast_gebremst_kg" / "anhaengelast_ungebremst_kg": zulässige Anhängelast in kg
+   - "abgasnorm": z.B. "Euro 6d-ISC-FCM" (bei Elektro: null)
+   - "felgengroesse_serie": Serienbereifung + optionale Größen, z.B. "17 Zoll (Serie), bis 20 Zoll optional"
 
 Ausgabe-Schema (Array):
 [{"variante_id":"...","bezeichnung":"...","motorcode":null,"kraftstoff":"...",
@@ -138,6 +145,9 @@ Ausgabe-Schema (Array):
   "drehmoment_nm":null,"getriebe":["..."],"antrieb":"...","beschleunigung_0_100":null,
   "vmax_kmh":null,"verbrauch_wltp":null,"verbrauch_real":null,"co2_g_km":null,
   "neupreis_ca_eur":null,"heck_emblem":null,"optische_unterscheidung":null,
+  "tankgroesse_liter":null,"kofferraum_liter":null,"batteriekapazitaet_kwh":null,
+  "anhaengelast_gebremst_kg":null,"anhaengelast_ungebremst_kg":null,
+  "abgasnorm":null,"felgengroesse_serie":null,
   "schwachstellen_motor":[{"bauteil":"...","beschreibung":"...","baujahre":null,"kosten_ca":null}],
   "kritische_wartung":[{"bauteil":"...","intervall":"...","hinweis":null}]}]"""
 

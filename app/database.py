@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name        TEXT PRIMARY KEY,
+    applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS poster (
     id           TEXT PRIMARY KEY,
     titel        TEXT NOT NULL,
@@ -100,6 +105,32 @@ CREATE TABLE IF NOT EXISTS gespeicherte_adresse (
     land       TEXT NOT NULL DEFAULT 'DE',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ebook (
+    id           TEXT PRIMARY KEY,
+    titel        TEXT NOT NULL,
+    untertitel   TEXT NOT NULL DEFAULT '',
+    beschreibung TEXT NOT NULL DEFAULT '',
+    zielgruppe   TEXT NOT NULL DEFAULT '',
+    preis_normal REAL NOT NULL,
+    preis_abo    REAL NOT NULL,
+    aktiv        INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS ebook_bestellung (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ebook_id                 TEXT    NOT NULL REFERENCES ebook(id),
+    preis_bezahlt            REAL    NOT NULL,
+    stripe_session_id        TEXT    UNIQUE NOT NULL,
+    stripe_payment_intent_id TEXT,
+    status                   TEXT    NOT NULL DEFAULT 'offen'
+                                     CHECK(status IN ('offen','bezahlt','storniert','erstattet')),
+    paid_at                  DATETIME,
+    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ebook_bestellung_user    ON ebook_bestellung(user_id);
+CREATE INDEX IF NOT EXISTS idx_ebook_bestellung_session ON ebook_bestellung(stripe_session_id);
 """
 
 
@@ -115,6 +146,46 @@ _POSTER_SEED = [
 ]
 
 
+_EBOOK_SEED = [
+    (
+        "kauf-kein-risiko",
+        "Kauf kein Risiko",
+        "Der ehrliche Gebrauchtwagen-Guide",
+        "Alles was du wissen musst, bevor du einen Gebrauchtwagen kaufst: Worauf achten, wie verhandeln, welche Fallen es gibt — direkt, ehrlich, ohne Blatt vor dem Mund.",
+        "Gebrauchtwagenkäufer",
+        17.99, 16.19,
+    ),
+    (
+        "dein-erstes-auto",
+        "Dein erstes Auto",
+        "Ohne Fehler, ohne Reue",
+        "Der Ratgeber für alle, die ihr erstes Auto kaufen: Budget planen, richtige Wahl treffen, typische Anfängerfehler vermeiden — verständlich erklärt.",
+        "Erstkäufer 18–30",
+        14.99, 13.49,
+    ),
+    (
+        "elektro-oder-verbrenner",
+        "Elektro oder Verbrenner?",
+        "Die ehrliche Entscheidungshilfe",
+        "Kein Marketing, keine Ideologie: Eine sachliche Analyse was Elektro und Verbrenner im Alltag wirklich bedeuten — Kosten, Reichweite, Ladeinfrastruktur, Restwert.",
+        "Alle Autokäufer 2026",
+        19.99, 17.99,
+    ),
+]
+
+
+def _seed_ebook(conn: sqlite3.Connection) -> None:
+    """Füllt ebook-Tabelle mit Initialdaten (nur wenn leer)."""
+    if conn.execute("SELECT COUNT(*) FROM ebook").fetchone()[0] > 0:
+        return
+    conn.executemany(
+        "INSERT INTO ebook (id, titel, untertitel, beschreibung, zielgruppe, preis_normal, preis_abo) VALUES (?,?,?,?,?,?,?)",
+        _EBOOK_SEED,
+    )
+    conn.commit()
+    log.info("Ebook-Seed: %d Einträge angelegt.", len(_EBOOK_SEED))
+
+
 def _seed_poster(conn: sqlite3.Connection) -> None:
     """Füllt poster-Tabelle mit Initialdaten (nur wenn leer)."""
     if conn.execute("SELECT COUNT(*) FROM poster").fetchone()[0] > 0:
@@ -125,6 +196,20 @@ def _seed_poster(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
     log.info("Poster-Seed: %d Einträge angelegt.", len(_POSTER_SEED))
+
+
+_MOTORVARIANTE_NEUE_SPALTEN = {
+    # Standard-Fahrzeugdaten, nach denen Nutzer häufig fragen (Phase 1 Wissensqualität).
+    # Auf motorvariante-Ebene, da Tankgröße/Kofferraum/Anhängelast oft je Motorisierung
+    # (Kraftstoffart, Antrieb, PHEV-Batterie) variieren — nicht nur je Baureihe.
+    "tankgroesse_liter":          "INTEGER",
+    "kofferraum_liter":           "INTEGER",
+    "batteriekapazitaet_kwh":     "REAL",     # nur BEV/PHEV, sonst NULL
+    "anhaengelast_gebremst_kg":   "INTEGER",
+    "anhaengelast_ungebremst_kg": "INTEGER",
+    "abgasnorm":                  "TEXT",     # z.B. "Euro 6d-ISC-FCM"
+    "felgengroesse_serie":        "TEXT",     # z.B. "17 Zoll (Serie), bis 20 Zoll optional"
+}
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -138,6 +223,36 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN deleted_at DATETIME")
     if "abo_kuendigt_zum" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN abo_kuendigt_zum TEXT")
+    if "ersatzteil_suchen_verbleibend" not in existing:
+        # DEFAULT 1 gilt auch für bestehende Zeilen → 1 Gratis-Suche für alle Bestandsnutzer.
+        # Bestehende Abo-Kunden (light/pro) werden unten per Backfill auf ihr echtes Kontingent gehoben,
+        # da für sie kein neues Stripe-Event feuert, das den Wert sonst setzen würde.
+        conn.execute("ALTER TABLE users ADD COLUMN ersatzteil_suchen_verbleibend INTEGER NOT NULL DEFAULT 1")
+
+    # Einmaliger Backfill: bestehende Abo-Kunden bekamen durch obigen DEFAULT 1 fälschlich
+    # nur 1 statt ihres Abo-Kontingents (light=5, pro=20, max=unbegrenzt). Läuft nur einmal
+    # (Marker in schema_migrations), damit spätere manuelle Anpassungen nicht überschrieben werden.
+    already_ran = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE name='ersatzteil_quota_backfill'"
+    ).fetchone()
+    if not already_ran:
+        conn.execute("UPDATE users SET ersatzteil_suchen_verbleibend=5  WHERE abo_typ='light'")
+        conn.execute("UPDATE users SET ersatzteil_suchen_verbleibend=20 WHERE abo_typ='pro'")
+        conn.execute("UPDATE users SET ersatzteil_suchen_verbleibend=0  WHERE abo_typ='max'")
+        conn.execute("INSERT INTO schema_migrations (name) VALUES ('ersatzteil_quota_backfill')")
+        log.info("Ersatzteil-Quota-Backfill für bestehende Abo-Kunden ausgeführt.")
+
+    # motorvariante-Tabelle existiert nicht in _SCHEMA_SQL (wird separat via db/schema.sql
+    # angelegt) — Migration daher defensiv nur ausführen wenn die Tabelle bereits existiert.
+    mv_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='motorvariante'"
+    ).fetchone()
+    if mv_table_exists:
+        mv_existing = {r[1] for r in conn.execute("PRAGMA table_info(motorvariante)").fetchall()}
+        for spalte, sql_typ in _MOTORVARIANTE_NEUE_SPALTEN.items():
+            if spalte not in mv_existing:
+                conn.execute(f"ALTER TABLE motorvariante ADD COLUMN {spalte} {sql_typ}")
+
     conn.commit()
 
 
@@ -162,6 +277,7 @@ def ensure_tables() -> None:
     try:
         _migrate_schema(conn2)
         _seed_poster(conn2)
+        _seed_ebook(conn2)
         tables = sorted(
             r[0] for r in conn2.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -180,6 +296,10 @@ def get_conn():
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

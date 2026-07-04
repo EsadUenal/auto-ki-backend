@@ -106,7 +106,17 @@ CREATE TABLE IF NOT EXISTS motorvariante (
     co2_g_km                INTEGER,
     neupreis_ca_eur         INTEGER,
     heck_emblem             TEXT,
-    optische_unterscheidung TEXT
+    optische_unterscheidung TEXT,
+
+    -- Standard-Fahrzeugdaten (Phase 1 Wissensqualität) — je Motorisierung, da Tankgröße,
+    -- Kofferraum, Anhängelast etc. oft zwischen Kraftstoffart/Antrieb/PHEV-Batterie variieren
+    tankgroesse_liter          INTEGER,
+    kofferraum_liter           INTEGER,
+    batteriekapazitaet_kwh     REAL,        -- nur BEV/PHEV, sonst NULL
+    anhaengelast_gebremst_kg   INTEGER,
+    anhaengelast_ungebremst_kg INTEGER,
+    abgasnorm                  TEXT,        -- z.B. "Euro 6d-ISC-FCM"
+    felgengroesse_serie        TEXT         -- z.B. "17 Zoll (Serie), bis 20 Zoll optional"
 );
 
 -- Motorspezifische Schwachstellen (1:n)

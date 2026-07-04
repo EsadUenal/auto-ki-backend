@@ -13,18 +13,22 @@ Harte Zahlen kommen IMMER aus SQL, NIEMALS aus dem Modell.
 """
 
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
 from typing import AsyncGenerator
 
+log = logging.getLogger(__name__)
+
 from google import genai
 from google.genai import types as genai_types
+from google.genai.errors import ServerError as GeminiServerError
 
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen
 from app.gemini_retry import with_retry_sync, RateLimitExhausted
-from app.web_search import tavily_search, results_to_context, results_to_belege, build_price_query
+from app.web_search import tavily_search, results_to_context, results_to_belege
 
 import chromadb
 
@@ -45,6 +49,7 @@ def _get_client() -> genai.Client:
 # ---------- ChromaDB ----------
 
 _chroma: chromadb.PersistentClient | None = None
+_chroma_cols: dict[str, chromadb.Collection] = {}
 
 
 def _get_chroma():
@@ -54,15 +59,32 @@ def _get_chroma():
     return _chroma
 
 
-def _vector_search(query: str, baureihe_ids: list[str], n: int = 6) -> list[str]:
-    """Sucht passende Fließtexte in ChromaDB."""
-    client = _get_chroma()
+def _get_col(name: str) -> chromadb.Collection:
+    """Collection-Objekt einmalig laden und danach aus Cache holen."""
+    if name not in _chroma_cols:
+        _chroma_cols[name] = _get_chroma().get_collection(name)
+    return _chroma_cols[name]
+
+
+def warmup_chroma() -> None:
+    """Embedding-Modell beim Server-Start vorladen — verhindert 4s Kaltstart beim ersten Request."""
+    try:
+        for col_name in ["optisches_wissen", "technisches_wissen"]:
+            col = _get_col(col_name)
+            col.query(query_texts=["warmup"], n_results=1)
+        print("[CHROMA] Warmup abgeschlossen", flush=True)
+    except Exception as exc:
+        print(f"[CHROMA] Warmup fehlgeschlagen (nicht kritisch): {exc}", flush=True)
+
+
+def _vector_search(query: str, baureihe_ids: list[str], n: int = 3) -> list[str]:
+    """Sucht passende Fließtexte in ChromaDB. n=3 pro Collection (6 total)."""
     results = []
     where = {"baureihe_id": {"$in": baureihe_ids}} if baureihe_ids else None
 
     for col_name in ["optisches_wissen", "technisches_wissen"]:
         try:
-            col = client.get_collection(col_name)
+            col = _get_col(col_name)
             kwargs = {"query_texts": [query], "n_results": min(n, col.count())}
             if where:
                 kwargs["where"] = where
@@ -118,7 +140,15 @@ def _sql_context(baureihe_ids: list[str]) -> str:
                 f"    Verbrauch real (Spritmonitor): {m['verbrauch_real'] or 'nicht erfasst'} l/100km",
                 f"    CO2: {m['co2_g_km'] or 'nicht erfasst'} g/km",
                 f"    Neupreis ca.: {m['neupreis_ca_eur'] or 'nicht erfasst'} EUR",
+                f"    Tankgröße: {m.get('tankgroesse_liter') or 'nicht erfasst'} Liter"
+                    + (" | Kofferraum: " + (str(m['kofferraum_liter']) + " Liter" if m.get('kofferraum_liter') else "nicht erfasst")),
+                f"    Anhängelast: {m.get('anhaengelast_gebremst_kg') or 'nicht erfasst'} kg gebremst / "
+                    f"{m.get('anhaengelast_ungebremst_kg') or 'nicht erfasst'} kg ungebremst",
+                f"    Abgasnorm: {m.get('abgasnorm') or 'nicht erfasst'}"
+                    + (f"  |  Felgen (Serie): {m['felgengroesse_serie']}" if m.get('felgengroesse_serie') else ""),
             ]
+            if m.get("batteriekapazitaet_kwh"):
+                motor_lines.append(f"    Batteriekapazität: {m['batteriekapazitaet_kwh']} kWh")
             if m["schwachstellen_motor"]:
                 motor_lines.append("    Bekannte Motorprobleme:")
                 for s in m["schwachstellen_motor"]:
@@ -165,6 +195,17 @@ _PREIS_KEYWORDS = frozenset({
 _RECALL_KEYWORDS = frozenset({
     "rückruf", "recall", "rückrufe", "sicherheitshinweis", "kba", "aktuell",
 })
+# Standard-Spezifikationsfragen (Phase 1 Wissensqualität): diese Werte fehlen in vielen
+# bestehenden DB-Profilen noch (neu eingeführte Felder) → IMMER Web-Fallback erlauben,
+# damit einfache Standardfragen nicht mit "kein Profil" abgewiesen werden.
+_SPEC_KEYWORDS = frozenset({
+    "tank", "tankgröße", "tankvolumen", "tankinhalt", "tankgroesse",
+    "kofferraum", "kofferraumvolumen", "ladevolumen", "stauraum",
+    "anhängelast", "anhängerlast", "anhaengelast", "zuggewicht", "gespanngewicht",
+    "batteriekapazität", "akkukapazität", "akkugröße", "batteriegröße", "batterie", "akku", "kwh",
+    "abgasnorm", "euro 6", "euro6", "euro 5", "abgasklasse",
+    "felgengröße", "felgengrößen", "felgen", "reifengröße", "bereifung", "serienbereifung",
+})
 # Automotive-Kontext: zeigt an, dass die Frage Kfz-relevant ist
 _AUTO_KEYWORDS = frozenset({
     "auto", "fahrzeug", "wagen", "kfz", "pkw",
@@ -189,6 +230,10 @@ def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict]
     """
     True wenn die Websuche benötigt wird:
     - Preisfragen oder aktuelle Rückrufe (immer, egal ob DB oder nicht)
+    - Standard-Spezifikationsfragen (Tank, Kofferraum, Anhängelast, Batterie, Abgasnorm,
+      Felgengröße) — IMMER, auch wenn die Baureihe erkannt ist. Grund: diese Felder sind
+      erst kürzlich eingeführt worden und in vielen bestehenden DB-Profilen noch leer;
+      ohne diesen Fallback würde die KI trotz erkanntem Fahrzeug fälschlich ablehnen.
     - Fahrzeug nicht in der DB UND aktuelle Nachricht hat Kfz-Kontext
 
     Wichtig: nur die AKTUELLE Nachricht auf Auto-Keywords prüfen, NICHT den Verlauf.
@@ -199,6 +244,8 @@ def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict]
     if any(kw in msg for kw in _PREIS_KEYWORDS):
         return True
     if any(kw in msg for kw in _RECALL_KEYWORDS):
+        return True
+    if any(kw in msg for kw in _SPEC_KEYWORDS):
         return True
     # Web-Fallback: nur wenn kein DB-Treffer UND aktuelle Nachricht ist Kfz-relevant
     if not baureihe_ids and any(kw in msg for kw in _AUTO_KEYWORDS):
@@ -277,6 +324,8 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 4. Du duzt den Nutzer immer.
 5. Bleibe ruhig, sachlich und vertrauenswürdig — kein Hype, keine Übertreibung, keine erfundene Sicherheit.
 6. Beschuldige niemals konkrete Personen oder Werkstätten der Lüge oder des Betrugs. Du darfst nur neutrale Kostenorientierung geben ("kostet üblicherweise ca. X–Y €; bei deutlich höheren Angeboten lohnt eine Zweitmeinung").
+7. Unterscheide bei jeder Antwort präzise zwischen allgemeinen (baureihenweiten) Aussagen und motorspezifischen Aussagen. Unterscheidet sich ein Wert zwischen Motorisierungen, Baujahren oder Ausstattungslinien, nenne die Werte je Variante statt einer Pauschalaussage. Ist die Frage mehrdeutig und der Unterschied dabei relevant (z. B. deutlich abweichende Anhängelast zwischen Front- und Allradversion), stelle eine kurze, gezielte Rückfrage statt zu raten oder willkürlich eine Variante auszuwählen.
+8. Standard-Spezifikationen (Tankgröße, Kofferraumvolumen, Batteriekapazität, Anhängelast, Abgasnorm, Felgengröße): Nutze zuerst die harten Zahlen aus dem DB-Kontext je Motorvariante. Steht dort "nicht erfasst", aber ein Block "=== AKTUELLE WEB-ERGEBNISSE ===" ist vorhanden, verwende den Web-Wert und kennzeichne ihn klar als Web-Quelle (siehe Abschnitt WEB-ERGEBNISSE) — antworte in diesem Fall NICHT mit "kein geprüftes Profil". Nur wenn weder DB noch Web einen Wert liefern, sage das ehrlich in einem Satz statt zu raten.
 
 — GESPRÄCHSGEDÄCHTNIS (wichtig) —
 - Du hast Zugriff auf den bisherigen Gesprächsverlauf. Nutze ihn aktiv.
@@ -289,16 +338,21 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 - Erkläre Fachbegriffe kurz, wenn der Nutzer wie ein Laie wirkt. Lass sie stehen, wenn er wie ein Kenner wirkt.
 - Standardlänge: kurz und auf den Punkt. Wird nach Details gefragt, antworte ausführlich und strukturiert.
 
+— EINFACHE FAKTENFRAGEN (z. B. "Wie groß ist der Tank?", "Wie viel PS hat der 320d?", "Welche Felgengröße ist Serie?") —
+- Antworte kompakt: 1–3 Sätze oder eine kurze Liste. Keine Einleitung, keine Wiederholung der Frage, keine unaufgeforderte Zusatz-Erklärung.
+- Ausführliche Antworten mit Zwischenüberschriften sind nur für komplexe Anfragen angemessen (Vergleiche, Kaufberatung, umfassende Erklärungen wie "Erzähl mir alles über…").
+
 — BEI ERKENNUNGSFRAGEN ("was ist das für ein Auto?", "Unterschied X vs Y") —
 - Nenne zuerst die konkreten optischen Merkmale (aus erkennung_generation), bevor du auf Technik oder Baujahr eingehst.
 
 — WEB-ERGEBNISSE (falls im Kontext vorhanden) —
 Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
-- Diese Daten sind UNGEPRÜFT. Preise aus dem Web sind Marktorientierungen, keine Garantien.
-- Kennzeichne Web-Quellen explizit: "Laut aktueller Websuche (Quelle: [Seitenname])..."
+- Diese Daten sind intern als ungeprüft markiert — Preise aus dem Web sind Marktorientierungen, keine Garantien. Das ist eine interne Einordnung für DICH, kein Textbaustein für die Antwort.
+- Kennzeichne Web-Quellen nutzerfreundlich in natürlicher Sprache: "Laut aktueller Websuche (Quelle: [Seitenname])..." oder "Aktuelle Angebote im Netz zeigen …".
+- Verwende in der Antwort NIEMALS interne Fachbegriffe wie "ungeprüft", "Vertrauen", "niedriges/mittleres/hohes Vertrauen" oder "Quelle: Web" als wörtliches Label — das sind Entwicklerbegriffe, keine Nutzersprache.
+- Formuliere Unsicherheit stattdessen konkret und hilfreich, z. B. "Die genauen Werte für dein Modell solltest du beim Händler/in den Fahrzeugpapieren bestätigen."
 - Nenne konkrete Preisrahmen wenn sie aus mehreren Quellen übereinstimmen.
 - Kombiniere geprüfte DB-Daten (zuverlässig) mit Web-Daten (Orientierung) sinnvoll.
-- Weise darauf hin, dass der Nutzer die verlinkten Quellen direkt prüfen sollte.
 
 Antworte immer auf Deutsch.
 
@@ -319,20 +373,30 @@ async def chat_stream(
       {"type": "meta",   "quelle": "...", ...}   — Abschluss-Metadaten
     """
     import asyncio
+    import time
+
+    t0 = time.perf_counter()
+
+    def _ms(since: float) -> str:
+        return f"{(time.perf_counter() - since) * 1000:.0f}ms"
 
     # ── Status 1: sofort sichtbar ────────────────────────────────────────────
     yield {"type": "status", "text": "Denke nach…"}
     await asyncio.sleep(0)  # Event-Loop freigeben → Event erreicht Client sofort
 
+    t_detect = time.perf_counter()
     baureihe_ids = _detect_baureihe_ids(message, verlauf)
+    print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids}", flush=True)
 
     # ── 1. DB-Kontext aufbauen ───────────────────────────────────────────────
     yield {"type": "status", "text": "Prüfe Datenbank…"}
     await asyncio.sleep(0)
 
+    t_db = time.perf_counter()
     sql_ctx = _sql_context(baureihe_ids) if baureihe_ids else ""
     vec_docs = _vector_search(message, baureihe_ids) if baureihe_ids else []
     vec_ctx = "\n\n".join(vec_docs) if vec_docs else ""
+    print(f"[TIMING] db+vector: {_ms(t_db)} (sql={len(sql_ctx)} chars, vec={len(vec_docs)} docs)", flush=True)
 
     quelle    = "datenbank" if baureihe_ids else "gemischt"
     vertrauen = "hoch"      if baureihe_ids else "mittel"
@@ -345,14 +409,19 @@ async def chat_stream(
         await asyncio.sleep(0)
 
         car_info = _first_baureihe_info(baureihe_ids)
+        # Kurze Such-Query bauen — nie den vollen Prompt übergeben (HTTP 400 bei >400 Zeichen)
+        first_line = message.split('\n')[0][:80]
         if car_info:
-            search_query = build_price_query(*car_info, message)
+            marke, modell, generation = car_info
+            search_query = f"{marke} {modell} {generation} {first_line}"[:200]
         else:
-            # Fahrzeug nicht in DB — Kontext aus Verlauf extrahieren
-            verlauf_text = " ".join(m.get("text", "") for m in verlauf[-4:])
-            search_query = f"{message} {verlauf_text} Deutschland".strip()
+            verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
+            search_query = f"{first_line} {verlauf_text} Deutschland"[:200]
 
+        t_web = time.perf_counter()
         web_results = await tavily_search(search_query)
+        print(f"[TIMING] tavily: {_ms(t_web)} -> {len(web_results) if web_results else 0} Ergebnisse", flush=True)
+
         if web_results:
             web_ctx = results_to_context(web_results)
             belege  = results_to_belege(web_results)
@@ -362,6 +431,8 @@ async def chat_stream(
             else:
                 quelle    = "web"
                 vertrauen = "niedrig"
+    else:
+        print("[TIMING] tavily: uebersprungen (kein Trigger)", flush=True)
 
     # ── 3. Gesamt-Kontext + Quelle bestimmen ────────────────────────────────
     hat_db  = bool(sql_ctx or vec_ctx)
@@ -379,8 +450,6 @@ async def chat_stream(
         quelle    = "web"
         vertrauen = "niedrig"
     else:
-        # Keine Fakten aus DB oder Web — LLM antwortet aus allg. Kfz-Wissen
-        # oder stellt eine Rückfrage. Kein Vertrauens-Badge im Frontend zeigen.
         quelle    = "gespräch"
         vertrauen = "keine"
         kontext = (
@@ -390,6 +459,8 @@ async def chat_stream(
             "Nur wenn konkrete Modell-Fakten fehlen UND du im Gesprächsverlauf kein Fahrzeug erkennst, "
             "weise darauf hin."
         )
+
+    print(f"[TIMING] kontext fertig: {_ms(t0)} (quelle={quelle}, hat_db={hat_db}, hat_web={hat_web})", flush=True)
 
     system = SYSTEM_PROMPT.format(kontext=kontext)
 
@@ -405,6 +476,7 @@ async def chat_stream(
         system_instruction=system, temperature=0.3
     )
 
+    t_gemini_init = time.perf_counter()
     try:
         response = with_retry_sync(lambda: client.models.generate_content_stream(
             model=LLM_MODEL, contents=contents, config=cfg,
@@ -414,11 +486,26 @@ async def chat_stream(
         yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
                "vertrauen": "niedrig", "belege": []}
         return
+    print(f"[TIMING] gemini iterator erstellt (blockierend): {_ms(t_gemini_init)}", flush=True)
 
-    for chunk in response:
-        if chunk.text:
-            yield {"type": "text", "delta": chunk.text}
-            await asyncio.sleep(0)  # Event-Loop zwischen Chunks freigeben
+    first_token = True
+    t_first_token = time.perf_counter()
+    token_count = 0
+    try:
+        for chunk in response:
+            if chunk.text:
+                if first_token:
+                    print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
+                    first_token = False
+                token_count += 1
+                yield {"type": "text", "delta": chunk.text}
+                await asyncio.sleep(0)
+    except GeminiServerError as exc:
+        msg = "KI momentan ausgelastet, bitte nochmal versuchen." if exc.code == 503 else f"Gemini-Fehler: {exc}"
+        yield {"type": "text", "delta": f"\n\n*{msg}*"}
+        print(f"[TIMING] GeminiServerError {exc.code} nach {_ms(t0)}", flush=True)
+
+    print(f"[TIMING] GESAMT: {_ms(t0)} ({token_count} chunks, quelle={quelle})", flush=True)
 
     yield {
         "type": "meta",
