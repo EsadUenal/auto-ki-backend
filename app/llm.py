@@ -351,6 +351,19 @@ def _gen_varianten(generation: str) -> set[str]:
     return varianten
 
 
+def _kanon_marke(marke: str | None) -> str:
+    """
+    Normalisiert DB-Markenwerte auf eine kanonische Form (z.B. "VW" -> "volkswagen").
+    Nötig weil die Baureihen-Tabelle dieselbe Marke inkonsistent geschrieben enthält
+    (fast alle VW-Modelle: marke="Volkswagen", einzelne Zeile marke="VW") — ohne
+    Normalisierung entstehen daraus zwei getrennte Gruppen bei der Generations-Eingrenzung,
+    wodurch der "keine Generation im Text passt" Fallback fälschlich die per Tippfehler
+    isolierte Zeile mit ausgibt (z.B. Golf 8 bei einer reinen Golf-7-Anfrage).
+    """
+    m = (marke or "").strip().lower()
+    return _MARKEN_ALIAS.get(m, m)
+
+
 def _marke_treffer(marke: str, text: str) -> bool:
     return _wort_in_text(marke, text) or any(
         _wort_in_text(alias, text) for alias, kanon in _MARKEN_ALIAS.items() if kanon == marke
@@ -412,15 +425,19 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
     ).fetchall()
     conn.close()
 
-    marke_by_id = {b["id"]: (b["marke"] or "").lower() for b in baureihen}
+    marke_by_id = {b["id"]: _kanon_marke(b["marke"]) for b in baureihen}
     generation_by_id = {b["id"]: (b["generation"] or "").lower() for b in baureihen}
 
     # Mehrdeutige (marke, generation)-Paare ermitteln: derselbe Chassis-Code über
     # mehrere Modelle hinweg (z.B. Audi "C7" bei A6, RS6 Avant, RS7 Sportback).
     # Dort reicht Marke+Generation allein nicht — das Modell muss zusätzlich genannt werden.
+    # Marke wird kanonisiert (z.B. "VW" -> "volkswagen"), damit inkonsistente DB-Schreibweisen
+    # derselben Marke (siehe _kanon_marke) nicht künstlich zwei getrennte Gruppen erzeugen —
+    # sonst greift unten der "keine Generation passt in der Gruppe" Fallback fälschlich auf
+    # die per Tippfehler isolierte Zeile zu und liefert z.B. "Golf 8" bei einer "Golf 7"-Frage.
     gen_modelle: dict[tuple[str, str], set[str]] = {}
     for b in baureihen:
-        key = ((b["marke"] or "").lower(), (b["generation"] or "").lower())
+        key = (_kanon_marke(b["marke"]), (b["generation"] or "").lower())
         gen_modelle.setdefault(key, set()).add((b["modell"] or "").lower())
 
     # Kandidaten je (marke, modell)-Gruppe sammeln, um pro Gruppe auf eine im
@@ -429,7 +446,7 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
     einzel_treffer: set[str] = set()  # marke+generation-Treffer ohne Modell-Erwähnung
 
     for b in baureihen:
-        marke = (b["marke"] or "").lower()
+        marke = _kanon_marke(b["marke"])
         modell = (b["modell"] or "").lower()
         generation = (b["generation"] or "").lower()
 
