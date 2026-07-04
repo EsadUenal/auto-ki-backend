@@ -10,7 +10,8 @@ from slowapi.errors import RateLimitExceeded
 
 from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH
 from app.database import ensure_tables
-from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters
+from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile
+from app.llm import warmup_chroma
 from app.utf8 import UTF8JSONResponse
 
 
@@ -21,8 +22,8 @@ def _utf8_json(status_code: int, content: dict) -> UTF8JSONResponse:
 limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
 
 app = FastAPI(
-    title="Auto-KI Backend",
-    description="Auf Autos spezialisierte Wissens-KI. Phase 1.",
+    title="Vira Backend",
+    description="Vira — KI-Autoberatung. Kauf, Verkauf, technisches Wissen.",
     version="0.1.0",
     default_response_class=UTF8JSONResponse,
 )
@@ -41,8 +42,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """Tabellen anlegen (idempotent) + DB-Pfad loggen."""
+    """Tabellen anlegen (idempotent) + ChromaDB vorladen."""
     ensure_tables()
+    warmup_chroma()
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -76,6 +78,8 @@ app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(checks.router,        prefix="/api/v1")
 app.include_router(payments.router,      prefix="/api/v1")
 app.include_router(posters.router,       prefix="/api/v1")
+app.include_router(ebooks.router,        prefix="/api/v1")
+app.include_router(ersatzteile.router,   prefix="/api/v1")
 
 
 @app.get("/health")

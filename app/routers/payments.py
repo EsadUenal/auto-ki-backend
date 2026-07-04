@@ -52,6 +52,12 @@ _ABO_CHECKS = {
     "max":   0,   # unlimited — checks_verbleibend spielt keine Rolle
 }
 
+_ABO_ERSATZTEIL_SUCHEN = {
+    "light": 5,
+    "pro":   20,
+    "max":   0,   # unlimited — ersatzteil_suchen_verbleibend spielt keine Rolle
+}
+
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
@@ -227,14 +233,15 @@ async def stripe_webhook(request: Request):
         typ     = _m.get("typ", "")
 
         if typ == "abo":
-            abo_typ = _m.get("abo_typ", "")
-            sub_id  = getattr(obj, "subscription", None)
-            checks  = _ABO_CHECKS.get(abo_typ, 0)
+            abo_typ   = _m.get("abo_typ", "")
+            sub_id    = getattr(obj, "subscription", None)
+            checks    = _ABO_CHECKS.get(abo_typ, 0)
+            ersatzteil_suchen = _ABO_ERSATZTEIL_SUCHEN.get(abo_typ, 0)
             with get_conn() as conn:
-                # abo_typ + checks immer schreiben (Kern-Freischaltung)
+                # abo_typ + checks + ersatzteilsuchen immer schreiben (Kern-Freischaltung)
                 conn.execute(
-                    "UPDATE users SET abo_typ=?, checks_verbleibend=? WHERE id=?",
-                    (abo_typ, checks, user_id),
+                    "UPDATE users SET abo_typ=?, checks_verbleibend=?, ersatzteil_suchen_verbleibend=? WHERE id=?",
+                    (abo_typ, checks, ersatzteil_suchen, user_id),
                 )
                 # stripe_subscription_id separat — Spalte könnte bei alten DBs fehlen
                 try:
@@ -253,6 +260,27 @@ async def stripe_webhook(request: Request):
                     (user_id,),
                 )
                 conn.commit()
+
+        elif typ == "ebook":
+            ebook_id       = _m.get("ebook_id", "")
+            preis_bezahlt  = float(_m.get("preis_bezahlt", "0") or "0")
+            session_id     = getattr(obj, "id", "")
+            payment_intent = getattr(obj, "payment_intent", None)
+            paid_at        = None
+            created_ts     = getattr(obj, "created", None)
+            if created_ts:
+                paid_at = datetime.fromtimestamp(created_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+            if user_id and ebook_id and session_id:
+                with get_conn() as conn:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO ebook_bestellung
+                           (user_id, ebook_id, preis_bezahlt, stripe_session_id,
+                            stripe_payment_intent_id, status, paid_at)
+                           VALUES (?,?,?,?,?,'bezahlt',?)""",
+                        (user_id, ebook_id, preis_bezahlt, session_id, payment_intent, paid_at),
+                    )
+                    conn.commit()
 
         elif typ == "poster":
             poster_id        = _m.get("poster_id", "")
@@ -299,9 +327,10 @@ async def stripe_webhook(request: Request):
             ).fetchone()
             if user and user["abo_typ"] != "max":
                 checks = _ABO_CHECKS.get(user["abo_typ"], 0)
+                ersatzteil_suchen = _ABO_ERSATZTEIL_SUCHEN.get(user["abo_typ"], 0)
                 conn.execute(
-                    "UPDATE users SET checks_verbleibend=? WHERE id=?",
-                    (checks, user["id"]),
+                    "UPDATE users SET checks_verbleibend=?, ersatzteil_suchen_verbleibend=? WHERE id=?",
+                    (checks, ersatzteil_suchen, user["id"]),
                 )
                 conn.commit()
 
@@ -311,7 +340,7 @@ async def stripe_webhook(request: Request):
         if sub_id:
             with get_conn() as conn:
                 conn.execute(
-                    "UPDATE users SET abo_typ='none', checks_verbleibend=0, "
+                    "UPDATE users SET abo_typ='none', checks_verbleibend=0, ersatzteil_suchen_verbleibend=0, "
                     "stripe_subscription_id=NULL, abo_kuendigt_zum=NULL "
                     "WHERE stripe_subscription_id=?",
                     (sub_id,),

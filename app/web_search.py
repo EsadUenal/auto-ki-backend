@@ -25,7 +25,11 @@ log = logging.getLogger(__name__)
 _ENDPOINT = "https://api.tavily.com/search"
 
 
-async def tavily_search(query: str, count: int = 5) -> list[dict[str, Any]]:
+async def tavily_search(
+    query: str,
+    count: int = 5,
+    include_domains: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Ruft die Tavily Search API auf (POST, JSON-Body).
 
@@ -34,25 +38,27 @@ async def tavily_search(query: str, count: int = 5) -> list[dict[str, Any]]:
       - Netzwerkfehler oder API-Fehler (nie weitergeworfen)
 
     search_depth="basic": 1 Credit pro Abfrage — sparsamster Modus.
+    include_domains: optional — beschränkt die Suche auf bestimmte Shops/Quellen.
     """
     if not TAVILY_API_KEY:
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
         return []
 
+    body: dict[str, Any] = {
+        "api_key":      TAVILY_API_KEY,
+        "query":        query,
+        "search_depth": "basic",
+        "max_results":  count,
+        "include_answer":     False,
+        "include_images":     False,
+        "include_raw_content": False,
+    }
+    if include_domains:
+        body["include_domains"] = include_domains
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                _ENDPOINT,
-                json={
-                    "api_key":      TAVILY_API_KEY,
-                    "query":        query,
-                    "search_depth": "basic",
-                    "max_results":  count,
-                    "include_answer":     False,
-                    "include_images":     False,
-                    "include_raw_content": False,
-                },
-            )
+            resp = await client.post(_ENDPOINT, json=body)
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])

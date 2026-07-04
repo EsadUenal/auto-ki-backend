@@ -135,7 +135,8 @@ def register(body: RegisterBody, response: Response):
     try:
         with get_conn() as conn:
             cursor = conn.execute(
-                "INSERT INTO users (email, password_hash, checks_verbleibend) VALUES (?, ?, 1)",
+                "INSERT INTO users (email, password_hash, checks_verbleibend, ersatzteil_suchen_verbleibend) "
+                "VALUES (?, ?, 1, 1)",
                 (body.email, hashed),
             )
             conn.commit()
@@ -147,7 +148,10 @@ def register(body: RegisterBody, response: Response):
         )
 
     _set_auth_cookie(response, _make_token(user_id, body.email))
-    return {"id": user_id, "email": body.email, "abo_typ": "none", "checks_verbleibend": 1}
+    return {
+        "id": user_id, "email": body.email, "abo_typ": "none",
+        "checks_verbleibend": 1, "ersatzteil_suchen_verbleibend": 1,
+    }
 
 
 @router.post("/login")
@@ -155,7 +159,8 @@ def login(body: LoginBody, response: Response):
     """Einloggen. Gibt User-Daten + setzt Auth-Cookie."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, abo_typ, checks_verbleibend, deleted_at "
+            "SELECT id, email, password_hash, abo_typ, checks_verbleibend, "
+            "ersatzteil_suchen_verbleibend, deleted_at "
             "FROM users WHERE email = ?",
             (body.email.strip().lower(),),
         ).fetchone()
@@ -179,6 +184,7 @@ def login(body: LoginBody, response: Response):
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": None,
     }
 
@@ -196,7 +202,8 @@ def me(auth_token: str | None = Cookie(default=None)):
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, abo_typ, checks_verbleibend, deleted_at, abo_kuendigt_zum "
+            "SELECT id, email, abo_typ, checks_verbleibend, ersatzteil_suchen_verbleibend, "
+            "deleted_at, abo_kuendigt_zum "
             "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
@@ -211,6 +218,7 @@ def me(auth_token: str | None = Cookie(default=None)):
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
     }
 
