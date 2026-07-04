@@ -16,10 +16,29 @@ import json
 import logging
 import re
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from typing import AsyncGenerator
 
 log = logging.getLogger(__name__)
+
+# TEMPORÄR — nur zur Instanz-Verifikation (welcher Prozess/Codestand antwortet tatsächlich?),
+# vor Prod-Release wieder entfernen. Einmalig beim Modul-Import ermittelt, nicht pro Request.
+def _ermittle_debug_build() -> str:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent.parent,
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        commit = "unbekannt"
+    return f"{commit}@pid{__import__('os').getpid()}-{time.strftime('%H:%M:%S')}"
+
+
+DEBUG_BUILD = _ermittle_debug_build()
+print(f"[DEBUG_BUILD] {DEBUG_BUILD}", flush=True)
 
 from google import genai
 from google.genai import types as genai_types
@@ -38,6 +57,11 @@ _US_QUELLEN_AUSSCHLUSS = [
     "kbb.com", "autotrader.com", "consumerreports.org", "roadandtrack.com",
     "carsguide.com.au", "carexpert.com.au",
 ]
+
+# Obergrenze für parallele Websuchen pro Chat-Nachricht (Mehrfahrzeug-Anfragen) — schützt
+# die Tavily-Quote und die Antwortzeit bei pathologischen Nachrichten mit sehr vielen
+# genannten Fahrzeugen. Deutlich über dem im Phase-1-Test verwendeten Fall (5 Fahrzeuge).
+MAX_PARALLELE_SUCHEN = 8
 
 import chromadb
 
@@ -291,19 +315,20 @@ def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict]
     )
 
 
-def _first_baureihe_info(baureihe_ids: list[str]) -> tuple[str, str, str] | None:
-    """Gibt (marke, modell, generation) der ersten Baureihe zurück oder None."""
+def _baureihe_infos(baureihe_ids: list[str]) -> dict[str, tuple[str, str, str]]:
+    """Lädt (marke, modell, generation) für mehrere Baureihen-IDs auf einmal (Batch statt
+    einer Query pro Fahrzeug — relevant bei Mehrfahrzeug-Anfragen mit paralleler Websuche)."""
     if not baureihe_ids:
-        return None
+        return {}
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    b = conn.execute(
-        "SELECT marke, modell, generation FROM baureihe WHERE id=?", (baureihe_ids[0],)
-    ).fetchone()
+    platzhalter = ",".join("?" * len(baureihe_ids))
+    rows = conn.execute(
+        f"SELECT id, marke, modell, generation FROM baureihe WHERE id IN ({platzhalter})",
+        baureihe_ids,
+    ).fetchall()
     conn.close()
-    if b is None:
-        return None
-    return b["marke"], b["modell"], b["generation"]
+    return {r["id"]: (r["marke"], r["modell"], r["generation"]) for r in rows}
 
 
 # Marken-Aliase für Text-Matching (Nutzer schreibt oft Kurzform/Alias statt DB-Wert)
@@ -333,6 +358,43 @@ def _wort_in_text(wort: str, text: str) -> bool:
     if not wort:
         return False
     return re.search(r"(?<![a-z0-9])" + re.escape(wort) + r"(?![a-z0-9])", text) is not None
+
+
+def _nur_hubraum_treffer(ziffer: str, text: str) -> bool:
+    """
+    Prüft, ob JEDE Ganzwort-Fundstelle einer reinen Ziffer (z.B. "2") in Wirklichkeit Teil
+    einer Hubraum-/Dezimalangabe ist (z.B. "2.0 TDI", "1,6 TSI") statt einer eigenständigen
+    Generationsangabe.
+
+    Nötig weil _gen_varianten() aus "Mk2"/"II" auch die bloße Ziffer "2" als Match-Variante
+    ableitet (damit z.B. "Golf 7" die DB-Generation "VII" findet). Bei einer Mehrfahrzeug-
+    Nachricht wie "Audi A4 B9 2.0 TDI ... Ford Fiesta MK7 ..." matcht diese bloße Ziffer "2"
+    aus dem Audi-Motorzusatz sonst fälschlich "Ford Fiesta Mk2"/"Golf II" irgendwo sonst in
+    derselben Nachricht — obwohl damit offensichtlich nur der Hubraum gemeint war.
+    """
+    treffer = list(re.finditer(r"(?<![a-z0-9])" + re.escape(ziffer) + r"(?![a-z0-9])", text))
+    if not treffer:
+        return False
+    for m in treffer:
+        davor  = text[max(0, m.start() - 3):m.start()]
+        danach = text[m.end():m.end() + 3]
+        ist_dezimal = bool(re.match(r"\s*[.,]\s*\d", danach)) or bool(re.search(r"\d\s*[.,]\s*$", davor))
+        if not ist_dezimal:
+            return False  # mindestens eine "echte" Fundstelle -> kein reiner Hubraum-Treffer
+    return True  # alle Fundstellen waren Hubraum-Dezimalzahlen
+
+
+def _gen_treffer(generation: str, text: str) -> bool:
+    """Prüft ob EINE der Schreibweisen einer Generation im Text vorkommt — reine Ziffern-
+    Varianten (siehe _gen_varianten) zählen dabei nicht, wenn sie ausschließlich als
+    Hubraum-Dezimalzahl auftreten (siehe _nur_hubraum_treffer)."""
+    for gv in _gen_varianten(generation):
+        if not gv or not _wort_in_text(gv, text):
+            continue
+        if gv.isdigit() and len(gv) <= 2 and _nur_hubraum_treffer(gv, text):
+            continue
+        return True
+    return False
 
 
 def _gen_varianten(generation: str) -> set[str]:
@@ -456,7 +518,7 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
         # eindeutigen Kennungen zu.
         modell_treffer = len(modell) >= 2 and _wort_in_text(modell, text)
         marke_treffer = _marke_treffer(marke, text)
-        gen_treffer = any(_wort_in_text(gv, text) for gv in _gen_varianten(generation) if gv)
+        gen_treffer = _gen_treffer(generation, text)
 
         if modell_treffer:
             gruppen.setdefault((marke, modell), []).append({"id": b["id"], "gen_treffer": gen_treffer})
@@ -485,7 +547,7 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
         if not _marke_treffer(b_marke, text):
             continue
         b_generation = generation_by_id.get(m["baureihe_id"], "")
-        gen_treffer_motor = any(_wort_in_text(gv, text) for gv in _gen_varianten(b_generation) if gv)
+        gen_treffer_motor = _gen_treffer(b_generation, text)
         motor_gruppen.setdefault((b_marke, bez or code), []).append(
             {"id": m["baureihe_id"], "gen_treffer": gen_treffer_motor}
         )
@@ -498,33 +560,64 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
     return list(ids)
 
 
-def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
-    """
-    Erkennt Fahrzeuge aus der Nachricht per DB-Abgleich (siehe _suche_baureihen_in_text).
+# Trennt eine Nachricht in einzelne Fahrzeug-Segmente auf: Zeilenumbrüche IMMER, sonst
+# Satzenden (. ? !) gefolgt von Leerraum. Bei einer Mehrfahrzeug-Nachricht ("BMW 320d G20\n
+# Golf 7 GTI\n...") landet dadurch jedes Fahrzeug in seinem eigenen Segment.
+_SATZTRENNER = re.compile(r"[\r\n]+|(?<=[.?!])\s+")
 
-    Verlauf wird NUR einbezogen wenn die aktuelle Nachricht selbst Kfz-Kontext
-    hat (Auto-Keyword vorhanden) — verhindert falsche DB-Badges bei Smalltalk
-    wie 'bro wie gehts?' nach einem vorherigen Kfz-Gespräch.
-    """
-    msg_lower = message.lower()
 
-    ids = _suche_baureihen_in_text(msg_lower)
-    if ids:
-        return ids
+def _erkenne_segmente(text: str) -> list[str]:
+    teile = [t.strip() for t in _SATZTRENNER.split(text) if t.strip()]
+    return teile if teile else ([text.strip()] if text.strip() else [])
+
+
+def _erkenne_fahrzeuge(message: str, verlauf: list[dict]) -> list[tuple[str, str]]:
+    """
+    Erkennt Fahrzeuge samt dem Text-Segment, in dem sie genannt wurden.
+
+    KERNFIX gegen Übermatching bei Mehrfahrzeug-Nachrichten: Jedes Segment (Zeile/Satz)
+    wird EINZELN gegen die DB geprüft statt die ganze Nachricht als einen Textblob zu
+    behandeln. Sonst kann ein generischer Token aus Segment A (z.B. die Ziffer "2" aus
+    "Audi A4 B9 2.0 TDI") fälschlich ein Fahrzeug aus Segment B matchen (z.B. "Ford Fiesta
+    Mk2"), sobald irgendwo in der GESAMTEN Nachricht auch "ford" vorkommt.
+
+    Rückgabe: Liste von (baureihe_id, segment_text) in Erwähnungsreihenfolge — bei
+    Mehrfachnennung derselben Baureihe wird nur das ERSTE Segment behalten (Basis für die
+    Websuche: ein Kontext-Schnipsel reicht, und Mehrfachsuche für dieselbe Baureihe wird
+    dadurch automatisch vermieden).
+
+    Verlauf wird NUR einbezogen wenn die aktuelle Nachricht selbst Kfz-Kontext hat
+    (Auto-Keyword vorhanden) — verhindert falsche DB-Badges bei Smalltalk wie
+    'bro wie gehts?' nach einem vorherigen Kfz-Gespräch.
+    """
+    treffer: dict[str, str] = {}
+    for segment in _erkenne_segmente(message):
+        for bid in _suche_baureihen_in_text(segment.lower()):
+            treffer.setdefault(bid, segment)
+    if treffer:
+        return list(treffer.items())
 
     # Verlauf nur hinzuziehen wenn die aktuelle Nachricht Kfz-Kontext zeigt
     # (echte Folgefrage wie "Motoren?"/"Und wie groß ist der Tank?", nicht Smalltalk
     # wie "bro wie gehts?"). Auch Spec-/Preis-/Rückruf-Keywords zählen als Kfz-Kontext —
     # sonst verliert eine reine Folgefrage wie "Und der Tank?" (kein klassisches
     # Auto-Keyword) den Fahrzeugbezug aus dem Verlauf komplett.
+    msg_lower = message.lower()
     if not any(
         kw in msg_lower
         for kw in (*_AUTO_KEYWORDS, *_SPEC_KEYWORDS, *_PREIS_KEYWORDS, *_RECALL_KEYWORDS)
     ):
         return []
 
-    verlauf_text = " ".join(m.get("text", "") for m in verlauf).lower()
-    return _suche_baureihen_in_text(verlauf_text)
+    verlauf_text = " ".join(m.get("text", "") for m in verlauf)
+    for bid in _suche_baureihen_in_text(verlauf_text.lower()):
+        treffer.setdefault(bid, message)
+    return list(treffer.items())
+
+
+def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
+    """Kompatibilitäts-Wrapper um _erkenne_fahrzeuge() — nur die IDs, ohne Segment-Text."""
+    return [bid for bid, _ in _erkenne_fahrzeuge(message, verlauf)]
 
 
 # ---------- System-Prompt ----------
@@ -636,7 +729,8 @@ async def chat_stream(
     await asyncio.sleep(0)  # Event-Loop freigeben → Event erreicht Client sofort
 
     t_detect = time.perf_counter()
-    baureihe_ids = _detect_baureihe_ids(message, verlauf)
+    fahrzeuge = _erkenne_fahrzeuge(message, verlauf)  # [(baureihe_id, segment_text), ...]
+    baureihe_ids = [bid for bid, _ in fahrzeuge]
     print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids}", flush=True)
 
     # ── 1. DB-Kontext aufbauen ───────────────────────────────────────────────
@@ -656,49 +750,85 @@ async def chat_stream(
     vertrauen = "hoch"      if baureihe_ids else "mittel"
     belege: list[dict] = []
 
-    # ── 2. Websuche: bei Preis/Rückruf ODER wenn Fahrzeug nicht in DB ───────
+    # ── 2. Websuche: EIN Fahrzeug = eine eigene Suche, alle parallel ────────
+    # Kernfix gegen den Mehrfahrzeug-Bug: vorher gab es nur EINE Tavily-Suche pro
+    # Nachricht, verankert an einem beliebigen (nicht mal deterministisch ersten)
+    # erkannten Fahrzeug — bei 5 genannten Autos bekamen 4 davon dadurch NIE
+    # Web-Daten. Jetzt bekommt jedes erkannte Fahrzeug seine eigene, auf sein
+    # Text-Segment fokussierte Suche; alle Suchen laufen parallel (asyncio.gather),
+    # damit die Antwortzeit bei Mehrfahrzeug-Anfragen nicht linear mit der Anzahl
+    # Fahrzeuge steigt.
     web_ctx = ""
     if _needs_web_search(message, baureihe_ids, verlauf) and TAVILY_API_KEY:
         yield {"type": "status", "text": "Durchsuche das Web…"}
         await asyncio.sleep(0)
 
-        car_info = _first_baureihe_info(baureihe_ids)
-        # Such-Query bauen — nie den vollen Prompt übergeben (HTTP 400 bei >400 Zeichen).
-        # Ganze Nachricht (Zeilenumbrüche zu Leerzeichen geglättet) statt nur der ersten
-        # Zeile nutzen — sonst geht bei mehrteiligen/mehrzeiligen Fragen der Kontext
-        # der übrigen Zeilen für die Suche verloren.
-        flat_msg = " ".join(message.split())[:150]
-        if car_info:
-            marke, modell, generation = car_info
-            # "Deutschland" explizit ergänzen, damit europäische statt US-Marktdaten
-            # bevorzugt werden (US-Modelljahre/-Ausstattungen weichen oft ab).
-            search_query = f"{marke} {modell} {generation} {flat_msg} Deutschland"[:250]
+        t_web = time.perf_counter()
+
+        if fahrzeuge:
+            # Begrenzung gegen pathologische Massen-Anfragen (z.B. 50 Fahrzeuge in einer
+            # Nachricht) — schützt die Tavily-Quote und die Antwortzeit.
+            begrenzt = fahrzeuge[:MAX_PARALLELE_SUCHEN]
+            infos = _baureihe_infos([bid for bid, _ in begrenzt])
+
+            async def _suche_fuer_fahrzeug(bid: str, segment: str) -> tuple[str, list[dict]]:
+                info = infos.get(bid)
+                if info is None:
+                    return bid, []
+                marke, modell, generation = info
+                flat_segment = " ".join(segment.split())[:150]
+                # "Deutschland" explizit ergänzen, damit europäische statt US-Marktdaten
+                # bevorzugt werden (US-Modelljahre/-Ausstattungen weichen oft ab).
+                query = f"{marke} {modell} {generation} {flat_segment} Deutschland"[:250]
+                results = await tavily_search(query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
+                # Robuster Fallback: liefert die spezifische Query nichts, mit breiterer
+                # Query nachsuchen statt komplett leer zu bleiben.
+                if not results:
+                    results = await tavily_search(
+                        f"{marke} {modell} Deutschland", exclude_domains=_US_QUELLEN_AUSSCHLUSS
+                    )
+                if not results:
+                    results = await tavily_search(
+                        f"{marke} {modell} {generation} technische Daten",
+                        exclude_domains=_US_QUELLEN_AUSSCHLUSS,
+                    )
+                return bid, results
+
+            ergebnisse = await asyncio.gather(
+                *(_suche_fuer_fahrzeug(bid, segment) for bid, segment in begrenzt)
+            )
+
+            bloecke: list[str] = []
+            alle_belege: list[dict] = []
+            for bid, results in ergebnisse:
+                if not results:
+                    continue
+                marke, modell, generation = infos[bid]
+                block = results_to_context(results)
+                if block:
+                    bloecke.append(f"### Web-Ergebnisse für: {marke} {modell} {generation}\n{block}")
+                alle_belege.extend(results_to_belege(results))
+
+            web_ctx = "\n\n".join(bloecke)
+            belege = alle_belege
+            print(
+                f"[TIMING] tavily (parallel, {len(begrenzt)} Fahrzeuge): {_ms(t_web)} "
+                f"-> {sum(len(r) for _, r in ergebnisse)} Ergebnisse gesamt",
+                flush=True,
+            )
         else:
+            # Kein Fahrzeug erkannt (z.B. reine Preis-/Rückruf-Frage ohne Modellbezug) —
+            # eine einzelne Suche über die Gesamtnachricht wie bisher.
+            flat_msg = " ".join(message.split())[:150]
             verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
             search_query = f"{flat_msg} {verlauf_text} Deutschland"[:250]
+            web_results = await tavily_search(search_query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
+            if web_results:
+                web_ctx = results_to_context(web_results)
+                belege = results_to_belege(web_results)
+            print(f"[TIMING] tavily (ohne Fahrzeug): {_ms(t_web)} -> {len(web_results)} Ergebnisse", flush=True)
 
-        t_web = time.perf_counter()
-        web_results = await tavily_search(search_query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
-        # Robuster Fallback: liefert die spezifische Query nichts, mit breiterer Query
-        # nachsuchen (z.B. ohne Generation/Zusatzfrage) statt komplett leer zu bleiben.
-        if not web_results and car_info:
-            marke, modell, _ = car_info
-            web_results = await tavily_search(
-                f"{marke} {modell} Deutschland", exclude_domains=_US_QUELLEN_AUSSCHLUSS
-            )
-        # Zweiter Fallback: manche Anfragen (z.B. reine Motorcode-Fragen) profitieren
-        # von einer knapperen, stärker technisch orientierten Query ohne Fahrzeugnamen-
-        # Wiederholung aus der Originalnachricht.
-        if not web_results and car_info:
-            marke, modell, generation = car_info
-            web_results = await tavily_search(
-                f"{marke} {modell} {generation} technische Daten", exclude_domains=_US_QUELLEN_AUSSCHLUSS
-            )
-        print(f"[TIMING] tavily: {_ms(t_web)} -> {len(web_results) if web_results else 0} Ergebnisse", flush=True)
-
-        if web_results:
-            web_ctx = results_to_context(web_results)
-            belege  = results_to_belege(web_results)
+        if web_ctx:
             if baureihe_ids:
                 quelle    = "gemischt"
                 vertrauen = "mittel"
@@ -761,7 +891,7 @@ async def chat_stream(
     except RateLimitExhausted as exc:
         yield {"type": "text", "delta": str(exc)}
         yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
-               "vertrauen": "niedrig", "belege": []}
+               "vertrauen": "niedrig", "belege": [], "debug_build": DEBUG_BUILD}
         return
     print(f"[TIMING] gemini iterator erstellt (blockierend): {_ms(t_gemini_init)}", flush=True)
 
@@ -801,4 +931,5 @@ async def chat_stream(
         "fahrzeug_referenz": baureihe_ids,
         "vertrauen":         vertrauen,
         "belege":            belege,
+        "debug_build":       DEBUG_BUILD,
     }
