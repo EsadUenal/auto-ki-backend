@@ -235,6 +235,21 @@ def _escape_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+# Gemini vergisst gelegentlich das Komma zwischen dem "bericht"-Wert (der oft mit einem
+# Satzzeichen endet, z.B. "...prüfen.") und dem nächsten Schema-Key — z.B.
+# `..."\n  "empfehlung": ...` statt `...",\n  "empfehlung": ...`. Muss VOR
+# _escape_json_strings laufen: die Anführungszeichen-Heuristik dort erkennt so ein
+# Schema-Key-Anführungszeichen ohne vorheriges Komma sonst fälschlich als literales
+# Zitat mitten im String und escaped es, statt den String korrekt zu beenden.
+_FEHLENDES_KOMMA_MUSTER = re.compile(
+    r'"(\s*)"(bericht|empfehlung|preis_bewertung|marktpreis_min|marktpreis_max)":'
+)
+
+
+def _repariere_fehlendes_komma(raw: str) -> str:
+    return _FEHLENDES_KOMMA_MUSTER.sub(r'",\1"\2":', raw)
+
+
 # Fängt den Fall ab, dass Gemini trotz response_mime_type=json gelegentlich reines
 # Markdown ohne JSON-Hülle liefert. Die Informationen stehen dann trotzdem im Text —
 # nur nicht in den strukturierten Feldern. Statt alles auf "unbekannt" fallen zu lassen,
@@ -318,5 +333,10 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         try:
             return json.loads(_escape_json_strings(raw))
         except json.JSONDecodeError:
-            log.warning("Gemini JSON-Parsing fehlgeschlagen (beide Versuche). Raw[:300]: %s", raw[:300])
-            return _notfall_extraktion(raw)
+            try:
+                # Komma-Reparatur muss auf dem ROHTEXT laufen (siehe Docstring von
+                # _repariere_fehlendes_komma), danach erst die Anführungszeichen-Reparatur.
+                return json.loads(_escape_json_strings(_repariere_fehlendes_komma(raw)))
+            except json.JSONDecodeError:
+                log.warning("Gemini JSON-Parsing fehlgeschlagen (alle Versuche). Raw[:300]: %s", raw[:300])
+                return _notfall_extraktion(raw)
