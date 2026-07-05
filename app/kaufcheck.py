@@ -104,7 +104,8 @@ REGELN:
 2. Kennzeichne Web-Preise transparent als Websuche-Ergebnis, ohne interne Begriffe wie "ungeprüft" oder "Vertrauen" im Text zu verwenden — das sind Entwicklerbegriffe, keine Nutzersprache.
 3. Sei direkt, sachlich und neutral — keine leeren Phrasen, kein Hype, keine Marketing-Sprache. Begründungen immer technisch (Motor, Verschleiß, Marktdaten), nie emotional/werblich.
 4. Schreibe ausschließlich auf Deutsch, kompakt — keine Wiederholung derselben Information in mehreren Abschnitten.
-5. Das JSON-Feld "bericht" darf Zeilenumbrüche (\\n) enthalten.\
+5. Das JSON-Feld "bericht" darf Zeilenumbrüche (\\n) enthalten.
+6. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Checkliste.\
 """
 
 

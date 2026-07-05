@@ -91,7 +91,8 @@ REGELN:
 3. Konkrete Zahlen — keine "könnte"-Phrasen ohne Zahl.
 4. Alle Zahlfelder MÜSSEN als Integer stehen — nicht im Bericht verstecken.
 5. Sachlich und neutral bleiben — Begründungen immer technisch (Zustand, Laufleistung, Marktdaten, Ausstattung), nie werblich/emotional ("toller Wagen", "beliebtes Modell").
-6. Auf Deutsch schreiben.\
+6. Auf Deutsch schreiben.
+7. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Verkaufsstrategie.\
 """
 
 
