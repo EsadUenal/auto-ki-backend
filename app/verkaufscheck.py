@@ -16,6 +16,7 @@ import logging
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
 from app.models import VerkaufsCheckRequest
+from app.postprocess import postprocess_answer
 from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
 
 log = logging.getLogger(__name__)
@@ -161,6 +162,8 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # zurückerstattet und eine saubere Fehlermeldung zeigt.
     user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx]))
     result = await call_gemini_json(_SYSTEM, user_msg)
+    if result.get("bericht"):
+        result["bericht"] = postprocess_answer(result["bericht"])
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"

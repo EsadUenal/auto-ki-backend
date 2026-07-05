@@ -16,6 +16,7 @@ import logging
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
 from app.models import KaufCheckRequest
+from app.postprocess import postprocess_answer
 from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
 
 log = logging.getLogger(__name__)
@@ -178,6 +179,8 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     # und eine saubere Fehlermeldung zeigt, statt hier einen wertlosen "unbekannt"-
     # Bericht als scheinbaren Erfolg (200 OK) zurückzugeben.
     result = await call_gemini_json(_SYSTEM, user_msg)
+    if result.get("bericht"):
+        result["bericht"] = postprocess_answer(result["bericht"])
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,

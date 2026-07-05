@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 from app.models import ChatRequest, ChatResponse, FehlerResponse
 from app.auth import verify_api_key
 from app.llm import chat_stream
+from app.postprocess import postprocess_answer
 from app.utf8 import UTF8JSONResponse
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
@@ -31,7 +32,7 @@ async def _sse_generator(message: str, verlauf: list[dict]):
         elif event["type"] == "meta":
             meta = event
             payload = {
-                "answer": "".join(full_text),
+                "answer": postprocess_answer("".join(full_text)),
                 "quelle": meta.get("quelle", "gemischt"),
                 "fahrzeug_referenz": meta.get("fahrzeug_referenz", []),
                 "vertrauen": meta.get("vertrauen", "mittel"),
@@ -79,7 +80,7 @@ async def chat_endpunkt(body: ChatRequest, request: Request):
             meta = event
 
     return ChatResponse(
-        answer="".join(full_text),
+        answer=postprocess_answer("".join(full_text)),
         quelle=meta.get("quelle", "gemischt"),
         fahrzeug_referenz=meta.get("fahrzeug_referenz", []),
         vertrauen=meta.get("vertrauen", "mittel"),
