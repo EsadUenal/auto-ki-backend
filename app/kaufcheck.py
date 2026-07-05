@@ -15,7 +15,6 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
-from app.gemini_retry import RateLimitExhausted
 from app.models import KaufCheckRequest
 from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
 
@@ -172,11 +171,12 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
         else "MOTOR-STATUS: nicht erkannt — Inserat nennt keine eindeutige Motorisierung"
     )
     user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx]))
-    try:
-        result = await call_gemini_json(_SYSTEM, user_msg)
-    except RateLimitExhausted as exc:
-        result = {"bericht": f"Gemini-Tageslimit erreicht: {exc}",
-                  "empfehlung": "unbekannt", "preis_bewertung": "unbekannt"}
+    # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
+    # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
+    # (routers/kaufcheck.py), der einheitlich das Check-Kontingent zurückerstattet
+    # und eine saubere Fehlermeldung zeigt, statt hier einen wertlosen "unbekannt"-
+    # Bericht als scheinbaren Erfolg (200 OK) zurückzugeben.
+    result = await call_gemini_json(_SYSTEM, user_msg)
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,

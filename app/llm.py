@@ -42,11 +42,10 @@ print(f"[DEBUG_BUILD] {DEBUG_BUILD}", flush=True)
 
 from google import genai
 from google.genai import types as genai_types
-from google.genai.errors import ServerError as GeminiServerError
 
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
-from app.gemini_retry import with_retry_sync, RateLimitExhausted
+from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.web_search import tavily_search, results_to_context, results_to_belege
 
 # US-zentrierte Auto-Portale liefern oft abweichende US-Modelljahre/-Ausstattungen/
@@ -75,7 +74,14 @@ def _get_client() -> genai.Client:
     if _client is None:
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY nicht gesetzt.")
-        _client = genai.Client(api_key=GEMINI_API_KEY)
+        # Ohne expliziten Timeout kann eine gestörte Verbindung den Request unbegrenzt
+        # hängen lassen (weder Retry noch Fehlermeldung würden je greifen). HttpOptions.
+        # timeout ist in Millisekunden (SDK-intern verifiziert) — 60s reichen für eine
+        # normale Chat-Streaming-Antwort deutlich.
+        _client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=genai_types.HttpOptions(timeout=60_000),
+        )
     return _client
 
 
@@ -913,15 +919,31 @@ async def chat_stream(
 
     t_gemini_init = time.perf_counter()
     try:
-        response = with_retry_sync(lambda: client.models.generate_content_stream(
+        # Async statt sync-Client: with_retry_sync() nutzte bisher time.sleep()
+        # während eines 429/503-Backoffs — das blockiert innerhalb einer async
+        # Funktion den KOMPLETTEN Event-Loop und damit ALLE gleichzeitigen
+        # Nutzer-Requests, nicht nur den eigenen. Der async-Client + await
+        # with_retry() (asyncio.sleep) gibt den Loop währenddessen frei.
+        response = await with_retry(lambda: client.aio.models.generate_content_stream(
             model=LLM_MODEL, contents=contents, config=cfg,
         ))
-    except RateLimitExhausted as exc:
-        yield {"type": "text", "delta": str(exc)}
+    except GeminiFehlgeschlagen as exc:
+        log.warning("Chat: Gemini-Totalausfall beim Start des Streams: %s", exc)
+        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
         yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
                "vertrauen": "niedrig", "belege": [], "debug_build": DEBUG_BUILD}
         return
-    print(f"[TIMING] gemini iterator erstellt (blockierend): {_ms(t_gemini_init)}", flush=True)
+    except Exception as exc:
+        # Sicherheitsnetz: JEDER sonst unerwartete Fehler (z.B. ein Bug in der
+        # SDK-Fehlerklassifizierung) darf den Generator nie ungefangen abbrechen —
+        # der Nutzer soll immer eine verständliche Meldung statt eines
+        # abgebrochenen Streams ohne jede Antwort sehen.
+        log.exception("Chat: unerwarteter Fehler beim Start des Gemini-Streams")
+        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
+        yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
+               "vertrauen": "niedrig", "belege": [], "debug_build": DEBUG_BUILD}
+        return
+    print(f"[TIMING] gemini iterator erstellt: {_ms(t_gemini_init)}", flush=True)
 
     first_token = True
     t_first_token = time.perf_counter()
@@ -932,7 +954,7 @@ async def chat_stream(
     _FLUSH_TAIL = 24
     scrub_buf = ""
     try:
-        for chunk in response:
+        async for chunk in response:
             if chunk.text:
                 if first_token:
                     print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
@@ -943,10 +965,13 @@ async def chat_stream(
                     safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
                     yield {"type": "text", "delta": _scrub_jargon(safe)}
                     await asyncio.sleep(0)
-    except GeminiServerError as exc:
-        msg = "KI momentan ausgelastet, bitte nochmal versuchen." if exc.code == 503 else f"Gemini-Fehler: {exc}"
-        scrub_buf += f"\n\n*{msg}*"
-        print(f"[TIMING] GeminiServerError {exc.code} nach {_ms(t0)}", flush=True)
+    except Exception as exc:
+        # Fehler MITTEN im Stream (503, Netzwerkabbruch, o.ä.) — der bereits
+        # gesendete Teiltext bleibt für den Nutzer sichtbar (bessere UX als ihn
+        # zu verwerfen), ergänzt um einen kurzen, verständlichen Hinweis statt
+        # eines rohen Fehlertexts. Der Generator wird NIE ungefangen abgebrochen.
+        log.warning("Chat: Fehler während des Streamens nach %s: %s", _ms(t0), exc)
+        scrub_buf += f"\n\n*{KI_UEBERLASTET_NACHRICHT}*"
 
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}

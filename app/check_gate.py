@@ -10,10 +10,14 @@ Alle anderen: atomares Dekrement; 402 wenn checks_verbleibend == 0
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import Depends, HTTPException
 
 from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
+
+log = logging.getLogger(__name__)
 
 
 def require_check_access(user_id: int = Depends(get_current_user_id)) -> int:
@@ -52,3 +56,29 @@ def require_check_access(user_id: int = Depends(get_current_user_id)) -> int:
         )
 
     return user_id
+
+
+def refund_check_credit(user_id: int) -> None:
+    """
+    Erstattet EINEN Check-Credit zurück, wenn require_check_access() bereits
+    dekrementiert hat, der Nutzer aber wegen eines Gemini-Totalausfalls (siehe
+    app.gemini_retry.GeminiFehlgeschlagen) keine verwertbare Antwort erhalten hat.
+
+    MAX-Abo hatte nie ein Dekrement (unbegrenztes Kontingent) — hier bewusst
+    NICHT erhöhen, sonst würde unbegrenztes Kontingent fälschlich zu einem
+    gezählten Kontingent-Feld mutieren. Kein Rowcount-Check nötig: ein Rückbuchen
+    auf einen ggf. inzwischen gelöschten Nutzer ist harmlos (0 Zeilen betroffen).
+    """
+    try:
+        with get_conn() as conn:
+            user = conn.execute("SELECT abo_typ FROM users WHERE id=?", (user_id,)).fetchone()
+            if user and user["abo_typ"] != "max":
+                conn.execute(
+                    "UPDATE users SET checks_verbleibend = checks_verbleibend + 1 WHERE id=?",
+                    (user_id,),
+                )
+                conn.commit()
+    except Exception:
+        # Refund ist best-effort — ein Fehler hier darf NICHT die eigentliche
+        # Fehlerantwort an den Nutzer verhindern, nur geloggt werden.
+        log.exception("Check-Credit-Rückerstattung für user_id=%s fehlgeschlagen", user_id)

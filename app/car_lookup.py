@@ -16,7 +16,7 @@ from google.genai import types as genai_types
 
 from app.config import GEMINI_API_KEY, LLM_MODEL
 from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz
-from app.gemini_retry import with_retry
+from app.gemini_retry import with_retry, GeminiFehlgeschlagen
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +177,14 @@ def get_gemini_client() -> genai.Client:
     if _client is None:
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY nicht gesetzt.")
-        _client = genai.Client(api_key=GEMINI_API_KEY)
+        # Ohne expliziten Timeout kann eine gestörte Verbindung den Request unbegrenzt
+        # hängen lassen. HttpOptions.timeout ist in Millisekunden (SDK-intern
+        # verifiziert) — 90s statt 60s wie im Chat, da max_output_tokens=16384 für
+        # Kauf-/Verkaufscheck-Berichte spürbar länger dauern kann.
+        _client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=genai_types.HttpOptions(timeout=90_000),
+        )
     return _client
 
 
@@ -322,7 +329,18 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         config=cfg,
     ))
 
-    raw = (response.text or "").strip()
+    # Manche Antworten liefern KEINEN Text (z.B. durch Safety-Filter blockiert,
+    # oder .text wirft selbst eine Exception bei fehlenden candidates) — das ist
+    # kein Python-Fehler, aber genauso wertlos für den Nutzer wie ein 429/503.
+    # Einheitlich als GeminiFehlgeschlagen behandeln, damit der Aufrufer (Kauf-/
+    # Verkaufscheck) das Check-Kontingent zurückerstatten kann.
+    try:
+        raw = (response.text or "").strip()
+    except Exception as exc:
+        raise GeminiFehlgeschlagen(f"Gemini-Antwort ohne verwertbaren Text: {exc}") from exc
+    if not raw:
+        raise GeminiFehlgeschlagen("Gemini hat eine leere Antwort geliefert.")
+
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw.strip())
 

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.models import KaufCheckRequest, KaufCheckResponse, FehlerResponse
 from app.auth import verify_api_key
-from app.check_gate import require_check_access
+from app.check_gate import require_check_access, refund_check_credit
+from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.kaufcheck import run_kaufcheck
 from app.utf8 import UTF8JSONResponse
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
 limiter = Limiter(key_func=get_remote_address)
@@ -24,14 +29,26 @@ limiter = Limiter(key_func=get_remote_address)
         403: {"model": FehlerResponse},
         429: {"model": FehlerResponse},
         500: {"model": FehlerResponse},
+        503: {"model": FehlerResponse},
     },
 )
 @limiter.limit("10/minute")
 async def kaufcheck_endpunkt(
     body: KaufCheckRequest,
     request: Request,
-    _user_id: int = Depends(require_check_access),
+    user_id: int = Depends(require_check_access),
 ):
     verify_api_key(request)
-    result = await run_kaufcheck(body)
+    try:
+        result = await run_kaufcheck(body)
+    except GeminiFehlgeschlagen as exc:
+        # Der Nutzer hat keine verwertbare Analyse erhalten — das bereits von
+        # require_check_access() abgezogene Check-Kontingent zurückerstatten,
+        # statt ihm einen Check zu berechnen, für den er nichts bekommen hat.
+        log.warning("Kaufcheck: Gemini-Totalausfall, erstatte Kontingent zurück (user_id=%s): %s", user_id, exc)
+        refund_check_credit(user_id)
+        raise HTTPException(
+            status_code=503,
+            detail={"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT}},
+        ) from exc
     return KaufCheckResponse(**result)

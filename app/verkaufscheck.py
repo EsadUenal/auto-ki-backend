@@ -15,7 +15,6 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
-from app.gemini_retry import RateLimitExhausted
 from app.models import VerkaufsCheckRequest
 from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
 
@@ -155,11 +154,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     belege  = results_to_belege(web_results)
 
     # 4. Gemini-Analyse
+    # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
+    # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
+    # (routers/verkaufscheck.py), der einheitlich das Check-Kontingent
+    # zurückerstattet und eine saubere Fehlermeldung zeigt.
     user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx]))
-    try:
-        result = await call_gemini_json(_SYSTEM, user_msg)
-    except RateLimitExhausted as exc:
-        result = {"bericht": f"Gemini-Tageslimit erreicht: {exc}"}
+    result = await call_gemini_json(_SYSTEM, user_msg)
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
