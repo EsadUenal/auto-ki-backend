@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import Request, HTTPException, status
 from app.config import API_KEY
 
@@ -10,7 +12,9 @@ def verify_api_key(request: Request) -> None:
             detail={"fehler": {"code": "unauthorized", "nachricht": "Authorization-Header fehlt oder ungültig."}},
         )
     token = auth.removeprefix("Bearer ").strip()
-    if token != API_KEY:
+    # Konstante Vergleichszeit statt "!=" — verhindert Timing-Angriffe, die aus
+    # der Antwortzeit auf übereinstimmende Präfixe schließen könnten.
+    if not hmac.compare_digest(token, API_KEY):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"fehler": {"code": "forbidden", "nachricht": "Ungültiger API-Schlüssel."}},

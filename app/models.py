@@ -3,6 +3,15 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Any
 
+# ---------- Input-Limits (Sicherheitsnetz gegen DOS/Kostenmissbrauch) ----------
+# Ohne Obergrenzen kann ein einzelner Request beliebig große Strings/Listen an
+# Gemini durchreichen (Kosten- und Latenzmissbrauch) oder den Server-Speicher
+# mit einer riesigen JSON-Payload belasten. Werte großzügig genug für jede
+# legitime Nutzung (Inserat-Volltext, langer Chat-Verlauf), aber endlich.
+_MAX_TEXT_LEN      = 8_000       # einzelne Freitext-/Nachrichtenfelder
+_MAX_BILD_B64_LEN  = 6_000_000   # Screenshot als Base64 (~4.5 MB Bilddatei)
+_MAX_VERLAUF_LEN   = 100         # Anzahl Nachrichten im Chat-Verlauf pro Request
+
 
 # ---------- Request ----------
 
@@ -13,14 +22,14 @@ class FahrzeugRequest(BaseModel):
 
 
 class ChatMessage(BaseModel):
-    rolle: str   # "user" | "ki"
-    text: str
+    rolle: str = Field(max_length=20)   # "user" | "ki"
+    text: str = Field(max_length=_MAX_TEXT_LEN)
 
 
 class ChatRequest(BaseModel):
-    message: str
-    verlauf: list[ChatMessage] = Field(default_factory=list)
-    bild_base64: str | None = None   # Phase 1: Feld vorhanden, noch nicht verarbeitet
+    message: str = Field(max_length=_MAX_TEXT_LEN)
+    verlauf: list[ChatMessage] = Field(default_factory=list, max_length=_MAX_VERLAUF_LEN)
+    bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
     stream: bool = True
 
 
@@ -48,27 +57,27 @@ class ChatResponse(BaseModel):
 
 class KaufCheckRequest(BaseModel):
     # Strukturierte Inserat-Felder
-    marke: str | None = None
-    modell: str | None = None
+    marke: str | None = Field(default=None, max_length=100)
+    modell: str | None = Field(default=None, max_length=100)
     baujahr: int | None = None
     kilometerstand: int | None = None
-    motor: str | None = None          # z.B. "320d", "2.0 TDI 150 PS"
-    kraftstoff: str | None = None
+    motor: str | None = Field(default=None, max_length=200)   # z.B. "320d", "2.0 TDI 150 PS"
+    kraftstoff: str | None = Field(default=None, max_length=100)
     preis_eur: int | None = None
-    ausstattung: list[str] = Field(default_factory=list)
-    beschreibung: str | None = None   # Freitext-Beschreibung aus dem Inserat
+    ausstattung: list[str] = Field(default_factory=list, max_length=100)
+    beschreibung: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)   # Freitext-Beschreibung aus dem Inserat
 
     # Zusätzliche Angaben — deutlich relevant für die Risikoeinschätzung
-    unfallfrei: str | None = None      # "ja" | "nein" | "unbekannt"
+    unfallfrei: str | None = Field(default=None, max_length=20)      # "ja" | "nein" | "unbekannt"
     vorbesitzer: int | None = None     # Anzahl Vorbesitzer laut Inserat
-    tuev_bis: str | None = None        # z.B. "06/2027"
+    tuev_bis: str | None = Field(default=None, max_length=20)        # z.B. "06/2027"
     scheckheftgepflegt: bool | None = None
 
     # Alternativ: Volltext des Inserats (Copy-Paste von mobile.de / AutoScout)
-    freitext: str | None = None
+    freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
 
     # Optional: Screenshot des Inserats
-    bild_base64: str | None = None
+    bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
 
 
 class KaufCheckResponse(BaseModel):
@@ -87,25 +96,25 @@ class KaufCheckResponse(BaseModel):
 # ---------- Verkaufs-Check ----------
 
 class VerkaufsCheckRequest(BaseModel):
-    marke: str | None = None
-    modell: str | None = None
+    marke: str | None = Field(default=None, max_length=100)
+    modell: str | None = Field(default=None, max_length=100)
     baujahr: int | None = None
     kilometerstand: int | None = None
-    motor: str | None = None
-    kraftstoff: str | None = None
-    ausstattung: list[str] = Field(default_factory=list)
-    beschreibung: str | None = None        # Zustand, Besonderheiten (Nichtraucher, Scheckheft, ...)
-    maengel: list[str] = Field(default_factory=list)  # bekannte Mängel / anstehende Reparaturen
+    motor: str | None = Field(default=None, max_length=200)
+    kraftstoff: str | None = Field(default=None, max_length=100)
+    ausstattung: list[str] = Field(default_factory=list, max_length=100)
+    beschreibung: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)        # Zustand, Besonderheiten (Nichtraucher, Scheckheft, ...)
+    maengel: list[str] = Field(default_factory=list, max_length=100)  # bekannte Mängel / anstehende Reparaturen
     preis_vorstellung: int | None = None   # eigene Preisvorstellung des Verkäufers (optional)
 
     # Zusätzliche Angaben — verbessern die Preiseinschätzung deutlich
-    unfallfrei: str | None = None      # "ja" | "nein" | "unbekannt"
+    unfallfrei: str | None = Field(default=None, max_length=20)      # "ja" | "nein" | "unbekannt"
     vorbesitzer: int | None = None
-    tuev_bis: str | None = None        # z.B. "06/2027"
+    tuev_bis: str | None = Field(default=None, max_length=20)        # z.B. "06/2027"
     scheckheftgepflegt: bool | None = None
 
-    freitext: str | None = None            # alternative Freitexteingabe
-    bild_base64: str | None = None
+    freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)            # alternative Freitexteingabe
+    bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
 
 
 class VerkaufsCheckResponse(BaseModel):

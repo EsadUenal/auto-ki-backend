@@ -11,14 +11,20 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from pydantic import BaseModel, field_validator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.config import JWT_EXPIRE_DAYS, JWT_SECRET
 from app.database import get_conn
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+# Eigene Limiter-Instanz wie in chat.py/kaufcheck.py/verkaufscheck.py — dediziertes,
+# strengeres Limit für Login/Registrierung (Brute-Force- bzw. Spam-Schutz) zusätzlich
+# zum globalen Default-Limit (siehe app/main.py SlowAPIMiddleware).
+limiter = Limiter(key_func=get_remote_address)
 
 _BCRYPT_ROUNDS = 12
 
@@ -129,7 +135,8 @@ def get_current_user_id(auth_token: str | None = Cookie(default=None)) -> int:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/register", status_code=201)
-def register(body: RegisterBody, response: Response):
+@limiter.limit("10/minute")
+def register(body: RegisterBody, response: Response, request: Request):
     """Neuen Nutzer anlegen. Gibt User-Daten + setzt Auth-Cookie."""
     hashed = _hash_pw(body.password)
     try:
@@ -155,7 +162,8 @@ def register(body: RegisterBody, response: Response):
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response):
+@limiter.limit("10/minute")
+def login(body: LoginBody, response: Response, request: Request):
     """Einloggen. Gibt User-Daten + setzt Auth-Cookie."""
     with get_conn() as conn:
         row = conn.execute(

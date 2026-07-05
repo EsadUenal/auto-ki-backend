@@ -5,14 +5,49 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH
+from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET
 from app.database import ensure_tables
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile
 from app.llm import warmup_chroma
 from app.utf8 import UTF8JSONResponse
+
+log = logging.getLogger(__name__)
+
+# Maximale Request-Body-Größe (Bytes) — Sicherheitsnetz gegen übergroße Payloads
+# (z.B. riesige bild_base64-Felder oder absichtlich aufgeblähte JSON-Bodies), die
+# sonst vollständig in den Speicher eingelesen werden, bevor Pydantic überhaupt
+# validiert. 8 MB ist großzügig genug für ein Inserat-Screenshot als Base64.
+_MAX_BODY_BYTES = 8 * 1024 * 1024
+
+
+class _MaxBodySizeMiddleware:
+    """ASGI-Middleware: lehnt Requests mit zu großem Content-Length sofort ab
+    (413), bevor der Body überhaupt gelesen/geparst wird."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            content_length = headers.get(b"content-length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > _MAX_BODY_BYTES:
+                        response = JSONResponse(
+                            status_code=413,
+                            content={"fehler": {"code": "payload_too_large",
+                                                 "nachricht": "Anfrage zu groß."}},
+                        )
+                        await response(scope, receive, send)
+                        return
+                except ValueError:
+                    pass
+        await self.app(scope, receive, send)
 
 
 def _utf8_json(status_code: int, content: dict) -> UTF8JSONResponse:
@@ -35,9 +70,18 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,       # httpOnly-Cookie wird mitgeschickt
 )
+app.add_middleware(_MaxBodySizeMiddleware)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# OHNE diese Middleware greift der oben konfigurierte default_limits=[RATE_LIMIT]
+# NIRGENDS automatisch — SlowAPI prüft Limits nur für Routen mit explizitem
+# @limiter.limit(...)-Decorator ODER wenn diese Middleware jede Anfrage gegen
+# app.state.limiter prüft. Vorher hatten dadurch NUR /chat, /kaufcheck und
+# /verkaufscheck (eigene @limiter.limit-Decorator mit eigener Limiter-Instanz)
+# überhaupt ein Rate-Limit — u.a. /auth/login und /auth/register liefen völlig
+# ungedrosselt (Brute-Force-/Registrierungs-Spam-Risiko).
+app.add_middleware(SlowAPIMiddleware)
 
 
 @app.on_event("startup")
@@ -45,6 +89,26 @@ def on_startup() -> None:
     """Tabellen anlegen (idempotent) + ChromaDB vorladen."""
     ensure_tables()
     warmup_chroma()
+    _warn_if_insecure_defaults()
+
+
+def _warn_if_insecure_defaults() -> None:
+    """Lautes Log-Signal beim Start, falls sicherheitskritische Secrets noch auf
+    dem Entwicklungs-Default stehen — leicht zu übersehen vor einem Public-Launch,
+    da die App damit anstandslos weiterläuft (fail-open)."""
+    if API_KEY == "dev-key-change-in-prod":
+        log.warning(
+            "!!! AUTO_KI_API_KEY ist nicht gesetzt — Admin-/Fahrzeug-Endpunkte "
+            "verwenden den öffentlich bekannten Dev-Default. Vor Launch per "
+            "Umgebungsvariable AUTO_KI_API_KEY setzen. !!!"
+        )
+    if JWT_SECRET == "dev-jwt-secret-change-in-prod":
+        log.warning(
+            "!!! AUTO_KI_JWT_SECRET ist nicht gesetzt — Login-Tokens verwenden "
+            "den öffentlich bekannten Dev-Default und können von JEDEM gefälscht "
+            "werden. Vor Launch per Umgebungsvariable AUTO_KI_JWT_SECRET setzen "
+            "(z.B. `openssl rand -hex 32`). !!!"
+        )
 
 
 @app.exception_handler(RateLimitExceeded)

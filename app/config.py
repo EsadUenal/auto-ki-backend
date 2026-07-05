@@ -59,7 +59,11 @@ JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", "dev-jwt-secret-change-in-prod
 JWT_EXPIRE_DAYS = int(os.environ.get("AUTO_KI_JWT_EXPIRE_DAYS", "7"))
 
 # CORS-Origins die Cookies senden dürfen (komma-getrennt in Env-Var)
-_cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:5173,null"
+# WICHTIG: "null" NICHT aufnehmen — Browser senden Origin: null aus sandboxed
+# iframes und file://-Kontexten; zusammen mit allow_credentials=True würde das
+# jeder lokal geöffneten HTML-Datei erlauben, authentifizierte Requests mit
+# dem Nutzer-Cookie zu senden (klassische CORS-Fehlkonfiguration).
+_cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.environ.get("AUTO_KI_CORS_ORIGINS", _cors_default).split(",") if o.strip()
 ]

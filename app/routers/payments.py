@@ -216,13 +216,44 @@ async def stripe_webhook(request: Request):
     event_type = event.type
     obj        = event.data.object
 
-    # Idempotenz: jedes Event nur einmal verarbeiten
+    # Idempotenz, race-sicher UND fehlertolerant:
+    #  1. Event atomar "beanspruchen" (INSERT — event_id ist PRIMARY KEY). Schlägt
+    #     das fehl (Zeile existiert schon), wurde das Event bereits verarbeitet
+    #     ODER wird gerade parallel verarbeitet → überspringen.
+    #  2. Erst NACH erfolgreicher Verarbeitung bleibt der Claim bestehen.
+    #  3. Schlägt die Verarbeitung fehl, wird der Claim wieder entfernt, damit
+    #     Stripes automatischer Retry das Event TATSÄCHLICH erneut verarbeitet.
+    #
+    # VORHER wurde der event_id-Eintrag committet, BEVOR irgendetwas verarbeitet
+    # wurde. Trat danach ein Fehler auf (z.B. unerwartetes Metadata-Format,
+    # DB-Fehler), gab die Funktion 500 zurück, Stripe retryte automatisch — der
+    # Retry traf aber sofort auf "schon erledigt" und wurde stillschweigend
+    # übersprungen, OHNE dass die Freischaltung je stattfand. Der Nutzer hätte
+    # bezahlt, aber nie sein Guthaben bekommen — und kein Retry hätte das je
+    # repariert.
     with get_conn() as conn:
-        if conn.execute("SELECT 1 FROM stripe_events WHERE event_id=?", (event_id,)).fetchone():
-            return {"ok": True, "skipped": True}
-        conn.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO stripe_events (event_id) VALUES (?)", (event_id,)
+        )
         conn.commit()
+        if cur.rowcount == 0:
+            return {"ok": True, "skipped": True}
 
+    try:
+        _verarbeite_event(event_type, obj)
+    except Exception:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM stripe_events WHERE event_id=?", (event_id,))
+            conn.commit()
+        raise
+
+    return {"ok": True}
+
+
+def _verarbeite_event(event_type: str, obj) -> None:
+    """Wendet ein einzelnes, bereits signatur-geprüftes Stripe-Event an.
+    Wirft bei Fehlern normal weiter — der Aufrufer (stripe_webhook) entscheidet
+    anhand dessen, ob der Idempotenz-Claim bestehen bleibt oder zurückgerollt wird."""
     # ── checkout.session.completed ─────────────────────────────────────────────
     if event_type == "checkout.session.completed":
         # obj.metadata ist StripeObject (Stripe 15.x) — kein .get(), kein dict().
@@ -315,11 +346,11 @@ async def stripe_webhook(request: Request):
     elif event_type == "invoice.paid":
         billing_reason = getattr(obj, "billing_reason", "")
         if billing_reason != "subscription_cycle":
-            return {"ok": True}   # Erstrechnung wird über checkout.session.completed verarbeitet
+            return   # Erstrechnung wird über checkout.session.completed verarbeitet
 
         sub_id = getattr(obj, "subscription", None)
         if not sub_id:
-            return {"ok": True}
+            return
 
         with get_conn() as conn:
             user = conn.execute(
@@ -346,8 +377,6 @@ async def stripe_webhook(request: Request):
                     (sub_id,),
                 )
                 conn.commit()
-
-    return {"ok": True}
 
 
 @router.post("/cancel-subscription")
