@@ -46,16 +46,49 @@ from google.genai import types as genai_types
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
-from app.web_search import tavily_search, results_to_context, results_to_belege
+from app.web_search import (
+    tavily_search, results_to_context, results_to_belege, curate_results,
+    US_QUELLEN_AUSSCHLUSS as _US_QUELLEN_AUSSCHLUSS,
+    KATEGORIE_TECHNISCHE_DATEN, KATEGORIE_MARKTPREISE, KATEGORIE_RUECKRUFE,
+    KATEGORIE_SCHWACHSTELLEN, KATEGORIE_DIAGNOSE,
+)
 
-# US-zentrierte Auto-Portale liefern oft abweichende US-Modelljahre/-Ausstattungen/
-# -Einheiten (mph, US-Gallonen) statt der hierzulande relevanten EU-Spezifikationen —
-# gezielt ausschließen, damit europäische/deutsche Quellen bevorzugt werden.
-_US_QUELLEN_AUSSCHLUSS = [
-    "caranddriver.com", "motortrend.com", "edmunds.com", "cars.com",
-    "kbb.com", "autotrader.com", "consumerreports.org", "roadandtrack.com",
-    "carsguide.com.au", "carexpert.com.au",
-]
+# Obergrenze für Quellen, die dem Nutzer in einer normalen Chat-Antwort gezeigt
+# werden ("nicht mehr Quellen anzeigen als nötig" — Final Polish Quellenqualität).
+# Gilt für die GESAMTE Antwort (über alle erkannten Fahrzeuge hinweg), nicht pro
+# Fahrzeug — bei Mehrfahrzeug-Nachrichten sonst 3-5 Quellen PRO Auto.
+MAX_CHAT_QUELLEN = 5
+
+_SCHWACHSTELLEN_KEYWORDS = frozenset({
+    "schwachstelle", "schwachstellen", "problem", "probleme", "defekt",
+    "schaden", "typisch", "bekannte mängel", "mangel", "mängel", "anfällig",
+})
+_DIAGNOSE_KEYWORDS = frozenset({
+    "geräusch", "klapper", "klopf", "quietsch", "pfeif", "schleif",
+    "warnleuchte", "kontrollleuchte", "ruckel", "stotter", "springt nicht an",
+    "startet nicht", "anlasser", "riecht", "raucht", "vibrier",
+})
+
+
+def _bestimme_kategorie(message: str) -> str:
+    """
+    Ordnet eine Chat-/Diagnose-Nachricht einer Quellen-Kategorie zu, damit die
+    Websuche thematisch passende Domains bevorzugt (siehe web_search.py
+    _KATEGORIE_BOOST): Rückrufe -> KBA/Hersteller, Marktpreise -> Marktplätze,
+    Schwachstellen -> Fachmedien/Community, Diagnose -> Technik/Fachmedien,
+    sonst technische Daten -> Hersteller/Technik-Datenbanken.
+    Reihenfolge = Priorität bei mehrdeutigen Nachrichten.
+    """
+    msg = message.lower()
+    if any(kw in msg for kw in _RECALL_KEYWORDS):
+        return KATEGORIE_RUECKRUFE
+    if any(kw in msg for kw in _PREIS_KEYWORDS):
+        return KATEGORIE_MARKTPREISE
+    if any(kw in msg for kw in _DIAGNOSE_KEYWORDS):
+        return KATEGORIE_DIAGNOSE
+    if any(kw in msg for kw in _SCHWACHSTELLEN_KEYWORDS):
+        return KATEGORIE_SCHWACHSTELLEN
+    return KATEGORIE_TECHNISCHE_DATEN
 
 # Obergrenze für parallele Websuchen pro Chat-Nachricht (Mehrfahrzeug-Anfragen) — schützt
 # die Tavily-Quote und die Antwortzeit bei pathologischen Nachrichten mit sehr vielen
@@ -804,6 +837,7 @@ async def chat_stream(
         await asyncio.sleep(0)
 
         t_web = time.perf_counter()
+        kategorie = _bestimme_kategorie(message)
 
         if fahrzeuge:
             # Begrenzung gegen pathologische Massen-Anfragen (z.B. 50 Fahrzeuge in einer
@@ -835,14 +869,17 @@ async def chat_stream(
                         f"{marke} {modell} {generation} technische Daten", count=3,
                         exclude_domains=_US_QUELLEN_AUSSCHLUSS,
                     )
-                return bid, results
+                # Quellenqualität: Social Media raus, Duplikate raus, nach
+                # Vertrauenswürdigkeit sortiert, pro Fahrzeug auf 3 begrenzt
+                # (Grobfilter — der globale Cap über alle Fahrzeuge folgt unten).
+                return bid, curate_results(results, kategorie=kategorie, max_results=3)
 
             ergebnisse = await asyncio.gather(
                 *(_suche_fuer_fahrzeug(bid, segment) for bid, segment in begrenzt)
             )
 
             bloecke: list[str] = []
-            alle_belege: list[dict] = []
+            alle_roh: list[dict] = []
             for bid, results in ergebnisse:
                 if not results:
                     continue
@@ -850,13 +887,16 @@ async def chat_stream(
                 block = results_to_context(results)
                 if block:
                     bloecke.append(f"### Web-Ergebnisse für: {marke} {modell} {generation}\n{block}")
-                alle_belege.extend(results_to_belege(results))
+                alle_roh.extend(results)
 
             web_ctx = "\n\n".join(bloecke)
-            belege = alle_belege
+            # Globaler Cap über ALLE Fahrzeuge hinweg (nicht pro Fahrzeug) — bei
+            # Mehrfahrzeug-Nachrichten bekommt der Nutzer sonst 3-5 Quellen PRO
+            # Auto statt insgesamt "so viele wie nötig" (siehe MAX_CHAT_QUELLEN).
+            belege = results_to_belege(curate_results(alle_roh, kategorie=kategorie, max_results=MAX_CHAT_QUELLEN))
             print(
                 f"[TIMING] tavily (parallel, {len(begrenzt)} Fahrzeuge): {_ms(t_web)} "
-                f"-> {sum(len(r) for _, r in ergebnisse)} Ergebnisse gesamt",
+                f"-> {sum(len(r) for _, r in ergebnisse)} Ergebnisse gesamt, {len(belege)} nach Kuration",
                 flush=True,
             )
         else:
@@ -866,6 +906,7 @@ async def chat_stream(
             verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
             search_query = f"{flat_msg} {verlauf_text} Deutschland"[:250]
             web_results = await tavily_search(search_query, count=3, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
+            web_results = curate_results(web_results, kategorie=kategorie, max_results=MAX_CHAT_QUELLEN)
             if web_results:
                 web_ctx = results_to_context(web_results)
                 belege = results_to_belege(web_results)

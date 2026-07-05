@@ -17,7 +17,15 @@ from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gem
 from app.config import TAVILY_API_KEY
 from app.models import KaufCheckRequest
 from app.postprocess import postprocess_answer
-from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
+from app.web_search import (
+    tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
+    KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
+)
+
+# Marktpreis-Quellen für den Kaufcheck: nur so viele wie wirklich nötig, um eine
+# belastbare Preisspanne zu begründen (Final Polish Quellenqualität) — statt
+# pauschal aller 5 abgefragten Treffer.
+_MAX_KAUFCHECK_QUELLEN = 4
 
 log = logging.getLogger(__name__)
 
@@ -154,7 +162,10 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
         ]))
         q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
         web_results_task = asyncio.ensure_future(
-            tavily_search_with_fallback([q_spezifisch, q_mittel, q_breit], count=5)
+            tavily_search_with_fallback(
+                [q_spezifisch, q_mittel, q_breit], count=5,
+                exclude_domains=US_QUELLEN_AUSSCHLUSS,
+            )
         )
 
     baureihe    = await baureihe_task
@@ -164,6 +175,9 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     db_ctx = build_db_context(baureihe, motor_match)
 
     web_results: list[dict] = await web_results_task if web_results_task else []
+    # Quellenqualität: Marktplätze (mobile.de/AutoScout24/AutoUncle) bevorzugt,
+    # Social Media/Duplikate raus, auf so viele Quellen wie nötig begrenzt.
+    web_results = curate_results(web_results, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
 

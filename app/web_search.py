@@ -17,6 +17,7 @@ import logging
 import time
 from datetime import date
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +26,228 @@ from app.config import TAVILY_API_KEY
 log = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.tavily.com/search"
+
+# ============================================================================
+# Quellenqualität: Kategorisierung, Ranking, Filterung (Final Polish)
+# ============================================================================
+#
+# Ziel: VIRA bevorzugt hochwertige, vertrauenswürdige, möglichst offizielle
+# Quellen — statt alle Tavily-Treffer gleich zu behandeln und unbegrenzt
+# anzuzeigen. Reine Nachbearbeitung der Suchergebnisse (kein Einfluss auf
+# Fakteninhalte) — siehe curate_results() als zentraler Einstiegspunkt.
+
+# Social Media liefert für Kfz-Fachfragen so gut wie nie echten Mehrwert
+# (keine technischen Fakten, keine geprüften Preise) — wird IMMER aus der
+# Tavily-Suche ausgeschlossen, unabhängig vom aufrufenden Flow.
+SOCIAL_MEDIA_AUSSCHLUSS = [
+    "instagram.com", "tiktok.com", "facebook.com", "pinterest.com",
+    "threads.net", "x.com", "twitter.com",
+]
+
+# US-zentrierte Auto-Portale liefern oft abweichende US-Modelljahre/
+# -Ausstattungen/-Einheiten (mph, US-Gallonen) statt der hierzulande
+# relevanten EU-Spezifikationen. War bisher nur in llm.py (Chat) definiert —
+# jetzt zentral, damit Kaufcheck/Verkaufscheck sie ebenfalls nutzen.
+US_QUELLEN_AUSSCHLUSS = [
+    "caranddriver.com", "motortrend.com", "edmunds.com", "cars.com",
+    "kbb.com", "autotrader.com", "consumerreports.org", "roadandtrack.com",
+    "carsguide.com.au", "carexpert.com.au",
+]
+
+# ---------- Domain-Qualitätsstufen ----------
+# Werte = Score-Bonus. Höher = vertrauenswürdiger/offizieller.
+_TIER_AMTLICH = 50       # KBA, TÜV, DEKRA — hoheitlich/technisch geprüft
+_TIER_HERSTELLER = 48    # Marken-Website des jeweiligen Herstellers
+_TIER_FACHMEDIEN = 40    # ADAC, Auto Motor und Sport, AutoBild
+_TIER_TECHNIK = 38       # Bosch, Hella, bekannte technische Datenbanken
+_TIER_MARKTPLATZ = 32    # mobile.de, AutoScout24, AutoUncle
+_TIER_NACHSCHLAGEWERK = 18   # Wikipedia u.ä. — brauchbar, aber nicht autoritativ
+_TIER_COMMUNITY = 12     # Motor-Talk, Reddit — nur mit Mehrwert relevant
+_TIER_NACHRICHTEN = 22   # etablierte Nachrichtenseiten (allgemein, nicht Kfz-Fachmedien)
+_TIER_UNBEKANNT = 0
+_TIER_GESPERRT = -1000   # Social Media — wird zusätzlich hart herausgefiltert
+
+_AMTLICH_DOMAINS = frozenset({
+    "kba.de", "tuev-sued.de", "tuvsud.com", "tuev-nord.de", "tuv.com",
+    "tuev-rheinland.de", "dekra.de", "dekra-akademie.de",
+})
+_FACHMEDIEN_DOMAINS = frozenset({
+    "adac.de", "auto-motor-und-sport.de", "ams-testcenter.de", "autobild.de",
+})
+_TECHNIK_DOMAINS = frozenset({
+    "bosch.de", "bosch-mobility.com", "bosch-presse.de", "hella.com",
+    "de.hella.com", "boschcarservice.com",
+})
+_MARKTPLATZ_DOMAINS = frozenset({
+    "mobile.de", "autoscout24", "autouncle",
+})
+_NACHSCHLAGEWERK_DOMAINS = frozenset({"wikipedia.org"})
+_COMMUNITY_DOMAINS = frozenset({
+    "motor-talk.de", "reddit.com",
+})
+_NACHRICHTEN_DOMAINS = frozenset({
+    "spiegel.de", "faz.net", "sueddeutsche.de", "zeit.de", "tagesschau.de",
+    "ndr.de", "focus.de", "n-tv.de", "welt.de",
+})
+
+# Herstellerseiten lassen sich nicht per fixer Domain-Liste abbilden (jede
+# Marke hat ihre eigene) — stattdessen wird geprüft, ob der Markenname als
+# Wortbestandteil im Domainnamen vorkommt (z.B. "bmw.de", "mercedes-benz.de",
+# "volkswagen.de", "audi.de"). Deckt automatisch auch Ländervarianten ab
+# (z.B. "bmw.at", "vw.co.uk").
+_HERSTELLER_MARKEN = frozenset({
+    "bmw", "mercedes-benz", "mercedes", "audi", "volkswagen", "vw", "opel",
+    "toyota", "honda", "hyundai", "kia", "seat", "skoda", "škoda", "peugeot",
+    "renault", "fiat", "volvo", "tesla", "porsche", "mazda", "subaru", "ford",
+    "citroen", "citroën", "mini", "jaguar", "landrover", "land-rover", "jeep",
+    "dacia", "smart", "cupra", "alfaromeo", "alfa-romeo", "suzuki", "mitsubishi",
+})
+
+
+def _domain_von(url: str) -> str:
+    """Extrahiert den Domainnamen (ohne 'www.') aus einer URL."""
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def _ist_herstellerseite(domain: str) -> bool:
+    """Prüft ob eine Domain zu einer bekannten Automarke gehört (z.B. bmw.de)."""
+    kern = domain.split(".")[0] if domain else ""
+    kern = kern.replace("-", "")
+    return any(kern == marke.replace("-", "") for marke in _HERSTELLER_MARKEN)
+
+
+def _enthaelt_domain(domain: str, gruppe: frozenset[str]) -> bool:
+    """
+    Teilstring-Match statt exaktem Vergleich — deckt Subdomains (z.B.
+    'suchen.mobile.de' für 'mobile.de') und länderspezifische TLD-Varianten
+    (z.B. 'autoscout24.at' für den Kern-Token 'autoscout24') gleichermaßen ab.
+    """
+    return any(eintrag in domain for eintrag in gruppe)
+
+
+# ---------- Themen-Kategorien ----------
+# Bestimmt, welche Domain-Gruppen für eine Fragestellung zusätzlich geboostet
+# werden (z.B. Marktplätze bei Preisfragen, KBA/Hersteller bei Rückrufen).
+KATEGORIE_TECHNISCHE_DATEN = "technische_daten"
+KATEGORIE_MARKTPREISE      = "marktpreise"
+KATEGORIE_RUECKRUFE        = "rueckrufe"
+KATEGORIE_SCHWACHSTELLEN   = "schwachstellen"
+KATEGORIE_WARTUNG          = "wartung"
+KATEGORIE_DIAGNOSE         = "diagnose"
+
+# Kategorie -> zusätzlich geboostete Domain-Gruppen (siehe Anforderung: Quellen
+# sollen thematisch passend ausgewählt werden, nicht pauschal gleich behandelt).
+_KATEGORIE_BOOST: dict[str, tuple[frozenset[str], ...]] = {
+    KATEGORIE_TECHNISCHE_DATEN: (_TECHNIK_DOMAINS,),
+    KATEGORIE_MARKTPREISE:      (_MARKTPLATZ_DOMAINS,),
+    KATEGORIE_RUECKRUFE:        (_AMTLICH_DOMAINS,),
+    KATEGORIE_SCHWACHSTELLEN:   (_FACHMEDIEN_DOMAINS, _COMMUNITY_DOMAINS),
+    KATEGORIE_WARTUNG:          (_TECHNIK_DOMAINS,),
+    KATEGORIE_DIAGNOSE:         (_TECHNIK_DOMAINS, _FACHMEDIEN_DOMAINS),
+}
+_KATEGORIE_BOOST_WERT = 15
+
+
+def score_domain(url: str, kategorie: str | None = None) -> int:
+    """Bewertet die Vertrauenswürdigkeit/Offizialität einer Quelle. Höher = besser."""
+    domain = _domain_von(url)
+    if not domain:
+        return _TIER_UNBEKANNT
+
+    if any(sperr in domain for sperr in SOCIAL_MEDIA_AUSSCHLUSS):
+        return _TIER_GESPERRT
+
+    if _enthaelt_domain(domain, _AMTLICH_DOMAINS):
+        score = _TIER_AMTLICH
+    elif _ist_herstellerseite(domain):
+        score = _TIER_HERSTELLER
+    elif _enthaelt_domain(domain, _FACHMEDIEN_DOMAINS):
+        score = _TIER_FACHMEDIEN
+    elif _enthaelt_domain(domain, _TECHNIK_DOMAINS):
+        score = _TIER_TECHNIK
+    elif _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS):
+        score = _TIER_MARKTPLATZ
+    elif _enthaelt_domain(domain, _NACHSCHLAGEWERK_DOMAINS):
+        score = _TIER_NACHSCHLAGEWERK
+    elif _enthaelt_domain(domain, _COMMUNITY_DOMAINS):
+        score = _TIER_COMMUNITY
+    elif _enthaelt_domain(domain, _NACHRICHTEN_DOMAINS):
+        score = _TIER_NACHRICHTEN
+    else:
+        score = _TIER_UNBEKANNT
+
+    if kategorie:
+        for gruppe in _KATEGORIE_BOOST.get(kategorie, ()):
+            if _enthaelt_domain(domain, gruppe):
+                score += _KATEGORIE_BOOST_WERT
+                break
+
+    return score
+
+
+def _normalisiere_url(url: str) -> str:
+    """Für Duplikat-Erkennung: ohne Query-String/Fragment/trailing Slash."""
+    try:
+        p = urlparse(url)
+        pfad = p.path.rstrip("/")
+        return f"{p.netloc.lower()}{pfad}".removeprefix("www.")
+    except Exception:
+        return url
+
+
+def curate_results(
+    results: list[dict[str, Any]],
+    kategorie: str | None = None,
+    max_results: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Zentrale Nachbearbeitung roher Tavily-Treffer für alle vier Flows
+    (Chat, Diagnose, Kaufcheck, Verkaufscheck):
+
+      1. Social Media hart herausfiltern (unabhängig von exclude_domains,
+         als zweites Sicherheitsnetz — siehe SOCIAL_MEDIA_AUSSCHLUSS)
+      2. Exakte URL-Duplikate entfernen
+      3. Near-Duplikate entfernen (gleiche Domain + gleicher Titel)
+      4. Nach Quellenqualität sortieren (score_domain, thematisch geboostet)
+      5. Auf max_results kürzen (Standard 5 — "nicht mehr Quellen als nötig")
+
+    Ändert NICHT den Inhalt (title/content/url) einzelner Treffer — nur
+    Auswahl und Reihenfolge.
+    """
+    if not results:
+        return []
+
+    gesehen_urls: set[str] = set()
+    gesehen_domain_titel: set[tuple[str, str]] = set()
+    bereinigt: list[dict[str, Any]] = []
+
+    for r in results:
+        url = r.get("url", "")
+        domain = _domain_von(url)
+        if not domain or any(sperr in domain for sperr in SOCIAL_MEDIA_AUSSCHLUSS):
+            continue
+
+        url_key = _normalisiere_url(url)
+        if url_key in gesehen_urls:
+            continue
+
+        titel_key = (domain, (r.get("title") or "").strip().lower())
+        if titel_key in gesehen_domain_titel:
+            continue
+
+        gesehen_urls.add(url_key)
+        gesehen_domain_titel.add(titel_key)
+        bereinigt.append(r)
+
+    # Stabile Sortierung nach Score (bei Gleichstand bleibt Tavily-Relevanz-
+    # Reihenfolge erhalten, da Python sort() stabil ist).
+    bereinigt.sort(key=lambda r: score_domain(r.get("url", ""), kategorie), reverse=True)
+
+    return bereinigt[:max_results]
 
 # Retry mit Exponential Backoff — nur für transiente Fehler (429 Rate-Limit, 5xx
 # Server-Fehler). Andere Fehler (400 ungültige Anfrage, 401 falscher Key etc.)
@@ -72,6 +295,12 @@ async def tavily_search(
     if not TAVILY_API_KEY:
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
         return []
+
+    # Social Media grundsätzlich ausschließen (spart Tavily-Ergebnis-Slots für
+    # tatsächlich brauchbare Quellen) — zusätzlich zu vom Aufrufer übergebenen
+    # Domains, unabhängig davon ob der Aufrufer daran denkt. curate_results()
+    # filtert sie zur Sicherheit trotzdem nochmal heraus.
+    exclude_domains = list({*(exclude_domains or []), *SOCIAL_MEDIA_AUSSCHLUSS})
 
     key = _cache_key(query, count, include_domains, exclude_domains)
     cached = _cache.get(key)
@@ -187,12 +416,37 @@ def results_to_context(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _qualitaets_label(url: str) -> str:
+    """Kurzes, nutzerverständliches Label für die Quellenanzeige (kein
+    Entwicklerbegriff wie 'Tier 1' — siehe Chat-Stilregeln)."""
+    domain = _domain_von(url)
+    if _enthaelt_domain(domain, _AMTLICH_DOMAINS):
+        return "Amtlich/Prüforganisation"
+    if _ist_herstellerseite(domain):
+        return "Hersteller"
+    if _enthaelt_domain(domain, _FACHMEDIEN_DOMAINS):
+        return "Fachmedien"
+    if _enthaelt_domain(domain, _TECHNIK_DOMAINS):
+        return "Technik-Hersteller"
+    if _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS):
+        return "Marktplatz"
+    if _enthaelt_domain(domain, _NACHSCHLAGEWERK_DOMAINS):
+        return "Nachschlagewerk"
+    if _enthaelt_domain(domain, _COMMUNITY_DOMAINS):
+        return "Community/Erfahrungsbericht"
+    if _enthaelt_domain(domain, _NACHRICHTEN_DOMAINS):
+        return "Nachrichten"
+    return "Sonstige Quelle"
+
+
 def results_to_belege(results: list[dict]) -> list[dict]:
     """
     Erstellt die `belege`-Liste für die API-Antwort.
 
-    Jeder Beleg enthält typ="web", titel, url, snippet, abgerufen.
-    Das Frontend kann diese URLs direkt als klickbare Quell-Links anzeigen.
+    Jeder Beleg enthält typ="web", titel, url, snippet, abgerufen, qualitaet.
+    Das Frontend kann diese URLs direkt als klickbare Quell-Links anzeigen;
+    `qualitaet` erlaubt eine professionellere Darstellung (z.B. Badge/Icon
+    statt einer undifferenzierten URL-Liste).
     """
     heute = date.today().isoformat()
     return [
@@ -202,6 +456,7 @@ def results_to_belege(results: list[dict]) -> list[dict]:
             "url":       r.get("url", ""),
             "snippet":   (r.get("content") or "")[:200],
             "abgerufen": heute,
+            "qualitaet": _qualitaets_label(r.get("url", "")),
         }
         for r in results
         if r.get("url")

@@ -17,7 +17,12 @@ from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gem
 from app.config import TAVILY_API_KEY
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
-from app.web_search import tavily_search_with_fallback, results_to_context, results_to_belege
+from app.web_search import (
+    tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
+    KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
+)
+
+_MAX_VERKAUFSCHECK_QUELLEN = 4
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +147,10 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         ]))
         q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
         web_results_task = asyncio.ensure_future(
-            tavily_search_with_fallback([q_spezifisch, q_mittel, q_breit], count=5)
+            tavily_search_with_fallback(
+                [q_spezifisch, q_mittel, q_breit], count=5,
+                exclude_domains=US_QUELLEN_AUSSCHLUSS,
+            )
         )
 
     baureihe    = await baureihe_task
@@ -152,6 +160,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     db_ctx = build_db_context(baureihe, motor_match)
 
     web_results: list[dict] = await web_results_task if web_results_task else []
+    web_results = curate_results(web_results, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_VERKAUFSCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
 
