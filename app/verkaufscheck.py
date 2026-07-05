@@ -10,6 +10,7 @@ Ablauf:
   4. Gemini (JSON-Modus) liefert Preisspanne + Verkaufsstrategie-Bericht
 """
 
+import asyncio
 import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
@@ -119,17 +120,15 @@ def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
 
 
 async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
-    # 1. Baureihe + Motor erkennen
-    baureihe    = find_baureihe(req.marke, req.modell, req.baujahr)
-    motor_match = find_motor(baureihe, req.motor) if baureihe else None
+    # 1. Baureihe erkennen (DB, blockierend) UND Marktpreise per Tavily (Netzwerk) laufen
+    #    PARALLEL — die Tavily-Queries hängen nur an den Fahrzeug-Rohdaten (req.*), nicht
+    #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
+    baureihe_task = asyncio.to_thread(find_baureihe, req.marke, req.modell, req.baujahr)
 
-    # 2. DB-Kontext
-    db_ctx = build_db_context(baureihe, motor_match)
-
-    # 3. Marktpreise per Tavily (vergleichbare Angebote) — kaskadierende Queries:
-    #    spezifisch → breiter, damit auch bei seltenen Modellen Ergebnisse kommen.
-    web_results: list[dict] = []
+    web_results_task: asyncio.Task[list[dict]] | None = None
     if TAVILY_API_KEY and req.marke and req.modell:
+        # Marktpreise per Tavily (vergleichbare Angebote) — kaskadierende Queries:
+        # spezifisch → breiter, damit auch bei seltenen Modellen Ergebnisse kommen.
         q_spezifisch = " ".join(filter(None, [
             req.marke, req.modell, req.motor,
             str(req.baujahr) if req.baujahr else None,
@@ -141,8 +140,17 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
             "Gebrauchtpreis Deutschland",
         ]))
         q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
-        web_results = await tavily_search_with_fallback([q_spezifisch, q_mittel, q_breit], count=5)
+        web_results_task = asyncio.ensure_future(
+            tavily_search_with_fallback([q_spezifisch, q_mittel, q_breit], count=5)
+        )
 
+    baureihe    = await baureihe_task
+    motor_match = find_motor(baureihe, req.motor) if baureihe else None
+
+    # 2. DB-Kontext
+    db_ctx = build_db_context(baureihe, motor_match)
+
+    web_results: list[dict] = await web_results_task if web_results_task else []
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
 

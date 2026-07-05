@@ -12,7 +12,9 @@ Free-Plan: 1.000 Abfragen/Monat (basic = 1 Credit, kein Kreditkarte nötig).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import date
 from typing import Any
 
@@ -23,6 +25,30 @@ from app.config import TAVILY_API_KEY
 log = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.tavily.com/search"
+
+# Retry mit Exponential Backoff — nur für transiente Fehler (429 Rate-Limit, 5xx
+# Server-Fehler). Andere Fehler (400 ungültige Anfrage, 401 falscher Key etc.)
+# werden sofort aufgegeben, ein Retry würde dort ohnehin nie erfolgreich sein.
+_MAX_RETRIES = 3
+_BACKOFF_BASIS_S = 1.0  # 1s, 2s, 4s
+
+# Kurzlebiger In-Memory-Cache für IDENTISCHE Suchanfragen (gleicher Query-String +
+# Domain-Filter). Fängt den häufigen Fall ab, dass dieselbe Baureihe innerhalb
+# kurzer Zeit mehrfach gesucht wird (z.B. mehrere Nutzer fragen zeitnah nach
+# demselben Auto, oder eine Folgefrage im selben Gespräch löst dieselbe Query
+# erneut aus). TTL bewusst kurz (5 Minuten) — Marktpreise/Web-Inhalte ändern sich
+# nicht innerhalb weniger Minuten, Ergebnis bleibt für den Nutzer identisch.
+_CACHE_TTL_S = 300.0
+_cache: dict[tuple, tuple[float, list[dict]]] = {}
+
+
+def _cache_key(query: str, count: int, include_domains, exclude_domains) -> tuple:
+    return (
+        query,
+        count,
+        tuple(include_domains) if include_domains else None,
+        tuple(exclude_domains) if exclude_domains else None,
+    )
 
 
 async def tavily_search(
@@ -47,6 +73,12 @@ async def tavily_search(
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
         return []
 
+    key = _cache_key(query, count, include_domains, exclude_domains)
+    cached = _cache.get(key)
+    if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
+        log.debug("Tavily Cache-Treffer für %r", query[:80])
+        return cached[1]
+
     body: dict[str, Any] = {
         "api_key":      TAVILY_API_KEY,
         "query":        query,
@@ -61,22 +93,42 @@ async def tavily_search(
     if exclude_domains:
         body["exclude_domains"] = exclude_domains
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(_ENDPOINT, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            log.info("Tavily Search: %d Ergebnisse für %r", len(results), query[:80])
-            return results
+    results: list[dict[str, Any]] = []
+    for versuch in range(_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(_ENDPOINT, json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("results", [])
+                log.info("Tavily Search: %d Ergebnisse für %r", len(results), query[:80])
+                break
 
-    except httpx.HTTPStatusError as exc:
-        log.warning("Tavily HTTP-Fehler %s für %r: %s",
-                    exc.response.status_code, query[:60], exc.response.text[:200])
-    except Exception as exc:
-        log.warning("Tavily Fehler (%s): %s", type(exc).__name__, exc)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            transient = status_code == 429 or status_code >= 500
+            if transient and versuch < _MAX_RETRIES - 1:
+                delay = _BACKOFF_BASIS_S * (2 ** versuch)
+                log.warning("Tavily %s (Versuch %d/%d) für %r — warte %.0fs",
+                            status_code, versuch + 1, _MAX_RETRIES, query[:60], delay)
+                await asyncio.sleep(delay)
+                continue
+            log.warning("Tavily HTTP-Fehler %s für %r: %s",
+                        status_code, query[:60], exc.response.text[:200])
+            break
+        except Exception as exc:
+            log.warning("Tavily Fehler (%s): %s", type(exc).__name__, exc)
+            break
 
-    return []
+    if results:
+        # Größe begrenzen (Long-Running-Prozess) — bei Überschreitung einfach den
+        # ältesten Eintrag verdrängen statt eine komplexe LRU-Struktur zu pflegen;
+        # bei realistischer Anfragevielfalt wird dieses Limit kaum je erreicht.
+        if len(_cache) >= 500:
+            aeltester = min(_cache, key=lambda k: _cache[k][0])
+            del _cache[aeltester]
+        _cache[key] = (time.monotonic(), results)
+    return results
 
 
 async def tavily_search_with_fallback(

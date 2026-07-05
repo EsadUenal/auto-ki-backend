@@ -45,7 +45,7 @@ from google.genai import types as genai_types
 from google.genai.errors import ServerError as GeminiServerError
 
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
-from app.database import get_baureihe, search_baureihen
+from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry_sync, RateLimitExhausted
 from app.web_search import tavily_search, results_to_context, results_to_belege
 
@@ -134,15 +134,15 @@ def _vector_search(query: str, baureihe_ids: list[str], n: int = 3) -> list[str]
 def _sql_context(baureihe_ids: list[str]) -> str:
     """Liest alle harten Fakten aus SQLite und baut einen strukturierten Kontext-String."""
     parts = []
+    # EINE Batch-Abfrage für marke/modell/generation aller Fahrzeuge statt einer
+    # eigenen Connection + Query pro Fahrzeug (relevant bei Mehrfahrzeug-Nachrichten).
+    infos = _baureihe_infos(baureihe_ids)
     for bid in baureihe_ids:
-        # Marke/Modell/Generation aus ID ermitteln
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        b = conn.execute("SELECT marke,modell,generation FROM baureihe WHERE id=?", (bid,)).fetchone()
-        conn.close()
-        if b is None:
+        info = infos.get(bid)
+        if info is None:
             continue
-        data = get_baureihe(b["marke"], b["modell"], b["generation"])
+        marke, modell, generation = info
+        data = get_baureihe(marke, modell, generation)
         if data is None:
             continue
 
@@ -285,7 +285,12 @@ _ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS = frozenset({
 })
 
 
-def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict] | None = None) -> bool:
+def _needs_web_search(
+    message: str,
+    baureihe_ids: list[str],
+    verlauf: list[dict] | None = None,
+    sql_ctx: str = "",
+) -> bool:
     """
     Entscheidet OB überhaupt eine Kfz-relevante Frage vorliegt — NICHT mehr, ob ein
     bestimmtes Themenfeld (Preis/Spec/Rückruf) betroffen ist.
@@ -302,10 +307,26 @@ def _needs_web_search(message: str, baureihe_ids: list[str], verlauf: list[dict]
     durchsucht. Das Ergebnis landet als Kontext-Block im Prompt; die KI entscheidet
     dann (siehe SYSTEM_PROMPT Regel 8/9), ob und wie sie DB- und Web-Daten kombiniert.
     Nur echter Smalltalk ganz ohne Kfz-Bezug bleibt ausgenommen (kein unnötiger Call).
+
+    FAST PATH (Performance): Ist das DB-Profil für das erkannte Fahrzeug bereits
+    VOLLSTÄNDIG (kein einziges "nicht erfasst" im aufgebauten SQL-Kontext), bringt eine
+    zusätzliche Websuche für Spec-Fragen keinen Mehrwert — jedes denkbare Datenfeld ist
+    ja bereits abgedeckt. Die Websuche läuft in diesem Fall trotzdem weiter, wenn die
+    Frage nach Preis/Rückruf fragt, da diese Angaben SICH ÄNDERN (aktueller Marktpreis,
+    neue Rückrufaktionen) und die DB dafür naturgemäß nie "vollständig" sein kann.
+    Betrifft nur den Fall mit erkanntem Fahrzeug UND vollständigem Profil — bei jeder
+    Unvollständigkeit oder unbekanntem Fahrzeug bleibt das bisherige Verhalten exakt
+    gleich (IMMER Websuche), keine Änderung an der eigentlichen Trigger-Logik.
     """
     msg = message.lower()
     if baureihe_ids:
-        return True  # Fahrzeug erkannt → IMMER ergänzend das Web prüfen (siehe oben)
+        ist_preis_oder_rueckruf_frage = (
+            any(kw in msg for kw in _PREIS_KEYWORDS) or any(kw in msg for kw in _RECALL_KEYWORDS)
+        )
+        db_profil_vollstaendig = bool(sql_ctx) and "nicht erfasst" not in sql_ctx
+        if db_profil_vollstaendig and not ist_preis_oder_rueckruf_frage:
+            return False  # Fast Path: DB deckt bereits alles ab, keine aktuellen Daten nötig
+        return True  # Fahrzeug erkannt → ergänzend das Web prüfen (siehe oben)
     return (
         any(kw in msg for kw in _PREIS_KEYWORDS)
         or any(kw in msg for kw in _RECALL_KEYWORDS)
@@ -479,13 +500,10 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
     Motorbezeichnung/-code wird analog behandelt: nur mit Markentreffer + eindeutiger
     (nicht generischer) Bezeichnung, ebenfalls generationsweise eingegrenzt.
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    baureihen = conn.execute("SELECT id, marke, modell, generation FROM baureihe").fetchall()
-    motoren = conn.execute(
-        "SELECT baureihe_id, bezeichnung, motorcode FROM motorvariante"
-    ).fetchall()
-    conn.close()
+    # Gecacht (60s TTL, siehe database.py) statt bei jedem Aufruf die komplette Tabelle neu
+    # zu lesen — bei Mehrfahrzeug-Nachrichten läuft diese Funktion einmal PRO Text-Segment.
+    baureihen = get_alle_baureihen_kurz()
+    motoren = get_alle_motorvarianten_kurz()
 
     marke_by_id = {b["id"]: _kanon_marke(b["marke"]) for b in baureihen}
     generation_by_id = {b["id"]: (b["generation"] or "").lower() for b in baureihen}
@@ -741,8 +759,15 @@ async def chat_stream(
         await asyncio.sleep(0)
 
     t_db = time.perf_counter()
-    sql_ctx = _sql_context(baureihe_ids) if baureihe_ids else ""
-    vec_docs = _vector_search(message, baureihe_ids) if baureihe_ids else []
+    if baureihe_ids:
+        # SQLite (_sql_context) und ChromaDB (_vector_search) sind unabhängige,
+        # blockierende Aufrufe — parallel in Threads statt nacheinander ausführen.
+        sql_ctx, vec_docs = await asyncio.gather(
+            asyncio.to_thread(_sql_context, baureihe_ids),
+            asyncio.to_thread(_vector_search, message, baureihe_ids),
+        )
+    else:
+        sql_ctx, vec_docs = "", []
     vec_ctx = "\n\n".join(vec_docs) if vec_docs else ""
     print(f"[TIMING] db+vector: {_ms(t_db)} (sql={len(sql_ctx)} chars, vec={len(vec_docs)} docs)", flush=True)
 
@@ -759,7 +784,7 @@ async def chat_stream(
     # damit die Antwortzeit bei Mehrfahrzeug-Anfragen nicht linear mit der Anzahl
     # Fahrzeuge steigt.
     web_ctx = ""
-    if _needs_web_search(message, baureihe_ids, verlauf) and TAVILY_API_KEY:
+    if _needs_web_search(message, baureihe_ids, verlauf, sql_ctx) and TAVILY_API_KEY:
         yield {"type": "status", "text": "Durchsuche das Web…"}
         await asyncio.sleep(0)
 
@@ -780,16 +805,19 @@ async def chat_stream(
                 # "Deutschland" explizit ergänzen, damit europäische statt US-Marktdaten
                 # bevorzugt werden (US-Modelljahre/-Ausstattungen weichen oft ab).
                 query = f"{marke} {modell} {generation} {flat_segment} Deutschland"[:250]
-                results = await tavily_search(query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
+                # count=3 statt Tavily-Default 5: für einfache Chat-Faktenfragen (im
+                # Gegensatz zum Kaufcheck, der bewusst 5 Quellen für Marktbreite nutzt)
+                # reichen 3 diverse Quellen, kombiniert mit dem DB-Kontext, aus.
+                results = await tavily_search(query, count=3, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
                 # Robuster Fallback: liefert die spezifische Query nichts, mit breiterer
                 # Query nachsuchen statt komplett leer zu bleiben.
                 if not results:
                     results = await tavily_search(
-                        f"{marke} {modell} Deutschland", exclude_domains=_US_QUELLEN_AUSSCHLUSS
+                        f"{marke} {modell} Deutschland", count=3, exclude_domains=_US_QUELLEN_AUSSCHLUSS
                     )
                 if not results:
                     results = await tavily_search(
-                        f"{marke} {modell} {generation} technische Daten",
+                        f"{marke} {modell} {generation} technische Daten", count=3,
                         exclude_domains=_US_QUELLEN_AUSSCHLUSS,
                     )
                 return bid, results
@@ -822,7 +850,7 @@ async def chat_stream(
             flat_msg = " ".join(message.split())[:150]
             verlauf_text = " ".join(m.get("text", "") for m in verlauf[-2:])[:60]
             search_query = f"{flat_msg} {verlauf_text} Deutschland"[:250]
-            web_results = await tavily_search(search_query, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
+            web_results = await tavily_search(search_query, count=3, exclude_domains=_US_QUELLEN_AUSSCHLUSS)
             if web_results:
                 web_ctx = results_to_context(web_results)
                 belege = results_to_belege(web_results)

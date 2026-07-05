@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import json
+import time
 from contextlib import contextmanager
 from app.config import DB_PATH
 
@@ -369,27 +370,37 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
             (baureihe_id,),
         ).fetchall()
 
+        # Schwachstellen/Wartung für ALLE Motorvarianten dieser Baureihe in je EINER
+        # Abfrage statt 2 Abfragen PRO Motor (vorher z.B. 16 Extra-Queries bei 8
+        # Motorvarianten) — gleiche Daten, nur in Python nach variante_id gruppiert.
+        variante_ids = [m["variante_id"] for m in motoren_rows]
+        schwachstellen_by_variante: dict[str, list[dict]] = {}
+        wartung_by_variante: dict[str, list[dict]] = {}
+        if variante_ids:
+            platzhalter = ",".join("?" * len(variante_ids))
+            for r in conn.execute(
+                f"SELECT variante_id,bauteil,beschreibung,baujahre,kosten_ca "
+                f"FROM schwachstelle_motor WHERE variante_id IN ({platzhalter})",
+                variante_ids,
+            ).fetchall():
+                d = dict(r)
+                vid = d.pop("variante_id")
+                schwachstellen_by_variante.setdefault(vid, []).append(d)
+            for r in conn.execute(
+                f"SELECT variante_id,bauteil,intervall,hinweis "
+                f"FROM kritische_wartung WHERE variante_id IN ({platzhalter})",
+                variante_ids,
+            ).fetchall():
+                d = dict(r)
+                vid = d.pop("variante_id")
+                wartung_by_variante.setdefault(vid, []).append(d)
+
         motoren = []
         for m in motoren_rows:
             motor = dict(m)
             motor["getriebe"] = _parse_json_field(motor.get("getriebe"))
-
-            motor["schwachstellen_motor"] = [
-                dict(r) for r in conn.execute(
-                    "SELECT bauteil,beschreibung,baujahre,kosten_ca "
-                    "FROM schwachstelle_motor WHERE variante_id=?",
-                    (motor["variante_id"],),
-                ).fetchall()
-            ]
-
-            motor["kritische_wartung"] = [
-                dict(r) for r in conn.execute(
-                    "SELECT bauteil,intervall,hinweis "
-                    "FROM kritische_wartung WHERE variante_id=?",
-                    (motor["variante_id"],),
-                ).fetchall()
-            ]
-
+            motor["schwachstellen_motor"] = schwachstellen_by_variante.get(motor["variante_id"], [])
+            motor["kritische_wartung"] = wartung_by_variante.get(motor["variante_id"], [])
             motoren.append(motor)
 
         result["motoren"] = motoren
@@ -408,3 +419,52 @@ def search_baureihen(query_marke: str | None = None, query_modell: str | None = 
             sql += " AND LOWER(modell)=LOWER(?)"
             params.append(query_modell)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# ── Kurzlebiger In-Memory-Cache für Referenzdaten (Performance) ─────────────────
+# Fahrzeugerkennung (Chat: llm._suche_baureihen_in_text, Kauf-/Verkaufscheck:
+# car_lookup.find_baureihe) liest bei JEDER Anfrage die KOMPLETTE baureihe- und
+# motorvariante-Tabelle, um lokal (in Python) zu matchen/scoren. Bei Mehrfahrzeug-
+# Nachrichten (mehrere Text-Segmente) passierte das sogar mehrfach PRO Request.
+# Diese Tabellen ändern sich nur über die Admin-Oberfläche (selten, nie während
+# eines normalen Chat-/Check-Requests) — ein kurzes TTL von 60s spart die
+# wiederholten Full-Table-Scans + Connection-Overhead, ohne dass Nutzer je einen
+# veralteten Stand sehen (Admin-Schreibvorgänge rufen zusätzlich sofort
+# invalidate_referenzdaten_cache() auf, siehe app/routers/admin.py).
+_REF_CACHE_TTL_S = 60.0
+_ref_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _cached_alle(key: str, sql: str) -> list[dict]:
+    now = time.monotonic()
+    eintrag = _ref_cache.get(key)
+    if eintrag is not None and (now - eintrag[0]) < _REF_CACHE_TTL_S:
+        return eintrag[1]
+    with get_conn() as conn:
+        daten = [dict(r) for r in conn.execute(sql).fetchall()]
+    _ref_cache[key] = (now, daten)
+    return daten
+
+
+def get_alle_baureihen_kurz() -> list[dict]:
+    """id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis für ALLE Baureihen —
+    gecacht (siehe oben), identische Spalten wie die bisherigen Direktabfragen in
+    llm._suche_baureihen_in_text() und car_lookup.find_baureihe()."""
+    return _cached_alle(
+        "baureihen",
+        "SELECT id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis FROM baureihe",
+    )
+
+
+def get_alle_motorvarianten_kurz() -> list[dict]:
+    """baureihe_id,bezeichnung,motorcode für ALLE Motorvarianten — gecacht (siehe oben)."""
+    return _cached_alle(
+        "motorvarianten",
+        "SELECT baureihe_id, bezeichnung, motorcode FROM motorvariante",
+    )
+
+
+def invalidate_referenzdaten_cache() -> None:
+    """Nach Admin-Schreibvorgängen (neue/geänderte Baureihe) aufrufen, damit die
+    Fahrzeugerkennung sofort den aktuellen Stand sieht statt bis zu 60s zu warten."""
+    _ref_cache.clear()

@@ -15,7 +15,7 @@ from google import genai
 from google.genai import types as genai_types
 
 from app.config import GEMINI_API_KEY, LLM_MODEL
-from app.database import get_baureihe, get_conn
+from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz
 from app.gemini_retry import with_retry
 
 log = logging.getLogger(__name__)
@@ -34,10 +34,9 @@ _MARKEN_ALIAS = {
 
 def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) -> dict | None:
     """Findet die Baureihe mit dem höchsten Treffer-Score."""
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis FROM baureihe"
-        ).fetchall()
+    # Gecacht (60s TTL, siehe database.py) statt bei jedem Kauf-/Verkaufscheck die
+    # komplette Tabelle neu zu lesen.
+    rows = get_alle_baureihen_kurz()
 
     if marke:
         marke = _MARKEN_ALIAS.get(marke.upper().strip(), marke.strip())

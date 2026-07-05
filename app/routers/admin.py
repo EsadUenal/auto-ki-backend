@@ -13,7 +13,7 @@ from google.genai.errors import ServerError
 from app.auth import verify_api_key
 from app.admin_llm import entwurf_erstellen, entwurf_stream, generationen_auflisten, luecken_entwurf_erstellen
 from app.db_writer import save_fahrzeug, patch_luecken
-from app.database import get_conn
+from app.database import get_conn, invalidate_referenzdaten_cache
 from app.utf8 import UTF8JSONResponse
 from app.gemini_retry import RateLimitExhausted
 
@@ -232,6 +232,10 @@ async def speichern(body: SpeichernRequest, request: Request):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"fehler": {"code": "db_fehler", "nachricht": str(e)}},
         )
+
+    # Neue/geänderte Baureihe muss sofort für Chat/Kauf-/Verkaufscheck sichtbar sein,
+    # nicht erst nach Ablauf des 60s-Referenzdaten-Caches (siehe database.py).
+    invalidate_referenzdaten_cache()
 
     return {
         "gespeichert": True,
