@@ -9,11 +9,22 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET
+from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL
 from app.database import ensure_tables
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile
 from app.llm import warmup_chroma
 from app.utf8 import UTF8JSONResponse
+
+# App-Logging konfigurieren, bevor irgendein Logger benutzt wird. Ohne dies bleibt
+# der App-eigene log.info(...)-Output (DB-Pfad, Backups, Gemini-Retries) unsichtbar,
+# weil die Python-Root-Vorgabe erst ab WARNING ausgibt. Level per AUTO_KI_LOG_LEVEL
+# steuerbar. force=True überschreibt einen evtl. von uvicorn gesetzten Root-Handler,
+# damit ein einheitliches Format mit Zeitstempel entsteht (wichtig für Prod-Logs).
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    force=True,
+)
 
 log = logging.getLogger(__name__)
 

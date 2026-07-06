@@ -37,10 +37,15 @@ DB_PATH = Path(os.environ.get("AUTO_KI_DB_PATH", str(_db_default)))
 # Ursprünglicher Pfad in OneDrive — wird für automatische Migration benötigt
 DB_LEGACY_PATH = BASE_DIR / "db" / "auto_ki.db"
 
-# Backup-Verzeichnis IN OneDrive — datierte Kopien, letzte 10 Versionen behalten.
+# Backup-Verzeichnis — datierte Kopien, letzte 10 Versionen behalten.
 # Jedes Backup bekommt einen eigenen Zeitstempel: auto_ki_backup_YYYY-MM-DD_HHMM.db
 # → ein gutes Backup kann nie von einem schlechten überschrieben werden.
-DB_BACKUP_DIR  = BASE_DIR / "db" / "backups"
+#
+# Standard (lokale Entwicklung): BASE_DIR/db/backups (liegt in OneDrive → Cloud-Sync).
+# PRODUKTION: Muss per AUTO_KI_DB_BACKUP_DIR auf ein PERSISTENTES Volume zeigen —
+# sonst landen die Backups im ephemeren Container-Dateisystem und sind nach jedem
+# Redeploy/Neustart verloren (stiller Datenverlust im Ernstfall).
+DB_BACKUP_DIR  = Path(os.environ.get("AUTO_KI_DB_BACKUP_DIR", str(BASE_DIR / "db" / "backups")))
 
 # Legacy-Einzeldatei — nicht mehr beschrieben, bleibt für migrate_db.py --restore
 # als letzter Fallback wenn DB_BACKUP_DIR leer ist.
@@ -52,6 +57,11 @@ CHROMA_PATH = Path(os.environ.get("AUTO_KI_CHROMA_PATH", str(_chroma_default)))
 
 API_KEY = os.environ.get("AUTO_KI_API_KEY", "dev-key-change-in-prod")
 RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
+
+# Log-Level für die App-eigenen Logger (uvicorn-Access-Logs bleiben unberührt).
+# Ohne explizite Konfiguration surft die Root-Loglevel-Vorgabe auf WARNING und
+# alle log.info(...)-Meldungen der App (DB-Pfad, Backups, Retries) sind unsichtbar.
+LOG_LEVEL = os.environ.get("AUTO_KI_LOG_LEVEL", "INFO").upper()
 
 # --- Auth (Phase 2b) ---
 # In Produktion: langen Zufalls-String setzen, z.B. `openssl rand -hex 32`
