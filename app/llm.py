@@ -16,29 +16,11 @@ import json
 import logging
 import re
 import sqlite3
-import subprocess
 import time
 from pathlib import Path
 from typing import AsyncGenerator
 
 log = logging.getLogger(__name__)
-
-# TEMPORÄR — nur zur Instanz-Verifikation (welcher Prozess/Codestand antwortet tatsächlich?),
-# vor Prod-Release wieder entfernen. Einmalig beim Modul-Import ermittelt, nicht pro Request.
-def _ermittle_debug_build() -> str:
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).resolve().parent.parent,
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-    except Exception:
-        commit = "unbekannt"
-    return f"{commit}@pid{__import__('os').getpid()}-{time.strftime('%H:%M:%S')}"
-
-
-DEBUG_BUILD = _ermittle_debug_build()
-print(f"[DEBUG_BUILD] {DEBUG_BUILD}", flush=True)
 
 from google import genai
 from google.genai import types as genai_types
@@ -981,7 +963,7 @@ async def chat_stream(
         log.warning("Chat: Gemini-Totalausfall beim Start des Streams: %s", exc)
         yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
         yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
-               "vertrauen": "niedrig", "belege": [], "debug_build": DEBUG_BUILD}
+               "vertrauen": "niedrig", "belege": []}
         return
     except Exception as exc:
         # Sicherheitsnetz: JEDER sonst unerwartete Fehler (z.B. ein Bug in der
@@ -991,7 +973,7 @@ async def chat_stream(
         log.exception("Chat: unerwarteter Fehler beim Start des Gemini-Streams")
         yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
         yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
-               "vertrauen": "niedrig", "belege": [], "debug_build": DEBUG_BUILD}
+               "vertrauen": "niedrig", "belege": []}
         return
     print(f"[TIMING] gemini iterator erstellt: {_ms(t_gemini_init)}", flush=True)
 
@@ -1034,5 +1016,4 @@ async def chat_stream(
         "fahrzeug_referenz": baureihe_ids,
         "vertrauen":         vertrauen,
         "belege":            belege,
-        "debug_build":       DEBUG_BUILD,
     }

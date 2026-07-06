@@ -50,7 +50,6 @@ class ChatResponse(BaseModel):
     fahrzeug_referenz: list[str] = Field(default_factory=list)
     vertrauen: str       # "hoch" | "mittel" | "niedrig"
     belege: list[Any] = Field(default_factory=list)
-    debug_build: str | None = None  # TEMPORÄR: Instanz-Verifikation, vor Prod-Release entfernen
 
 
 # ---------- Kauf-Check ----------

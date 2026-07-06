@@ -37,7 +37,6 @@ async def _sse_generator(message: str, verlauf: list[dict]):
                 "fahrzeug_referenz": meta.get("fahrzeug_referenz", []),
                 "vertrauen": meta.get("vertrauen", "mittel"),
                 "belege": meta.get("belege", []),
-                "debug_build": meta.get("debug_build"),
             }
             data = json.dumps({"meta": payload}, ensure_ascii=False)
             yield f"data: {data}\n\n"
@@ -85,5 +84,4 @@ async def chat_endpunkt(body: ChatRequest, request: Request):
         fahrzeug_referenz=meta.get("fahrzeug_referenz", []),
         vertrauen=meta.get("vertrauen", "mittel"),
         belege=meta.get("belege", []),
-        debug_build=meta.get("debug_build"),
     )
