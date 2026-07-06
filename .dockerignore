@@ -1,0 +1,35 @@
+# ── Secrets — NIEMALS ins Image ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Lokale Daten (gehören ins persistente Volume, nicht ins Image) ──────────
+db/
+*.db
+*.db-wal
+*.db-shm
+
+# ── Git / IDE ──────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# ── Python-Artefakte ───────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# ── Entwicklungs-/Diagnose-Skripte & Tests (nicht im Prod-Image nötig) ──────
+# HINWEIS: migrate_db.py und rebuild_chroma.py bleiben BEWUSST im Image —
+# sie werden zum einmaligen Seeden des Prod-Volumes gebraucht
+# (z.B. `railway run python rebuild_chroma.py`).
+diag_*.py
+test_*.py
+tests/
+
+# ── Doku ───────────────────────────────────────────────────────────────────
+*.md
