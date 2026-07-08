@@ -137,6 +137,22 @@ def _get_or_create_customer(user_id: int) -> str:
     return customer.id
 
 
+def _hat_laufendes_abo(customer_id: str) -> bool:
+    """True, wenn der Kunde bereits ein laufendes Abo besitzt.
+
+    Laufend = Stripe-Status ``active`` oder ``trialing``. Ein per
+    ``cancel_at_period_end`` gekündigtes, aber noch nicht abgelaufenes Abo behält
+    bei Stripe weiterhin status ``active`` → wird korrekt als laufend erkannt und
+    blockiert. Beendete (``canceled``), ``past_due``, ``incomplete`` etc. gelten
+    NICHT als laufend und erlauben damit ein neues Abo.
+
+    Fragt Stripe direkt (nicht die lokale DB) ab, damit die Sperre unabhängig von
+    einem evtl. noch nicht eingetroffenen Webhook zuverlässig greift.
+    """
+    subs = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
+    return any(getattr(s, "status", None) in ("active", "trialing") for s in subs.data)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/checkout-session")
@@ -160,6 +176,20 @@ def create_checkout_session(
             raise HTTPException(
                 status_code=500,
                 detail={"fehler": {"code": "konfiguration", "nachricht": "Stripe-Preis nicht konfiguriert."}},
+            )
+
+        # ── Launch-Sicherung gegen parallele Abos ───────────────────────────────
+        # Besitzt der Kunde bereits ein laufendes Abo (active/trialing, inkl. per
+        # cancel_at_period_end gekündigt aber noch aktiv), wird KEINE weitere
+        # Checkout-Session erstellt und KEIN zweites Stripe-Abo erzeugt.
+        # Bewusst KEINE Upgrade-/Downgrade-/Proration-Logik — nur die sichere
+        # Verhinderung mehrerer gleichzeitiger Abonnements.
+        if _hat_laufendes_abo(customer_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"fehler": {"code": "abo_bereits_aktiv",
+                                   "nachricht": "Du besitzt bereits ein aktives Abonnement. "
+                                                "Bitte verwalte oder kündige dieses zuerst."}},
             )
 
         session = stripe.checkout.Session.create(
