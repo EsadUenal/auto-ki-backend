@@ -137,20 +137,31 @@ def _get_or_create_customer(user_id: int) -> str:
     return customer.id
 
 
+_LAUFENDE_STATUS = ("active", "trialing", "past_due")
+
+
 def _hat_laufendes_abo(customer_id: str) -> bool:
     """True, wenn der Kunde bereits ein laufendes Abo besitzt.
 
-    Laufend = Stripe-Status ``active`` oder ``trialing``. Ein per
-    ``cancel_at_period_end`` gekündigtes, aber noch nicht abgelaufenes Abo behält
-    bei Stripe weiterhin status ``active`` → wird korrekt als laufend erkannt und
-    blockiert. Beendete (``canceled``), ``past_due``, ``incomplete`` etc. gelten
-    NICHT als laufend und erlauben damit ein neues Abo.
+    Laufend = Stripe-Status ``active``, ``trialing`` oder ``past_due``:
+      - ``active``    — normal laufendes Abo (inkl. ``cancel_at_period_end`` bis
+                        zum Periodenende: Stripe behält hier status ``active``).
+      - ``trialing``  — Testphase, Abo besteht.
+      - ``past_due``  — Verlängerung fehlgeschlagen, aber Abo besteht weiter und
+                        Stripe versucht die Zahlung erneut (Dunning). Erholt sich
+                        der Retry, wird das Abo wieder ``active`` → ein hier neu
+                        abgeschlossenes zweites Abo führte zu zwei abbuchenden
+                        Abos. Deshalb ebenfalls blockieren.
+
+    NICHT laufend (neues Abo erlaubt): ``canceled`` (beendet), ``unpaid``,
+    ``incomplete``, ``incomplete_expired`` — dort findet keine automatische
+    Abbuchung mehr statt.
 
     Fragt Stripe direkt (nicht die lokale DB) ab, damit die Sperre unabhängig von
     einem evtl. noch nicht eingetroffenen Webhook zuverlässig greift.
     """
     subs = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
-    return any(getattr(s, "status", None) in ("active", "trialing") for s in subs.data)
+    return any(getattr(s, "status", None) in _LAUFENDE_STATUS for s in subs.data)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

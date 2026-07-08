@@ -47,13 +47,15 @@ check("aktives Abo", ["active"], True)
 check("trialing Abo", ["trialing"], True)
 # cancel_at_period_end (noch nicht abgelaufen) = bei Stripe weiterhin status active
 check("gekündigt aber noch laufend (cancel_at_period_end)", ["active"], True)
+# past_due = Abo besteht weiter, Stripe versucht Zahlung erneut → blockieren
+check("past_due (Dunning, kann sich erholen)", ["past_due"], True)
 check("mehrere Subs, eine aktiv", ["canceled", "active"], True)
-check("mehrere Subs, eine trialing", ["canceled", "past_due", "trialing"], True)
+check("mehrere Subs, eine trialing", ["canceled", "trialing"], True)
+check("mehrere Subs, eine past_due", ["canceled", "past_due"], True)
 
 # ── Erlaubt (kein laufendes Abo) ───────────────────────────────────────────────
 check("kein Abo (leer)", [], False)
 check("gekündigt und beendet", ["canceled"], False)
-check("past_due", ["past_due"], False)
 check("incomplete", ["incomplete"], False)
 check("incomplete_expired", ["incomplete_expired"], False)
 check("unpaid", ["unpaid"], False)
