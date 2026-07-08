@@ -20,6 +20,10 @@ _STATIC_DIR = Path(__file__).parent.parent.parent / "static"
 
 from app.config import FRONTEND_URL, STRIPE_SECRET_KEY
 from app.database import get_conn
+from app.einwilligung import (
+    require_agb, require_widerruf_verzicht,
+    record as record_einwilligung, ART_AGB, ART_WIDERRUF,
+)
 from app.routers.user_auth import get_current_user_id
 from app.utf8 import UTF8JSONResponse
 
@@ -36,6 +40,8 @@ _ABO_DISCOUNT_TYPEN = {"pro", "max"}
 
 class CheckoutBody(BaseModel):
     ebook_id: str
+    agb_akzeptiert: bool = False    # AGB + Datenschutz — Pflicht bei jedem Kauf
+    widerruf_verzicht: bool = False # Zustimmung zur sofortigen Ausführung (digitaler Download)
 
 
 def _user_abo(user_id: int) -> str:
@@ -80,6 +86,9 @@ def create_ebook_checkout(
     Erstellt eine Stripe-Checkout-Session für ein E-Book (digitales Produkt).
     Preis serverseitig berechnet, kein Adressfeld nötig.
     """
+    # Pflicht-Zustimmungen serverseitig erzwingen (unabhängig vom Frontend).
+    require_agb(body.agb_akzeptiert)
+    require_widerruf_verzicht(body.widerruf_verzicht)
     abo_typ = _user_abo(user_id)
     hat_rabatt = abo_typ in _ABO_DISCOUNT_TYPEN
 
@@ -121,6 +130,10 @@ def create_ebook_checkout(
             "preis_bezahlt": str(preis),
         },
     )
+
+    # Nachweis der Zustimmungen für diesen Kauf festhalten.
+    record_einwilligung(user_id, ART_AGB, f"ebook:{body.ebook_id}")
+    record_einwilligung(user_id, ART_WIDERRUF, f"ebook:{body.ebook_id}")
 
     return {"url": session.url}
 

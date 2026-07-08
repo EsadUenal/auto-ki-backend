@@ -29,6 +29,10 @@ from app.config import (
     STRIPE_WEBHOOK_SECRET,
 )
 from app.database import get_conn
+from app.einwilligung import (
+    require_agb, require_widerruf_verzicht,
+    record as record_einwilligung, ART_AGB, ART_WIDERRUF,
+)
 from app.routers.user_auth import get_current_user_id
 from app.utf8 import UTF8JSONResponse
 
@@ -62,8 +66,10 @@ _ABO_ERSATZTEIL_SUCHEN = {
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class CheckoutBody(BaseModel):
-    typ: str                    # "abo" | "einzelkauf"
-    abo_typ: str | None = None  # "light" | "pro" | "max" (nur bei typ=="abo")
+    typ: str                        # "abo" | "einzelkauf"
+    abo_typ: str | None = None      # "light" | "pro" | "max" (nur bei typ=="abo")
+    agb_akzeptiert: bool = False    # AGB + Datenschutz — Pflicht bei jedem Kauf
+    widerruf_verzicht: bool = False # Zustimmung zur sofortigen Ausführung (digitaler Kauf)
 
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
@@ -172,6 +178,10 @@ def create_checkout_session(
     user_id: int = Depends(get_current_user_id),
 ):
     """Erzeugt eine Stripe-Checkout-Session und gibt die URL zurück."""
+    # Pflicht-Zustimmungen serverseitig erzwingen (unabhängig vom Frontend):
+    # AGB/Datenschutz bei jedem Kauf, Widerrufs-Verzicht bei jedem digitalen Kauf.
+    require_agb(body.agb_akzeptiert)
+    require_widerruf_verzicht(body.widerruf_verzicht)
     customer_id = _get_or_create_customer(user_id)
     success_url = f"{FRONTEND_URL}/pricing?payment=success"
     cancel_url  = f"{FRONTEND_URL}/pricing?payment=cancelled"
@@ -235,6 +245,11 @@ def create_checkout_session(
             status_code=400,
             detail={"fehler": {"code": "bad_request", "nachricht": "Unbekannter Checkout-Typ."}},
         )
+
+    # Nachweis der Zustimmungen für diesen Kauf festhalten.
+    kontext = f"abo:{body.abo_typ}" if body.typ == "abo" else "einzelkauf"
+    record_einwilligung(user_id, ART_AGB, kontext)
+    record_einwilligung(user_id, ART_WIDERRUF, kontext)
 
     return {"url": session.url}
 

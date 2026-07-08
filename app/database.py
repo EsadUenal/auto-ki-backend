@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS ebook_bestellung (
 );
 CREATE INDEX IF NOT EXISTS idx_ebook_bestellung_user    ON ebook_bestellung(user_id);
 CREATE INDEX IF NOT EXISTS idx_ebook_bestellung_session ON ebook_bestellung(stripe_session_id);
+
+-- Nachweis erteilter Einwilligungen (AGB/Datenschutz-Zustimmung, Widerrufs-Verzicht
+-- bei sofortiger Ausfuehrung). Append-only-Audit-Log: pro Zustimmung eine Zeile mit
+-- Zeitstempel und Kontext (Registrierung / konkreter Kauf) — belastbarer Nachweis.
+CREATE TABLE IF NOT EXISTS einwilligung (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    art           TEXT    NOT NULL,   -- 'agb_datenschutz' | 'widerruf_verzicht'
+    kontext       TEXT    NOT NULL,   -- 'registrierung' | 'ebook:<id>' | 'abo:<typ>' | 'einzelkauf'
+    akzeptiert_am DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_einwilligung_user ON einwilligung(user_id);
 """
 
 

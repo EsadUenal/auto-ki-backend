@@ -19,6 +19,7 @@ from slowapi.util import get_remote_address
 
 from app.config import JWT_EXPIRE_DAYS, JWT_SECRET
 from app.database import get_conn
+from app.einwilligung import require_agb, record as record_einwilligung, ART_AGB
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 # Eigene Limiter-Instanz wie in chat.py/kaufcheck.py/verkaufscheck.py — dediziertes,
@@ -50,6 +51,7 @@ COOKIE_OPTS = dict(
 class RegisterBody(BaseModel):
     email: str
     password: str
+    agb_akzeptiert: bool = False   # AGB + Datenschutz — Pflicht bei Registrierung
 
     @field_validator("email")
     @classmethod
@@ -138,6 +140,7 @@ def get_current_user_id(auth_token: str | None = Cookie(default=None)) -> int:
 @limiter.limit("10/minute")
 def register(body: RegisterBody, response: Response, request: Request):
     """Neuen Nutzer anlegen. Gibt User-Daten + setzt Auth-Cookie."""
+    require_agb(body.agb_akzeptiert)
     hashed = _hash_pw(body.password)
     try:
         with get_conn() as conn:
@@ -154,6 +157,7 @@ def register(body: RegisterBody, response: Response, request: Request):
             detail={"fehler": {"code": "email_exists", "nachricht": "Diese E-Mail ist bereits registriert."}},
         )
 
+    record_einwilligung(user_id, ART_AGB, "registrierung")
     _set_auth_cookie(response, _make_token(user_id, body.email))
     return {
         "id": user_id, "email": body.email, "abo_typ": "none",
