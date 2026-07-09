@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -9,8 +10,9 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL
+from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL, DB_BACKUP_INTERVAL_SECONDS
 from app.database import ensure_tables
+from app.db_writer import backup_sqlite_now
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile
 from app.llm import warmup_chroma
 from app.utf8 import UTF8JSONResponse
@@ -61,6 +63,39 @@ class _MaxBodySizeMiddleware:
         await self.app(scope, receive, send)
 
 
+class _SecurityHeadersMiddleware:
+    """ASGI-Middleware: setzt Standard-Security-Header auf jede Antwort.
+
+    Railway/ein vorgeschalteter Proxy terminiert TLS, aber die API selbst
+    sendet ohne dies GAR KEINE Security-Header — jeder direkte Client
+    (nicht nur der Browser über das Frontend-nginx) bekäme Antworten ohne
+    X-Content-Type-Options/X-Frame-Options/etc. HSTS ist hier ebenfalls
+    sinnvoll: der Header wird unabhängig vom vorgeschalteten Proxy gesetzt.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.extend([
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+                    (b"strict-transport-security", b"max-age=63072000; includeSubDomains"),
+                ])
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 def _utf8_json(status_code: int, content: dict) -> UTF8JSONResponse:
     return UTF8JSONResponse(status_code=status_code, content=content)
 
@@ -82,6 +117,7 @@ app.add_middleware(
     allow_credentials=True,       # httpOnly-Cookie wird mitgeschickt
 )
 app.add_middleware(_MaxBodySizeMiddleware)
+app.add_middleware(_SecurityHeadersMiddleware)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -95,12 +131,43 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 
+async def _periodic_backup_loop() -> None:
+    """Sichert die komplette SQLite-DB in festem Takt (siehe DB_BACKUP_INTERVAL_SECONDS).
+
+    Ergänzt die bestehende, ereignisgesteuerte Sicherung in db_writer.py (die nur
+    bei Fahrzeug-Admin-Schreibvorgängen lief) um eine zeitgesteuerte Sicherung,
+    die auch Nutzerkonten, Chats und Käufe abdeckt.
+    """
+    if DB_BACKUP_INTERVAL_SECONDS <= 0:
+        log.info("Periodisches Backup deaktiviert (AUTO_KI_DB_BACKUP_INTERVAL_SECONDS<=0).")
+        return
+    while True:
+        await asyncio.sleep(DB_BACKUP_INTERVAL_SECONDS)
+        try:
+            backup_sqlite_now()
+        except Exception:
+            log.exception("Periodisches Backup fehlgeschlagen.")
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     """Tabellen anlegen (idempotent) + ChromaDB vorladen."""
     ensure_tables()
     warmup_chroma()
     _warn_if_insecure_defaults()
+    app.state.backup_task = asyncio.create_task(_periodic_backup_loop())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    """Hintergrund-Task sauber beenden (kein Zombie-Task bei Redeploy/Restart)."""
+    task = getattr(app.state, "backup_task", None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _warn_if_insecure_defaults() -> None:

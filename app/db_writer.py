@@ -111,6 +111,18 @@ def _backup_sqlite() -> None:
         log.warning("SQLite-Backup fehlgeschlagen (Daten in DB_PATH sicher): %s", exc)
 
 
+def backup_sqlite_now() -> None:
+    """Öffentlicher Einstiegspunkt für einen sofortigen Backup-Lauf.
+
+    _backup_sqlite() sicherte bislang nur Fahrzeug-Admin-Schreibvorgänge
+    (save_fahrzeug/patch_luecken) — Nutzerregistrierungen, Chats und Käufe
+    lösten NIE ein Backup aus. Da die Sicherung die komplette SQLite-Datei
+    kopiert (nicht nur Fahrzeugtabellen), deckt ein periodischer Aufruf
+    dieser Funktion (siehe app.main) auch diese Daten ab.
+    """
+    _backup_sqlite()
+
+
 # ---------- Hilfsfunktionen ----------
 
 def _slug(text: str) -> str:

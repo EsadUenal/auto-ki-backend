@@ -47,6 +47,14 @@ DB_LEGACY_PATH = BASE_DIR / "db" / "auto_ki.db"
 # Redeploy/Neustart verloren (stiller Datenverlust im Ernstfall).
 DB_BACKUP_DIR  = Path(os.environ.get("AUTO_KI_DB_BACKUP_DIR", str(BASE_DIR / "db" / "backups")))
 
+# Periodisches Backup-Intervall (Sekunden). Die bisherige Backup-Logik lief NUR
+# nach Fahrzeug-Admin-Schreibvorgängen (save_fahrzeug/patch_luecken) — Nutzer-
+# registrierungen, Chats und Käufe lösten nie ein Backup aus. Ein periodischer
+# Timer (siehe app.main) sichert stattdessen die komplette DB in festem Takt,
+# unabhängig davon ob/wann zuletzt ein Fahrzeug gepflegt wurde.
+# Default: 6 Stunden. 0 oder negativ deaktiviert den periodischen Timer.
+DB_BACKUP_INTERVAL_SECONDS = int(os.environ.get("AUTO_KI_DB_BACKUP_INTERVAL_SECONDS", "21600"))
+
 # Legacy-Einzeldatei — nicht mehr beschrieben, bleibt für migrate_db.py --restore
 # als letzter Fallback wenn DB_BACKUP_DIR leer ist.
 DB_BACKUP_PATH = BASE_DIR / "db" / "auto_ki_backup.db"
