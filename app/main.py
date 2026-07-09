@@ -71,6 +71,17 @@ class _SecurityHeadersMiddleware:
     (nicht nur der Browser über das Frontend-nginx) bekäme Antworten ohne
     X-Content-Type-Options/X-Frame-Options/etc. HSTS ist hier ebenfalls
     sinnvoll: der Header wird unabhängig vom vorgeschalteten Proxy gesetzt.
+
+    BEWUSST NICHT gesetzt (Security-Header-Audit Runde 2):
+    - Cross-Origin-Resource-Policy: Das Frontend lädt E-Book-PDFs und JSON
+      per fetch() mit credentials:'include' CROSS-ORIGIN (eigene Domain).
+      same-origin/same-site würde diese Downloads blockieren.
+    - Cross-Origin-Embedder-Policy: bräuchte auf JEDER Cross-Origin-Antwort
+      einen passenden CORP-Header, sonst schlägt genau der Download-Fetch
+      oben fehl. Kein technischer Nutzen (kein SharedArrayBuffer/WASM) —
+      Risiko ohne Gegenwert.
+    - Content-Security-Policy: absichtlich nicht aktiviert (siehe
+      DEPLOYMENT_REPORT.md für einen dokumentierten Vorschlag).
     """
 
     def __init__(self, app):
@@ -89,6 +100,8 @@ class _SecurityHeadersMiddleware:
                     (b"x-frame-options", b"DENY"),
                     (b"referrer-policy", b"strict-origin-when-cross-origin"),
                     (b"strict-transport-security", b"max-age=63072000; includeSubDomains"),
+                    (b"permissions-policy", b"geolocation=(), microphone=(), camera=()"),
+                    (b"cross-origin-opener-policy", b"same-origin"),
                 ])
                 message = {**message, "headers": headers}
             await send(message)
