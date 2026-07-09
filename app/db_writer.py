@@ -83,6 +83,13 @@ def _backup_sqlite() -> None:
     Nach dem Schreiben werden ältere Dateien gelöscht, sodass nur die
     letzten _BACKUP_KEEP Versionen erhalten bleiben.
 
+    Nach dem Schreiben wird die neue Datei per PRAGMA integrity_check
+    geprüft (gleiches Muster wie migrate_db.py/_ensure_db_migrated) —
+    ohne diese Prüfung könnte ein durch einen I/O-Fehler beschädigtes
+    Backup unbemerkt als "neuestes Backup" stehen bleiben und würde erst
+    im echten Notfall beim Restore-Versuch auffallen. Ein korruptes
+    Backup wird sofort gelöscht statt in der Rotation zu verbleiben.
+
     Fehler werden nur geloggt, nie weitergeworfen.
     """
     try:
@@ -98,8 +105,29 @@ def _backup_sqlite() -> None:
         dst.close()
         src.close()
 
+        # Bei schwerer Beschädigung wirft PRAGMA integrity_check selbst eine
+        # sqlite3.DatabaseError (nicht nur ein "not ok"-Ergebnis) — beides
+        # zählt hier als korrupt, sonst würde eine so beschädigte Datei NICHT
+        # gelöscht (die Exception würde sonst nur von der äußeren try/except
+        # aufgefangen, ohne dass die kaputte Datei entfernt wird).
+        try:
+            check_conn = sqlite3.connect(dst_path)
+            integrity = check_conn.execute("PRAGMA integrity_check").fetchone()[0]
+            check_conn.close()
+        except sqlite3.DatabaseError as exc:
+            integrity = f"integrity_check fehlgeschlagen: {exc}"
+
+        if integrity != "ok":
+            dst_path.unlink(missing_ok=True)
+            log.error(
+                "SQLite-Backup %s war korrupt (integrity_check=%r) — gelöscht, "
+                "NICHT in die Rotation aufgenommen. Live-DB in DB_PATH ist davon "
+                "unberührt.", dst_path.name, integrity,
+            )
+            return
+
         sz = dst_path.stat().st_size
-        log.info("SQLite-Backup erstellt: %s (%d KB)", dst_path.name, sz // 1024)
+        log.info("SQLite-Backup erstellt: %s (%d KB, integrity=ok)", dst_path.name, sz // 1024)
 
         # Rotation: nur letzte _BACKUP_KEEP Dateien behalten
         all_backups = sorted(DB_BACKUP_DIR.glob("auto_ki_backup_*.db"))

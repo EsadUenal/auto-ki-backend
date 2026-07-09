@@ -168,20 +168,45 @@ def cmd_restore():
     print("NOTFALL-WIEDERHERSTELLUNG: Backup → Live-DB")
     print("=" * 65)
 
-    # Neuestes datiertes Backup bevorzugen
-    src = _latest_backup()
+    # Neuestes datiertes Backup bevorzugen — bei Korruption automatisch das
+    # nächst-ältere versuchen, statt sofort abzubrechen (im echten Notfall
+    # ist "der letzte Versuch schlägt fehl" das denkbar schlechteste
+    # Verhalten, wenn 9 weitere, gute Backups im selben Verzeichnis liegen).
+    kandidaten = sorted(DB_BACKUP_DIR.glob("auto_ki_backup_*.db"), reverse=True) \
+        if DB_BACKUP_DIR.exists() else []
+
+    src = None
+    n_b = n_m = 0
+    ic = "kein Kandidat geprüft"
+    for kandidat in kandidaten:
+        # Bei schwerer Beschädigung wirft schon die SELECT-Abfrage in
+        # _check_db() eine sqlite3.DatabaseError, bevor PRAGMA integrity_check
+        # überhaupt erreicht wird — auch das zählt als korrupt, sonst würde
+        # der Restore-Versuch hier abstürzen statt zum nächsten Kandidaten
+        # weiterzugehen (gleiches Muster wie db_writer._backup_sqlite).
+        try:
+            n_b, n_m, ic = _check_db(kandidat)
+        except sqlite3.DatabaseError as exc:
+            ic = f"Prüfung fehlgeschlagen: {exc}"
+        if ic == "ok":
+            src = kandidat
+            if kandidat != kandidaten[0]:
+                print(f"\nHinweis: neuestes Backup war korrupt — verwende stattdessen: {kandidat.name}")
+            else:
+                print(f"\nNeuestes Backup: {kandidat.name}")
+            break
+        print(f"  Übersprungen (korrupt, integrity={ic!r}): {kandidat.name}")
+
     if src is None:
         # Fallback auf Legacy-Einzeldatei
         if DB_BACKUP_PATH.exists():
             src = DB_BACKUP_PATH
-            print(f"\nKein datiertes Backup gefunden — verwende Legacy: {src.name}")
+            n_b, n_m, ic = _check_db(src)
+            print(f"\nKein intaktes datiertes Backup gefunden — verwende Legacy: {src.name}")
         else:
-            print("\nFEHLER: Kein Backup gefunden (weder datiert noch legacy).")
+            print("\nFEHLER: Kein intaktes Backup gefunden (weder datiert noch legacy).")
             sys.exit(1)
-    else:
-        print(f"\nNeuestes Backup: {src.name}")
 
-    n_b, n_m, ic = _check_db(src)
     print(f"Backup-Status: {n_b} Baureihen, {n_m} Motoren, integrity={ic}")
     if ic != "ok":
         print(f"FEHLER: Backup korrupt (integrity={ic!r}) — Wiederherstellung abgebrochen.")
