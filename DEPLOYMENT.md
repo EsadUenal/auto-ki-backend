@@ -80,21 +80,33 @@ Einmalig nach dem ersten erfolgreichen Deploy:
 
 ---
 
-## 2. Frontend (Static Site)
-1. Build lokal oder via CI: `npm ci && npm run build` → Output in `dist/`.
-2. Als Static Site deployen (Railway Static / Netlify / Vercel), `dist/` als Root.
-3. Env-Variablen des Frontends (Build-Zeit):
+## 2. Frontend (Railway, eigenes Docker-Image)
+Das Frontend-Repo (`auto-ki-web`) hat ein eigenes `Dockerfile` + `railway.json`
+(zweistufiger Build: Vite-Build → nginx liefert `dist/` aus, inkl. SPA-Fallback
+für react-router-dom `BrowserRouter` und Security-Headern).
+
+1. Neues Railway-Projekt/Service → **Deploy from GitHub repo** → `auto-ki-web`.
+2. Railway erkennt `Dockerfile` + `railway.json` automatisch.
+3. **Build Args setzen** (Service → Settings → Build) — Vite bettet diese zur
+   BUILD-Zeit ins JS-Bundle ein, NICHT zur Laufzeit:
    - `VITE_API_BASE_URL=https://<railway-backend-domain>`
    - `VITE_API_KEY=<AUTO_KI_API_KEY>` (identisch zum Backend)
+   Ändert sich einer der beiden Werte später, reicht ein Redeploy NICHT —
+   das Image muss neu gebaut werden (Build Args wirken nur beim Build).
 4. Nach dem Deploy die Frontend-Domain in Backend-`AUTO_KI_CORS_ORIGINS`
-   und `FRONTEND_URL` eintragen.
+   und `FRONTEND_URL` eintragen (Backend neu deployen, damit CORS greift).
 
 ---
 
 ## 3. Backup & Restore
-- Nach jedem erfolgreichen DB-Schreibvorgang wird automatisch eine konsistente,
-  datierte Kopie nach `AUTO_KI_DB_BACKUP_DIR` (`/data/backups`) geschrieben,
-  die letzten 10 Versionen bleiben erhalten.
+- Zwei Backup-Auslöser, beide schreiben eine konsistente, datierte Kopie nach
+  `AUTO_KI_DB_BACKUP_DIR` (`/data/backups`), die letzten 10 Versionen bleiben
+  erhalten:
+  1. **Ereignisgesteuert:** nach jedem Fahrzeug-Admin-Schreibvorgang
+     (save_fahrzeug/patch_luecken).
+  2. **Periodisch:** alle `AUTO_KI_DB_BACKUP_INTERVAL_SECONDS` (Default 6h) —
+     deckt Nutzerregistrierungen, Chats, Checks und Käufe ab, die sonst
+     zwischen zwei Admin-Aktionen ungesichert geblieben wären.
 - **Wichtig:** Diese Backups liegen auf **demselben** Volume wie die Live-DB.
   Für echte Ausfallsicherheit zusätzlich regelmäßig `/data/backups` **extern**
   sichern (Railway-Volume-Snapshot oder periodischer Off-Site-Kopie-Job).
