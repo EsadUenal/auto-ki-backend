@@ -13,6 +13,8 @@ db/chroma/
 
 # Secrets
 .env
+.env.*
+!.env.example
 
 # IDE
 .vscode/
