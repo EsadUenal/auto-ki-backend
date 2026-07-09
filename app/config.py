@@ -85,6 +85,9 @@ _cors_default = "http://localhost:3000,http://localhost:3001,http://localhost:51
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.environ.get("AUTO_KI_CORS_ORIGINS", _cors_default).split(",") if o.strip()
 ]
+# Für die Start-Warnung in app.main: True, wenn AUTO_KI_CORS_ORIGINS nie gesetzt
+# wurde und die App noch auf den reinen Dev-Localhost-Default läuft.
+CORS_IS_DEFAULT: bool = "AUTO_KI_CORS_ORIGINS" not in os.environ
 
 # Stripe — Phase 2d
 # Testmodus-Keys unter https://dashboard.stripe.com/test/apikeys

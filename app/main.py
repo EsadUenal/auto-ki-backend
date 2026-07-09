@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT, CORS_ORIGINS, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL, DB_BACKUP_INTERVAL_SECONDS
+from app.config import RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL, DB_BACKUP_INTERVAL_SECONDS
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile
@@ -186,6 +186,13 @@ def _warn_if_insecure_defaults() -> None:
             "den öffentlich bekannten Dev-Default und können von JEDEM gefälscht "
             "werden. Vor Launch per Umgebungsvariable AUTO_KI_JWT_SECRET setzen "
             "(z.B. `openssl rand -hex 32`). !!!"
+        )
+    if CORS_IS_DEFAULT:
+        log.warning(
+            "!!! AUTO_KI_CORS_ORIGINS ist nicht gesetzt — nur localhost-Origins "
+            "sind erlaubt. Die echte Frontend-Domain wird sonst vom Browser "
+            "blockiert (CORS). Vor Launch per Umgebungsvariable "
+            "AUTO_KI_CORS_ORIGINS=https://deine-domain.de setzen. !!!"
         )
 
 
