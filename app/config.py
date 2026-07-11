@@ -102,7 +102,11 @@ FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000"
 
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
-FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-2.5-flash-lite")
+# "gemini-2.5-flash-lite" liefert für diesen API-Key inzwischen 404 ("no longer
+# available to new users") — Google hat das Modell für neue Nutzer gesperrt.
+# "gemini-flash-lite-latest" ist der von Google gepflegte Alias auf das jeweils
+# aktuelle Lite-Modell und dadurch nicht von künftigen Modell-Absetzungen betroffen.
+FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-flash-lite-latest")
 
 # Tavily Search — optional, aktiviert Echtzeit-Websuche für Preise/Rückrufe
 # Free-Plan: 1.000 Abfragen/Monat, kein Kreditkarte — https://app.tavily.com/

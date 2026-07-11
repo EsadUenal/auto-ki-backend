@@ -678,7 +678,11 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
         return None  # beide Versuche gescheitert
 
     # ── Primär: Flash-Lite (schnell) ──────────────────────────────────
-    result = _versuche(FAST_LLM_MODEL, max_output_tokens=800)
+    # Budget großzügig bemessen: breite Anfragen wie "alle Renault Modelle"
+    # brauchen für ~55 Generationen bereits ~1950 Output-Tokens (empirisch
+    # gemessen) — bei knappem Budget bricht die JSON-Antwort mitten im Array
+    # ab und wird unparsebar (JSONDecodeError), statt sauber gekürzt zu sein.
+    result = _versuche(FAST_LLM_MODEL, max_output_tokens=3000)
     if result is not None:
         return result
 
@@ -688,7 +692,7 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
     )
 
     # ── Fallback: Flash (mehr Kapazität) ──────────────────────────────
-    result = _versuche(LLM_MODEL, max_output_tokens=1600)
+    result = _versuche(LLM_MODEL, max_output_tokens=6000)
     if result is not None:
         return result
 
