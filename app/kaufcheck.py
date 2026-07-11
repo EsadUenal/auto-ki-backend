@@ -27,6 +27,12 @@ from app.web_search import (
 # pauschal aller 5 abgefragten Treffer.
 _MAX_KAUFCHECK_QUELLEN = 4
 
+# Bekannte Abweichungen des Modells vom vorgegebenen preis_bewertung-Enum
+# (siehe _SYSTEM) auf den nächstliegenden Schema-Wert abgebildet.
+_PREIS_BEWERTUNG_SYNONYME = {
+    "guter_deal": "guenstig",
+}
+
 log = logging.getLogger(__name__)
 
 _SYSTEM = """\
@@ -222,10 +228,19 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     elif hat_web:            quelle, vertrauen = "web", "niedrig"
     else:                    quelle, vertrauen = "gemischt", "niedrig"
 
+    # Sicherheitsnetz gegen Schema-Abweichung: Gemini driftet trotz fest
+    # vorgegebenem Enum (siehe _SYSTEM oben) gelegentlich zu naheliegenden,
+    # nicht im Schema stehenden Synonymen (z.B. "guter_deal" statt "guenstig").
+    # Ohne diese Normalisierung landet der rohe Snake-Case-Wert unübersetzt im
+    # Frontend, statt als lesbarer Text angezeigt zu werden.
+    preis_wert = _PREIS_BEWERTUNG_SYNONYME.get(
+        result.get("preis_bewertung", "unbekannt"), result.get("preis_bewertung", "unbekannt")
+    )
+
     return {
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
-        "preis_bewertung":  result.get("preis_bewertung", "unbekannt"),
+        "preis_bewertung":  preis_wert,
         "marktpreis_min":   result.get("marktpreis_min"),
         "marktpreis_max":   result.get("marktpreis_max"),
         "baureihe_erkannt": baureihe["id"] if baureihe else None,
