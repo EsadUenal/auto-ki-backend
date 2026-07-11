@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -228,6 +229,40 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     else:
         content = {"fehler": {"code": str(exc.status_code), "nachricht": str(detail)}}
     return _utf8_json(exc.status_code, content)
+
+
+# Kurze, kundentaugliche Texte je Pydantic-Fehlertyp — ohne Eintrag fällt
+# validation_error_handler() auf einen generischen Satz zurück.
+_VALIDIERUNGS_TEXTE = {
+    "string_too_long":  "darf höchstens {max_length} Zeichen lang sein.",
+    "string_too_short": "muss mindestens {min_length} Zeichen lang sein.",
+    "missing":          "ist erforderlich.",
+    "int_parsing":      "muss eine Zahl sein.",
+    "float_parsing":    "muss eine Zahl sein.",
+    "greater_than_equal": "muss mindestens {ge} sein.",
+    "less_than_equal":  "darf höchstens {le} sein.",
+}
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Ersetzt FastAPIs Standard-422-Antwort (roher JSON-Dump mit loc/type/msg/url —
+    z.B. bei einer zu langen Eingabe im Kaufcheck-Feld 'Motor / Antrieb') durch eine
+    kurze, für Kunden verständliche Meldung im app-eigenen {"fehler": {...}}-Format,
+    konsistent mit den anderen Exception-Handlern in dieser Datei."""
+    fehler = exc.errors()
+    if fehler:
+        erster = fehler[0]
+        feld = ".".join(str(p) for p in erster.get("loc", []) if p != "body") or "Eingabe"
+        vorlage = _VALIDIERUNGS_TEXTE.get(erster.get("type", ""), "ist ungültig.")
+        try:
+            text = vorlage.format(**erster.get("ctx", {}))
+        except (KeyError, IndexError):
+            text = "ist ungültig."
+        nachricht = f"{feld}: {text}"
+    else:
+        nachricht = "Eingabe ist ungültig."
+    return _utf8_json(422, {"fehler": {"code": "validierung", "nachricht": nachricht}})
 
 
 app.include_router(fahrzeug.router,      prefix="/api/v1")
