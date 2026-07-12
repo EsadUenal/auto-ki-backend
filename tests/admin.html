@@ -155,6 +155,11 @@ input:focus { outline: none; border-color: #3b82f6; }
       <button class="btn btn-batch" id="btn-batch" onclick="batchLaden()">Generationen auflisten</button>
     </div>
     <div id="batch-list" style="margin-top:12px"></div>
+    <button id="btn-entwurf-batch" class="btn"
+            style="display:none;margin-top:8px;background:#6d28d9;color:#fff"
+            onclick="entwurfBatchAlle()">
+      &#9654; Alle Entwürfe erstellen (Stapel)
+    </button>
   </div>
 
   <hr style="border-color:#334155">
@@ -219,6 +224,15 @@ input:focus { outline: none; border-color: #3b82f6; }
     </div>
     <div id="lk-drafts-list"></div>
   </div>
+
+  <!-- ===== ENTWURF-STAPEL (Batch-Modus: alle Entwürfe erstellen) ===== -->
+  <div id="entwurf-batch-area" style="display:none">
+    <div style="margin-bottom:16px">
+      <h2 style="font-size:18px;font-weight:700;color:#f8fafc">Entwürfe (Stapel)</h2>
+      <p id="entwurf-batch-sub" style="font-size:12px;color:#94a3b8;margin-top:2px"></p>
+    </div>
+    <div id="entwurf-batch-list"></div>
+  </div>
 </div>
 
 </div><!-- #app -->
@@ -226,6 +240,10 @@ input:focus { outline: none; border-color: #3b82f6; }
 <script>
 const API = "http://localhost:8000/api/v1";
 let currentData = null;
+
+// Entwurf-Stapel (Batch-Modus: "Alle Entwürfe erstellen")
+let entwurfBatchQueue = [];   // [{idx,marke,modell,generation,status,data,saved,errorMsg}]
+let entwurfBatchActiveIdx = null;  // welcher Stapel-Eintrag ist gerade im Haupt-Editor geöffnet
 
 function key() { return document.getElementById("api-key").value.trim(); }
 function headers() { return { "Authorization": `Bearer ${key()}`, "Content-Type": "application/json" }; }
@@ -244,6 +262,10 @@ async function entwurfErstellen(marke, modell, generation) {
   modell     = modell     || document.getElementById("s-modell").value.trim();
   generation = generation || document.getElementById("s-gen").value.trim();
   if (!marke || !modell || !generation) { setStatus("Marke, Modell und Generation eingeben.", "err"); return; }
+
+  // Nicht versehentlich einen Stapel-Eintrag als "gespeichert" markieren,
+  // wenn jetzt manuell ein neuer/anderer Entwurf erstellt wird.
+  entwurfBatchActiveIdx = null;
 
   document.getElementById("btn-entwurf").disabled = true;
   document.getElementById("btn-speichern").disabled = true;
@@ -377,12 +399,208 @@ async function batchLaden() {
         <button class="batch-load" onclick='entwurfErstellen(${JSON.stringify(g.marke)},${JSON.stringify(g.modell)},${JSON.stringify(g.generation)})'>Entwurf</button>`;
       list.appendChild(item);
     }
+
+    // Neue Suche → alten Entwurf-Stapel verwerfen, Bereich ausblenden
+    entwurfBatchQueue = j.generationen.map((g, i) => ({
+      idx: i, marke: g.marke, modell: g.modell, generation: g.generation,
+      status: "waiting", data: null, saved: false, errorMsg: null,
+    }));
+    entwurfBatchActiveIdx = null;
+    document.getElementById("entwurf-batch-area").style.display = "none";
+    document.getElementById("entwurf-batch-list").innerHTML = "";
+    document.getElementById("btn-entwurf-batch").style.display =
+      entwurfBatchQueue.length > 1 ? "block" : "none";
+
     setStatus(`${j.generationen.length} Generationen gefunden.`, "ok");
   } catch(e) {
     setStatus("Verbindungsfehler: " + e.message, "err");
   } finally {
     document.getElementById("btn-batch").disabled = false;
   }
+}
+
+// ================================================================
+//  ENTWURF-STAPEL — alle aufgelisteten Generationen nacheinander im
+//  Hintergrund erzeugen (kein gleichzeitiges Rendern mehrerer Formulare —
+//  der Editor unten arbeitet mit festen, nicht-eindeutigen HTML-IDs und
+//  einer einzigen globalen currentData, das würde bei Parallel-Anzeige
+//  Daten verschiedener Entwürfe vermischen). Danach einzeln im normalen,
+//  unveränderten Editor öffnen, prüfen, speichern.
+// ================================================================
+async function entwurfErstellenBatchItem(idx) {
+  const q = entwurfBatchQueue[idx];
+  q.status = "processing";
+  entwurfBatchRenderCard(idx);
+
+  const preview  = document.getElementById("stream-preview");
+  const spText   = document.getElementById("sp-text");
+  const spTokens = document.getElementById("sp-tokens");
+  preview.style.display = "block";
+  spText.textContent = "";
+  spTokens.textContent = "0";
+  setStatus(`(${idx + 1}/${entwurfBatchQueue.length}) Gemini generiert ${q.marke} ${q.modell} ${q.generation}…`, "info");
+
+  try {
+    const resp = await fetch(`${API}/admin/entwurf-stream`, {
+      method: "POST", headers: headers(),
+      body: JSON.stringify({ marke: q.marke, modell: q.modell, generation: q.generation }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      q.status = "error";
+      q.errorMsg = err?.fehler?.nachricht || ("Fehler " + resp.status);
+      entwurfBatchRenderCard(idx);
+      return;
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    let charCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split("\n\n");
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (raw === "[DONE]") continue;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.delta !== undefined) {
+          charCount += evt.delta.length;
+          spText.textContent += evt.delta;
+          spTokens.textContent = charCount;
+          preview.scrollTop = preview.scrollHeight;
+        }
+
+        if (evt.done && evt.json) {
+          q.data = evt.json;
+          if (evt.json._motorenfehler) {
+            q.status = "error";
+            q.errorMsg = "Motorvarianten konnten nicht geladen werden — bitte einzeln neu erstellen.";
+          } else {
+            q.status = "done";
+          }
+          entwurfBatchRenderCard(idx);
+        }
+
+        if (evt.status === "retry") {
+          spText.textContent = "";
+          charCount = 0;
+          setStatus(`(${idx + 1}/${entwurfBatchQueue.length}) Antwort unvollständig — wiederhole…`, "info");
+        }
+
+        if (evt.error) {
+          q.status = "error";
+          q.errorMsg = evt.error;
+          entwurfBatchRenderCard(idx);
+        }
+      }
+    }
+  } catch(e) {
+    q.status = "error";
+    q.errorMsg = e.message;
+    entwurfBatchRenderCard(idx);
+  } finally {
+    preview.style.display = "none";
+  }
+}
+
+async function entwurfBatchAlle() {
+  const waiting = entwurfBatchQueue.filter(q => q.status === "waiting");
+  if (!waiting.length) { setStatus("Alle Einträge bereits verarbeitet.", "info"); return; }
+
+  // Ein Entwurf pro Fahrzeug ist ein voller Gemini-Aufruf (Baureihe + Motoren) —
+  // bei sehr langen Listen (z.B. "alle Renault Modelle") kann der komplette
+  // Stapel mehrere Minuten dauern. Kurz nachfragen statt überraschend blockieren.
+  if (waiting.length > 10 && !confirm(
+    `${waiting.length} Entwürfe werden nacheinander per Gemini erzeugt — das kann mehrere Minuten dauern. Fortfahren?`
+  )) return;
+
+  document.getElementById("btn-entwurf-batch").disabled = true;
+  document.getElementById("editor-area").style.display = "none";
+  document.getElementById("empty-hint").style.display = "none";
+  document.getElementById("luecken-area").style.display = "none";
+  document.getElementById("entwurf-batch-area").style.display = "block";
+  entwurfBatchRenderList();
+
+  // Bewusst sequenziell (kein Promise.all) — parallele SSE-Streams würden sich
+  // dieselbe #stream-preview-Anzeige teilen und Gemini/Backend unnötig
+  // gleichzeitig belasten. Kleine Pause zwischen den Aufrufen als Puffer.
+  for (const q of waiting) {
+    await entwurfErstellenBatchItem(q.idx);
+    await new Promise(res => setTimeout(res, 800));
+  }
+
+  document.getElementById("btn-entwurf-batch").disabled = false;
+  const done = entwurfBatchQueue.filter(q => q.status === "done").length;
+  const failed = entwurfBatchQueue.filter(q => q.status === "error").length;
+  setStatus(
+    `Stapel fertig — ${done} Entwurf/Entwürfe bereit${failed ? `, ${failed} fehlgeschlagen` : ""}.`,
+    failed ? "err" : "ok"
+  );
+}
+
+function entwurfBatchRenderList() {
+  const list = document.getElementById("entwurf-batch-list");
+  list.innerHTML = "";
+  entwurfBatchQueue.forEach((q, i) => {
+    const card = document.createElement("div");
+    card.className = "lk-draft-card";
+    card.id = `eb-card-${i}`;
+    list.appendChild(card);
+    entwurfBatchRenderCard(i);
+  });
+}
+
+function entwurfBatchRenderCard(idx) {
+  const q = entwurfBatchQueue[idx];
+  const card = document.getElementById(`eb-card-${idx}`);
+  if (!card) return;
+
+  const badge =
+    q.status === "processing" ? `<span class="lk-badge lk-badge-processing">lädt…</span>` :
+    q.status === "done"       ? (q.saved
+        ? `<span class="lk-badge lk-badge-done">✓ gespeichert</span>`
+        : `<span class="lk-badge lk-badge-done">bereit</span>`) :
+    q.status === "error"      ? `<span class="lk-badge lk-badge-error">Fehler</span>` : "";
+
+  card.innerHTML = `
+    <div class="lk-draft-header" style="cursor:${q.status==='done' ? 'pointer':'default'}"
+         ${q.status === "done" ? `onclick="entwurfBatchOeffnen(${idx})"` : ""}>
+      <div>
+        <div class="lk-draft-title">${q.marke} ${q.modell} ${q.generation}</div>
+        <div class="lk-draft-sub">${
+          q.status === "error" ? (q.errorMsg || "Fehler")
+          : q.status === "done" ? "Klicken zum Prüfen & Speichern"
+          : ""
+        }</div>
+      </div>
+      ${badge}
+    </div>`;
+
+  const subEl = document.getElementById("entwurf-batch-sub");
+  if (subEl) {
+    const doneOrErr = entwurfBatchQueue.filter(x => x.status === "done" || x.status === "error").length;
+    subEl.textContent = `${doneOrErr} von ${entwurfBatchQueue.length} verarbeitet`;
+  }
+}
+
+function entwurfBatchOeffnen(idx) {
+  const q = entwurfBatchQueue[idx];
+  if (!q || !q.data) return;
+  entwurfBatchActiveIdx = idx;
+  ladeEntwurf(q.data);
+  document.getElementById("editor-area").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // ================================================================
@@ -780,6 +998,7 @@ async function lueckenSuchen() {
   picker.style.display = "none";
   document.getElementById("btn-luecken-batch").style.display = "none";
   document.getElementById("luecken-area").style.display = "none";
+  document.getElementById("entwurf-batch-area").style.display = "none";
   document.getElementById("lk-drafts-list").innerHTML = "";
   lueckenQueue   = [];
   lueckenDraftMap = {};
@@ -1183,6 +1402,14 @@ async function speichern() {
     const j = await r.json();
     if (!r.ok) { setStatus(j?.fehler?.nachricht || "Fehler beim Speichern", "err"); return; }
     setStatus(j.nachricht || "Gespeichert!", "ok");
+
+    // Falls dieser Entwurf aus dem Stapel-Modus geöffnet wurde: Karte als
+    // gespeichert markieren, damit der Fortschritt in der Liste sichtbar ist.
+    if (entwurfBatchActiveIdx !== null && entwurfBatchQueue[entwurfBatchActiveIdx]) {
+      entwurfBatchQueue[entwurfBatchActiveIdx].saved = true;
+      entwurfBatchRenderCard(entwurfBatchActiveIdx);
+      entwurfBatchActiveIdx = null;
+    }
   } catch(e) {
     setStatus("Verbindungsfehler: " + e.message, "err");
   } finally {
