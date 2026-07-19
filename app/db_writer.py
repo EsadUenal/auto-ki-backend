@@ -100,6 +100,7 @@ def _backup_sqlite() -> None:
         dst_path = DB_BACKUP_DIR / f"auto_ki_backup_{ts}.db"
 
         src = sqlite3.connect(DB_PATH)
+        src.execute("PRAGMA busy_timeout=5000")  # siehe Begründung in save_fahrzeug()
         dst = sqlite3.connect(dst_path)
         src.backup(dst)
         dst.close()
@@ -193,6 +194,7 @@ def patch_luecken(bid: str, daten: dict) -> None:
     _ensure_db_migrated()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # siehe Begründung in save_fahrzeug()
     heute = date.today().strftime("%Y-%m")
 
     # 1. Kaufberatung (einfaches UPDATE — kein Löschen nötig)
@@ -283,6 +285,13 @@ def save_fahrzeug(data: dict) -> str:
     _ensure_db_migrated()   # transparente Migration aus Legacy-Pfad
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys=ON")
+    # Ohne busy_timeout scheitert ein Schreibzugriff SOFORT mit "database is
+    # locked", sobald eine andere Connection kurz schreibt (z.B. das Backup
+    # direkt nach einem vorherigen Speichern, siehe _backup_sqlite unten) —
+    # statt kurz zu warten, wie es get_conn() in database.py bereits tut.
+    # Wurde besonders beim schnellen Hintereinander-Speichern im Admin-Tool
+    # (Entwurf-Stapel) sichtbar.
+    conn.execute("PRAGMA busy_timeout=5000")
 
     marke      = data["marke"]
     modell     = data["modell"]
