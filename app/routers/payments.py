@@ -391,7 +391,6 @@ def _verarbeite_event(event_type: str, obj) -> None:
             paid_at          = None
             created_ts       = getattr(obj, "created", None)
             if created_ts:
-                from datetime import datetime, timezone
                 paid_at = datetime.fromtimestamp(created_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
             if user_id and poster_id and session_id:
