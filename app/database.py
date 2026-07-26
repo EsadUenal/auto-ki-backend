@@ -171,7 +171,7 @@ _EBOOK_SEED = [
     (
         "dein-erstes-auto",
         "Dein erstes Auto",
-        "Ohne Fehler, ohne Reue",
+        "Der ehrliche Ratgeber für Erstkäufer",
         "Der Ratgeber für alle, die ihr erstes Auto kaufen: Budget planen, richtige Wahl treffen, typische Anfängerfehler vermeiden — verständlich erklärt.",
         "Erstkäufer 18–30",
         14.99, 13.49,
