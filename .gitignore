@@ -15,6 +15,7 @@ db/chroma/
 .env
 .env.*
 !.env.example
+wiederherstellungspasswort.txt
 
 # IDE
 .vscode/
