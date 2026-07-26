@@ -114,7 +114,9 @@ def _utf8_json(status_code: int, content: dict) -> UTF8JSONResponse:
     return UTF8JSONResponse(status_code=status_code, content=content)
 
 
-limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
+# Limiter lebt in app.rate_limit, damit Router (z.B. der Stripe-Webhook) ihn per
+# @limiter.exempt ohne Zirkelimport ueber main.py nutzen koennen.
+from app.rate_limit import limiter
 
 app = FastAPI(
     title="Vira Backend",

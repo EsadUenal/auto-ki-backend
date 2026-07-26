@@ -33,6 +33,7 @@ from app.einwilligung import (
     require_agb, require_widerruf_verzicht,
     record as record_einwilligung, ART_AGB, ART_WIDERRUF,
 )
+from app.rate_limit import limiter
 from app.routers.user_auth import get_current_user_id
 from app.utf8 import UTF8JSONResponse
 
@@ -183,7 +184,7 @@ def create_checkout_session(
     require_agb(body.agb_akzeptiert)
     require_widerruf_verzicht(body.widerruf_verzicht)
     customer_id = _get_or_create_customer(user_id)
-    success_url = f"{FRONTEND_URL}/pricing?payment=success"
+    success_url = f"{FRONTEND_URL}/pricing?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url  = f"{FRONTEND_URL}/pricing?payment=cancelled"
 
     if body.typ == "abo":
@@ -255,6 +256,8 @@ def create_checkout_session(
 
 
 @router.post("/webhook", include_in_schema=False)
+@limiter.exempt   # Stripe-Webhook nie drosseln: unter geteilter IP koennte das
+                  # globale Rate-Limit sonst 429 liefern -> verzoegerte Freischaltung.
 async def stripe_webhook(request: Request):
     """
     Stripe-Webhook — einziger Weg zur Freischaltung.
@@ -296,7 +299,13 @@ async def stripe_webhook(request: Request):
             return {"ok": True, "skipped": True}
 
     try:
-        _verarbeite_event(event_type, obj)
+        # Checkout-Sessions laufen ueber einen zusaetzlichen session-scoped Claim,
+        # damit Webhook und Verify-Fallback (/verify-session) dieselbe Session nie
+        # doppelt freischalten. Andere Event-Typen wie gehabt.
+        if event_type == "checkout.session.completed":
+            _verarbeite_checkout_session(obj)
+        else:
+            _verarbeite_event(event_type, obj)
     except Exception:
         with get_conn() as conn:
             conn.execute("DELETE FROM stripe_events WHERE event_id=?", (event_id,))
@@ -433,6 +442,85 @@ def _verarbeite_event(event_type: str, obj) -> None:
                     (sub_id,),
                 )
                 conn.commit()
+
+
+def _verarbeite_checkout_session(obj) -> None:
+    """Verarbeitet eine abgeschlossene Checkout-Session *idempotent*.
+
+    Beansprucht einen session-scoped Eintrag in ``stripe_events`` (Key
+    ``cs:<session_id>``), bevor die eigentliche Freischaltung laeuft. Dadurch
+    koennen Webhook UND Verify-Fallback dieselbe Session gefahrlos verarbeiten,
+    ohne doppelt freizuschalten (z.B. doppelte Check-Gutschrift beim Einzelkauf).
+    Schlaegt die Freischaltung fehl, wird der Claim wieder entfernt, damit ein
+    Retry (Stripe-Webhook) bzw. ein erneuter Verify-Aufruf sie wirklich nachholt.
+    """
+    session_id = getattr(obj, "id", "")
+    if not session_id:
+        return
+    claim = f"cs:{session_id}"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO stripe_events (event_id) VALUES (?)", (claim,)
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return   # bereits (durch Webhook ODER Verify) verarbeitet
+    try:
+        _verarbeite_event("checkout.session.completed", obj)
+    except Exception:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM stripe_events WHERE event_id=?", (claim,))
+            conn.commit()
+        raise
+
+
+class VerifySessionBody(BaseModel):
+    session_id: str
+
+
+@router.post("/verify-session")
+def verify_session(body: VerifySessionBody, user_id: int = Depends(get_current_user_id)):
+    """Fallback zum Webhook.
+
+    Nach der Rueckkehr des Kunden von Stripe prueft das Frontend hierueber die
+    Checkout-Session direkt bei Stripe. Ist sie bezahlt und gehoert sie dem
+    eingeloggten Konto, wird *idempotent* freigeschaltet — falls der Webhook
+    (noch) nicht angekommen ist. So bekommt ein zahlender Kunde selbst bei
+    verzoegertem oder verpasstem Webhook sofort Zugang. Eine Doppel-Freischaltung
+    mit dem Webhook ist durch den session-scoped Idempotenz-Claim ausgeschlossen.
+    """
+    if not body.session_id:
+        raise HTTPException(
+            status_code=400,
+            detail={"fehler": {"code": "bad_request", "nachricht": "session_id fehlt."}},
+        )
+    try:
+        session = stripe.checkout.Session.retrieve(body.session_id)
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail={"fehler": {"code": "nicht_gefunden", "nachricht": "Checkout-Session nicht gefunden."}},
+        )
+
+    # Nur tatsaechlich bezahlte/abgeschlossene Sessions freischalten.
+    bezahlt = (
+        getattr(session, "payment_status", None) == "paid"
+        or getattr(session, "status", None) == "complete"
+    )
+    if not bezahlt:
+        return {"ok": True, "freigeschaltet": False, "status": getattr(session, "status", None)}
+
+    # Session muss dem anfragenden Konto gehoeren (kein Fremd-Claim ueber geratene IDs).
+    meta = session.metadata or {}
+    _m   = meta._data if hasattr(meta, "_data") else (meta if isinstance(meta, dict) else {})
+    if int(_m.get("user_id", 0) or 0) != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail={"fehler": {"code": "forbidden", "nachricht": "Session gehoert nicht zu diesem Konto."}},
+        )
+
+    _verarbeite_checkout_session(session)
+    return {"ok": True, "freigeschaltet": True}
 
 
 @router.post("/cancel-subscription")

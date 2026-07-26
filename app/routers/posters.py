@@ -160,7 +160,7 @@ def create_poster_checkout(
             },
             "quantity": 1,
         }],
-        success_url=f"{FRONTEND_URL}/poster?payment=success",
+        success_url=f"{FRONTEND_URL}/poster?payment=success&session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{FRONTEND_URL}/poster?payment=cancelled",
         metadata={
             "typ":             "poster",

@@ -121,7 +121,7 @@ def create_ebook_checkout(
             },
             "quantity": 1,
         }],
-        success_url=f"{FRONTEND_URL}/ebooks?payment=success",
+        success_url=f"{FRONTEND_URL}/ebooks?payment=success&session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{FRONTEND_URL}/ebooks?payment=cancelled",
         metadata={
             "typ":           "ebook",
