@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
@@ -108,3 +108,35 @@ def delete_check(check_id: int, user_id: int = Depends(get_current_user_id)):
         _get_own_check(conn, check_id, user_id)
         conn.execute("DELETE FROM checks WHERE id = ?", (check_id,))
         conn.commit()
+
+
+# ── Analyse-Rückfragen (Q&A) pro Check ────────────────────────────────────────
+
+class SaveFrageBody(BaseModel):
+    frage:   str = Field(max_length=2_000)
+    antwort: str = Field(max_length=20_000)
+
+
+@router.get("/{check_id}/fragen")
+def list_check_fragen(check_id: int, user_id: int = Depends(get_current_user_id)):
+    """Gespeicherte Analyse-Rückfragen eines Checks (älteste zuerst)."""
+    with get_conn() as conn:
+        _get_own_check(conn, check_id, user_id)   # Existenz + Ownership (403/404)
+        rows = conn.execute(
+            "SELECT frage, antwort, created_at FROM check_frage WHERE check_id = ? ORDER BY id",
+            (check_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{check_id}/fragen", status_code=201)
+def add_check_frage(check_id: int, body: SaveFrageBody, user_id: int = Depends(get_current_user_id)):
+    """Eine abgeschlossene Frage/Antwort an den Check anhängen."""
+    with get_conn() as conn:
+        _get_own_check(conn, check_id, user_id)   # Existenz + Ownership (403/404)
+        conn.execute(
+            "INSERT INTO check_frage (check_id, frage, antwort) VALUES (?, ?, ?)",
+            (check_id, body.frage, body.antwort),
+        )
+        conn.commit()
+    return {"ok": True}

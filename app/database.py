@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS idx_checks_user_id ON checks(user_id);
 
+-- Kontextgebundene Analyse-Rückfragen (Q&A) pro gespeichertem Check. Bleibt an
+-- den Check gekoppelt und wird beim erneuten Öffnen wiederhergestellt. Löscht der
+-- Nutzer den Check, verschwinden die Fragen mit (ON DELETE CASCADE).
+CREATE TABLE IF NOT EXISTS check_frage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id    INTEGER NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+    frage       TEXT    NOT NULL,
+    antwort     TEXT    NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_check_frage_check ON check_frage(check_id);
+
 CREATE TABLE IF NOT EXISTS stripe_events (
     event_id     TEXT PRIMARY KEY,
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
