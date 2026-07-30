@@ -1017,3 +1017,98 @@ async def chat_stream(
         "vertrauen":         vertrauen,
         "belege":            belege,
     }
+
+
+# ---------- Kontextgebundene Rückfragen zu einer Check-Analyse ----------
+
+# Obergrenze für den mitgeschickten Analysetext im Prompt (Sicherheitsnetz gegen
+# Kosten/Latenz; das Request-Modell begrenzt zusätzlich auf _MAX_TEXT_LEN).
+_ANALYSE_KONTEXT_MAX = 8_000
+
+_ANALYSE_SYSTEM = """Du bist Viras Analyse-Assistent. Der Nutzer hat gerade das Ergebnis eines {check_label} zu einem konkreten Fahrzeug erhalten (siehe unten). Deine EINZIGE Aufgabe: Fragen zu GENAU DIESER Analyse und den darin behandelten Themen beantworten.
+
+— WAS DU BEANTWORTEST (großzügig auslegen) —
+- Fragen zur Analyse selbst ("Warum wurde Punkt X als Risiko eingestuft?", "Was bedeutet die Empfehlung?").
+- Vertiefende Fragen zu Konzepten, die in der Analyse vorkommen oder eng dazugehören ("Wie hoch sind typische Kosten für einen Zahnriemenwechsel?", "Was ist eine Schadstoffklasse?").
+- Klärung von Fachbegriffen aus der Analyse.
+- Folgefragen, die auf den Ergebnissen aufbauen.
+
+— GRENZFÄLLE (nur am Rande mit der Analyse verwandt) —
+Beantworte sie kurz und hänge GENAU diesen Hinweis an: "Für tiefergehende Fragen zum Thema nutze gerne den KI-Chat."
+
+— WAS DU HÖFLICH ABLEHNST —
+Nur klar themenfremde Fragen ohne jeden Bezug zu diesem Fahrzeug, zu Autos allgemein oder zur Analyse (z. B. Kochen, Politik, Allgemeinwissen). Antworte dann mit GENAU diesem Satz und sonst NICHTS:
+"Diese Frage bezieht sich nicht auf die Analyse. Nutze den KI-Chat für allgemeine Fragen."
+
+PRINZIP: Im Zweifel hilfreich antworten, NICHT hyperstreng. Frag dich: "Hat das plausibel mit diesem Auto oder dieser Analyse zu tun?" Wenn ja → beantworten.
+
+— STIL —
+Duze den Nutzer. Sachlich und ruhig, kein Hype. KEINE Einleitungsfloskeln ("Gerne", "Natürlich", "Klar") und KEIN Floskel-Schluss. Steig direkt mit der Antwort ein. Antworte auf Deutsch, kurz und auf den Punkt — ausführlich nur, wenn ausdrücklich nach Details gefragt wird. Erfinde KEINE konkreten modellspezifischen Zahlen, die nicht in der Analyse stehen; allgemeine Orientierungswerte/Faustregeln darfst du nennen und als solche kennzeichnen.
+
+=== DIE ANALYSE ({check_label}) ===
+{analyse_kontext}"""
+
+_ANALYSE_CHECK_LABELS = {
+    "kauf":       "Kauf-Checks",
+    "verkauf":    "Verkaufs-Checks",
+    "ersatzteil": "einer Ersatzteil-Suche",
+}
+
+
+async def analyse_frage_stream(
+    analyse_kontext: str,
+    frage: str,
+    verlauf: list[dict],
+    check_typ: str = "kauf",
+) -> AsyncGenerator[dict, None]:
+    """Beantwortet eine kontextgebundene Rückfrage zu einer Check-Analyse.
+
+    Events: {"type": "text", "delta": "..."} — reiner Text-Stream (kein Meta/keine
+    Websuche; der Kontext ist der bereits erstellte Analysetext).
+    """
+    import asyncio
+
+    check_label = _ANALYSE_CHECK_LABELS.get(check_typ, "Checks")
+    system = _ANALYSE_SYSTEM.format(
+        check_label=check_label,
+        analyse_kontext=(analyse_kontext or "")[:_ANALYSE_KONTEXT_MAX],
+    )
+
+    history = []
+    for msg in verlauf:
+        role = "user" if msg.get("rolle") == "user" else "model"
+        history.append({"role": role, "parts": [{"text": msg.get("text", "")}]})
+
+    client = _get_client()
+    contents = history + [{"role": "user", "parts": [{"text": frage}]}]
+    cfg = genai_types.GenerateContentConfig(system_instruction=system, temperature=0.3)
+
+    try:
+        response = await with_retry(lambda: client.aio.models.generate_content_stream(
+            model=LLM_MODEL, contents=contents, config=cfg,
+        ))
+    except GeminiFehlgeschlagen as exc:
+        log.warning("Analyse-Frage: Gemini-Totalausfall beim Start des Streams: %s", exc)
+        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
+        return
+    except Exception:
+        log.exception("Analyse-Frage: unerwarteter Fehler beim Start des Gemini-Streams")
+        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
+        return
+
+    _FLUSH_TAIL = 24
+    scrub_buf = ""
+    try:
+        async for chunk in response:
+            if chunk.text:
+                scrub_buf += chunk.text
+                if len(scrub_buf) > _FLUSH_TAIL * 2:
+                    safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
+                    yield {"type": "text", "delta": _scrub_jargon(safe)}
+                    await asyncio.sleep(0)
+    except Exception as exc:
+        log.warning("Analyse-Frage: Fehler während des Streamens: %s", exc)
+        scrub_buf += f"\n\n*{KI_UEBERLASTET_NACHRICHT}*"
+
+    if scrub_buf:
+        yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
