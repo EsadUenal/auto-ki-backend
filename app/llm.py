@@ -1052,6 +1052,7 @@ PRINZIP: Im Zweifel hilfreich antworten, NICHT hyperstreng. Frag dich: "Hat das 
 - Duze den Nutzer. Sachlich und ruhig, kein Hype. KEINE Einleitungsfloskeln ("Gerne", "Natürlich", "Klar") und KEIN Floskel-Schluss. Steig direkt mit der Antwort ein. Antworte auf Deutsch.
 - Geh DIREKT auf die konkrete Frage ein — nur das, was die Frage wirklich braucht.
 - Standardlänge: kurz, normalerweise 2–5 Absätze (oft reicht weniger). Länger antworten NUR, wenn der Nutzer ausdrücklich mehr Detailtiefe verlangt.
+- Strukturiere mit Markdown, wo es die Antwort klarer macht: **Fettung** für zentrale Begriffe und Kernaussagen, Aufzählungen (mit "- ") für mehrere Punkte, Faktoren oder Schritte, und kurze fette Zwischenüberschriften bei längeren, mehrteiligen Antworten. Eine kurze, einfache Antwort bleibt sauberer Fließtext — erzwinge dort keine Überschriften oder Listen.
 - Erfinde KEINE konkreten modellspezifischen Zahlen, die nicht in der Analyse stehen; allgemeine Orientierungswerte/Faustregeln darfst du nennen und als solche kennzeichnen.
 
 === DIE ANALYSE ({check_label}) ===
