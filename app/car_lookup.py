@@ -104,22 +104,76 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     return get_baureihe(best["marke"], best["modell"], best["generation"])
 
 
+# Kraftstoff aus einem freien Motor-Hint ableiten ("2.0 Diesel, 190 PS" -> diesel).
+# Der normierte Wert wird gegen das kraftstoff-Feld der Motorvariante gematcht.
+_KRAFTSTOFF_HINTS: list[tuple[str, tuple[str, ...]]] = [
+    ("diesel",  ("diesel", "tdi", "cdi", "hdi", "dci", "bluetec")),
+    ("hybrid",  ("hybrid", "phev", "plug-in", "plug in", "plugin")),
+    ("elektro", ("elektro", "electric", " ev", "bev")),
+    ("benzin",  ("benzin", "tsi", "tfsi", "gti", "otto", "petrol", "mpi")),
+]
+
+
+def _kraftstoff_aus_hint(h: str) -> str | None:
+    """Normierter Kraftstoff aus dem Hint, oder None. Reihenfolge: spezifisch vor
+    Benzin (ein 'Plug-in-Hybrid' soll nicht als Benzin durchgehen)."""
+    for norm, keys in _KRAFTSTOFF_HINTS:
+        if any(k in h for k in keys):
+            return norm
+    return None
+
+
 def find_motor(baureihe: dict, hint: str | None) -> dict | None:
-    """Findet die passende Motorvariante per Textabgleich."""
+    """Findet die passende Motorvariante per Textabgleich.
+
+    Signalreihenfolge: (1) direkte Bezeichnung/Motorcode, (2) Leistung — dabei die
+    EINHEIT im Hint respektieren (eine PS-Angabe nur gegen leistung_ps, eine
+    kW-Angabe nur gegen leistung_kw) und zusätzlich per Kraftstoff eingrenzen.
+
+    Ohne diese Einheiten-Trennung kollidiert z.B. "190 PS" (320d, Diesel) mit
+    "190 kW" (330i = 258 PS, Benzin): stand der 330i in der Motorliste vorn,
+    gewann er über leistung_kw==190 und der Kaufcheck bekam Benzin-Specs für einen
+    Diesel — widersprüchlicher Kontext, der die Analyse verfälscht.
+    """
     if not hint or not baureihe["motoren"]:
         return None
     h = hint.lower()
+
+    # (1) Direkter Bezeichnungs-/Motorcode-Treffer — stärkstes Signal.
     for m in baureihe["motoren"]:
         bez  = m["bezeichnung"].lower()
         code = (m["motorcode"] or "").lower()
         if h in bez or bez in h or (code and h in code):
             return m
-    ps_match = re.search(r"(\d{2,3})\s*(?:ps|kw)", h)
+
+    # (2) Leistungs-Treffer. Kandidaten zuerst per Kraftstoff eingrenzen (falls im
+    #     Hint genannt) — sonst kann ein Benziner mit gleicher kW-Zahl einen Diesel
+    #     mit gleicher PS-Zahl verdrängen.
+    kandidaten = baureihe["motoren"]
+    kraftstoff = _kraftstoff_aus_hint(h)
+    if kraftstoff:
+        gefiltert = [m for m in kandidaten if kraftstoff in (m.get("kraftstoff") or "").lower()]
+        if gefiltert:
+            kandidaten = gefiltert
+
+    ps_match = re.search(r"(\d{2,3})\s*ps\b", h)
     if ps_match:
         val = int(ps_match.group(1))
-        for m in baureihe["motoren"]:
-            if m.get("leistung_ps") == val or m.get("leistung_kw") == val:
+        for m in kandidaten:
+            if m.get("leistung_ps") == val:
                 return m
+    kw_match = re.search(r"(\d{2,3})\s*kw\b", h)
+    if kw_match:
+        val = int(kw_match.group(1))
+        for m in kandidaten:
+            if m.get("leistung_kw") == val:
+                return m
+
+    # (3) Keine Leistungsangabe, aber der Kraftstoff grenzt eindeutig auf genau
+    #     einen Motor ein -> diesen nehmen.
+    if kraftstoff and len(kandidaten) == 1:
+        return kandidaten[0]
+
     return None
 
 
@@ -312,20 +366,74 @@ _MARKTPREIS_SPANNE_MUSTER = re.compile(
 )
 
 
-def _notfall_extraktion(raw: str) -> dict:
-    """Best-effort Rekonstruktion der Strukturfelder aus reinem Markdown-Text,
-    wenn beide JSON-Parse-Versuche fehlschlagen (siehe call_gemini_json)."""
-    ergebnis: dict = {"bericht": raw or "Analyse fehlgeschlagen."}
+def _extrahiere_bericht_string(raw: str) -> str | None:
+    """Löst den inneren Markdown-Wert des Feldes "bericht" aus einer (evtl. kaputten
+    oder abgeschnittenen) JSON-Hülle heraus, damit der Nutzer NIE die rohe JSON-
+    Struktur `{"bericht": "..."}` zu sehen bekommt.
 
-    empf_abschnitt_match = re.search(r"##\s*Kaufempfehlung(.{0,200})", raw, re.IGNORECASE | re.DOTALL)
-    such_text_empf = empf_abschnitt_match.group(1) if empf_abschnitt_match else raw
+    - Ist der Rohtext keine JSON-Hülle (beginnt nicht mit "{"), wird er unverändert
+      zurückgegeben (das Modell lieferte dann reines Markdown).
+    - Findet sich keine "bericht"-Zeichenkette, wird None zurückgegeben.
+    """
+    if not raw:
+        return None
+    if not raw.lstrip().startswith("{"):
+        return raw
+    m = re.search(r'"bericht"\s*:\s*"', raw)
+    if not m:
+        return None
+    i, n = m.end(), len(raw)
+    buf: list[str] = []
+    while i < n:
+        ch = raw[i]
+        if ch == "\\" and i + 1 < n:            # bereits escapte Sequenz übernehmen
+            buf.append(raw[i:i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            rest = raw[i + 1:]
+            # Echtes String-Ende: dahinter folgt ein JSON-Strukturzeichen oder das
+            # (abgeschnittene) Textende. Sonst ein literales Zitat im Fließtext.
+            if rest.strip() == "" or re.match(r"\s*[,}\]]", rest):
+                break
+            buf.append('\\"')
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    inner = "".join(buf)
+    try:
+        return json.loads('"' + inner + '"')
+    except json.JSONDecodeError:
+        return (inner.replace("\\n", "\n").replace("\\r", "\r")
+                     .replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\"))
+
+
+def _notfall_extraktion(raw: str) -> dict:
+    """Best-effort Rekonstruktion der Strukturfelder, wenn alle JSON-Parse-Versuche
+    fehlschlagen (siehe call_gemini_json).
+
+    Der "bericht" wird IMMER als sauberer Markdown-Text zurückgegeben — niemals als
+    rohe oder abgeschnittene JSON-Hülle. Lässt sich kein Bericht bergen, steht dort
+    eine verständliche Meldung statt interner JSON-Strukturen.
+    """
+    bericht_text = _extrahiere_bericht_string(raw)
+    if not bericht_text or bericht_text.lstrip().startswith("{"):
+        bericht_text = (
+            "Die Analyse konnte diesmal nicht vollständig erstellt werden. "
+            "Bitte starte den Kauf-Check in einem Moment erneut."
+        )
+    ergebnis: dict = {"bericht": bericht_text}
+
+    empf_abschnitt_match = re.search(r"##\s*Kaufempfehlung(.{0,200})", bericht_text, re.IGNORECASE | re.DOTALL)
+    such_text_empf = empf_abschnitt_match.group(1) if empf_abschnitt_match else bericht_text
     for pattern, wert in _EMPFEHLUNG_MUSTER:
         if pattern.search(such_text_empf):
             ergebnis["empfehlung"] = wert
             break
 
-    preis_abschnitt_match = re.search(r"##\s*Preis-Einsch[äa]tzung(.{0,300})", raw, re.IGNORECASE | re.DOTALL)
-    such_text_preis = preis_abschnitt_match.group(1) if preis_abschnitt_match else raw
+    preis_abschnitt_match = re.search(r"##\s*Preis-Einsch[äa]tzung(.{0,300})", bericht_text, re.IGNORECASE | re.DOTALL)
+    such_text_preis = preis_abschnitt_match.group(1) if preis_abschnitt_match else bericht_text
     for pattern, wert in _PREIS_BEWERTUNG_MUSTER:
         if pattern.search(such_text_preis):
             ergebnis["preis_bewertung"] = wert
@@ -342,6 +450,18 @@ def _notfall_extraktion(raw: str) -> dict:
     return ergebnis
 
 
+def _ist_abgeschnitten(response) -> bool:
+    """True, wenn Gemini die Antwort wegen des Token-Limits abgeschnitten hat
+    (finish_reason MAX_TOKENS). Eine solche Antwort enthält unvollständiges JSON."""
+    try:
+        fr = response.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return False
+    if fr is None:
+        return False
+    return getattr(fr, "name", str(fr)).upper().endswith("MAX_TOKENS")
+
+
 async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
     """
     Ruft Gemini im JSON-Modus auf und gibt das geparste Dict zurück.
@@ -353,6 +473,15 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         temperature=0.2,
         max_output_tokens=16384,
         response_mime_type="application/json",
+        # Gemini 2.5 Flash "denkt" per Default dynamisch und praktisch unbegrenzt;
+        # diese Thinking-Tokens zählen gegen max_output_tokens. Bei einem langen
+        # Kauf-/Verkaufscheck-Bericht zehrt das Denken das Budget auf, sodass die
+        # eigentliche JSON-Antwort mitten im Bericht (z.B. in einer Tabelle)
+        # abgeschnitten wird (finish_reason MAX_TOKENS) — das JSON ist dann
+        # unparsebar. Ohne Thinking steht das gesamte Budget der Antwort zur
+        # Verfügung (dasselbe Muster nutzt admin_llm für die strukturierte
+        # Fahrzeug-Generierung mit demselben 16k-Budget).
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
     client = get_gemini_client()
     response = await with_retry(lambda: client.aio.models.generate_content(
@@ -372,6 +501,18 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         raise GeminiFehlgeschlagen(f"Gemini-Antwort ohne verwertbaren Text: {exc}") from exc
     if not raw:
         raise GeminiFehlgeschlagen("Gemini hat eine leere Antwort geliefert.")
+
+    # Eine durch das Token-Limit abgeschnittene Antwort NICHT als Erfolg durch-
+    # reichen: das JSON ist unvollständig, alle Parse-/Repair-Versuche scheitern und
+    # der Nutzer bekäme sonst rohen, mitten im Bericht abgebrochenen JSON-Text zu
+    # sehen. Als kontrollierten Fehlschlag behandeln — der Router erstattet das
+    # Kontingent und zeigt eine saubere Meldung statt eines kaputten Berichts.
+    if _ist_abgeschnitten(response):
+        log.warning(
+            "Gemini JSON-Antwort abgeschnitten (MAX_TOKENS, %d Zeichen) — kein Roh-Dump, "
+            "melde kontrollierten Fehlschlag.", len(raw),
+        )
+        raise GeminiFehlgeschlagen("Gemini-Antwort wurde durch das Token-Limit abgeschnitten.")
 
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw.strip())

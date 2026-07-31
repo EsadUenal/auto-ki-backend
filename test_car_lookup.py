@@ -85,6 +85,34 @@ set_daten(BAUREIHEN, MOTOREN)
 check("Ferrari 488 -> None", cl.find_baureihe("Ferrari", "488", 2019) is None)
 check("Nur Marke BMW (kein Modell) -> Best-Guess erlaubt", cl.find_baureihe("BMW", None, 2016) is not None)
 
+# ── find_motor: Einheiten-/Kraftstoff-getrennter Leistungsabgleich ──────────
+# Regressionsschutz: "190 PS" (320d, Diesel) darf NICHT den 330i (190 kW, Benzin)
+# ziehen — sonst bekommt der Kaufcheck Benzin-Specs für einen Diesel.
+G20_MOTOREN = {"motoren": [
+    {"bezeichnung": "320i", "motorcode": "B48", "kraftstoff": "Benzin",
+     "leistung_ps": 184, "leistung_kw": 135},
+    {"bezeichnung": "330i", "motorcode": "B48", "kraftstoff": "Benzin",
+     "leistung_ps": 258, "leistung_kw": 190},
+    {"bezeichnung": "320d", "motorcode": "B47", "kraftstoff": "Diesel",
+     "leistung_ps": 190, "leistung_kw": 140},
+    {"bezeichnung": "330e", "motorcode": "B48", "kraftstoff": "Plug-in-Hybrid",
+     "leistung_ps": 292, "leistung_kw": 215},
+]}
+
+
+def mbez(res):
+    return (res or {}).get("bezeichnung")
+
+
+check("find_motor '2.0 Diesel, 190 PS' -> 320d (NICHT 330i)",
+      mbez(cl.find_motor(G20_MOTOREN, "2.0 Diesel, 190 PS, Automatik")) == "320d")
+check("find_motor '320d' (Bezeichnung) -> 320d", mbez(cl.find_motor(G20_MOTOREN, "320d")) == "320d")
+check("find_motor '330i' (Bezeichnung) -> 330i", mbez(cl.find_motor(G20_MOTOREN, "330i")) == "330i")
+check("find_motor '190 PS' (nur PS) -> 320d", mbez(cl.find_motor(G20_MOTOREN, "190 PS")) == "320d")
+check("find_motor '140 kW Diesel' -> 320d", mbez(cl.find_motor(G20_MOTOREN, "140 kW Diesel")) == "320d")
+check("find_motor '190 kW Benzin' -> 330i", mbez(cl.find_motor(G20_MOTOREN, "190 kW Benzin")) == "330i")
+check("find_motor '500 PS' (kein Treffer) -> None", cl.find_motor(G20_MOTOREN, "500 PS") is None)
+
 print()
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER: " + ", ".join(FEHLER))
