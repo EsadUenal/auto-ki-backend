@@ -15,7 +15,7 @@ from google import genai
 from google.genai import types as genai_types
 
 from app.config import GEMINI_API_KEY, LLM_MODEL
-from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz
+from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen
 
 log = logging.getLogger(__name__)
@@ -41,18 +41,44 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     if marke:
         marke = _MARKEN_ALIAS.get(marke.upper().strip(), marke.strip())
 
-    scored: list[tuple[int, dict]] = []
+    # Der eingegebene "Modell"-String ist häufig KEIN Baureihen-Name ("3er"), sondern eine
+    # Motorbezeichnung ("320d") oder ein Motorcode ("B47"). Diese den zugehörigen Baureihen
+    # zuordnen — sonst findet z.B. "320d" nie den 3er (dessen modell "3er" heißt) und die
+    # Erkennung fällt auf einen reinen Marke+Baujahr-Treffer zurück (der eigentliche Bug:
+    # "320d" -> BMW M4, weil M4 dieselbe Marke hat und das Baujahr im Bauzeitraum liegt).
+    motor_baureihe_ids: set[str] = set()
+    if modell:
+        ml_in = modell.strip().lower()
+        for m in get_alle_motorvarianten_kurz():
+            bez  = (m.get("bezeichnung") or "").strip().lower()
+            code = (m.get("motorcode") or "").strip().lower()
+            if (bez and (ml_in == bez or (len(bez) >= 3 and (ml_in in bez or bez in ml_in)))) \
+               or (code and len(code) >= 3 and ml_in == code):
+                motor_baureihe_ids.add(m["baureihe_id"])
+
+    scored: list[tuple[int, bool, dict]] = []
     for r in rows:
         score = 0
+        marke_ok = marke is None
+        modell_getroffen = False
         if marke:
             if r["marke"].lower() == marke.lower():
                 score += 4
+                marke_ok = True
             elif marke.lower() in r["marke"].lower() or r["marke"].lower() in marke.lower():
                 score += 2
+                marke_ok = True
         if modell:
             ml, rl = modell.lower(), r["modell"].lower()
             if ml == rl or ml in rl or rl in ml:
                 score += 4
+                modell_getroffen = True
+        # Motorvarianten-Treffer nur werten, wenn die Marke passt (kein Cross-Brand-Match,
+        # z.B. ein VW-"2.0 TDI" darf keine BMW-Baureihe matchen).
+        if marke_ok and r["id"] in motor_baureihe_ids:
+            if not modell_getroffen:
+                score += 4
+            modell_getroffen = True
         if baujahr and score > 0:
             bvon = r["bauzeitraum_von"] or 0
             bbis = r["bauzeitraum_bis"] or 9999
@@ -61,13 +87,19 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
             elif abs(bvon - baujahr) <= 2 or (bbis < 9999 and abs(bbis - baujahr) <= 2):
                 score += 1
         if score > 0:
-            scored.append((score, dict(r)))
+            scored.append((score, modell_getroffen, dict(r)))
+
+    # Ist ein Modell angegeben, NUR Baureihen mit echtem Modell- ODER Motor-Treffer zulassen.
+    # Sonst gewinnt eine andere Baureihe derselben Marke allein über Marke+Baujahr.
+    # Kein Treffer -> None -> saubere Web-Analyse statt eines falschen Profils.
+    if modell:
+        scored = [s for s in scored if s[1]]
 
     if not scored:
         return None
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    best = scored[0][1]
+    best = scored[0][2]
     log.info("Baureihe erkannt: %s (score=%d)", best["id"], scored[0][0])
     return get_baureihe(best["marke"], best["modell"], best["generation"])
 
