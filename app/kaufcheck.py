@@ -21,6 +21,7 @@ from app.evidence import (
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
+from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -293,6 +294,11 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     # "Warum diese Preisbewertung?" zeigen, auch wenn das LLM ihn nicht referenziert.
     preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
 
+    # Phase 2: Kern-Erkenntnisse deterministisch aus den bereits vorhandenen Daten
+    # verdichten (Marktanalyse in insights, Rückruf-Applicability, Schwachstellen,
+    # Inserat-Widersprüche) — kein weiteres LLM, referenziert nur echte Insight-IDs.
+    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights)
+
     return {
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
@@ -308,4 +314,5 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
         "empfehlung_evidence_ids": empfehlung_evidence_ids,
         "preis_evidence_ids":      preis_evidence_ids,
         "risiko_evidence_ids":     risiko_evidence_ids,
+        "key_findings":            key_findings,
     }

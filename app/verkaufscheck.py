@@ -21,6 +21,7 @@ from app.evidence import (
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
+from app.key_findings import build_key_findings_verkauf
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -304,6 +305,10 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # Preisbegründung zeigen, auch wenn das LLM ihn nicht referenziert.
     preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
 
+    # Phase 2: Kern-Erkenntnisse deterministisch verdichten (Marktposition, fehlende
+    # Angaben, wertsteigernde Ausstattung, Markt-Datenqualität) — kein weiteres LLM.
+    key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights)
+
     return {
         "bericht":                     result.get("bericht", ""),
         "schnellverkaufs_preis":        result.get("schnellverkaufs_preis"),
@@ -322,4 +327,5 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         "preis_evidence_ids":          preis_evidence_ids,
         "strategie_evidence_ids":      strategie_evidence_ids,
         "argument_evidence_ids":       argument_evidence_ids,
+        "key_findings":                key_findings,
     }

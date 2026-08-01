@@ -186,6 +186,32 @@ class Insight(BaseModel):
     marktanalyse: Marktanalyse | None = None
 
 
+class KeyFinding(BaseModel):
+    """Phase 2 — verdichtete Kern-Erkenntnis ("Das solltest du wissen").
+
+    Ein KeyFinding erzeugt KEINE neue Wahrheit: es fasst bereits vorhandene,
+    deterministisch abgeleitete Daten (Marktanalyse, Rückruf-Applicability,
+    Schwachstellen, Inserat-Widersprüche) zu einer sofort verständlichen Aussage
+    zusammen. Passt eine Evidence dazu, referenziert `evidence_ids` deren EXISTIERENDE
+    Insight-IDs (kein Erfinden). Bewusst KEINE scheinpräzisen Prozentwerte im Text.
+    """
+    id: str
+    kategorie: str        # "preis" | "betrug" | "rueckruf" | "schwachstelle" | "motorproblem" |
+                          # "widerspruch" | "vorteil" | "marktposition" | "angaben" |
+                          # "ausstattung" | "datenqualitaet"
+    # stufe = Dringlichkeit/Ton (KEINE Angstmache): "kritisch" | "warnung" | "chance" | "info".
+    stufe: str
+    icon: str | None = None            # dezentes Emoji für die Karte
+    titel: str
+    beschreibung: str
+    wert: str | None = None            # kompakte Kennzahl, z.B. "↓ 3.010 € · ca. 11,4 %"
+    aktion: str | None = None          # konkrete Handlungsempfehlung
+    # Nur EXISTIERENDE Insight-IDs (siehe `insights`) — leer, wenn keine passende
+    # Evidence existiert (z.B. rein aus Inserat-Daten abgeleiteter Widerspruch).
+    evidence_ids: list[str] = Field(default_factory=list)
+    prioritaet: int = 0                # Sortierwert (höher = wichtiger); Cap 5 nach Sortierung
+
+
 # ---------- Kauf-Check ----------
 
 class KaufCheckResponse(BaseModel):
@@ -206,6 +232,10 @@ class KaufCheckResponse(BaseModel):
     empfehlung_evidence_ids: list[str] = Field(default_factory=list)
     preis_evidence_ids: list[str] = Field(default_factory=list)
     risiko_evidence_ids: list[str] = Field(default_factory=list)
+    # Phase 2: verdichtete Kern-Erkenntnisse ("Das solltest du wissen"), max. 5,
+    # deterministisch aus den obigen Daten. Additiv -> alte Checks ohne dieses Feld
+    # laden weiter (Default []).
+    key_findings: list[KeyFinding] = Field(default_factory=list)
 
 
 # ---------- Verkaufs-Check ----------
@@ -253,3 +283,6 @@ class VerkaufsCheckResponse(BaseModel):
     preis_evidence_ids: list[str] = Field(default_factory=list)
     strategie_evidence_ids: list[str] = Field(default_factory=list)
     argument_evidence_ids: list[str] = Field(default_factory=list)
+    # Phase 2: verdichtete Kern-Erkenntnisse ("Das solltest du wissen"), max. 5,
+    # deterministisch. Additiv -> alte Checks laden weiter (Default []).
+    key_findings: list[KeyFinding] = Field(default_factory=list)
