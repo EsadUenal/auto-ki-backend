@@ -484,11 +484,33 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
     client = get_gemini_client()
-    response = await with_retry(lambda: client.aio.models.generate_content(
-        model=LLM_MODEL,
-        contents=[{"role": "user", "parts": [{"text": user_msg}]}],
-        config=cfg,
-    ))
+
+    async def _ein_versuch():
+        return await with_retry(lambda: client.aio.models.generate_content(
+            model=LLM_MODEL,
+            contents=[{"role": "user", "parts": [{"text": user_msg}]}],
+            config=cfg,
+        ))
+
+    # Eine durch das Token-Limit abgeschnittene Antwort (finish_reason MAX_TOKENS)
+    # NIEMALS als Erfolg durchreichen: das JSON ist unvollständig, alle Parse-/
+    # Repair-Versuche scheitern und der Nutzer bekäme sonst rohen, mitten im Bericht
+    # abgebrochenen JSON-Text zu sehen. Kontrollierter Ablauf: EIN Retry (mit
+    # deaktiviertem Thinking sollte die Antwort ins Budget passen), danach sauberer
+    # Fehlschlag — der Router erstattet das Kontingent und zeigt eine verständliche
+    # Meldung statt eines kaputten Berichts.
+    response = await _ein_versuch()
+    if _ist_abgeschnitten(response):
+        log.warning("Gemini JSON-Antwort abgeschnitten (MAX_TOKENS) — einmaliger kontrollierter Retry.")
+        response = await _ein_versuch()
+        if _ist_abgeschnitten(response):
+            log.warning(
+                "Gemini JSON-Antwort auch nach Retry abgeschnitten (MAX_TOKENS) — "
+                "melde Fehlschlag, kein Roh-Dump."
+            )
+            raise GeminiFehlgeschlagen(
+                "Gemini-Antwort wurde durch das Token-Limit abgeschnitten (auch nach Retry)."
+            )
 
     # Manche Antworten liefern KEINEN Text (z.B. durch Safety-Filter blockiert,
     # oder .text wirft selbst eine Exception bei fehlenden candidates) — das ist
@@ -501,18 +523,6 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         raise GeminiFehlgeschlagen(f"Gemini-Antwort ohne verwertbaren Text: {exc}") from exc
     if not raw:
         raise GeminiFehlgeschlagen("Gemini hat eine leere Antwort geliefert.")
-
-    # Eine durch das Token-Limit abgeschnittene Antwort NICHT als Erfolg durch-
-    # reichen: das JSON ist unvollständig, alle Parse-/Repair-Versuche scheitern und
-    # der Nutzer bekäme sonst rohen, mitten im Bericht abgebrochenen JSON-Text zu
-    # sehen. Als kontrollierten Fehlschlag behandeln — der Router erstattet das
-    # Kontingent und zeigt eine saubere Meldung statt eines kaputten Berichts.
-    if _ist_abgeschnitten(response):
-        log.warning(
-            "Gemini JSON-Antwort abgeschnitten (MAX_TOKENS, %d Zeichen) — kein Roh-Dump, "
-            "melde kontrollierten Fehlschlag.", len(raw),
-        )
-        raise GeminiFehlgeschlagen("Gemini-Antwort wurde durch das Token-Limit abgeschnitten.")
 
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw.strip())

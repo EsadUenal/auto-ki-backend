@@ -91,6 +91,12 @@ Zu teure Maßnahmen im Verhältnis zum Mehrwert.
 - Preisstrategie: wann und um wie viel senken
 - Verhandlungstipps
 
+— PREISLOGIK (verbindlich) —
+- Verankere schnellverkaufs_preis, empfohlener_preis und maximal_preis an der aus dem Web ermittelten Marktspanne (marktpreis_min–marktpreis_max).
+- empfohlener_preis ODER maximal_preis dürfen NUR dann ÜBER marktpreis_max liegen, wenn es durch KONKRETE, wirklich vergleichbare Angebote oder klar quantifizierte wertsteigernde Faktoren (z.B. seltene Ausstattung mit belegbarem Aufpreis) nachvollziehbar begründet ist. Nenne die Abweichung dann ausdrücklich in EURO UND PROZENT (z.B. "+1.500 €, ~7 % über der Markt-Obergrenze") samt konkreter Begründung. Pauschalaussagen wie "gute Ausstattung rechtfertigt das" sind KEINE Begründung.
+- Sind die Web-Daten schwach, widersprüchlich oder nicht direkt vergleichbar (andere Karosserie/Motorvariante, stark abweichende Laufleistung/Baujahr, sehr breite Streuung): setze KEINE künstlich weite Marktspanne, kennzeichne die Unsicherheit deutlich im Bericht und lege empfohlener_preis/maximal_preis dann NICHT deutlich über marktpreis_max.
+- Erfinde KEINE präzisen Verkaufszeiten. Gib verkaufsdauer_* nur als grobe Orientierung an und nur, wenn eine belastbare Grundlage (Marktnachfrage aus den Quellen) existiert — sonst grob halten und die Unsicherheit benennen.
+
 REGELN:
 1. Neupreis und Specs nur aus DB-Profil.
 2. Web-Preise transparent als Websuche-Ergebnis kennzeichnen, ohne interne Begriffe wie "ungeprüft" oder "Vertrauen" im Text zu verwenden — das sind Entwicklerbegriffe, keine Nutzersprache. Keine Klammer-Quellenverweise wie "(Quelle [1])" im Fließtext — Quellen erscheinen automatisch im Quellenbereich.
@@ -123,6 +129,65 @@ def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
     if req.scheckheftgepflegt is not None:
         lines.append(f"Scheckheftgepflegt: {'ja' if req.scheckheftgepflegt else 'nein'}")
     return "\n".join(lines)
+
+
+# Kleine Überschreitungen (Rundung, Marktrauschen) sind kein Widerspruch;
+# darüber hinaus wird der Aufschlag transparent gemacht.
+_PREIS_TOLERANZ_PCT = 2.0
+
+
+def _nennt_abweichung(bericht: str) -> bool:
+    """True, wenn der Bericht eine Preisabweichung über der Marktspanne bereits
+    transparent mit Prozent-Angabe UND Markt-Obergrenzen-Bezug benennt."""
+    b = bericht.lower()
+    hat_markt_bezug = any(
+        s in b for s in ("über der markt", "über dem markt", "markt-obergrenze", "marktobergrenze")
+    )
+    return "%" in b and hat_markt_bezug
+
+
+def _preis_konsistenz_hinweis(
+    bericht: str, empfohlener_preis, maximal_preis, marktpreis_max
+) -> str:
+    """Hängt einen transparenten Hinweis an den Bericht, wenn empfohlener_preis oder
+    maximal_preis SPÜRBAR (> Toleranz) über der aus der Websuche ermittelten Markt-
+    Obergrenze liegen und der Bericht die Abweichung nicht bereits mit Euro- UND
+    Prozent-Angabe begründet.
+
+    Deterministisch (reine Zahlenlogik) — verändert die vom Modell genannten Preise
+    NICHT, macht die Abweichung nur explizit (Euro + Prozent) und kennzeichnet die
+    Unsicherheit. Ohne belastbare Markt-Obergrenze (kein Web) passiert nichts.
+    """
+    if not bericht or not isinstance(marktpreis_max, int) or marktpreis_max <= 0:
+        return bericht
+
+    treffer: list[tuple[str, int, int, float]] = []
+    for label, preis in (("empfohlene Preis", empfohlener_preis), ("Maximalpreis", maximal_preis)):
+        if not isinstance(preis, int) or preis <= marktpreis_max:
+            continue
+        diff = preis - marktpreis_max
+        pct = diff / marktpreis_max * 100
+        if pct >= _PREIS_TOLERANZ_PCT:
+            treffer.append((label, preis, diff, pct))
+
+    if not treffer or _nennt_abweichung(bericht):
+        return bericht
+
+    def _eur(n: int) -> str:
+        return f"{n:,} €".replace(",", ".")
+
+    saetze = [
+        f"Der {label} ({_eur(preis)}) liegt {_eur(diff)} (~{pct:.0f} %) über der aus der "
+        f"Websuche ermittelten Markt-Obergrenze ({_eur(marktpreis_max)})."
+        for label, preis, diff, pct in treffer
+    ]
+    hinweis = (
+        "\n\n> **Hinweis zur Preiseinordnung:** " + " ".join(saetze) +
+        " Ein Preis oberhalb der Marktspanne ist nur bei wirklich vergleichbaren Angeboten "
+        "realistisch erzielbar; ohne belastbare Vergleichsdaten sollte eher die Markt-"
+        "Obergrenze als Zielpreis dienen."
+    )
+    return bericht + hinweis
 
 
 async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
@@ -173,6 +238,15 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
+        # Preis-Konsistenz: liegt empfohlener/maximaler Preis spürbar über der
+        # Markt-Obergrenze ohne transparente Begründung, den Aufschlag deterministisch
+        # in Euro UND Prozent kenntlich machen (verändert die Preise selbst nicht).
+        result["bericht"] = _preis_konsistenz_hinweis(
+            result["bericht"],
+            result.get("empfohlener_preis"),
+            result.get("maximal_preis"),
+            result.get("marktpreis_max"),
+        )
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
