@@ -74,11 +74,18 @@ f2 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW,
 preis2 = kf_of(f2, "preis")
 check("2: Angebot +30% -> Preis-Finding 'warnung'", bool(preis2) and preis2[0].stufe == "warnung")
 
-# ── 2b) Extrem niedrig + gute Daten -> Betrugssignal 'kritisch' ─────────────
+# ── 2b) Extrem niedrig + gute Daten -> 'Ungewöhnlich günstiger Preis' (KEIN Betrug) ─
 f2b = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW,
                               [mv_insight(26000, 17000, -9000, -34.6, "hoch")])
-betrug = kf_of(f2b, "betrug")
-check("2b: -34,6% & gute Daten -> Betrugssignal 'kritisch'", bool(betrug) and betrug[0].stufe == "kritisch")
+p2b = kf_of(f2b, "preis")
+check("H1: -34,6% & gute Daten -> 'Ungewöhnlich günstiger Preis'",
+      bool(p2b) and "ungewöhnlich günstig" in p2b[0].titel.lower())
+check("H1: Stufe 'warnung' (NICHT 'kritisch')", bool(p2b) and p2b[0].stufe == "warnung")
+check("H1: kein Wort 'Betrug' irgendwo im Finding",
+      bool(p2b) and all("betrug" not in (getattr(p2b[0], a) or "").lower()
+                        for a in ("titel", "beschreibung", "aktion")))
+check("H1: keine 'betrug'-Kategorie / kein 'kritisch' allein wegen Preis",
+      not kf_of(f2b, "betrug") and all(f.stufe != "kritisch" for f in f2b))
 
 # ── 3) Schwache Markt-Datenbasis (kein Median) -> keine Preisabweichung ──────
 f3 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW,
@@ -125,6 +132,37 @@ f6b = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW, [
 sw = kf_of(f6b, "schwachstelle")
 check("6b: hohe Schwachstelle -> 'warnung' + Evidence-ID",
       bool(sw) and sw[0].stufe == "warnung" and sw[0].evidence_ids == ["schwachstelle-2"])
+
+# ── H2) "Keine schweren bekannten Motorprobleme gefunden" — nur mit Motor-Daten ─
+def motorproblem(iid, titel):
+    return Insight(id=iid, kategorie="motorproblem", titel=titel, beschreibung="…", confidence="mittel")
+
+
+MOTOR_MIT_DATEN = {"bezeichnung": "320d", "kraftstoff": "Diesel", "leistung_ps": 190,
+                   "kritische_wartung": [{"bauteil": "Steuerkette", "intervall": "—"}],
+                   "schwachstellen_motor": []}
+MOTOR_OHNE_DATEN = {"bezeichnung": "320d", "kraftstoff": "Diesel", "leistung_ps": 190}  # keine Motor-Daten
+
+# H2-3: keine schwere Motor-Schwachstelle + vorhandene Motor-Daten -> positives Finding
+fH3 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_MIT_DATEN, [])
+vH3 = [f for f in fH3 if f.kategorie == "vorteil" and "motorprobleme" in f.titel.lower()]
+check("H2-3: Motor-Daten vorhanden & keine schwere Schwachstelle -> 'Keine schweren bekannten Motorprobleme gefunden'",
+      bool(vH3) and "keine schweren bekannten motorprobleme" in vH3[0].titel.lower())
+check("H2-3: Formulierung zurückhaltend (nicht 'unauffällig'/'keine Probleme')",
+      bool(vH3) and "unauffällig" not in vH3[0].titel.lower()
+      and "bedeutet nicht" in (vH3[0].beschreibung.lower()))
+
+# H2-4: KEINE Motor-Daten -> KEIN positives Motor-Finding ("keine Daten" != "unauffällig")
+fH4 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_OHNE_DATEN, [])
+check("H2-4: keine Motor-Daten -> KEIN positives Motor-Finding",
+      not [f for f in fH4 if f.kategorie == "vorteil" and "motorprobleme" in f.titel.lower()])
+
+# H2-5: schwere Motor-Schwachstelle (motorproblem-Insight) -> KEIN positives Motor-Finding
+fH5 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_MIT_DATEN,
+                              [motorproblem("motorproblem-1", "Steuerkette — Längung")])
+check("H2-5: schwere Motor-Schwachstelle -> KEIN positives Motor-Finding",
+      not [f for f in fH5 if f.kategorie == "vorteil" and "motorprobleme" in f.titel.lower()])
+check("H2-5: stattdessen Motorproblem-Finding vorhanden", bool(kf_of(fH5, "motorproblem")))
 
 # ── 7) Inserat-Widerspruch (Kraftstoff) -> Finding ──────────────────────────
 REQ_WIDER = SimpleNamespace(marke="BMW", modell="320d", baujahr=2020, kilometerstand=78500,

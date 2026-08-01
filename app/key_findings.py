@@ -33,10 +33,13 @@ MAX_FINDINGS = 5
 
 # ── Priorisierung (höher = wichtiger). Bewusst in Bänder gruppiert, damit die vom
 # Produkt vorgegebene Reihenfolge deterministisch eingehalten wird. ──────────────
-# Kauf: 1) Sicherheit/Betrug/Widerspruch  2) Preisabweichung  3) Rückruf
+# Kauf: 1) Widerspruch  2) Preisabweichung (auch "ungewöhnlich günstig")  3) Rückruf
 #       4) Schwachstelle  5) Vorteil
-_P_BETRUG        = 1000
+# HINWEIS: Ein niedriger Preis ALLEIN ist KEIN Betrugssignal (kein "kritisch",
+# kein Wort "Betrug"). Ein echter Betrugsverdacht bräuchte MEHRERE unabhängige
+# Warnzeichen — das bauen wir hier bewusst NICHT.
 _P_WIDERSPRUCH   = 950
+_P_PREIS_UNGEWOEHNLICH = 850   # ungewöhnlich günstig -> starke, aber neutrale Warnung
 _P_PREIS_UEBER   = 830   # zu teuer = Risiko -> etwas höher als "günstig"
 _P_PREIS_UNTER   = 810
 _P_RUECKRUF      = 700
@@ -173,17 +176,19 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
         gut = ma.datenqualitaet in ("mittel", "hoch")
         caveat = "" if gut else " (auf begrenzter Datenbasis)"
         ev = [mv.id]
-        if pct <= -25 and gut:
+        if pct <= -20 and gut:
+            # Ungewöhnlich günstig — NEUTRAL, KEIN Betrugssignal. Ein niedriger Preis
+            # allein beweist keinen Betrug; nur zu sorgfältiger Prüfung anhalten.
             findings.append(KeyFinding(
-                id="", kategorie="betrug", stufe=STUFE_KRITISCH, icon="🚩",
-                titel="Auffällig niedriger Preis",
+                id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💰",
+                titel="Ungewöhnlich günstiger Preis",
                 beschreibung=f"Das Angebot liegt {_eur(abs(diff))} bzw. {_pct(pct)} unter dem "
-                             f"Median vergleichbarer Fahrzeuge ({_eur(ma.median_eur)}). Ein "
-                             f"ungewöhnlich niedriger Preis kann auf versteckte Mängel, "
-                             f"Vorschäden oder einen Betrugsversuch hindeuten.",
+                             f"ermittelten Marktmedian ({_eur(ma.median_eur)}). Preis, "
+                             f"Fahrzeughistorie und Verkäuferangaben deshalb besonders "
+                             f"sorgfältig prüfen.",
                 wert=f"↓ {_eur(abs(diff))} · {_pct(pct)}",
-                aktion="Vor Zahlung besichtigen, Papiere und Fahrzeugzustand genau prüfen.",
-                evidence_ids=ev, prioritaet=_P_BETRUG))
+                aktion="Papiere, Servicehistorie und Fahrzeugzustand vor Zahlung genau prüfen.",
+                evidence_ids=ev, prioritaet=_P_PREIS_UNGEWOEHNLICH))
             preis_finding_erzeugt = True
         elif pct <= -8:
             findings.append(KeyFinding(
@@ -229,7 +234,7 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     # ── B) Relevante Rückrufe ───────────────────────────────────────────────────
     findings += _rueckruf_findings(insights)
 
-    # ── C) Motorproblem / hohe Schwachstelle / "Motor unauffällig" ──────────────
+    # ── C) Motorproblem / hohe Schwachstelle / "keine schweren Motorprobleme" ───
     motorprobleme = [i for i in insights if i.kategorie == "motorproblem"]
     schwach_hoch = [i for i in insights if i.kategorie == "schwachstelle"
                     and (i.schweregrad or "").lower() in ("hoch", "kritisch", "sehr hoch")]
@@ -251,13 +256,18 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
             beschreibung=namen,
             aktion="Bei der Besichtigung gezielt prüfen.",
             evidence_ids=[i.id for i in schwach_hoch], prioritaet=_P_SCHWACH_HOCH))
-    elif motor_match and not motorprobleme:
-        # Nur behaupten, wenn wir den Motor WIRKLICH erkannt haben (echte Datenbasis).
+    elif motor_match and not motorprobleme and motor_match.get("kritische_wartung"):
+        # NUR wenn die Motorvariante eindeutig erkannt wurde UND für sie tatsächlich
+        # motor-spezifische Daten geprüft vorliegen (hier: kritische_wartung als
+        # Beleg editorieller Abdeckung) UND keine schwere Motor-Schwachstelle
+        # existiert. "Keine Daten" darf NIE zu "unauffällig"/"keine Probleme" werden.
+        # Bewusst zurückhaltend formuliert: Abwesenheit von Daten ≠ Fehlerfreiheit.
         findings.append(KeyFinding(
             id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
-            titel="Motor in der VIRA-Datenbasis unauffällig",
-            beschreibung=f"Für die erkannte Motorisierung ({motor_match.get('bezeichnung', 'Motor')}) "
-                         f"sind keine spezifischen Schwachstellen hinterlegt.",
+            titel="Keine schweren bekannten Motorprobleme gefunden",
+            beschreibung=f"In der vorhandenen VIRA-Datenbasis sind für die erkannte "
+                         f"Motorvariante ({motor_match.get('bezeichnung', 'Motor')}) keine schweren "
+                         f"Probleme hinterlegt. Das bedeutet nicht, dass keine Defekte auftreten können.",
             prioritaet=_P_MOTOR_OK))
 
     # ── E) Ungewöhnlich positive Punkte (deterministisch belegbar) ──────────────
