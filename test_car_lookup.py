@@ -85,6 +85,63 @@ set_daten(BAUREIHEN, MOTOREN)
 check("Ferrari 488 -> None", cl.find_baureihe("Ferrari", "488", 2019) is None)
 check("Nur Marke BMW (kein Modell) -> Best-Guess erlaubt", cl.find_baureihe("BMW", None, 2016) is not None)
 
+# ── Mercedes-Verkaufsbezeichnungen: Präfix sauber unterscheiden ──────────────
+# Root Cause: "C 200" (mit Leerzeichen) traf die DB-Variante "C200" nicht (fehlende
+# Normalisierung) UND blutete per Substring in "GLC 200" durch -> GLC. Analog "CLA
+# 200" -> A-Klasse (weil "a 200" Substring von "cla 200" ist). Der Präfix muss exakt
+# passen; das Baujahr wählt die Generation.
+MB_BAUREIHEN = [
+    {"id": "mercedes-benz-c-klasse-w205", "marke": "Mercedes-Benz", "modell": "C-Klasse",
+     "generation": "W205", "bauzeitraum_von": 2014, "bauzeitraum_bis": 2021},
+    {"id": "mercedes-benz-c-klasse-w206", "marke": "Mercedes-Benz", "modell": "C-Klasse",
+     "generation": "W206", "bauzeitraum_von": 2021, "bauzeitraum_bis": None},
+    {"id": "mercedes-benz-glc-x253", "marke": "Mercedes-Benz", "modell": "GLC",
+     "generation": "X253", "bauzeitraum_von": 2015, "bauzeitraum_bis": 2022},
+    {"id": "mercedes-benz-e-klasse-w213", "marke": "Mercedes-Benz", "modell": "E-Klasse",
+     "generation": "W213", "bauzeitraum_von": 2016, "bauzeitraum_bis": 2023},
+    {"id": "mercedes-benz-cla-c117", "marke": "Mercedes-Benz", "modell": "CLA",
+     "generation": "C117", "bauzeitraum_von": 2013, "bauzeitraum_bis": 2019},
+    {"id": "mercedes-benz-a-klasse-w177", "marke": "Mercedes-Benz", "modell": "A-Klasse",
+     "generation": "W177", "bauzeitraum_von": 2018, "bauzeitraum_bis": None},
+]
+MB_MOTOREN = [
+    {"baureihe_id": "mercedes-benz-c-klasse-w205", "bezeichnung": "C200", "motorcode": ""},
+    {"baureihe_id": "mercedes-benz-c-klasse-w205", "bezeichnung": "C220 d", "motorcode": ""},
+    {"baureihe_id": "mercedes-benz-c-klasse-w205", "bezeichnung": "C300 e", "motorcode": ""},
+    {"baureihe_id": "mercedes-benz-c-klasse-w206", "bezeichnung": "C200", "motorcode": ""},
+    {"baureihe_id": "mercedes-benz-glc-x253", "bezeichnung": "GLC 200", "motorcode": "M 274 DE 20 AL"},
+    {"baureihe_id": "mercedes-benz-glc-x253", "bezeichnung": "GLC 220 d", "motorcode": "OM 651 DE 22 LA"},
+    {"baureihe_id": "mercedes-benz-e-klasse-w213", "bezeichnung": "E 220 d", "motorcode": ""},
+    {"baureihe_id": "mercedes-benz-cla-c117", "bezeichnung": "CLA 200", "motorcode": "M 270 DE 16 AL"},
+    {"baureihe_id": "mercedes-benz-a-klasse-w177", "bezeichnung": "A 180", "motorcode": "M 282 DE 14 LA"},
+    {"baureihe_id": "mercedes-benz-a-klasse-w177", "bezeichnung": "A 200", "motorcode": "M 282 DE 14 LA"},
+]
+set_daten(MB_BAUREIHEN, MB_MOTOREN)
+
+check("1: 'C 200' 2019 -> C-Klasse W205", gen_of(cl.find_baureihe("Mercedes-Benz", "C 200", 2019)) == "W205")
+check("2: 'C200' 2019 -> C-Klasse W205", gen_of(cl.find_baureihe("Mercedes-Benz", "C200", 2019)) == "W205")
+check("2b: 'C-200' 2019 -> C-Klasse W205", gen_of(cl.find_baureihe("Mercedes-Benz", "C-200", 2019)) == "W205")
+check("3: 'C 220 d' 2019 -> C-Klasse W205", gen_of(cl.find_baureihe("Mercedes-Benz", "C 220 d", 2019)) == "W205")
+check("3b: 'C220d' 2019 -> C-Klasse W205", gen_of(cl.find_baureihe("Mercedes-Benz", "C220d", 2019)) == "W205")
+check("4: 'GLC 200' 2019 -> GLC (NICHT C-Klasse)",
+      gen_of(cl.find_baureihe("Mercedes-Benz", "GLC 200", 2019)) == "X253")
+check("4b: 'GLC200' 2019 -> GLC", gen_of(cl.find_baureihe("Mercedes-Benz", "GLC200", 2019)) == "X253")
+check("5: 'E 220 d' 2019 -> E-Klasse", gen_of(cl.find_baureihe("Mercedes-Benz", "E 220 d", 2019)) == "W213")
+check("6: 'CLA 200' 2019 -> CLA (NICHT A-/C-Klasse)",
+      gen_of(cl.find_baureihe("Mercedes-Benz", "CLA 200", 2019)) == "C117")
+check("6b: 'A 180' 2019 -> A-Klasse", gen_of(cl.find_baureihe("Mercedes-Benz", "A 180", 2019)) == "W177")
+check("7: 'C 200' 2015 -> W205 / 2022 -> W206 (Baujahr wählt Generation)",
+      gen_of(cl.find_baureihe("Mercedes-Benz", "C 200", 2015)) == "W205"
+      and gen_of(cl.find_baureihe("Mercedes-Benz", "C 200", 2022)) == "W206")
+# 'C 200' darf NIEMALS GLC ziehen (Kern-Bug)
+check("Kern-Bug behoben: 'C 200' zieht nie GLC",
+      "glc" not in (cl.find_baureihe("Mercedes-Benz", "C 200", 2019) or {}).get("generation", "").lower()
+      and cl.find_baureihe("Mercedes-Benz", "C 200", 2019)["modell"] == "C-Klasse")
+
+# BMW-Regression im Mercedes-Datensatz-Kontext zurücksetzen
+set_daten(BAUREIHEN, MOTOREN)
+check("8: BMW '320d' 2020 weiterhin -> 3er G20", gen_of(cl.find_baureihe("BMW", "320d", 2020)) == "G20")
+
 # ── find_motor: Einheiten-/Kraftstoff-getrennter Leistungsabgleich ──────────
 # Regressionsschutz: "190 PS" (320d, Diesel) darf NICHT den 330i (190 kW, Benzin)
 # ziehen — sonst bekommt der Kaufcheck Benzin-Specs für einen Diesel.

@@ -30,6 +30,74 @@ _MARKEN_ALIAS = {
 }
 
 
+# ---------- Verkaufsbezeichnungs-Normalisierung / -Erkennung ----------
+#
+# Typische Nutzereingaben im "Modell"-Feld sind Verkaufsbezeichnungen wie
+# "C 200", "C200", "C-200", "GLC 200", "E 220 d", "CLA 200". Ohne Normalisierung
+# schlägt der Motorvarianten-Abgleich fehl ("c 200" != DB-Bezeichnung "C200"),
+# und ein naiver Substring-Vergleich lässt kurze Präfixe in längere durchbluten
+# ("c 200" ist Substring von "glc 200" -> C-Klasse-Eingabe trifft fälschlich GLC).
+
+def _norm_bezeichnung(s: str) -> str:
+    """Kleinschreibung, Leer-/Bindestriche entfernt: 'C 200'/'C-200' -> 'c200'."""
+    return re.sub(r"[\s\-]+", "", (s or "").lower())
+
+
+# Verkaufsbezeichnung = Buchstaben-Präfix (Baureihe: C/E/A/S/GLC/CLA/…) + 2–3-
+# stellige Klassenzahl (180/200/220/300/43/63) + optionaler Rest (d/e/4matic/…).
+# Bewusst NICHT auf 1-stellige Zahlen (Audi "A4") — das sind keine Mercedes-
+# Klassenkennungen und sollen den generischen Pfad nutzen.
+_KENNUNG = re.compile(r"^([a-z]{1,3})(\d{2,3})([a-z0-9]*)$")
+
+
+def _parse_kennung(s: str) -> tuple[str, str, str] | None:
+    """Zerlegt eine normalisierte Verkaufsbezeichnung in (präfix, klasse, rest).
+
+    'C 200' -> ('c','200',''); 'GLC 200' -> ('glc','200',''); 'E 220 d' ->
+    ('e','220','d'); 'C200 4MATIC' -> ('c','200','4matic'). Kein Präfix/keine
+    passende Struktur (z.B. BMW '320d', Motorcode 'B47D20') -> None.
+    """
+    m = _KENNUNG.match(_norm_bezeichnung(s))
+    if not m:
+        return None
+    return (m.group(1), m.group(2), m.group(3))
+
+
+def _modell_trifft_motor(ml_in: str, ml_norm: str,
+                         ml_kenn: tuple[str, str, str] | None,
+                         bez: str, code: str) -> bool:
+    """Ob die Modell-Eingabe zu einer Motorvariante (bezeichnung/motorcode) passt.
+
+    Kernregel: Ist die Eingabe eine Verkaufsbezeichnung (Präfix+Klasse), MUSS der
+    Buchstaben-Präfix EXAKT übereinstimmen ('c' != 'glc', 'cla' != 'a') — kein
+    Durchbluten kurzer Präfixe in längere. Für nicht-kennungsartige Eingaben
+    (BMW '320d', Motorcodes) bleibt der normalisierte Exakt-/Teilstring-Match.
+    """
+    code_norm = _norm_bezeichnung(code)
+    if code_norm and len(code_norm) >= 3 and ml_norm == code_norm:
+        return True
+
+    bez_norm = _norm_bezeichnung(bez)
+    if not bez_norm:
+        return False
+
+    if ml_kenn is not None:
+        # Verkaufsbezeichnung -> präfix-exakter Klassen-Abgleich.
+        bez_kenn = _parse_kennung(bez)
+        if bez_kenn is None:
+            return False
+        return ml_kenn[0] == bez_kenn[0] and ml_kenn[1] == bez_kenn[1]
+
+    # Nicht-Kennung (numerische/technische Eingabe): normalisierter Exakt-Match,
+    # oder Teilstring nur bei hinreichend spezifischer Eingabe (>=3 Zeichen), damit
+    # kein 1-Zeichen-Präfix wie 'c' in 'glc200' blutet.
+    if ml_norm == bez_norm:
+        return True
+    if len(ml_norm) >= 3 and (ml_norm in bez_norm or bez_norm in ml_norm):
+        return True
+    return False
+
+
 # ---------- Fahrzeug-Erkennung ----------
 
 def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) -> dict | None:
@@ -48,12 +116,13 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     # "320d" -> BMW M4, weil M4 dieselbe Marke hat und das Baujahr im Bauzeitraum liegt).
     motor_baureihe_ids: set[str] = set()
     if modell:
-        ml_in = modell.strip().lower()
+        ml_in   = modell.strip().lower()
+        ml_norm = _norm_bezeichnung(ml_in)     # 'C 200' -> 'c200'
+        ml_kenn = _parse_kennung(ml_in)         # ('c','200',…) oder None (z.B. '320d')
         for m in get_alle_motorvarianten_kurz():
             bez  = (m.get("bezeichnung") or "").strip().lower()
             code = (m.get("motorcode") or "").strip().lower()
-            if (bez and (ml_in == bez or (len(bez) >= 3 and (ml_in in bez or bez in ml_in)))) \
-               or (code and len(code) >= 3 and ml_in == code):
+            if _modell_trifft_motor(ml_in, ml_norm, ml_kenn, bez, code):
                 motor_baureihe_ids.add(m["baureihe_id"])
 
     scored: list[tuple[int, bool, dict]] = []
