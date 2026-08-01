@@ -92,6 +92,47 @@ class KaufCheckRequest(BaseModel):
     bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
 
 
+# ---------- Provenance / Evidence (Phase 1: Vertrauen & Nachvollziehbarkeit) ----------
+
+class EvidenceQuelle(BaseModel):
+    """Eine konkrete Quelle, die eine Erkenntnis (Insight) stützt.
+
+    `typ` benennt die HERKUNFT und darf nur gesetzt werden, wenn diese Quelle die
+    Aussage tatsächlich gestützt hat (keine Fake-Quellen):
+    "datenbank" | "motorvarianten" | "schwachstellen" | "rueckruf_kba" |
+    "web" | "marktvergleich" | "inserat" | "ki_ableitung"
+    """
+    typ: str
+    ref: str | None = None            # z.B. KBA-Referenz, Bauteil, Baureihen-/Varianten-ID
+    url: str | None = None
+    titel: str | None = None
+    qualitaet: str | None = None      # z.B. Web-Qualitätslabel ("Marktplatz", "Amtlich/Prüforganisation", ...)
+
+
+class Insight(BaseModel):
+    """Eine nachvollziehbare Erkenntnis mit Herkunft (Provenance).
+
+    Wiederverwendbar für Kauf- und Verkaufscheck. `confidence` ist bewusst dreistufig
+    ("hoch" | "mittel" | "niedrig") — KEINE scheinpräzisen Prozentwerte.
+    """
+    id: str
+    kategorie: str                    # "schwachstelle" | "rueckruf" | "motorproblem" | "marktvergleich" | ...
+    titel: str
+    beschreibung: str
+    quellen_typen: list[str] = Field(default_factory=list)   # abgeleitet aus quellen[].typ
+    quellen: list[EvidenceQuelle] = Field(default_factory=list)
+    # confidence = WIE BELASTBAR die Aussage ist (Provenance: Zuordnung, Baujahr-
+    # Deckung, Quellenart) — hängt NIE vom Schweregrad ab.
+    confidence: str                   # "hoch" | "mittel" | "niedrig"
+    # schweregrad = WIE SCHLIMM das Problem ist (nur wo aus der DB vorhanden).
+    # Bewusst ein EIGENES Feld, damit "wie schlimm" und "wie belastbar" strikt
+    # getrennt bleiben. Fließt NICHT in confidence ein.
+    schweregrad: str | None = None    # z.B. "gering" | "mittel" | "hoch" (nur Schwachstelle Baureihe)
+    einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
+
+
+# ---------- Kauf-Check ----------
+
 class KaufCheckResponse(BaseModel):
     bericht: str                                   # Markdown-Bericht
     empfehlung: str                                # "kaufen" | "kaufen_nach_besichtigung" | "nur_mit_werkstattpruefung" | "preis_nachverhandeln" | "hohes_risiko" | "finger_weg" | "unbekannt"
@@ -103,6 +144,8 @@ class KaufCheckResponse(BaseModel):
     quelle: str                                    # "datenbank" | "web" | "gemischt"
     vertrauen: str                                 # "hoch" | "mittel" | "niedrig"
     belege: list[Any] = Field(default_factory=list)
+    # Phase 1: strukturierte, nachvollziehbare Erkenntnisse (additiv, backward-compatible).
+    insights: list[Insight] = Field(default_factory=list)
 
 
 # ---------- Verkaufs-Check ----------
@@ -143,3 +186,5 @@ class VerkaufsCheckResponse(BaseModel):
     quelle: str
     vertrauen: str
     belege: list[Any] = Field(default_factory=list)
+    # Phase 1: strukturierte, nachvollziehbare Erkenntnisse (additiv, backward-compatible).
+    insights: list[Insight] = Field(default_factory=list)

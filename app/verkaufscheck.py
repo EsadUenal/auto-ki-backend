@@ -15,6 +15,7 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
+from app.evidence import build_insights
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -254,6 +255,15 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     elif hat_web:            quelle, vertrauen = "web", "niedrig"
     else:                    quelle, vertrauen = "gemischt", "niedrig"
 
+    # Phase 1: nachvollziehbare Erkenntnisse (Provenance) aus den bereits
+    # abgefragten deterministischen Daten — additiv, ändert nichts am Bericht.
+    insights = build_insights(
+        baureihe, motor_match, belege, req,
+        check_typ="verkauf",
+        marktpreis_min=result.get("marktpreis_min"),
+        marktpreis_max=result.get("marktpreis_max"),
+    )
+
     return {
         "bericht":                     result.get("bericht", ""),
         "schnellverkaufs_preis":        result.get("schnellverkaufs_preis"),
@@ -268,4 +278,5 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         "quelle":                      quelle,
         "vertrauen":                   vertrauen,
         "belege":                      belege,
+        "insights":                    insights,
     }
