@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+"""
+Marktvergleich 2.0 — deterministische, ehrliche Preisbewertung (Phase 1).
+
+Problem des alten Standes: die Marktspanne (marktpreis_min/max) wurde vollständig
+vom LLM aus rohen Tavily-Snippets ERFUNDEN, und der Marktvergleich-Insight zeigte
+allgemeine Suchseiten als scheinbare "Vergleichsfahrzeuge" — auch dann, wenn die
+verlinkte Seite Fahrzeuge anderer Generation/Baujahr/Motorisierung/km enthielt
+(die berüchtigte "7.000-€-Karre" neben einer 23.000-€-Spanne). Das beschädigt
+Vertrauen.
+
+Datenlage (real geprüft): Tavily (search_depth=basic) liefert überwiegend Such-/
+Übersichtsseiten, KEINE sauberen Einzelinserate je URL (raw_content=null). Die
+Snippet-TEXTE enthalten aber häufig mehrere echte Angebote als "Preis + km + EZ".
+Wir können daraus deterministisch einzelne Preis-DATENPUNKTE extrahieren, ihre
+Vergleichbarkeit gegen das Zielfahrzeug bewerten (Generation/Baujahr/km/Kraftstoff)
+und daraus robuste Statistik (Median + Quartils-Spanne) berechnen.
+
+Ehrlichkeitsgrundsätze:
+- Keine erfundenen Fahrzeuge — nur was aus dem Snippet-Text extrahierbar war.
+- Fremde Generationen (z.B. E90/F30 beim G20) werden verworfen, nicht mitgemittelt.
+- Ausreißer verzerren die Spanne nicht (Median + Quartile statt min/max).
+- Wenige/schwache Daten -> niedrige Datenqualität, KEINE Scheinpräzision.
+- Eine allgemeine Suchseite bleibt Recherchequelle, wird aber NIE als einzelnes
+  Vergleichsfahrzeug ausgegeben.
+"""
+
+import logging
+import re
+import statistics
+from urllib.parse import urlparse
+
+from app.models import Marktanalyse, Preisbeobachtung
+
+log = logging.getLogger(__name__)
+
+# ── Plausibilitätsgrenzen (Sicherheitsnetz gegen Fehl-Extraktion) ────────────
+_PREIS_MIN = 1_500
+_PREIS_MAX = 250_000
+_KM_MAX = 500_000
+_JAHR_MIN = 1990
+_JAHR_MAX = 2027   # aktuelles Jahr + 1 (EZ-Neuwagen)
+
+# Zeichen-Fenster um einen Preis-Treffer, in dem km/Baujahr als zum selben Angebot
+# gehörend gewertet werden. Bewusst eng — lieber ein Feld None lassen (reduziert die
+# Vergleichbarkeit) als km/Baujahr eines NACHBAR-Inserats falsch zuzuordnen.
+_FENSTER = 130
+
+# Vergleichbarkeits-Stufen (absteigend). Index = "Abwertungs-Distanz".
+_STUFEN = ["sehr_aehnlich", "aehnlich", "bedingt", "ungeeignet"]
+_UNGEEIGNET = len(_STUFEN) - 1
+
+# Maximale relative Breite des typischen Marktbereichs (Spanne/Median). Ist die
+# Streuung der "vergleichbaren" Preise größer, sind die extrahierten Datenpunkte
+# in Wahrheit NICHT kohärent (z.B. gemischte Cash-/Finanzierungs-/Gesamtpreise
+# derselben Anzeige, oder Fehl-Assoziation Preis↔km) — dann KEIN Schein-Median
+# ausgeben, sondern ehrlich auf die unzuverlässige Datenbasis hinweisen.
+_MAX_REL_SPANNE = 0.6
+
+# Preis: Zahl mit Tausenderpunkten ODER 4–6 Ziffern, GEFOLGT von € / EUR.
+_RE_PREIS = re.compile(r"(\d{1,3}(?:\.\d{3})+|\d{4,6})\s*(?:€|eur\b)", re.IGNORECASE)
+# Kilometer: Zahl (mit/ohne Tausenderpunkt), gefolgt von km.
+_RE_KM = re.compile(r"(\d{1,3}(?:\.\d{3})+|\d{2,6})\s*km\b", re.IGNORECASE)
+# Baujahr / Erstzulassung: "EZ 04/2020" (zuverlässigstes Signal) sowie
+# "Baujahr 2020" / "aus 2020" / "BJ 2020".
+_RE_EZ = re.compile(r"ez\s*\d{1,2}/((?:19|20)\d{2})", re.IGNORECASE)
+_RE_BJ = re.compile(r"(?:baujahr|bj\.?|aus)\s*((?:19|20)\d{2})", re.IGNORECASE)
+_RE_JAHR = re.compile(r"\b((?:19|20)\d{2})\b")
+
+# Generations-/Chassis-Code (BMW E/F/G/U.., Mercedes W/S/C/A/X.., Audi B/C/D..).
+_RE_CODE = re.compile(r"\b([a-z]\d{2,3})\b", re.IGNORECASE)
+
+_KRAFTSTOFF_WORTE = {
+    "diesel": ("diesel", "tdi", "cdi", "hdi", "dci", "bluetec"),
+    "benzin": ("benzin", "tsi", "tfsi", "gti", "petrol"),
+    "elektro": ("elektro", "electric", "ev "),
+    "hybrid": ("hybrid", "phev", "plug-in", "plugin"),
+}
+
+
+def _zahl(roh: str) -> int:
+    return int(roh.replace(".", "").replace(" ", ""))
+
+
+def _domain(url: str) -> str:
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def _generation_tokens(text: str) -> list[str]:
+    """Baureihen-Kürzel wie 'g20', 'e90' als lowercase-Token-Liste."""
+    if not text:
+        return []
+    out: list[str] = []
+    for t in re.split(r"[^a-z0-9]+", text.lower()):
+        if re.fullmatch(r"[a-z]\d{2,3}", t):
+            out.append(t)
+    return out
+
+
+def _kraftstoff_im_text(text: str) -> str | None:
+    t = text.lower()
+    for norm, keys in _KRAFTSTOFF_WORTE.items():
+        if any(k in t for k in keys):
+            return norm
+    return None
+
+
+def _naechster(treffer: list[re.Match], pos: int) -> re.Match | None:
+    """Der zum Preis (an Position `pos`) nächstgelegene Treffer innerhalb _FENSTER."""
+    best = None
+    best_dist = _FENSTER + 1
+    for m in treffer:
+        d = abs(m.start() - pos)
+        if d <= _FENSTER and d < best_dist:
+            best, best_dist = m, d
+    return best
+
+
+def _extrahiere_aus_text(text: str, url: str) -> list[Preisbeobachtung]:
+    """Alle (Preis[, km][, Baujahr])-Datenpunkte aus EINEM Snippet-Text.
+
+    Assoziation rein positionsbasiert: km/Baujahr werden nur übernommen, wenn sie
+    innerhalb eines engen Fensters um den Preis stehen. Ordnung/Reihenfolge der
+    Felder variiert je Portal — das enge Fenster hält Fehlzuordnungen klein; im
+    Zweifel bleibt ein Feld None (senkt später die Vergleichbarkeit).
+    """
+    if not text:
+        return []
+    km_treffer = list(_RE_KM.finditer(text))
+    ez_treffer = list(_RE_EZ.finditer(text))
+    bj_treffer = list(_RE_BJ.finditer(text))
+    jahr_treffer = list(_RE_JAHR.finditer(text))
+    domain = _domain(url)
+
+    out: list[Preisbeobachtung] = []
+    for pm in _RE_PREIS.finditer(text):
+        preis = _zahl(pm.group(1))
+        if not (_PREIS_MIN <= preis <= _PREIS_MAX):
+            continue
+        pos = pm.start()
+
+        km_m = _naechster(km_treffer, pos)
+        km = None
+        if km_m:
+            k = _zahl(km_m.group(1))
+            if 0 <= k <= _KM_MAX:
+                km = k
+
+        jahr = None
+        for treffer in (ez_treffer, bj_treffer, jahr_treffer):   # zuverlässigste Quelle zuerst
+            jm = _naechster(treffer, pos)
+            if jm:
+                y = int(jm.group(1))
+                if _JAHR_MIN <= y <= _JAHR_MAX:
+                    jahr = y
+                    break
+
+        # Lokales Textfenster (für Generations-/Kraftstoff-Prüfung der Vergleichbarkeit).
+        fenster = text[max(0, pos - _FENSTER): pos + _FENSTER]
+        out.append(_roh_beobachtung(preis, km, jahr, domain, url, fenster))
+    return out
+
+
+# Roh-Beobachtung trägt das lokale Textfenster vorübergehend in `gruende[0]` mit,
+# damit die Vergleichbarkeits-Bewertung darauf zugreifen kann (wird dort entfernt).
+def _roh_beobachtung(preis, km, jahr, domain, url, fenster) -> Preisbeobachtung:
+    return Preisbeobachtung(
+        preis_eur=preis, kilometerstand=km, baujahr=jahr,
+        quelle_domain=domain, quelle_url=url,
+        vergleichbarkeit="", gruende=[f"\x00{fenster}"],
+    )
+
+
+def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
+    """Deterministische Vergleichbarkeit einer Beobachtung gegen das Zielfahrzeug."""
+    fenster = ""
+    if b.gruende and b.gruende[0].startswith("\x00"):
+        fenster = b.gruende[0][1:]
+    gruende: list[str] = []
+    stufe = 0  # 0 = sehr_aehnlich
+
+    def ab(n: int):
+        nonlocal stufe
+        stufe = min(_UNGEEIGNET, stufe + n)
+
+    codes = _generation_tokens(fenster)
+    ziel_gen = ziel.get("generation_tokens") or set()
+    fremd_gen = ziel.get("fremd_generationen") or set()
+    hat_ziel = any(c in ziel_gen for c in codes)
+    hat_fremd = any(c in fremd_gen for c in codes)
+
+    if hat_fremd and not hat_ziel:
+        fremd = next(c for c in codes if c in fremd_gen)
+        b.vergleichbarkeit = "ungeeignet"
+        b.gruende = [f"andere Generation ({fremd.upper()})"]
+        return b
+    if hat_ziel:
+        gruende.append(f"Generation bestätigt ({next(c for c in codes if c in ziel_gen).upper()})")
+    else:
+        ab(1)
+        gruende.append("Generation nicht bestätigt")
+
+    ziel_bj = ziel.get("baujahr")
+    if b.baujahr is not None and ziel_bj:
+        d = abs(b.baujahr - ziel_bj)
+        if d <= 1:
+            gruende.append(f"Baujahr passt (±{d})")
+        elif d == 2:
+            ab(1); gruende.append("Baujahr ±2 Jahre")
+        else:
+            b.vergleichbarkeit = "ungeeignet"
+            b.gruende = [f"Baujahr weicht stark ab ({b.baujahr} vs {ziel_bj})"]
+            return b
+    else:
+        ab(1); gruende.append("Baujahr unbekannt")
+
+    ziel_km = ziel.get("kilometerstand")
+    if b.kilometerstand is not None and ziel_km:
+        d = abs(b.kilometerstand - ziel_km)
+        if d <= 20_000:
+            gruende.append("Laufleistung vergleichbar")
+        elif d <= 40_000:
+            ab(1); gruende.append("Laufleistung mäßig abweichend")
+        elif d <= 70_000:
+            ab(2); gruende.append("Laufleistung deutlich abweichend")
+        else:
+            b.vergleichbarkeit = "ungeeignet"
+            b.gruende = [f"Laufleistung weicht stark ab ({b.kilometerstand:,} km)".replace(",", ".")]
+            return b
+    else:
+        ab(1); gruende.append("Laufleistung unbekannt")
+
+    ziel_kr = _kraftstoff_im_text(ziel.get("kraftstoff") or "")
+    kr_text = _kraftstoff_im_text(fenster)
+    if ziel_kr and kr_text and kr_text != ziel_kr:
+        ab(1); gruende.append(f"anderer Kraftstoff ({kr_text})")
+
+    b.vergleichbarkeit = _STUFEN[stufe]
+    b.gruende = gruende
+    return b
+
+
+def _trim_ausreisser(beob: list[Preisbeobachtung]) -> tuple[list, list]:
+    """Robuste Ausreißer-Entfernung per Tukey-Zaun (Q1−1.5·IQR … Q3+1.5·IQR).
+
+    Verhindert, dass ein einzelner Fehl-/Fremdpreis (z.B. ein versehentlich als
+    'ähnlich' klassifizierter Fremdmodell-Treffer wie ein Audi RS4 für 43.000 €)
+    sowohl die Spanne verzerrt ALS AUCH als scheinbares Vergleichsfahrzeug angezeigt
+    wird. Greift erst ab 4 Werten (darunter ist ein IQR nicht sinnvoll).
+    """
+    if len(beob) < 4:
+        return beob, []
+    preise = sorted(b.preis_eur for b in beob)
+    q = statistics.quantiles(preise, n=4, method="inclusive")
+    q1, q3 = q[0], q[2]
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    behalten = [b for b in beob if lo <= b.preis_eur <= hi]
+    entfernt = [b for b in beob if not (lo <= b.preis_eur <= hi)]
+    # Sicherheitsnetz: nie mehr als ~1/3 als Ausreißer verwerfen (sonst ist die
+    # Grundgesamtheit einfach breit gestreut, kein Ausreißerproblem).
+    if len(entfernt) > len(beob) // 3:
+        return beob, []
+    return behalten, entfernt
+
+
+def _typischer_bereich(preise: list[int]) -> tuple[int, int]:
+    """Robuster typischer Marktbereich = unteres/oberes Quartil (Ausreißer-fest),
+    auf 100 € gerundet. Bei sehr wenigen Werten min/max des verwendeten Sets."""
+    s = sorted(preise)
+    if len(s) >= 4:
+        q = statistics.quantiles(s, n=4, method="inclusive")  # [p25, p50, p75]
+        lo, hi = q[0], q[2]
+    else:
+        lo, hi = s[0], s[-1]
+    return _r100(lo), _r100(hi)
+
+
+def _r100(x: float) -> int:
+    return int(round(x / 100.0) * 100)
+
+
+def _datenqualitaet(sehr: int, aehnlich: int, verwendet: int) -> str:
+    """Confidence NICHT allein aus Anzahl — Match-Qualität zählt mit. Bewusst
+    konservativ: die Datenpunkte sind heuristisch aus Snippet-Text extrahiert
+    (keine verifizierten Einzelinserate), daher "hoch" nur bei vielen, überwiegend
+    sehr ähnlichen Treffern."""
+    if verwendet >= 10 and sehr >= 6:
+        return "hoch"
+    if verwendet >= 4:
+        return "mittel"
+    return "niedrig"
+
+
+def baue_ziel(baureihe: dict | None, motor_match: dict | None, req, alle_baureihen: list[dict] | None) -> dict:
+    """Baut das Ziel-Profil für die Vergleichbarkeitsbewertung.
+
+    `fremd_generationen` = Generations-Kürzel ANDERER Baureihen desselben Modells
+    (z.B. E90/F30/E46 beim 3er) — daten-getrieben aus der DB, kein Hardcoding. Ein
+    Datenpunkt, dessen Snippet ein Fremd-Kürzel trägt, wird als 'ungeeignet'
+    verworfen (die berüchtigte E90-7.000-€-Karre beim G20).
+    """
+    gen: set[str] = set()
+    if baureihe:
+        gen |= set(_generation_tokens(baureihe.get("generation", "")))
+        gen |= set(_generation_tokens(baureihe.get("id", "")))
+    fremd: set[str] = set()
+    if baureihe:
+        bm = (baureihe.get("marke") or "").lower()
+        bmod = (baureihe.get("modell") or "").lower()
+        for r in alle_baureihen or []:
+            if (r.get("marke", "").lower() == bm and r.get("modell", "").lower() == bmod
+                    and r.get("id") != baureihe.get("id")):
+                fremd |= set(_generation_tokens(r.get("generation", "")))
+                fremd |= set(_generation_tokens(r.get("id", "")))
+    fremd -= gen
+    kraftstoff = (motor_match or {}).get("kraftstoff") or getattr(req, "kraftstoff", None)
+    return {
+        "generation_tokens": gen,
+        "fremd_generationen": fremd,
+        "baujahr": getattr(req, "baujahr", None),
+        "kilometerstand": getattr(req, "kilometerstand", None),
+        "kraftstoff": kraftstoff,
+    }
+
+
+def prompt_block(ma: Marktanalyse | None) -> str:
+    """Kompakter, VERBINDLICHER Marktvergleich-Block für den LLM-Prompt — damit der
+    Bericht dieselben (deterministisch berechneten) Zahlen nennt und keine eigene
+    Spanne erfindet. Leer, wenn keine belastbare Analyse vorliegt."""
+    if not ma or not ma.median_eur:
+        return ""
+    lines = [
+        "=== DETERMINISTISCHER MARKTVERGLEICH (Backend-berechnet — VERBINDLICH) ===",
+        f"Robust aus {ma.verwendet} vergleichbaren Web-Preisangaben berechnet "
+        f"({ma.anzahl_sehr_aehnlich} sehr ähnlich, {ma.anzahl_aehnlich} ähnlich):",
+        f"- Median-Marktwert: {ma.median_eur} €",
+        f"- Typischer Marktbereich (robuste Quartile): {ma.spanne_min_eur}–{ma.spanne_max_eur} €",
+        f"- Datenqualität dieser Basis: {ma.datenqualitaet}",
+        f"Verwende GENAU diese Spanne: setze marktpreis_min={ma.spanne_min_eur} und "
+        f"marktpreis_max={ma.spanne_max_eur}. Erfinde KEINE davon abweichende Spanne. "
+        f"Nenne im Bericht den Median und den typischen Marktbereich; leite die "
+        f"Preisbewertung aus der Lage des Angebotspreises zu dieser Spanne ab.",
+    ]
+    return "\n".join(lines)
+
+
+def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | None) -> Marktanalyse:
+    """Baut die deterministische Marktanalyse aus den rohen Tavily-Treffern.
+
+    `ziel` erwartet: generation_tokens:set, fremd_generationen:set, baujahr:int|None,
+    kilometerstand:int|None, kraftstoff:str|None. `angebot_eur` = Angebots-/Wunschpreis.
+    """
+    roh: list[Preisbeobachtung] = []
+    for r in web_results or []:
+        url = r.get("url", "") or ""
+        text = f"{r.get('title','')}\n{r.get('content','')}"
+        roh.extend(_extrahiere_aus_text(text, url))
+
+    bewertet = [_bewerte(b, ziel) for b in roh]
+    # Deduplizieren auf (Preis, km, Baujahr) — dieselbe Anzeige taucht in mehreren
+    # Snippets/Queries auf; sonst überzählt ein Portal die Statistik.
+    gesehen: set[tuple] = set()
+    uniq: list[Preisbeobachtung] = []
+    for b in bewertet:
+        key = (b.preis_eur, b.kilometerstand, b.baujahr)
+        if key in gesehen:
+            continue
+        gesehen.add(key)
+        uniq.append(b)
+
+    sehr = [b for b in uniq if b.vergleichbarkeit == "sehr_aehnlich"]
+    aehn = [b for b in uniq if b.vergleichbarkeit == "aehnlich"]
+    bedingt = [b for b in uniq if b.vergleichbarkeit == "bedingt"]
+
+    # Für die Preisberechnung bevorzugt sehr_aehnlich + aehnlich; "bedingt" nur als
+    # Fallback bei zu wenig Daten. "ungeeignet" NIE.
+    kandidaten = sehr + aehn
+    fallback = False
+    if len(kandidaten) < 3:
+        kandidaten = kandidaten + bedingt
+        fallback = True
+
+    # Ausreißer-Preise entfernen (Tukey) — bevor gezählt/gemittelt/angezeigt wird.
+    verwendet, _entfernt = _trim_ausreisser(kandidaten)
+
+    # Domains NUR der tatsächlich verwendeten Vergleiche (keine Quelle nennen, die
+    # nichts Verwertbares beigetragen hat) — order-preserving dedupliziert.
+    domains: list[str] = []
+    for b in verwendet:
+        if b.quelle_domain and b.quelle_domain not in domains:
+            domains.append(b.quelle_domain)
+
+    ma = Marktanalyse(
+        gefunden=len(uniq),
+        # Kategorie-Zähler beschreiben die TATSÄCHLICH verwendeten (post-Trim)
+        # Vergleiche — nicht die Rohmenge (ehrliche "X sehr ähnlich · Y ähnlich").
+        anzahl_sehr_aehnlich=sum(1 for b in verwendet if b.vergleichbarkeit == "sehr_aehnlich"),
+        anzahl_aehnlich=sum(1 for b in verwendet if b.vergleichbarkeit == "aehnlich"),
+        anzahl_bedingt=sum(1 for b in verwendet if b.vergleichbarkeit == "bedingt"),
+        angebot_eur=angebot_eur,
+        quellen_domains=domains,
+    )
+
+    def _unzuverlaessig(grund: str) -> Marktanalyse:
+        # KEINE Scheinpräzision. Median/Spanne bleiben None; die Datenpunkte werden
+        # dennoch als (schwache) Beobachtungen ausgewiesen (Transparenz).
+        ma.verwendet = len(verwendet)
+        ma.datenqualitaet = "niedrig"
+        ma.methode = grund
+        ma.beobachtungen = verwendet
+        return ma
+
+    if len(verwendet) < 3:
+        return _unzuverlaessig(
+            "Zu wenige vergleichbare Preisangaben aus der Websuche für eine belastbare "
+            "Median-/Quartils-Berechnung — Marktanalyse auf begrenzter Datenbasis."
+        )
+
+    preise = [b.preis_eur for b in verwendet]
+    median = _r100(statistics.median(preise))
+    lo, hi = _typischer_bereich(preise)
+
+    # Plausibilitätsprüfung Streuung: ist der typische Marktbereich relativ zum
+    # Median zu breit, sind die Datenpunkte in Wahrheit nicht kohärent (Fehl-
+    # Assoziation / gemischte Preisarten). Dann ehrlich als unzuverlässig ausweisen
+    # statt einen bedeutungslosen Median zu präsentieren.
+    if median and (hi - lo) / median > _MAX_REL_SPANNE:
+        return _unzuverlaessig(
+            f"Die gefundenen Vergleichspreise streuen zu stark "
+            f"({lo:,}–{hi:,} €) für einen belastbaren Marktwert — die Web-Datenbasis "
+            f"ist uneinheitlich (z.B. gemischte Angebots-/Finanzierungspreise). "
+            f"Nur grobe Orientierung möglich.".replace(",", ".")
+        )
+
+    ma.verwendet = len(verwendet)
+    ma.median_eur = median
+    ma.spanne_min_eur = lo
+    ma.spanne_max_eur = hi
+    ma.datenqualitaet = _datenqualitaet(ma.anzahl_sehr_aehnlich, ma.anzahl_aehnlich, len(verwendet))
+    ma.beobachtungen = verwendet
+    if angebot_eur:
+        ma.differenz_eur = angebot_eur - median
+        ma.differenz_pct = round((angebot_eur - median) / median * 100, 1)
+    ma.methode = (
+        f"Median und typischer Marktbereich (unteres–oberes Quartil, ausreißer-robust) "
+        f"aus {len(verwendet)} vergleichbaren Preisangaben"
+        + (" (inkl. bedingt vergleichbarer, da wenige Daten)" if fallback else "")
+        + f"; aus {len(uniq)} extrahierten Datenpunkten der Websuche gefiltert."
+    )
+    return ma

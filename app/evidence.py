@@ -17,13 +17,114 @@ Was hier NICHT passiert (bewusst, Schicht A):
 import logging
 import re
 
-from app.models import EvidenceQuelle, Insight
+from app.models import EvidenceQuelle, Insight, Marktanalyse
 
 log = logging.getLogger(__name__)
 
 _JAHR = re.compile(r"\b(?:19|20)\d{2}\b")
 _BEREICH = re.compile(r"[-–]|bis")
 _ALLGEMEIN = {"", "alle", "alle baujahre", "-", "n/a", "unbekannt", "diverse"}
+
+# ── Rückruf-Varianten-Zuordnung (Phase 1B) ───────────────────────────────────
+# Die Tabelle `rueckruf` ist NUR an baureihe_id gekoppelt (kein motorvariante/
+# kraftstoff/antrieb-Feld). Die Varianten-Einschränkung steht — wenn überhaupt —
+# als FREITEXT im mangel/abhilfe/betroffene_baujahre (z.B. "(Plug-in-Hybrid)",
+# "Hochvoltbatterie"). Daraus leiten wir DETERMINISTISCH ab, ob ein Rückruf einen
+# bestimmten Antrieb/Kraftstoff adressiert — ohne Raten, ohne LLM.
+
+# Signalwörter, die einen Rückruf auf Hochvolt-/Hybrid-/Elektro-Antrieb eingrenzen.
+_HV_WORTE = ("hochvolt", "hochspannung", "plug-in", "plug in", "plugin", "phev",
+             "hybrid", "elektro", "elektrisch")
+
+# Normierung des Kraftstoffs (Motorvariante ODER Rückruf-Freitext-Qualifier).
+def _norm_kraftstoff(text: str | None) -> str | None:
+    t = (text or "").lower()
+    if not t:
+        return None
+    if "mild" in t:
+        return "mild"          # Mild-Hybrid (48V) — NICHT das Hochvolt-System eines PHEV/BEV
+    if any(k in t for k in ("plug-in", "plug in", "plugin", "phev")):
+        return "phev"
+    if "elektro" in t or "electric" in t:
+        return "elektro"
+    if "hybrid" in t:
+        return "phev"          # generisches "Hybrid" -> Hochvolt-Antrieb (nicht Mild s.o.)
+    if "diesel" in t:
+        return "diesel"
+    if "benzin" in t or "petrol" in t:
+        return "benzin"
+    return None
+
+
+def _paren_qualifier(betroffene: str | None) -> str | None:
+    """Antriebs-Qualifier aus einem Klammerzusatz wie '2019-2020 (Plug-in-Hybrid)'."""
+    if not betroffene:
+        return None
+    m = re.search(r"\(([^)]*)\)", betroffene)
+    return _norm_kraftstoff(m.group(1)) if m else None
+
+
+# Antriebe, die ein Hochvolt-System besitzen (für den Abgleich mit HV-Rückrufen).
+_HAT_HOCHVOLT = {"phev", "elektro"}
+
+
+def _rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: dict | None):
+    """Bestimmt, WIE SICHER ein Rückruf GENAU DIESES Fahrzeug betrifft.
+
+    Rückgabe: (applicability, confidence, einfluss, variant_hinweis)
+      applicability: "exakt" | "wahrscheinlich" | "unklar"
+      confidence:    Beleglage des Insights ("hoch"|"mittel"|"niedrig")
+      einfluss:      Handlungshinweis
+      variant_hinweis: Zusatztext für die Beschreibung (oder "")
+
+    Strikt getrennte Konzepte:
+      severity  = wie schlimm            (eigenes Feld, hier NICHT berührt)
+      confidence= wie gut belegt         (Beleglage/Provenance)
+      applicability = betrifft dieses Fahrzeug  (Varianten-/Antriebs-Zuordnung)
+    """
+    text = " ".join(filter(None, [r.get("mangel"), r.get("abhilfe"), r.get("betroffene_baujahre")]))
+    ist_hv_rueckruf = any(w in text.lower() for w in _HV_WORTE)
+    qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
+    fahrzeug_kraftstoff = _norm_kraftstoff((motor_match or {}).get("kraftstoff"))
+
+    hinweis_fin = "Betroffenheit anhand der FIN beim Hersteller/KBA prüfen."
+
+    # Der Rückruf grenzt sich auf einen bestimmten Antrieb ein (Klammer-Qualifier
+    # ODER klarer Hochvolt-/Hybrid-Bezug).
+    scope = qualifier or ("phev" if ist_hv_rueckruf else None)
+    if scope:
+        if fahrzeug_kraftstoff is None:
+            # Motor nicht erkannt -> Varianten-Betroffenheit NICHT bestimmbar.
+            return ("unklar", "niedrig",
+                    f"Betroffenheit unklar — der Rückruf betrifft bestimmte Varianten. {hinweis_fin}",
+                    "Für die Baureihe hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
+        matcht = (
+            fahrzeug_kraftstoff == scope
+            or (scope in _HAT_HOCHVOLT and fahrzeug_kraftstoff in _HAT_HOCHVOLT)
+        )
+        if matcht:
+            # Passende Variante + Baujahr-Deckung + KBA-Referenz -> stark belastbar.
+            if passt is True and kba:
+                return ("exakt", "hoch", "Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.", "")
+            return ("wahrscheinlich", "mittel",
+                    "Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen.", "")
+        # Klarer Antriebs-Widerspruch (z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist Diesel)
+        # -> NICHT als direkt zutreffend markieren.
+        scope_label = {"phev": "Plug-in-Hybrid-/Hochvolt-Varianten", "elektro": "Elektro-Varianten",
+                       "diesel": "Diesel-Varianten", "benzin": "Benzin-Varianten",
+                       "mild": "Mild-Hybrid-Varianten"}.get(scope, "bestimmte Varianten")
+        return ("unklar", "niedrig",
+                f"Betrifft laut Datenlage {scope_label} — dein Fahrzeug gehört voraussichtlich nicht dazu. {hinweis_fin}",
+                f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt nicht dazu.")
+
+    # Kein Antriebs-Scope erkennbar -> allgemeiner Baureihen-Rückruf (z.B. Bremse,
+    # Lenkung): gilt unabhängig von der Motorisierung.
+    if passt is True and kba:
+        return ("exakt", "hoch", "Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.", "")
+    if passt is True:
+        return ("wahrscheinlich", "mittel", "Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen.", "")
+    return ("wahrscheinlich", "mittel",
+            f"Sicherheitsrelevant — Baujahr-Zuordnung nicht eindeutig. {hinweis_fin}", "")
 
 
 def _jahre(text: str | None) -> list[int]:
@@ -81,6 +182,7 @@ def build_insights(
     check_typ: str = "kauf",
     marktpreis_min: int | None = None,
     marktpreis_max: int | None = None,
+    marktanalyse: Marktanalyse | None = None,
 ) -> list[Insight]:
     """Baut die Liste nachvollziehbarer Insights aus deterministischen Daten.
 
@@ -134,21 +236,34 @@ def build_insights(
             ref=kba or None,
             titel="KBA-Rückrufdatenbank" if kba else "KBA-Rückruf (Referenz nicht hinterlegt)",
         )]
+        # Phase 1B: Varianten-/Antriebs-Zuordnung -> applicability (getrennt von
+        # confidence & severity). Ein Hochvolt-/PHEV-Rückruf wird NICHT als direkt
+        # zutreffend für einen reinen Diesel markiert.
+        applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
+            r, passt, kba, motor_match)
         beschr = (r.get("mangel") or "").strip()
         if r.get("abhilfe"):
             beschr = f"{beschr} — Abhilfe: {r['abhilfe'].strip()}"
         if r.get("datum"):
             beschr = f"{beschr} (Rückruf {r['datum']})"
+        if variant_hinweis:
+            beschr = f"{beschr} — {variant_hinweis}"
+        # Titel signalisiert nur bei gesicherter Betroffenheit einen konkreten Rückruf;
+        # sonst als Baureihen-Hinweis kennzeichnen (kein "betrifft dein Fahrzeug").
+        if applicability == "exakt":
+            titel = f"KBA-Rückruf: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
+        else:
+            titel = f"KBA-Rückruf (Baureihe): {(r.get('mangel') or 'Rückrufaktion')[:70]}".rstrip(": ").strip()
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
-            titel=f"KBA-Rückruf: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip(),
+            titel=titel,
             beschreibung=beschr.strip(" —"),
             quellen_typen=_typen(quellen),
             quellen=quellen,
-            # KBA-Referenz + exakte Baujahr-Deckung = amtlich belastbar -> hoch.
-            confidence="hoch" if (passt is True and kba) else "mittel",
-            einfluss="Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.",
+            confidence=r_conf,
+            applicability=applicability,
+            einfluss=r_einfluss,
         ))
 
     # ── 3) Motorspezifische Probleme (nur bei ERKANNTEM Motor) ─────────────────
@@ -176,40 +291,81 @@ def build_insights(
                 einfluss=einfluss,
             ))
 
-    # ── 4) Marktvergleich (Websuche — ungeprüft) ───────────────────────────────
+    # ── 4) Marktvergleich (Marktvergleich 2.0 — deterministisch) ───────────────
+    # Quellen bleiben die RECHERCHE-Seiten (typ="web") — eine allgemeine Suchseite
+    # wird NICHT als einzelnes Vergleichsfahrzeug ausgegeben. Die eigentliche
+    # Vergleichbarkeit/Preisbewertung kommt aus der deterministischen Marktanalyse.
     web_belege = web_belege or []
     web_quellen = [
         EvidenceQuelle(typ="web", url=b.get("url"), titel=b.get("titel"), qualitaet=b.get("qualitaet"))
         for b in web_belege if b.get("url")
     ]
-    if web_quellen:
-        # Confidence bewusst KONSERVATIV und NICHT allein aus der Trefferzahl:
-        # Ob die gefundenen Angebote wirklich vergleichbar sind (Modell/Motorisierung/
-        # Baujahr/Kilometerstand/Karosserie/Kraftstoff), lässt sich aus der aktuellen
-        # Web-Ergebnisstruktur (nur Titel + gekürzter Snippet) NICHT zuverlässig
-        # deterministisch nachweisen. Deshalb: mehrere gute Marktplatzquellen = maximal
-        # "mittel"; "hoch" wird NICHT über die Anzahl vergeben (kein LLM, keine
-        # Scheinpräzision). "hoch" bliebe echter, verifizierbarer Vergleichbarkeit
-        # vorbehalten (nicht Teil von Schicht A).
-        marktplatz = sum(1 for b in web_belege if b.get("qualitaet") == "Marktplatz")
-        conf = "mittel" if marktplatz >= 2 else "niedrig"
-        spanne = ""
-        if marktpreis_min or marktpreis_max:
-            spanne = f" Ermittelte Marktspanne: {marktpreis_min}–{marktpreis_max} €."
-        insights.append(Insight(
+    mv = _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, marktpreis_max, check_typ)
+    if mv:
+        insights.append(mv)
+
+    return insights
+
+
+def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, marktpreis_max, check_typ):
+    """Baut den Marktvergleich-Insight. Bevorzugt die deterministische Marktanalyse
+    (Median + robuste Spanne + verwendete Datenpunkte); ohne belastbare Analyse
+    bleibt ein transparenter Hinweis auf die begrenzte Web-Datenbasis."""
+    einfluss = "Grundlage der Preisstrategie." if check_typ == "verkauf" else "Grundlage der Preisbewertung."
+
+    if marktanalyse and marktanalyse.median_eur:
+        m = marktanalyse
+        teile = [
+            f"{m.verwendet} vergleichbare Preisangaben ausgewertet "
+            f"({m.anzahl_sehr_aehnlich} sehr ähnlich · {m.anzahl_aehnlich} ähnlich"
+            + (f" · {m.anzahl_bedingt} bedingt" if m.anzahl_bedingt else "") + ").",
+            f"Median: {m.median_eur:,} €.".replace(",", "."),
+        ]
+        if m.spanne_min_eur and m.spanne_max_eur:
+            teile.append(f"Typischer Marktbereich: {m.spanne_min_eur:,}–{m.spanne_max_eur:,} €.".replace(",", "."))
+        if m.angebot_eur and m.differenz_eur is not None:
+            vz = "+" if m.differenz_eur >= 0 else "−"
+            teile.append(f"Angebot {m.angebot_eur:,} € = {vz}{abs(m.differenz_eur):,} € "
+                         f"({vz}{abs(m.differenz_pct):.1f} %) zum Median.".replace(",", "."))
+        return Insight(
             id=_id("marktvergleich"),
             kategorie="marktvergleich",
             titel="Marktvergleich (aktuelle Websuche)",
-            beschreibung=(f"Preis-Orientierung aus {len(web_quellen)} Web-Angeboten "
-                          f"({marktplatz} Marktplatz-Quellen).{spanne} "
-                          f"Web-Daten sind nicht redaktionell geprüft."),
-            quellen_typen=_typen(web_quellen) + ["marktvergleich"],
+            beschreibung=" ".join(teile),
+            quellen_typen=_typen(web_quellen) + ["marktvergleich"] if web_quellen else ["marktvergleich"],
             quellen=web_quellen,
-            confidence=conf,
-            einfluss="Grundlage der Preisstrategie." if check_typ == "verkauf" else "Grundlage der Preisbewertung.",
-        ))
+            confidence=m.datenqualitaet,
+            einfluss=einfluss,
+            marktanalyse=m,
+        )
 
-    return insights
+    # Fallback: keine belastbare deterministische Analyse (zu wenige oder zu stark
+    # streuende Datenpunkte). Ehrlich kennzeichnen, keine Scheinpräzision.
+    if not web_quellen:
+        return None
+    spanne = ""
+    if marktpreis_min or marktpreis_max:
+        spanne = f" Grobe Orientierung: {marktpreis_min}–{marktpreis_max} €."
+    if marktanalyse and marktanalyse.methode:
+        # Konkrete, deterministisch ermittelte Begründung (zu wenige / zu breit gestreut).
+        beschr = marktanalyse.methode + spanne
+    elif marktanalyse and marktanalyse.gefunden:
+        beschr = (f"{marktanalyse.gefunden} Preisangaben aus der Websuche gefunden, aber zu wenige "
+                  f"eindeutig vergleichbare für eine belastbare Spanne." + spanne)
+    else:
+        beschr = ("Nur begrenzte, nicht eindeutig vergleichbare Web-Daten gefunden — "
+                  "die Marktanalyse basiert auf einer schmalen Datenbasis." + spanne)
+    return Insight(
+        id=_id("marktvergleich"),
+        kategorie="marktvergleich",
+        titel="Marktvergleich (begrenzte Web-Datenbasis)",
+        beschreibung=beschr,
+        quellen_typen=_typen(web_quellen) + ["marktvergleich"],
+        quellen=web_quellen,
+        confidence="niedrig",
+        einfluss=einfluss,
+        marktanalyse=marktanalyse,
+    )
 
 
 # ── Schicht B: Evidence dem LLM geben & referenzierte IDs validieren ─────────
@@ -245,6 +401,23 @@ def format_evidence_for_prompt(insights: list[Insight]) -> str:
 
 def valid_evidence_ids(insights: list[Insight]) -> set[str]:
     return {i.id for i in insights}
+
+
+def marktvergleich_id(insights: list[Insight]) -> str | None:
+    """ID des Marktvergleich-Insights (falls vorhanden) — damit der Marktvergleich
+    zuverlässig unter 'Warum diese Preisbewertung?' erscheint, auch wenn das LLM ihn
+    nicht selbst referenziert hat."""
+    for i in insights:
+        if i.kategorie == "marktvergleich":
+            return i.id
+    return None
+
+
+def ergaenze_id(ids: list[str], neue: str | None) -> list[str]:
+    """Fügt `neue` ans Ende hinzu, falls noch nicht enthalten (Reihenfolge erhalten)."""
+    if neue and neue not in ids:
+        return [*ids, neue]
+    return ids
 
 
 def filter_evidence_ids(ids, valid: set[str], *, feld: str = "") -> list[str]:

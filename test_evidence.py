@@ -103,22 +103,79 @@ check("2b: gleiche Baujahr-Deckung -> gleiche confidence trotz unterschiedl. sch
 check("2b: confidence bleibt provenance-basiert (hoch), nicht vom schweregrad abhängig",
       all(i.confidence == "hoch" for i in sev))
 
-# ── 3) Webbasierter Marktpreis -> Web/Marktvergleich ────────────────────────
+# ── 2c) Rückruf-Applicability (Phase 1B): Varianten-/Antriebs-Zuordnung ──────
+# severity / confidence / applicability sind DREI getrennte Konzepte.
+BAUREIHE_HV = {
+    "id": "bmw-3er-g20-g21", "quellen": [], "schwachstellen_baureihe": [],
+    "rueckrufe": [
+        {"datum": "2020-03", "betroffene_baujahre": "2019-2020",
+         "mangel": "Möglicher Ausfall des Bremskraftverstärkers",
+         "abhilfe": "Prüfung", "kba_referenz": "009696"},
+        {"datum": "2020-10", "betroffene_baujahre": "2019-2020 (Plug-in-Hybrid)",
+         "mangel": "Brandgefahr der Hochvoltbatterie",
+         "abhilfe": "Austausch der Hochvoltbatterie-Module", "kba_referenz": "010078"},
+    ],
+}
+MOTOR_DIESEL = {"bezeichnung": "320d", "kraftstoff": "Diesel", "schwachstellen_motor": []}
+MOTOR_PHEV = {"bezeichnung": "330e", "kraftstoff": "Plug-in-Hybrid", "schwachstellen_motor": []}
+
+_rk_diesel = {i.titel: i for i in build_insights(BAUREIHE_HV, MOTOR_DIESEL, [], req(2020)) if i.kategorie == "rueckruf"}
+hv_d = next(i for t, i in _rk_diesel.items() if "Hochvolt" in t)
+brems_d = next(i for t, i in _rk_diesel.items() if "Bremskraft" in t)
+check("11: Hochvolt-Rückruf beim 320d-Diesel -> applicability 'unklar' (nicht betrifft-Fahrzeug)",
+      hv_d.applicability == "unklar")
+check("11: Hochvolt-Rückruf beim Diesel -> confidence reduziert (niedrig)", hv_d.confidence == "niedrig")
+check("11: Titel als Baureihen-Hinweis gekennzeichnet (nicht direkt zutreffend)",
+      "Baureihe" in hv_d.titel)
+check("11: Hinweis auf FIN-Prüfung im Einfluss", "FIN" in (hv_d.einfluss or ""))
+check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> applicability 'exakt'",
+      brems_d.applicability == "exakt" and brems_d.confidence == "hoch")
+
+_rk_phev = {i.titel: i for i in build_insights(BAUREIHE_HV, MOTOR_PHEV, [], req(2020)) if i.kategorie == "rueckruf"}
+hv_p = next(i for t, i in _rk_phev.items() if "Hochvolt" in t)
+check("13: Hochvolt-Rückruf beim 330e Plug-in-Hybrid -> applicability 'exakt'",
+      hv_p.applicability == "exakt" and hv_p.confidence == "hoch")
+
+_rk_nomotor = {i.titel: i for i in build_insights(BAUREIHE_HV, None, [], req(2020)) if i.kategorie == "rueckruf"}
+hv_n = next(i for t, i in _rk_nomotor.items() if "Hochvolt" in t)
+check("12: Motor nicht erkannt -> Hochvolt-Applicability 'unklar' (nicht raten)",
+      hv_n.applicability == "unklar")
+
+_rk_2023 = [i for i in build_insights(BAUREIHE_HV, MOTOR_DIESEL, [], req(2023)) if i.kategorie == "rueckruf"]
+check("14: Baujahr 2023 außerhalb 2019-2020 -> Rückrufe ausgelassen", len(_rk_2023) == 0)
+check("15: KBA-Referenz bleibt am (Baureihen-)Rückruf erhalten",
+      any(q.ref == "010078" for q in hv_d.quellen))
+check("16: severity/confidence/applicability getrennt (Rückruf hat applicability-Feld, keine severity)",
+      hv_d.applicability is not None and hv_d.schweregrad is None)
+
+# ── 3) Webbasierter Marktpreis -> Web/Marktvergleich (Marktvergleich 2.0) ────
 mv = [i for i in ins if i.kategorie == "marktvergleich"]
 check("3: Marktvergleich-Insight vorhanden", len(mv) == 1)
 check("3: quellen_typen web + marktvergleich",
       bool(mv) and "web" in mv[0].quellen_typen and "marktvergleich" in mv[0].quellen_typen)
-check("3: Web-URL vorhanden", bool(mv) and any(q.url for q in mv[0].quellen))
-# Punkt 3: Confidence NICHT allein aus Trefferzahl. Vergleichbarkeit ist aus der
-# Web-Struktur (Titel+Snippet) nicht belegbar -> mehrere Marktplatzquellen = max. "mittel".
-check("3: mehrere Marktplatz-Quellen -> maximal 'mittel' (nie 'hoch' aus Anzahl)",
-      bool(mv) and mv[0].confidence == "mittel")
+check("3: Web-URL bleibt als Recherchequelle erhalten", bool(mv) and any(q.url for q in mv[0].quellen))
+# Marktvergleich 2.0: OHNE belastbare deterministische Marktanalyse ist die
+# Confidence bewusst konservativ 'niedrig' — Belege allein (Titel+URL) belegen
+# KEINE Vergleichbarkeit. Die Confidence kommt NICHT mehr aus der Trefferzahl.
+check("3: ohne deterministische Analyse -> Marktvergleich confidence 'niedrig'",
+      bool(mv) and mv[0].confidence == "niedrig")
 BELEGE_VIER = BELEGE_STARK + [{"typ": "web", "titel": "4. Angebot",
                                "url": "https://autoscout24.de/4", "qualitaet": "Marktplatz"}]
 mv4 = [i for i in build_insights(None, None, BELEGE_VIER, req(2020)) if i.kategorie == "marktvergleich"]
 check("3: 4 Marktplatz-URLs bedeuten NICHT automatisch 'hoch'", bool(mv4) and mv4[0].confidence != "hoch")
-mv1 = [i for i in build_insights(None, None, [BELEGE_STARK[0]], req(2020)) if i.kategorie == "marktvergleich"]
-check("3: einzelne Marktplatz-Quelle -> 'niedrig'", bool(mv1) and mv1[0].confidence == "niedrig")
+# Mit deterministischer Marktanalyse spiegelt die Confidence die Datenqualität.
+from app.models import Marktanalyse  # noqa: E402
+_ma = Marktanalyse(gefunden=8, verwendet=6, anzahl_sehr_aehnlich=4, anzahl_aehnlich=2,
+                   median_eur=26200, spanne_min_eur=25600, spanne_max_eur=26900,
+                   datenqualitaet="mittel")
+mvA = [i for i in build_insights(None, None, BELEGE_STARK, req(2020), marktanalyse=_ma)
+       if i.kategorie == "marktvergleich"]
+check("3: deterministische Analyse -> Confidence = Datenqualität ('mittel')",
+      bool(mvA) and mvA[0].confidence == "mittel")
+check("3: Marktvergleich-Insight trägt strukturierte marktanalyse (Median/Spanne)",
+      bool(mvA) and mvA[0].marktanalyse is not None and mvA[0].marktanalyse.median_eur == 26200)
+check("3: Beschreibung nennt Median UND typischen Marktbereich",
+      bool(mvA) and "Median" in mvA[0].beschreibung and "Typischer Marktbereich" in mvA[0].beschreibung)
 
 # ── 4) Reine KI-Ableitung / fehlende Daten -> NICHT als DB/Web ──────────────
 check("4: ohne DB & Web -> keine erfundenen Insights", build_insights(None, None, [], req(2020)) == [])

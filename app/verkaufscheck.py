@@ -15,10 +15,12 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
+from app.database import get_alle_baureihen_kurz
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
-    valid_evidence_ids, enrich_marktvergleich_spanne,
+    valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
+from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -229,7 +231,8 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
         web_results_task = asyncio.ensure_future(
             tavily_search_with_fallback(
-                [q_spezifisch, q_mittel, q_breit], count=5,
+                # count=8: mehr Snippets für den Marktvergleich (gleicher Credit-Preis).
+                [q_spezifisch, q_mittel, q_breit], count=8,
                 exclude_domains=US_QUELLEN_AUSSCHLUSS,
             )
         )
@@ -240,10 +243,16 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # 2. DB-Kontext
     db_ctx = build_db_context(baureihe, motor_match)
 
-    web_results: list[dict] = await web_results_task if web_results_task else []
-    web_results = curate_results(web_results, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_VERKAUFSCHECK_QUELLEN)
+    web_results_roh: list[dict] = await web_results_task if web_results_task else []
+    web_results = curate_results(web_results_roh, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_VERKAUFSCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
+
+    # Marktvergleich 2.0: deterministische Preis-Datenpunkte (aus ALLEN Rohtreffern)
+    # + robuste Statistik (Median/Quartilsbereich) statt LLM-erfundener Spanne.
+    # Angebot = Preisvorstellung.
+    ziel = baue_ziel(baureihe, motor_match, req, get_alle_baureihen_kurz() if baureihe else [])
+    marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
 
     # 4. Gemini-Analyse
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
@@ -253,9 +262,11 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # Phase 1 Schicht B: Evidence deterministisch VOR dem LLM bauen (Marktpreis noch
     # unbekannt -> None, wird nach dem LLM ergänzt) und dem LLM kompakt zum
     # Referenzieren mitgeben (stabile IDs -> anschließend backend-validierbar).
-    insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf")
+    insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf",
+                              marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
-    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx, evidence_block]))
+    markt_block = markt_prompt_block(marktanalyse)
+    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx, markt_block, evidence_block]))
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
@@ -275,9 +286,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     elif hat_web:            quelle, vertrauen = "web", "niedrig"
     else:                    quelle, vertrauen = "gemischt", "niedrig"
 
-    # Marktvergleich-Insight mit der erst jetzt bekannten Marktspanne anreichern
-    # (gleiche ID -> vom LLM referenzierte IDs bleiben gültig).
-    enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
+    # Marktpreis-Spanne deterministisch verankern, wenn belastbare Analyse vorliegt
+    # (robuster Median/Quartilsbereich statt LLM-Spanne); sonst LLM-Spanne nachtragen.
+    if marktanalyse and marktanalyse.median_eur:
+        result["marktpreis_min"] = marktanalyse.spanne_min_eur
+        result["marktpreis_max"] = marktanalyse.spanne_max_eur
+    else:
+        enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
 
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
@@ -285,6 +300,9 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     preis_evidence_ids     = filter_evidence_ids(result.get("preis_evidence_ids"), gueltige, feld="preis")
     strategie_evidence_ids = filter_evidence_ids(result.get("strategie_evidence_ids"), gueltige, feld="strategie")
     argument_evidence_ids  = filter_evidence_ids(result.get("argument_evidence_ids"), gueltige, feld="argument")
+    # Der Marktvergleich ist Grundlage der Preisstrategie -> immer unter der
+    # Preisbegründung zeigen, auch wenn das LLM ihn nicht referenziert.
+    preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
 
     return {
         "bericht":                     result.get("bericht", ""),

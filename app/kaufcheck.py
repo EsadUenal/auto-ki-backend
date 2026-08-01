@@ -15,10 +15,12 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
+from app.database import get_alle_baureihen_kurz
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
-    valid_evidence_ids, enrich_marktvergleich_spanne,
+    valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
+from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
 from app.models import KaufCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -185,7 +187,10 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
         q_breit = f"{req.marke} {req.modell} Gebrauchtpreis Deutschland"
         web_results_task = asyncio.ensure_future(
             tavily_search_with_fallback(
-                [q_spezifisch, q_mittel, q_breit], count=5,
+                # count=8: Tavily "basic" liefert bis zu max_results Treffer für 1
+                # Credit — mehr Snippets = mehr extrahierbare Preis-Datenpunkte für
+                # den Marktvergleich (Kosten bleiben identisch).
+                [q_spezifisch, q_mittel, q_breit], count=8,
                 exclude_domains=US_QUELLEN_AUSSCHLUSS,
             )
         )
@@ -196,25 +201,34 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     # 2. DB-Kontext
     db_ctx = build_db_context(baureihe, motor_match)
 
-    web_results: list[dict] = await web_results_task if web_results_task else []
-    # Quellenqualität: Marktplätze (mobile.de/AutoScout24/AutoUncle) bevorzugt,
-    # Social Media/Duplikate raus, auf so viele Quellen wie nötig begrenzt.
-    web_results = curate_results(web_results, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
+    web_results_roh: list[dict] = await web_results_task if web_results_task else []
+    # Quellenqualität für LLM-Kontext/Belege: Marktplätze bevorzugt, Social Media/
+    # Duplikate raus, auf so viele Quellen wie nötig begrenzt.
+    web_results = curate_results(web_results_roh, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
+
+    # Marktvergleich 2.0: aus den Web-Snippets deterministisch einzelne Preis-
+    # Datenpunkte extrahieren (aus ALLEN Rohtreffern — mehr Vergleichsbasis),
+    # Vergleichbarkeit gegen das Inserat bewerten und daraus robuste Statistik
+    # (Median + Quartils-Spanne) berechnen — statt die Spanne vom LLM erfinden zu lassen.
+    ziel = baue_ziel(baureihe, motor_match, req, get_alle_baureihen_kurz() if baureihe else [])
+    marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
 
     # 4. Gemini-Analyse
     motor_status = (
         f"MOTOR-STATUS: erkannt ({motor_match['bezeichnung']})" if motor_match
         else "MOTOR-STATUS: nicht erkannt — Inserat nennt keine eindeutige Motorisierung"
     )
-    # Phase 1 Schicht B: Evidence deterministisch VOR dem LLM bauen (Marktpreis noch
-    # unbekannt -> None, wird nach dem LLM ergänzt) und dem LLM kompakt zum
+    # Phase 1 Schicht B: Evidence deterministisch VOR dem LLM bauen (Marktvergleich
+    # 2.0 ist jetzt bereits vor dem LLM berechnet) und dem LLM kompakt zum
     # Referenzieren mitgeben. Die IDs sind stabil, sodass die vom LLM referenzierten
     # IDs anschließend gegen genau diese Insights validiert werden können.
-    insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf")
+    insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
+                              marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
-    user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx, evidence_block]))
+    markt_block = markt_prompt_block(marktanalyse)
+    user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx, markt_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
     # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
     # (routers/kaufcheck.py), der einheitlich das Check-Kontingent zurückerstattet
@@ -259,9 +273,15 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
         result.get("preis_bewertung", "unbekannt"), result.get("preis_bewertung", "unbekannt")
     )
 
-    # Marktvergleich-Insight mit der erst jetzt bekannten Marktspanne anreichern
-    # (gleiche ID -> vom LLM referenzierte IDs bleiben gültig).
-    enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
+    # Marktpreis-Spanne: liegt eine belastbare deterministische Marktanalyse vor,
+    # ist SIE die Wahrheit (robuster Median/Quartilsbereich) — die LLM-Spanne wird
+    # dann durch die berechnete ersetzt. Ohne belastbare Analyse bleibt die LLM-
+    # Spanne und wird nur im Insight nachgetragen.
+    if marktanalyse and marktanalyse.median_eur:
+        result["marktpreis_min"] = marktanalyse.spanne_min_eur
+        result["marktpreis_max"] = marktanalyse.spanne_max_eur
+    else:
+        enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
 
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
@@ -269,6 +289,9 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     empfehlung_evidence_ids = filter_evidence_ids(result.get("empfehlung_evidence_ids"), gueltige, feld="empfehlung")
     preis_evidence_ids      = filter_evidence_ids(result.get("preis_evidence_ids"), gueltige, feld="preis")
     risiko_evidence_ids     = filter_evidence_ids(result.get("risiko_evidence_ids"), gueltige, feld="risiko")
+    # Der Marktvergleich ist die Grundlage der Preisbewertung -> immer unter
+    # "Warum diese Preisbewertung?" zeigen, auch wenn das LLM ihn nicht referenziert.
+    preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
 
     return {
         "bericht":          result.get("bericht", ""),

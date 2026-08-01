@@ -109,6 +109,52 @@ class EvidenceQuelle(BaseModel):
     qualitaet: str | None = None      # z.B. Web-Qualitätslabel ("Marktplatz", "Amtlich/Prüforganisation", ...)
 
 
+class Preisbeobachtung(BaseModel):
+    """Ein einzelner, aus einem Web-Treffer EXTRAHIERTER Preis-Datenpunkt
+    (Marktvergleich 2.0).
+
+    WICHTIG (Ehrlichkeit / keine Halluzination): Tavily liefert überwiegend
+    Such-/Übersichtsseiten, KEINE sauberen Einzelinserate je URL. Deshalb ist dies
+    bewusst KEIN vollständiges Fahrzeugobjekt mit eigener Inserats-URL, sondern eine
+    aus dem Snippet-Text herausgelöste Preis-Beobachtung. Es wird ausschließlich
+    gespeichert, was wirklich extrahierbar war (fehlende Felder bleiben None) — und
+    `quelle_url` ist die RECHERCHE-Seite, aus deren Text der Datenpunkt stammt, nicht
+    ein einzelnes Fahrzeuginserat.
+    """
+    preis_eur: int
+    kilometerstand: int | None = None
+    baujahr: int | None = None
+    quelle_domain: str | None = None
+    quelle_url: str | None = None
+    vergleichbarkeit: str             # "sehr_aehnlich" | "aehnlich" | "bedingt" | "ungeeignet"
+    gruende: list[str] = Field(default_factory=list)
+
+
+class Marktanalyse(BaseModel):
+    """Deterministisch berechneter Marktvergleich (Median + robuste Spanne) aus den
+    extrahierten Preis-Beobachtungen. Ersetzt die früher rein LLM-erfundene Spanne.
+
+    Confidence/Datenqualität wird NICHT allein aus der Anzahl abgeleitet, sondern
+    auch aus der Match-Qualität — und ist bewusst konservativ, weil die Datenpunkte
+    aus Snippet-Text heuristisch extrahiert sind (keine verifizierten Einzelinserate).
+    """
+    gefunden: int = 0                 # extrahierte Datenpunkte insgesamt
+    verwendet: int = 0                # tatsächlich für Median/Spanne verwendete
+    anzahl_sehr_aehnlich: int = 0
+    anzahl_aehnlich: int = 0
+    anzahl_bedingt: int = 0
+    median_eur: int | None = None
+    spanne_min_eur: int | None = None   # typischer Marktbereich (unteres Quartil, robust)
+    spanne_max_eur: int | None = None   # typischer Marktbereich (oberes Quartil, robust)
+    angebot_eur: int | None = None      # Angebots-/Wunschpreis des Nutzers
+    differenz_eur: int | None = None    # angebot - median (negativ = unter Markt)
+    differenz_pct: float | None = None
+    datenqualitaet: str = "niedrig"     # "niedrig" | "mittel" | "hoch"
+    methode: str | None = None          # kurze Dokumentation der Berechnungsmethode
+    quellen_domains: list[str] = Field(default_factory=list)
+    beobachtungen: list[Preisbeobachtung] = Field(default_factory=list)  # nur verwendete
+
+
 class Insight(BaseModel):
     """Eine nachvollziehbare Erkenntnis mit Herkunft (Provenance).
 
@@ -128,7 +174,16 @@ class Insight(BaseModel):
     # Bewusst ein EIGENES Feld, damit "wie schlimm" und "wie belastbar" strikt
     # getrennt bleiben. Fließt NICHT in confidence ein.
     schweregrad: str | None = None    # z.B. "gering" | "mittel" | "hoch" (nur Schwachstelle Baureihe)
+    # applicability = WIE SICHER die Erkenntnis GENAU DIESES Fahrzeug betrifft
+    # (nur Rückrufe). Strikt getrennt von confidence (Beleglage) und schweregrad
+    # (wie schlimm): "exakt" | "wahrscheinlich" | "unklar". Ein Baureihen-Rückruf,
+    # dessen Varianten-/Antriebs-Zuordnung nicht gesichert ist, ist "unklar" —
+    # NICHT automatisch "betrifft dein Fahrzeug".
+    applicability: str | None = None
     einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
+    # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch
+    # berechnete Marktvergleich (Median, robuste Spanne, verwendete Datenpunkte).
+    marktanalyse: Marktanalyse | None = None
 
 
 # ---------- Kauf-Check ----------
