@@ -146,6 +146,11 @@ class KaufCheckResponse(BaseModel):
     belege: list[Any] = Field(default_factory=list)
     # Phase 1: strukturierte, nachvollziehbare Erkenntnisse (additiv, backward-compatible).
     insights: list[Insight] = Field(default_factory=list)
+    # Phase 1 Schicht B: welche vorhandenen Insight-IDs (siehe `insights`) die jeweilige
+    # LLM-Entscheidung stützen. Backend-validiert — enthält nur existierende IDs.
+    empfehlung_evidence_ids: list[str] = Field(default_factory=list)
+    preis_evidence_ids: list[str] = Field(default_factory=list)
+    risiko_evidence_ids: list[str] = Field(default_factory=list)
 
 
 # ---------- Verkaufs-Check ----------
@@ -188,3 +193,8 @@ class VerkaufsCheckResponse(BaseModel):
     belege: list[Any] = Field(default_factory=list)
     # Phase 1: strukturierte, nachvollziehbare Erkenntnisse (additiv, backward-compatible).
     insights: list[Insight] = Field(default_factory=list)
+    # Phase 1 Schicht B: welche vorhandenen Insight-IDs (siehe `insights`) die jeweilige
+    # LLM-Entscheidung stützen. Backend-validiert — enthält nur existierende IDs.
+    preis_evidence_ids: list[str] = Field(default_factory=list)
+    strategie_evidence_ids: list[str] = Field(default_factory=list)
+    argument_evidence_ids: list[str] = Field(default_factory=list)

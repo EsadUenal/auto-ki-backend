@@ -14,9 +14,12 @@ Was hier NICHT passiert (bewusst, Schicht A):
 - Keine scheinpräzisen Prozentwerte — Confidence ist dreistufig.
 """
 
+import logging
 import re
 
 from app.models import EvidenceQuelle, Insight
+
+log = logging.getLogger(__name__)
 
 _JAHR = re.compile(r"\b(?:19|20)\d{2}\b")
 _BEREICH = re.compile(r"[-–]|bis")
@@ -207,3 +210,63 @@ def build_insights(
         ))
 
     return insights
+
+
+# ── Schicht B: Evidence dem LLM geben & referenzierte IDs validieren ─────────
+#
+# Das LLM darf seine Entscheidungen (Empfehlung/Preis/…) mit EXISTIERENDER Evidence
+# verknüpfen — aber NIE neue Evidence erfinden. Es bekommt eine kompakte Liste der
+# Schicht-A-Insight-IDs und darf ausschließlich diese referenzieren. Das Backend
+# bleibt Source of Truth: gelieferte IDs werden gegen die echten Insight-IDs
+# gefiltert (Halluzinationen verworfen). Confidence/Provenance ändert das LLM nicht.
+
+_EVIDENCE_TYP_LABEL = {
+    "schwachstelle": "Schwachstelle (DB, geprüft)",
+    "rueckruf":      "Rückruf (KBA)",
+    "motorproblem":  "Motorproblem (DB, geprüft)",
+    "marktvergleich": "Marktvergleich (Websuche)",
+}
+
+
+def format_evidence_for_prompt(insights: list[Insight]) -> str:
+    """Kompakter Evidence-Block für den LLM-Prompt: nur ID, Typ, Confidence, Titel
+    (kein aufgeblähter JSON-Blob). Leerer String, wenn keine Evidence existiert."""
+    if not insights:
+        return ""
+    lines = [
+        "=== VERFÜGBARE EVIDENCE (Schicht A, Backend-geprüft) ===",
+        "Referenziere in den *_evidence_ids-Feldern NUR IDs aus dieser Liste — sonst leere Liste.",
+    ]
+    for i in insights:
+        label = _EVIDENCE_TYP_LABEL.get(i.kategorie, i.kategorie)
+        lines.append(f"[{i.id}] {label} | Confidence: {i.confidence} | {i.titel}")
+    return "\n".join(lines)
+
+
+def valid_evidence_ids(insights: list[Insight]) -> set[str]:
+    return {i.id for i in insights}
+
+
+def filter_evidence_ids(ids, valid: set[str], *, feld: str = "") -> list[str]:
+    """Behält nur IDs, die zu EXISTIERENDER Evidence dieses Checks gehören
+    (Reihenfolge erhalten, dedupliziert). Ungültige/halluzinierte IDs werden
+    verworfen und geloggt. Keine Exception — die restliche Antwort bleibt valide.
+    """
+    out: list[str] = []
+    for x in ids or []:
+        if isinstance(x, str) and x in valid:
+            if x not in out:
+                out.append(x)
+        elif x:
+            log.info("Schicht B: ungültige Evidence-ID vom LLM verworfen (Feld %s): %r", feld or "?", x)
+    return out
+
+
+def enrich_marktvergleich_spanne(insights: list[Insight], marktpreis_min, marktpreis_max) -> None:
+    """Ergänzt die erst NACH dem LLM bekannte Marktspanne im Marktvergleich-Insight
+    (gleiche ID bleibt erhalten — vom LLM referenzierte IDs bleiben gültig)."""
+    if not (marktpreis_min or marktpreis_max):
+        return
+    for i in insights:
+        if i.kategorie == "marktvergleich" and "Marktspanne" not in i.beschreibung:
+            i.beschreibung = f"{i.beschreibung} Ermittelte Marktspanne: {marktpreis_min}–{marktpreis_max} €."

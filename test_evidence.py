@@ -159,6 +159,61 @@ altes_ergebnis = {
 }
 check("8: altes ergebnis-Dict ohne insights -> default []", KaufCheckResponse(**altes_ergebnis).insights == [])
 
+# ══ SCHICHT B: Evidence an LLM geben & referenzierte IDs validieren ══════════
+from app.evidence import (format_evidence_for_prompt, filter_evidence_ids,  # noqa: E402
+                          valid_evidence_ids, enrich_marktvergleich_spanne)
+
+insB = build_insights(BAUREIHE, MOTOR, BELEGE_STARK, req(2020), check_typ="kauf")
+ids_all = [i.id for i in insB]
+gueltig = valid_evidence_ids(insB)
+
+# Evidence-Block: kompakt, enthält alle IDs, kein aufgeblähter JSON-Blob
+block = format_evidence_for_prompt(insB)
+check("B: Evidence-Block enthält alle IDs", all(f"[{i.id}]" in block for i in insB))
+check("B: Evidence-Block nennt Confidence", "Confidence:" in block)
+check("B: Evidence-Block kompakt (kein quellen-JSON)", "quellen_typen" not in block and "EvidenceQuelle" not in block)
+check("B: leere Evidence -> leerer Block", format_evidence_for_prompt([]) == "")
+
+# 1/2/3: die jeweils passenden Evidence-Typen existieren und sind referenzierbar
+rk_id = next(i.id for i in insB if i.kategorie == "rueckruf")
+mv_id = next(i.id for i in insB if i.kategorie == "marktvergleich")
+mp_id = next(i.id for i in insB if i.kategorie == "motorproblem")
+check("1: gültige Rückruf-ID als Empfehlungs-Evidence referenzierbar", filter_evidence_ids([rk_id], gueltig) == [rk_id])
+check("2: gültige Marktvergleich-ID als Preis-Evidence referenzierbar", filter_evidence_ids([mv_id], gueltig) == [mv_id])
+check("3: gültige Motorproblem-ID als Risiko-Evidence referenzierbar", filter_evidence_ids([mp_id], gueltig) == [mp_id])
+
+# 4: Fake-ID wird backendseitig entfernt, gültige bleiben (Reihenfolge erhalten)
+mit_fake = filter_evidence_ids([ids_all[0], "ev_fake_123", ids_all[-1]], gueltig, feld="test")
+check("4: Fake-ID entfernt, gültige in Reihenfolge erhalten", mit_fake == [ids_all[0], ids_all[-1]])
+check("4: nur existierende IDs im Ergebnis", all(x in gueltig for x in mit_fake))
+check("4: Duplikate dedupliziert + non-str/None ignoriert",
+      filter_evidence_ids([ids_all[0], ids_all[0], 42, None, "ev_fake"], gueltig) == [ids_all[0]])
+
+# 5: keine passende / keine Evidence -> []
+check("5: ohne existierende Evidence -> []", filter_evidence_ids(["irgendwas"], set()) == [])
+check("5: LLM liefert nichts -> []", filter_evidence_ids(None, gueltig) == [])
+
+# 6: Confidence/Provenance wird durch Schicht B NICHT verändert
+conf_vorher = [i.confidence for i in insB]
+_ = filter_evidence_ids(ids_all + ["ev_fake"], gueltig)
+enrich_marktvergleich_spanne(insB, 23000, 27000)
+check("6: Confidence unverändert nach Validierung + Anreicherung",
+      [i.confidence for i in insB] == conf_vorher)
+check("6: Anreicherung ergänzt NUR Marktvergleich-Beschreibung (Spanne), keine Confidence",
+      any(i.kategorie == "marktvergleich" and "23000" in i.beschreibung for i in insB))
+
+# Response-Modelle: neue *_evidence_ids-Felder additiv + Default []
+kaufB = KaufCheckResponse(bericht="...", empfehlung="kaufen", preis_bewertung="guenstig",
+                          quelle="gemischt", vertrauen="mittel", insights=insB,
+                          empfehlung_evidence_ids=[ids_all[0]])
+check("B: KaufCheckResponse neue Felder (gesetzt + default [])",
+      kaufB.empfehlung_evidence_ids == [ids_all[0]] and kaufB.preis_evidence_ids == [] and kaufB.risiko_evidence_ids == [])
+verkB = VerkaufsCheckResponse(bericht="...", quelle="web", vertrauen="niedrig")
+check("B: VerkaufsCheckResponse neue Felder default []",
+      verkB.preis_evidence_ids == [] and verkB.strategie_evidence_ids == [] and verkB.argument_evidence_ids == [])
+check("9: altes ergebnis-Dict ohne evidence-Felder -> default []",
+      KaufCheckResponse(**altes_ergebnis).empfehlung_evidence_ids == [])
+
 print()
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER: " + ", ".join(FEHLER))

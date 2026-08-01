@@ -15,7 +15,10 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
-from app.evidence import build_insights
+from app.evidence import (
+    build_insights, format_evidence_for_prompt, filter_evidence_ids,
+    valid_evidence_ids, enrich_marktvergleich_spanne,
+)
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -45,8 +48,19 @@ AUSGABE: Ausschließlich gültiges JSON. WICHTIG: Zuerst die Zahlfelder, dann "b
   "verkaufsdauer_tage_maximal": <integer Tage, z.B. 90 für 3 Monate, PFLICHT wenn ableitbar>,
   "marktpreis_min": <integer EUR aus Web, null wenn kein Web>,
   "marktpreis_max": <integer EUR aus Web, null wenn kein Web>,
+  "preis_evidence_ids": [<IDs aus "VERFÜGBARE EVIDENCE", die die Preisempfehlung stützen; sonst []>],
+  "strategie_evidence_ids": [<IDs, die Verkaufsstrategie/Marktpositionierung stützen; sonst []>],
+  "argument_evidence_ids": [<IDs zu zentralen Verkaufsargumenten/Risiken; sonst []>],
   "bericht": "<vollständiger Markdown-Bericht — Struktur unten>"
 }
+
+— EVIDENCE-VERKNÜPFUNG (Provenance) —
+Im Nutzerteil steht ggf. ein Block "VERFÜGBARE EVIDENCE" mit IDs (bereits geprüfte Schicht-A-Fakten). Für die *_evidence_ids-Felder:
+- Referenziere NUR IDs aus diesem Block — und NUR solche, die die jeweilige Entscheidung TATSÄCHLICH stützen.
+- Erfinde KEINE IDs. Referenziere keine ID nur wegen thematischer Ähnlichkeit.
+- Passt keine Evidence → leere Liste []. Preisempfehlung/Strategie bleiben trotzdem gültig (dann reine KI-Ableitung).
+- Die Felder dienen NUR dem Referenzieren bestehender IDs: ändere nichts an der Evidence, erfinde keine Confidence.
+- Gibt es keinen Evidence-Block, sind alle *_evidence_ids [].
 
 — FEHLENDE ODER FEHLERHAFTE EINGABEN (prüfe das ZUERST) —
 - Fehlen Kernangaben (Marke, Modell, Baujahr ODER Kilometerstand): Antworte NUR mit einer kompakten Rückfrage (2–3 Sätze), was konkret noch gebraucht wird, alle Zahlfelder null. Keine volle Struktur.
@@ -235,7 +249,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
     # (routers/verkaufscheck.py), der einheitlich das Check-Kontingent
     # zurückerstattet und eine saubere Fehlermeldung zeigt.
-    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx]))
+    # Phase 1 Schicht B: Evidence deterministisch VOR dem LLM bauen (Marktpreis noch
+    # unbekannt -> None, wird nach dem LLM ergänzt) und dem LLM kompakt zum
+    # Referenzieren mitgeben (stabile IDs -> anschließend backend-validierbar).
+    insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf")
+    evidence_block = format_evidence_for_prompt(insights)
+    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx, evidence_block]))
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
@@ -255,14 +274,16 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     elif hat_web:            quelle, vertrauen = "web", "niedrig"
     else:                    quelle, vertrauen = "gemischt", "niedrig"
 
-    # Phase 1: nachvollziehbare Erkenntnisse (Provenance) aus den bereits
-    # abgefragten deterministischen Daten — additiv, ändert nichts am Bericht.
-    insights = build_insights(
-        baureihe, motor_match, belege, req,
-        check_typ="verkauf",
-        marktpreis_min=result.get("marktpreis_min"),
-        marktpreis_max=result.get("marktpreis_max"),
-    )
+    # Marktvergleich-Insight mit der erst jetzt bekannten Marktspanne anreichern
+    # (gleiche ID -> vom LLM referenzierte IDs bleiben gültig).
+    enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
+
+    # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
+    # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
+    gueltige = valid_evidence_ids(insights)
+    preis_evidence_ids     = filter_evidence_ids(result.get("preis_evidence_ids"), gueltige, feld="preis")
+    strategie_evidence_ids = filter_evidence_ids(result.get("strategie_evidence_ids"), gueltige, feld="strategie")
+    argument_evidence_ids  = filter_evidence_ids(result.get("argument_evidence_ids"), gueltige, feld="argument")
 
     return {
         "bericht":                     result.get("bericht", ""),
@@ -279,4 +300,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         "vertrauen":                   vertrauen,
         "belege":                      belege,
         "insights":                    insights,
+        "preis_evidence_ids":          preis_evidence_ids,
+        "strategie_evidence_ids":      strategie_evidence_ids,
+        "argument_evidence_ids":       argument_evidence_ids,
     }
