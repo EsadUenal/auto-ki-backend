@@ -61,6 +61,7 @@ Im Nutzerteil steht ggf. ein Block "VERFÜGBARE EVIDENCE" mit IDs (bereits gepr�
 - Passt keine Evidence → leere Liste []. Preisempfehlung/Strategie bleiben trotzdem gültig (dann reine KI-Ableitung).
 - Die Felder dienen NUR dem Referenzieren bestehender IDs: ändere nichts an der Evidence, erfinde keine Confidence.
 - Gibt es keinen Evidence-Block, sind alle *_evidence_ids [].
+- Evidence-IDs (z.B. "schwachstelle-1", "rueckruf-4", "marktvergleich-7") gehören AUSSCHLIESSLICH in die *_evidence_ids-Felder. Im Feld "bericht" dürfen NIEMALS interne Evidence-IDs, technische IDs oder Hinweise auf das interne Evidence-System erscheinen — KEIN "(Evidence-ID: ...)", KEIN "[schwachstelle-1]" o.ä. Der Bericht bleibt für den Nutzer vollständig natürlich lesbar.
 
 — FEHLENDE ODER FEHLERHAFTE EINGABEN (prüfe das ZUERST) —
 - Fehlen Kernangaben (Marke, Modell, Baujahr ODER Kilometerstand): Antworte NUR mit einer kompakten Rückfrage (2–3 Sätze), was konkret noch gebraucht wird, alle Zahlfelder null. Keine volle Struktur.
