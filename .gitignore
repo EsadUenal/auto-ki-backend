@@ -20,3 +20,5 @@ wiederherstellungspasswort.txt
 # IDE
 .vscode/
 .idea/
+
+.env.stripe
