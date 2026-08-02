@@ -247,8 +247,16 @@ class VerkaufsCheckRequest(BaseModel):
     kilometerstand: int | None = None
     motor: str | None = Field(default=None, max_length=200)
     kraftstoff: str | None = Field(default=None, max_length=100)
+    getriebe: str | None = Field(default=None, max_length=60)        # "Automatik" | "Schaltgetriebe" | ...
+    farbe: str | None = Field(default=None, max_length=60)
     ausstattung: list[str] = Field(default_factory=list, max_length=100)
     beschreibung: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)        # Zustand, Besonderheiten (Nichtraucher, Scheckheft, ...)
+    # Phase 4: der tatsächliche, vom Verkäufer eingegebene Inserats-Beschreibungstext
+    # (Freitext). Getrennt von `beschreibung` (Zustands-Label) und `freitext`
+    # (Alt-Feld, das die strukturierten Felder ERSETZT — siehe _format_fahrzeug).
+    # Wird für die Widerspruchsprüfung (Beschreibung vs. Strukturdaten) genutzt.
+    inserat_text: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
+    inserat_titel: str | None = Field(default=None, max_length=200)                 # vom Nutzer eingegebener Titel (optional)
     maengel: list[str] = Field(default_factory=list, max_length=100)  # bekannte Mängel / anstehende Reparaturen
     preis_vorstellung: int | None = None   # eigene Preisvorstellung des Verkäufers (optional)
 
@@ -260,6 +268,56 @@ class VerkaufsCheckRequest(BaseModel):
 
     freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)            # alternative Freitexteingabe
     bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
+
+
+# ---------- Phase 4: Inseratsanalyse & -optimierung (Seller-Tools) ----------
+
+class FehlendeAngabe(BaseModel):
+    """Eine im Inserat fehlende Angabe, nach Wichtigkeit kategorisiert.
+
+    `wichtigkeit` ist deterministisch vergeben (kein LLM): "kritisch" | "wichtig" |
+    "optional". `feld` ist der nutzerlesbare Name (z.B. "TÜV/HU").
+    """
+    feld: str
+    wichtigkeit: str                  # "kritisch" | "wichtig" | "optional"
+
+
+class ListingAnalyse(BaseModel):
+    """Deterministische Qualitätsanalyse des Inserats (Phase 4).
+
+    Erzeugt KEINE neue Wahrheit und KEINEN erfundenen KI-Score: Vollständigkeit ist
+    ein transparenter Zählwert (`vorhanden`/`gesamt`), das Label leitet sich fest
+    daraus ab. Alle Listen enthalten nur, was aus den Eingaben oder den geprüften
+    Strukturdaten belegbar ist. Additiv/backward-compatible — alte Checks besitzen
+    das Feld nicht (Default None).
+    """
+    qualitaet: str                    # "sehr_gut" | "gut" | "verbesserbar" | "unvollstaendig"
+    vorhanden: int                    # Anzahl vorhandener wichtiger Angaben
+    gesamt: int                       # Gesamtzahl geprüfter wichtiger Angaben
+    staerken: list[str] = Field(default_factory=list)          # Vertrauensfaktoren (belegt)
+    verkaufsargumente: list[str] = Field(default_factory=list) # aus Ausstattung/Daten (max ~6)
+    fehlende_angaben: list[FehlendeAngabe] = Field(default_factory=list)
+    probleme: list[str] = Field(default_factory=list)          # Widersprüche / schwache Angaben
+    verbesserungen: list[str] = Field(default_factory=list)    # konkrete Handlungsempfehlungen
+    preis_hinweis: str | None = None
+    titel_vorschlag: str | None = None                         # deterministisch aus Strukturdaten
+    # Nur EXISTIERENDE Insight-IDs (Marktvergleich) — leer, wenn keine passt.
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class InseratOptimierung(BaseModel):
+    """LLM-erzeugte, FAKTEN-GEPRÜFTE optimierte Inseratsversion (Phase 4).
+
+    Der LLM ist ausschließlich Textersteller. Vor der Rückgabe wird der Text gegen
+    die Eingangsdaten geprüft (`pruefe_fakten`): unbelegte Positiv-Behauptungen
+    (unfallfrei, Scheckheft, TÜV neu, Vorbesitzer, nicht genannte Ausstattung)
+    werden entfernt/neutralisiert, bekannte Mängel bleiben ehrlich enthalten.
+    """
+    titel: str
+    beschreibung: str
+    generiert_am: str | None = None   # ISO-Zeitstempel (für Anzeige/Persistenz)
+    # Transparenz: welche Aussagen der Fakten-Schutz entfernt/neutralisiert hat.
+    entfernte_behauptungen: list[str] = Field(default_factory=list)
 
 
 class VerkaufsCheckResponse(BaseModel):
@@ -286,3 +344,11 @@ class VerkaufsCheckResponse(BaseModel):
     # Phase 2: verdichtete Kern-Erkenntnisse ("Das solltest du wissen"), max. 5,
     # deterministisch. Additiv -> alte Checks laden weiter (Default []).
     key_findings: list[KeyFinding] = Field(default_factory=list)
+    # Phase 4: deterministische Inseratsanalyse (Qualität, fehlende Angaben,
+    # Verkaufsargumente). Additiv -> alte Checks ohne dieses Feld laden weiter.
+    listing_analyse: ListingAnalyse | None = None
+    # Phase 4: optimierte Inseratsversion — NICHT bei jedem Check erzeugt, sondern
+    # on-demand über einen separaten Endpoint. Beim erneuten Öffnen eines
+    # gespeicherten Checks liegt eine bereits erzeugte Version hier (persistiert)
+    # vor -> kein neuer LLM-Call.
+    inserat_optimierung: InseratOptimierung | None = None

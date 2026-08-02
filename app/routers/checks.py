@@ -7,12 +7,18 @@ Fremde IDs → 403.
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.database import get_conn
+from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
+from app.inserat import run_inserat_optimierung
+from app.models import InseratOptimierung, VerkaufsCheckRequest
 from app.routers.user_auth import get_current_user_id
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/checks", tags=["checks"])
 
@@ -140,3 +146,69 @@ def add_check_frage(check_id: int, body: SaveFrageBody, user_id: int = Depends(g
         )
         conn.commit()
     return {"ok": True}
+
+
+# ── Phase 4: Inserats-Optimierung pro Verkaufscheck ───────────────────────────
+#
+# On-demand (NICHT bei jedem Check automatisch — Kosten/Geschwindigkeit). Der
+# erzeugte Text wird in ergebnis.inserat_optimierung PERSISTIERT: beim erneuten
+# Öffnen desselben gespeicherten Checks liegt er vor -> KEIN neuer LLM-Call.
+# Verbraucht KEIN Check-Kontingent (Folge-Werkzeug eines bereits bezahlten Checks);
+# Auth + Ownership schützen vor Fremdzugriff, das globale Rate-Limit vor Missbrauch.
+
+@router.post("/{check_id}/inserat-optimierung", response_model=InseratOptimierung)
+async def optimiere_inserat(
+    check_id: int,
+    body: VerkaufsCheckRequest,
+    user_id: int = Depends(get_current_user_id),
+):
+    """Optimierte Inseratsversion (Titel + Beschreibung) für einen Verkaufscheck.
+
+    Idempotent: ist bereits eine Version am Check gespeichert, wird sie ohne neuen
+    LLM-Aufruf zurückgegeben. Der LLM erzeugt reinen Text; `run_inserat_optimierung`
+    prüft ihn danach gegen die Eingangsdaten (Fakten-Schutz), bevor er persistiert wird.
+    """
+    with get_conn() as conn:
+        row = _get_own_check(conn, check_id, user_id)   # Existenz + Ownership (403/404)
+        if row["typ"] != "verkauf":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"fehler": {"code": "kein_verkaufscheck",
+                                   "nachricht": "Inserats-Optimierung gibt es nur für Verkaufschecks."}},
+            )
+        try:
+            ergebnis = json.loads(row["ergebnis"])
+        except (json.JSONDecodeError, TypeError):
+            ergebnis = {}
+        bereits = ergebnis.get("inserat_optimierung")
+        if bereits:
+            # Schon vorhanden -> keine erneute Generierung (Kosten sparen).
+            return InseratOptimierung(**bereits)
+
+    try:
+        optimierung = await run_inserat_optimierung(body)
+    except GeminiFehlgeschlagen as exc:
+        log.warning("Inserat-Optimierung: Gemini-Ausfall (check_id=%s): %s", check_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT}},
+        ) from exc
+
+    # In ergebnis.inserat_optimierung persistieren (erneut laden + prüfen, falls sich
+    # der Check zwischenzeitlich geändert hat — Ownership erneut bestätigen).
+    with get_conn() as conn:
+        row = _get_own_check(conn, check_id, user_id)
+        try:
+            ergebnis = json.loads(row["ergebnis"])
+        except (json.JSONDecodeError, TypeError):
+            ergebnis = {}
+        # Falls ein paralleler Request bereits gespeichert hat, dessen Version behalten.
+        if ergebnis.get("inserat_optimierung"):
+            return InseratOptimierung(**ergebnis["inserat_optimierung"])
+        ergebnis["inserat_optimierung"] = optimierung.model_dump()
+        conn.execute(
+            "UPDATE checks SET ergebnis = ? WHERE id = ? AND user_id = ?",
+            (json.dumps(ergebnis), check_id, user_id),
+        )
+        conn.commit()
+    return optimierung

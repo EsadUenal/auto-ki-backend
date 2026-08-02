@@ -22,6 +22,7 @@ from app.evidence import (
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
 from app.key_findings import build_key_findings_verkauf
+from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
 from app.postprocess import postprocess_answer
 from app.web_search import (
@@ -309,6 +310,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # Angaben, wertsteigernde Ausstattung, Markt-Datenqualität) — kein weiteres LLM.
     key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights)
 
+    # Phase 4: deterministische Inseratsanalyse (Qualität, fehlende Angaben,
+    # Verkaufsargumente, Widersprüche, Titelvorschlag) — kein LLM. Die optimierte
+    # LLM-Inseratsversion wird NICHT hier erzeugt, sondern on-demand über einen
+    # separaten Endpoint (Kosten/Geschwindigkeit).
+    listing_analyse = build_listing_analyse(req, baureihe, motor_match, insights)
+
     return {
         "bericht":                     result.get("bericht", ""),
         "schnellverkaufs_preis":        result.get("schnellverkaufs_preis"),
@@ -328,4 +335,6 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         "strategie_evidence_ids":      strategie_evidence_ids,
         "argument_evidence_ids":       argument_evidence_ids,
         "key_findings":                key_findings,
+        "listing_analyse":             listing_analyse,
+        "inserat_optimierung":         None,   # on-demand, separater Endpoint
     }
