@@ -20,6 +20,7 @@ from slowapi.util import get_remote_address
 from app.config import JWT_EXPIRE_DAYS, JWT_SECRET
 from app.database import get_conn
 from app.einwilligung import require_agb, record as record_einwilligung, ART_AGB
+from app.entitlements import has_dealer_access
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 # Eigene Limiter-Instanz wie in chat.py/kaufcheck.py/verkaufscheck.py — dediziertes,
@@ -163,6 +164,7 @@ def register(body: RegisterBody, response: Response, request: Request):
         "id": user_id, "email": body.email, "abo_typ": "none",
         "checks_verbleibend": 1, "ersatzteil_suchen_verbleibend": 1,
         "ist_haendler": False,
+        "dealer_access": has_dealer_access("none", False),
     }
 
 
@@ -200,6 +202,7 @@ def login(body: LoginBody, response: Response, request: Request):
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": None,
         "ist_haendler": bool(row["ist_haendler"]),
+        "dealer_access": has_dealer_access(row["abo_typ"], row["ist_haendler"]),
     }
 
 
@@ -235,6 +238,7 @@ def me(auth_token: str | None = Cookie(default=None)):
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
         "ist_haendler": bool(row["ist_haendler"]),
+        "dealer_access": has_dealer_access(row["abo_typ"], row["ist_haendler"]),
     }
 
 

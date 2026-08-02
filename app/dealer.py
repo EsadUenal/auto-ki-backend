@@ -14,6 +14,7 @@ import logging
 from fastapi import Depends, HTTPException
 
 from app.database import get_conn
+from app.entitlements import has_dealer_access
 from app.models import (
     DealerFinance, DealerTriage, DealerVehicle, DealerViraKauf, DealerViraVerkauf,
 )
@@ -25,18 +26,21 @@ log = logging.getLogger(__name__)
 # ── Berechtigung ─────────────────────────────────────────────────────────────
 
 def require_dealer(user_id: int = Depends(get_current_user_id)) -> int:
-    """FastAPI-Dependency: nur freigeschaltete Händler-Accounts. 403 sonst.
+    """FastAPI-Dependency: nur Konten mit effektiver Dealer-Berechtigung. 403 sonst.
 
+    Effektive Regel (eine Quelle: entitlements.has_dealer_access): abo_typ == "max"
+    ODER manueller ist_haendler-Override. Wird bei JEDER Anfrage aus dem aktuellen
+    Account abgeleitet — nach einer MAX-Kündigung entfällt der Zugriff automatisch.
     Backend-seitige Prüfung — Frontend-Verstecken allein reicht nicht (§15/§28)."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT ist_haendler FROM users WHERE id=? AND deleted_at IS NULL", (user_id,)
+            "SELECT abo_typ, ist_haendler FROM users WHERE id=? AND deleted_at IS NULL", (user_id,)
         ).fetchone()
-    if not row or not row["ist_haendler"]:
+    if not row or not has_dealer_access(row["abo_typ"], row["ist_haendler"]):
         raise HTTPException(
             status_code=403,
             detail={"fehler": {"code": "dealer_required",
-                               "nachricht": "Dieser Bereich ist nur für VIRA-Dealer-Konten verfügbar."}},
+                               "nachricht": "Dieser Bereich ist nur für VIRA-Dealer-Konten (MAX-Tarif) verfügbar."}},
         )
     return user_id
 
