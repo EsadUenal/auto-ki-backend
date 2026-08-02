@@ -14,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL, DB_BACKUP_INTERVAL_SECONDS
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
-from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage
+from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage, dealer
 from app.llm import warmup_chroma
 from app.utf8 import UTF8JSONResponse
 
@@ -280,6 +280,7 @@ app.include_router(posters.router,       prefix="/api/v1")
 app.include_router(ebooks.router,        prefix="/api/v1")
 app.include_router(ersatzteile.router,   prefix="/api/v1")
 app.include_router(analyse_frage.router, prefix="/api/v1")
+app.include_router(dealer.router,        prefix="/api/v1")
 
 
 @app.get("/health")

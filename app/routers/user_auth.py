@@ -162,6 +162,7 @@ def register(body: RegisterBody, response: Response, request: Request):
     return {
         "id": user_id, "email": body.email, "abo_typ": "none",
         "checks_verbleibend": 1, "ersatzteil_suchen_verbleibend": 1,
+        "ist_haendler": False,
     }
 
 
@@ -172,7 +173,7 @@ def login(body: LoginBody, response: Response, request: Request):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, email, password_hash, abo_typ, checks_verbleibend, "
-            "ersatzteil_suchen_verbleibend, deleted_at "
+            "ersatzteil_suchen_verbleibend, deleted_at, ist_haendler "
             "FROM users WHERE email = ?",
             (body.email.strip().lower(),),
         ).fetchone()
@@ -198,6 +199,7 @@ def login(body: LoginBody, response: Response, request: Request):
         "checks_verbleibend": row["checks_verbleibend"],
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": None,
+        "ist_haendler": bool(row["ist_haendler"]),
     }
 
 
@@ -215,7 +217,7 @@ def me(auth_token: str | None = Cookie(default=None)):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, email, abo_typ, checks_verbleibend, ersatzteil_suchen_verbleibend, "
-            "deleted_at, abo_kuendigt_zum "
+            "deleted_at, abo_kuendigt_zum, ist_haendler "
             "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
@@ -232,6 +234,7 @@ def me(auth_token: str | None = Cookie(default=None)):
         "checks_verbleibend": row["checks_verbleibend"],
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
+        "ist_haendler": bool(row["ist_haendler"]),
     }
 
 

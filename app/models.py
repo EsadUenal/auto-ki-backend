@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any
 
 # ---------- Input-Limits (Sicherheitsnetz gegen DOS/Kostenmissbrauch) ----------
@@ -352,3 +352,151 @@ class VerkaufsCheckResponse(BaseModel):
     # gespeicherten Checks liegt eine bereits erzeugte Version hier (persistiert)
     # vor -> kein neuer LLM-Call.
     inserat_optimierung: InseratOptimierung | None = None
+
+
+# ---------- Phase 5: VIRA Dealer (Händler-Bestand) ----------
+
+DEALER_STATUS = ("beobachtung", "einkauf_geplant", "im_bestand", "verkauft")
+
+
+class DealerVehicleCreate(BaseModel):
+    """Manuelles Anlegen eines Händler-Fahrzeugs (ohne vorherigen Check).
+
+    Alle Preise/Kilometer werden auf >= 0 validiert. Fahrzeug-Kerndaten optional —
+    ein Händler darf auch mit minimalen Angaben eine Akte anlegen und später ergänzen.
+    """
+    marke: str | None = Field(default=None, max_length=100)
+    modell: str | None = Field(default=None, max_length=100)
+    baureihe: str | None = Field(default=None, max_length=100)
+    motor: str | None = Field(default=None, max_length=200)
+    baujahr: int | None = Field(default=None, ge=1900, le=2100)
+    kilometerstand: int | None = Field(default=None, ge=0)
+    status: str = Field(default="beobachtung")
+    einkaufspreis: int | None = Field(default=None, ge=0)
+    nebenkosten: int | None = Field(default=None, ge=0)
+    geplanter_verkaufspreis: int | None = Field(default=None, ge=0)
+    interne_notiz: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v: str) -> str:
+        if v not in DEALER_STATUS:
+            raise ValueError(f"status muss einer von {DEALER_STATUS} sein")
+        return v
+
+
+class DealerVehicleUpdate(BaseModel):
+    """Teilweises Update eines Händler-Fahrzeugs (PATCH). Alle Felder optional —
+    nur gesetzte Felder werden geändert. `tatsaechlicher_verkaufspreis` typischerweise
+    beim Wechsel auf status='verkauft'."""
+    marke: str | None = Field(default=None, max_length=100)
+    modell: str | None = Field(default=None, max_length=100)
+    baureihe: str | None = Field(default=None, max_length=100)
+    motor: str | None = Field(default=None, max_length=200)
+    baujahr: int | None = Field(default=None, ge=1900, le=2100)
+    kilometerstand: int | None = Field(default=None, ge=0)
+    status: str | None = None
+    einkaufspreis: int | None = Field(default=None, ge=0)
+    nebenkosten: int | None = Field(default=None, ge=0)
+    geplanter_verkaufspreis: int | None = Field(default=None, ge=0)
+    tatsaechlicher_verkaufspreis: int | None = Field(default=None, ge=0)
+    interne_notiz: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
+    verkaufscheck_id: int | None = None   # bestehenden Verkaufscheck verknüpfen
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v: str | None) -> str | None:
+        if v is not None and v not in DEALER_STATUS:
+            raise ValueError(f"status muss einer von {DEALER_STATUS} sein")
+        return v
+
+
+class DealerFinance(BaseModel):
+    """Deterministischer Margenrechner. KEINE Steuer-/Gewinn-/Gewährleistungs-/
+    Finanzierungsannahmen — nur die vom Nutzer eingegebenen Zahlen.
+
+    Marge-Prozent bezieht sich auf den VERKAUFSPREIS (Marge / Verkaufspreis).
+    Fehlende Grundwerte -> None (Frontend zeigt "–", niemals eine erfundene 0-€-Marge).
+    """
+    einkaufspreis: int | None = None
+    nebenkosten: int | None = None
+    gesamteinsatz: int | None = None
+    geplanter_verkaufspreis: int | None = None
+    moegliche_bruttomarge: int | None = None
+    moegliche_marge_pct: float | None = None
+    tatsaechlicher_verkaufspreis: int | None = None
+    realisierte_bruttomarge: int | None = None
+    realisierte_marge_pct: float | None = None
+    hinweis: str = ("Bruttomarge vor Steuern, Gewährleistung, Finanzierung und sonstigen "
+                    "Betriebskosten. Marge-% bezogen auf den Verkaufspreis.")
+
+
+class DealerViraKauf(BaseModel):
+    """Aus dem verknüpften KAUFCHECK übernommene VIRA-Signale (nichts neu berechnet)."""
+    vorhanden: bool = False
+    kaufcheck_id: int | None = None
+    empfehlung: str | None = None
+    preis_bewertung: str | None = None
+    markt_median: int | None = None
+    markt_min: int | None = None
+    markt_max: int | None = None
+    risiko_hinweise: list[str] = Field(default_factory=list)   # aus Key Findings (kritisch/warnung)
+    key_findings_count: int = 0
+
+
+class DealerViraVerkauf(BaseModel):
+    """Aus dem verknüpften VERKAUFSCHECK übernommene Signale (nichts neu berechnet)."""
+    vorhanden: bool = False
+    verkaufscheck_id: int | None = None
+    empfohlener_preis: int | None = None
+    markt_median: int | None = None
+    inserat_qualitaet: str | None = None
+    hat_optimierung: bool = False
+
+
+class DealerTriage(BaseModel):
+    """Schnelle Vergleichs-Signale (KEIN Fake-Score). Werte stammen ausschließlich
+    aus dem verknüpften Kaufcheck bzw. der deterministischen Marge."""
+    empfehlung: str = "unklar"   # kaufen | nach_pruefung | vorsicht | nicht_empfohlen | unklar
+    preis: str = "unklar"        # guenstig | marktgerecht | teuer | unklar
+    risiko: str = "unklar"       # gering | mittel | erhoeht | pruefen | unklar
+    marge_eur: int | None = None
+
+
+class DealerVehicle(BaseModel):
+    """Vollständige Händler-Fahrzeugakte inkl. deterministisch berechneter Finanzen
+    und aus verknüpften Checks übernommener VIRA-Signale."""
+    id: int
+    marke: str | None = None
+    modell: str | None = None
+    baureihe: str | None = None
+    motor: str | None = None
+    baujahr: int | None = None
+    kilometerstand: int | None = None
+    status: str
+    interne_notiz: str | None = None
+    kaufcheck_id: int | None = None
+    verkaufscheck_id: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    sold_at: str | None = None
+    finanzen: DealerFinance
+    vira: DealerViraKauf
+    verkauf: DealerViraVerkauf
+    triage: DealerTriage
+    braucht_aufmerksamkeit: bool = False
+    aufmerksamkeit_gruende: list[str] = Field(default_factory=list)
+
+
+class DealerSummary(BaseModel):
+    """Dashboard-Kennzahlen. Kapital/Margen nur, wenn Daten vorhanden sind
+    (sonst None -> Frontend zeigt "–"). Keine Fake-KPIs."""
+    fahrzeuge_gesamt: int = 0
+    beobachtung: int = 0
+    einkauf_geplant: int = 0
+    im_bestand: int = 0
+    verkauft: int = 0
+    gebundenes_kapital: int | None = None
+    geplante_bruttomarge: int | None = None
+    realisierte_bruttomarge: int | None = None
+    braucht_aufmerksamkeit: int = 0

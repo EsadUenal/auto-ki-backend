@@ -74,6 +74,39 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Phase 5: VIRA Dealer — Fahrzeugakte pro Händler (Bestand/Beobachtung).
+-- Ownership über user_id (CASCADE: Konto weg -> Fahrzeuge weg). Verknüpfte Checks
+-- sind bewusst SET NULL: ein gelöschter Kauf-/Verkaufscheck darf den Händlerbestand
+-- NICHT mitlöschen (die Fahrzeugakte bleibt, nur die Analyse-Verknüpfung entfällt).
+CREATE TABLE IF NOT EXISTS dealer_vehicle (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kaufcheck_id                INTEGER REFERENCES checks(id) ON DELETE SET NULL,
+    verkaufscheck_id            INTEGER REFERENCES checks(id) ON DELETE SET NULL,
+    marke                       TEXT,
+    modell                      TEXT,
+    baureihe                    TEXT,
+    motor                       TEXT,
+    baujahr                     INTEGER,
+    kilometerstand              INTEGER,
+    status                      TEXT NOT NULL DEFAULT 'beobachtung'
+                                     CHECK(status IN ('beobachtung','einkauf_geplant','im_bestand','verkauft')),
+    einkaufspreis               INTEGER,
+    nebenkosten                 INTEGER,
+    geplanter_verkaufspreis     INTEGER,
+    tatsaechlicher_verkaufspreis INTEGER,
+    interne_notiz               TEXT,
+    created_at                  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sold_at                     DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_dealer_vehicle_user ON dealer_vehicle(user_id);
+-- Ein Kaufcheck darf pro Händler höchstens EIN Fahrzeug erzeugen (kein Duplikat bei
+-- mehrfachem "Zum Händlerbereich hinzufügen"). Partieller Index: NULL-kaufcheck_id
+-- (manuell angelegte Fahrzeuge) sind davon ausgenommen -> beliebig viele erlaubt.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dealer_vehicle_user_kaufcheck
+    ON dealer_vehicle(user_id, kaufcheck_id) WHERE kaufcheck_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name        TEXT PRIMARY KEY,
     applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -248,6 +281,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN deleted_at DATETIME")
     if "abo_kuendigt_zum" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN abo_kuendigt_zum TEXT")
+    if "ist_haendler" not in existing:
+        # Phase 5: Dealer-Berechtigung (orthogonal zum abo_typ/Check-Kontingent).
+        # DEFAULT 0 -> alle Bestandsnutzer bleiben normale Kunden; Freischaltung
+        # erfolgt gezielt (z.B. Admin/Stripe-Händlertarif später).
+        conn.execute("ALTER TABLE users ADD COLUMN ist_haendler INTEGER NOT NULL DEFAULT 0")
     if "ersatzteil_suchen_verbleibend" not in existing:
         # DEFAULT 1 gilt auch für bestehende Zeilen → 1 Gratis-Suche für alle Bestandsnutzer.
         # Bestehende Abo-Kunden (light/pro) werden unten per Backfill auf ihr echtes Kontingent gehoben,
