@@ -124,6 +124,47 @@ def _modell_tokens(name: str) -> set[str]:
     return out
 
 
+def _num_modell_tokens(name: str) -> set[str]:
+    """3-stellige Modell-Zahlen aus einer Bezeichnung ('320d'->'320', '530i'->'530',
+    'c200'->'200', '911'->'911').
+
+    Markenzahlen sind marken-INTERN unterscheidungskräftig (BMW 320 vs 520), aber
+    marken-ÜBERGREIFEND mehrdeutig. Deshalb werden sie NUR marken-skopiert als
+    Fremdsignal genutzt (siehe baue_ziel/marke_tokens) — nie markenübergreifend."""
+    return set(re.findall(r"\d{3}", (name or "").lower()))
+
+
+def _marke_tokens(marke: str) -> set[str]:
+    """Marken-Wörter (>=2 Zeichen, lowercase) für den marken-skopierten Zahlenabgleich.
+    'Mercedes-Benz' -> {'mercedes','benz'}, 'BMW' -> {'bmw'}."""
+    return {t for t in re.split(r"[^a-z0-9]+", (marke or "").lower()) if len(t) >= 2}
+
+
+def _ist_fremdmodell(worte: set[str], ziel: dict) -> str | None:
+    """Zentrale, strukturierte Fremdmodell-Erkennung (alpha + marken-skopierte Zahl).
+
+    Rückgabe: das erkannte Fremd-Token (Grund) oder None. Ein Text ist NUR dann fremd,
+    wenn er ein Fremdmodell nennt und KEIN Zielmodell-Signal trägt. Für Zahlen zusätzlich
+    marken-skopiert: die Zielmarke muss im Text stehen (kein markenübergreifender
+    Zahlen-Fehlschluss wie Peugeot 508 vs BMW).
+    """
+    ziel_model = ziel.get("modell_tokens") or set()
+    if worte & ziel_model:
+        return None  # klares Zielsignal -> nie verwerfen
+    # (a) Alpha-Fremdmodell (mokka, 5er, glc, passat, 520d …)
+    alpha = worte & (ziel.get("fremd_modelle") or set())
+    if alpha:
+        return sorted(alpha)[0]
+    # (b) Marken-skopierte Fremd-Zahl (BMW 520 im 320er-Check) — nur wenn die
+    #     Zielmarke im Text steht und keine Zielzahl vorkommt.
+    marke_tokens = ziel.get("marke_tokens") or set()
+    ziel_num = ziel.get("ziel_num") or set()
+    fremd_num = ziel.get("fremd_num") or set()
+    if (marke_tokens & worte) and (fremd_num & worte) and not (ziel_num & worte):
+        return sorted(fremd_num & worte)[0]
+    return None
+
+
 def _kraftstoff_im_text(text: str) -> str | None:
     t = text.lower()
     for norm, keys in _KRAFTSTOFF_WORTE.items():
@@ -212,15 +253,12 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
 
     # ── HARTE MODELLTREUE (zuerst) — Root-Cause #5 ────────────────────────────
     # Nennt das lokale Preis-Umfeld ein FREMDES Modell (anderes Modell irgendeiner
-    # Marke, inkl. Motor-Verkaufsbezeichnung wie '520d' statt '320d') und NICHT das
-    # Zielmodell, wird der Datenpunkt hart verworfen — kein Mokka im Insignia-Median.
-    worte = _wort_tokens(fenster)
-    ziel_model = ziel.get("modell_tokens") or set()
-    fremd_model = ziel.get("fremd_modelle") or set()
-    fremd_treffer = worte & fremd_model
-    if fremd_treffer and not (worte & ziel_model):
+    # Marke, inkl. Motor-Verkaufsbezeichnung '520d' UND marken-skopierter Zahl '520')
+    # und NICHT das Zielmodell, wird der Datenpunkt hart verworfen.
+    fremd_grund = _ist_fremdmodell(_wort_tokens(fenster), ziel)
+    if fremd_grund:
         b.vergleichbarkeit = "ungeeignet"
-        b.gruende = [f"anderes Modell im Preisumfeld ({sorted(fremd_treffer)[0]})"]
+        b.gruende = [f"anderes Modell im Preisumfeld ({fremd_grund})"]
         return b
 
     codes = _generation_tokens(fenster)
@@ -340,13 +378,10 @@ def modell_relevant(r: dict, ziel: dict) -> bool:
     läuft ohnehin datenpunktgenau in _bewerte — dies verbessert nur die Quellenanzeige.
     """
     worte = _wort_tokens(f"{r.get('title', '')} {r.get('content', '')}")
-    ziel_model = ziel.get("modell_tokens") or set()
-    fremd = ziel.get("fremd_modelle") or set()
-    if ziel_model and (worte & ziel_model):
+    if worte & (ziel.get("modell_tokens") or set()):
         return True
-    if fremd and (worte & fremd):
-        return False
-    return True
+    # Fremdmodell (alpha ODER marken-skopierte Zahl) klar erkannt -> raus.
+    return _ist_fremdmodell(worte, ziel) is None
 
 
 def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
@@ -384,20 +419,35 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
     ziel_id = baureihe.get("id") if baureihe else None
     modell_tokens: set[str] = set()
     fremd_modelle: set[str] = set()
+    marke_tokens: set[str] = set()
+    ziel_num: set[str] = set()
+    fremd_num: set[str] = set()
     if baureihe:
+        bm = (baureihe.get("marke") or "").lower()
+        marke_tokens = _marke_tokens(baureihe.get("marke", ""))
+        id_marke = {r.get("id"): (r.get("marke") or "").lower() for r in (alle_baureihen or [])}
+
         modell_tokens |= _modell_tokens(baureihe.get("modell", ""))
+        ziel_num |= _num_modell_tokens(baureihe.get("modell", ""))
         for m in alle_motorvarianten or []:
             if m.get("baureihe_id") == ziel_id:
                 modell_tokens |= _modell_tokens(m.get("bezeichnung", ""))
+                ziel_num |= _num_modell_tokens(m.get("bezeichnung", ""))
         for r in alle_baureihen or []:
             if r.get("id") != ziel_id:
                 fremd_modelle |= _modell_tokens(r.get("modell", ""))
+                # Fremd-Zahlen NUR aus Baureihen DERSELBEN Marke (markeninterner Zahlenraum).
+                if (r.get("marke") or "").lower() == bm:
+                    fremd_num |= _num_modell_tokens(r.get("modell", ""))
         for m in alle_motorvarianten or []:
             if m.get("baureihe_id") != ziel_id:
                 fremd_modelle |= _modell_tokens(m.get("bezeichnung", ""))
-        # Alles, was auch zum Ziel gehört, ist KEIN Fremdsignal (z.B. gemeinsame
-        # Trim-/Klassenwörter). Verhindert Fehl-Verwerfungen echter Zieltreffer.
+                if id_marke.get(m.get("baureihe_id")) == bm:
+                    fremd_num |= _num_modell_tokens(m.get("bezeichnung", ""))
+        # Alles, was auch zum Ziel gehört, ist KEIN Fremdsignal (gemeinsame Trim-/
+        # Klassenwörter, geteilte Zahlen wie Mercedes C200/GLC200 -> beide '200').
         fremd_modelle -= modell_tokens
+        fremd_num -= ziel_num
 
     kraftstoff = (motor_match or {}).get("kraftstoff") or getattr(req, "kraftstoff", None)
     return {
@@ -405,6 +455,9 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
         "fremd_generationen": fremd,
         "modell_tokens": modell_tokens,
         "fremd_modelle": fremd_modelle,
+        "marke_tokens": marke_tokens,
+        "ziel_num": ziel_num,
+        "fremd_num": fremd_num,
         "baujahr": getattr(req, "baujahr", None),
         "kilometerstand": getattr(req, "kilometerstand", None),
         "kraftstoff": kraftstoff,
@@ -467,6 +520,16 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     if len(kandidaten) < 3:
         kandidaten = kandidaten + bedingt
         fallback = True
+
+    # Rausch-Reduktion (TIGHTENING der Relevanz, KEIN Loosening): Datenpunkte OHNE
+    # jedes Attribut (weder Baujahr NOCH km extrahierbar) stammen oft aus Übersichts-
+    # zeilen ohne echten Fahrzeugbezug und verbreitern die Preisspanne künstlich —
+    # was den Streuungs-Guard fälschlich auslöst und ein populäres Fahrzeug auf
+    # "niedrig" drückt. Tragen genügend Datenpunkte ein Attribut, werden die
+    # attribut-losen verworfen (nur wenn danach noch eine belastbare Basis bleibt).
+    mit_attr = [b for b in kandidaten if b.baujahr is not None or b.kilometerstand is not None]
+    if len(mit_attr) >= 5:
+        kandidaten = mit_attr
 
     # Ausreißer-Preise entfernen (Tukey) — bevor gezählt/gemittelt/angezeigt wird.
     verwendet, _entfernt = _trim_ausreisser(kandidaten)

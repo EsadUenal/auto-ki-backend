@@ -160,6 +160,31 @@ check("6c: 'BMW 320d G20' Seite IST relevant",
 check("6d: neutrale Seite ohne klares Fremdsignal bleibt erhalten",
       modell_relevant({"title": "Gebrauchtwagen Preise Deutschland", "content": ""}, ZIEL_3B) is True)
 
+# ══ 7) NUMERISCHE Modellnamen (marken-skopiert): 'BMW 520' != 'BMW 320d' ══════
+check("7: ziel_num enthält '320', fremd_num enthält '520'",
+      "320" in ZIEL_3["ziel_num"] and "520" in ZIEL_3["fremd_num"])
+check("7b: '520' ist NICHT in ziel_num (nicht fälschlich Ziel)", "520" not in ZIEL_3["ziel_num"])
+# Rechercheseite mit bloßer Zahl '520' (ohne 'd') wird als fremd erkannt
+check("7c: 'BMW 520 aus 2018' Seite NICHT relevant (marken-skopierte Zahl)",
+      modell_relevant({"title": "BMW 520 aus 2018 gebraucht kaufen AutoScout24", "content": ""}, ZIEL_3) is False)
+check("7d: 'BMW 320 Limousine' (bloße Zielzahl) BLEIBT relevant",
+      modell_relevant({"title": "BMW 320 Limousine gebraucht", "content": ""}, ZIEL_3) is True)
+# Preis-Datenpunkt aus einem '520'-Umfeld wird im Vergleich hart verworfen
+WEB_520 = [
+    {"url": "https://a.de/3er", "title": "BMW 320d G20",
+     "content": ("BMW 320d G20 29.000 € 65.000 km EZ 04/2020 . "
+                 "BMW 320d 27.500 € 72.000 km EZ 06/2020 . "
+                 "BMW 320d G20 28.200 € 68.000 km EZ 05/2020")},
+    {"url": "https://b.de/520", "title": "BMW 520 Limousine",
+     "content": "BMW 520 34.900 € 60.000 km EZ 03/2020 . BMW 520 33.500 € 66.000 km EZ 05/2020"},
+]
+ma_520 = analysiere_markt(WEB_520, ZIEL_3, 28000)
+check("7e: bloße '520'-Preise (34.900/33.500) NICHT im 320d-Median",
+      34900 not in preise(ma_520) and 33500 not in preise(ma_520))
+# Marken-übergreifende Zahl darf NICHT fälschlich verwerfen (kein Peugeot-508-Fehlschluss)
+check("7f: fremd_num ist marken-skopiert (nur BMW-intern, kein markenfremder Zahl-Fehlschluss)",
+      modell_relevant({"title": "Peugeot 508 gebraucht", "content": "Peugeot 508 20.000 €"}, ZIEL_3) is True)
+
 print()
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER: " + ", ".join(FEHLER))
