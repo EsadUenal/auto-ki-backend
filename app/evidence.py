@@ -307,11 +307,46 @@ def build_insights(
     return insights
 
 
+def _verwendete_quellen(web_quellen, marktanalyse):
+    """Nur die Quellen, die TATSÄCHLICH einen verwendeten Vergleichs-Datenpunkt
+    beigetragen haben (Root-Cause #5b): eine URL erscheint im 'Warum?' nur, wenn aus
+    ihrem Snippet ein verwendeter Preis stammt. Verhindert, dass eine kuratierte,
+    aber fachfremde/Modell-fremde Seite als Marktquelle auftaucht.
+
+    Fallback: liegen keine verwendeten Beobachtungen mit URL vor, bleiben die
+    Web-Quellen als reine RECHERCHE-Quellen erhalten (kein Vergleichsfahrzeug-Anspruch).
+    """
+    beob = getattr(marktanalyse, "beobachtungen", None) or []
+    used_urls: list[str] = []
+    for b in beob:
+        u = getattr(b, "quelle_url", None)
+        if u and u not in used_urls:
+            used_urls.append(u)
+    if not used_urls:
+        return web_quellen
+    per_url = {q.url: q for q in web_quellen if getattr(q, "url", None)}
+    out = []
+    for u in used_urls:
+        out.append(per_url.get(u) or EvidenceQuelle(typ="web", url=u, titel=_domain_titel(u)))
+    return out
+
+
+def _domain_titel(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        net = urlparse(url).netloc.lower()
+        return net[4:] if net.startswith("www.") else net
+    except Exception:
+        return url
+
+
 def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, marktpreis_max, check_typ):
     """Baut den Marktvergleich-Insight. Bevorzugt die deterministische Marktanalyse
     (Median + robuste Spanne + verwendete Datenpunkte); ohne belastbare Analyse
     bleibt ein transparenter Hinweis auf die begrenzte Web-Datenbasis."""
     einfluss = "Grundlage der Preisstrategie." if check_typ == "verkauf" else "Grundlage der Preisbewertung."
+    # Nur die Quellen der tatsächlich verwendeten Vergleiche (siehe _verwendete_quellen).
+    web_quellen = _verwendete_quellen(web_quellen, marktanalyse)
 
     if marktanalyse and marktanalyse.median_eur:
         m = marktanalyse

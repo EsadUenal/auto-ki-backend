@@ -30,11 +30,44 @@ router = APIRouter(
 )
 
 _SHOP_DOMAINS = [
-    "autodoc.de",
-    "kfzteile24.de",
-    "ebay.de",
+    "autodoc.de", "kfzteile24.de", "ebay.de", "kfzteile.com",
+    "motointegrator.de", "teiledirekt.de", "daparto.de", "autoteile-markt.de",
 ]
-_SITE_FILTER = "(site:autodoc.de OR site:kfzteile24.de OR site:ebay.de)"
+
+# Allgemeine Positions-/Teil-Synonyme & Übersetzungen — KEIN fahrzeugspezifisches
+# Hardcoding. Erweitert eine Bauteil-Bezeichnung um gängige Schreibweisen, damit die
+# Suche nicht an einer einzelnen Formulierung scheitert (Root-Cause #1/#8).
+_SYNONYME: dict[str, tuple[str, ...]] = {
+    "vorne": ("vorderachse", "front", "vorn"),
+    "vorderachse": ("vorne", "front"),
+    "hinten": ("hinterachse", "rear", "hinterer"),
+    "hinterachse": ("hinten", "rear"),
+    "bremsscheiben": ("bremsscheibe", "brake discs", "brake rotors", "bremsscheiben satz"),
+    "bremsscheibe": ("bremsscheiben", "brake disc"),
+    "bremsbeläge": ("bremsbelag", "bremsklötze", "brake pads"),
+    "bremsbelaege": ("bremsbeläge", "brake pads"),
+    "stoßdämpfer": ("stossdaempfer", "shock absorber", "dämpfer"),
+    "querlenker": ("control arm", "lenker"),
+    "zündkerzen": ("zuendkerzen", "spark plugs"),
+    "luftfilter": ("air filter",),
+    "ölfilter": ("oelfilter", "oil filter"),
+    "kupplung": ("clutch", "kupplungssatz"),
+    "radlager": ("wheel bearing", "radnabe"),
+    "keilrippenriemen": ("keilriemen", "serpentine belt"),
+    "zahnriemen": ("timing belt", "zahnriemensatz"),
+}
+
+# Grobe Teile-Kategorie (für den ehrlichen Mindestnutzen-Fallback, §9) — allgemein.
+_KATEGORIEN: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Bremsen", ("brems", "bremse", "sattel", "brake")),
+    ("Fahrwerk", ("stoßdämpf", "stossdämpf", "querlenker", "feder", "domlager", "koppelstange")),
+    ("Motor", ("zündkerze", "zahnriemen", "keilriemen", "steuerkette", "zylinder", "kolben", "turbolader")),
+    ("Filter & Service", ("filter", "öl", "oel")),
+    ("Kupplung/Getriebe", ("kupplung", "getriebe", "schwungrad")),
+    ("Elektrik", ("batterie", "lichtmaschine", "anlasser", "sensor", "zündspule")),
+    ("Abgas", ("auspuff", "katalysator", "partikelfilter", "lambda")),
+    ("Kühlung", ("kühler", "kuehler", "wasserpumpe", "thermostat")),
+)
 
 _SYSTEM = """\
 Du bist ein KFZ-Ersatzteil-Experte. Du erhältst rohe Web-Suchergebnisse zu einer \
@@ -83,14 +116,86 @@ class SucheBody(BaseModel):
         return v[:120]
 
 
-def _build_query(fahrzeug: str, bauteil: str) -> str:
+def _teil_varianten(bauteil: str) -> list[str]:
+    """Bauteil-Bezeichnung + gängige Synonyme/Übersetzungen (allgemein, kein
+    Fahrzeug-Hardcoding). Erste Variante = Originaltext."""
+    b = bauteil.strip()
+    low = b.lower()
+    varianten = [b]
+    # Längste (spezifischste) Bezeichnung zuerst — das Bauteil-Nomen ('bremsscheiben')
+    # hat Vorrang vor Positionswörtern ('vorne'), damit die Nomen-Synonyme/-Übersetzungen
+    # nicht von den Positions-Synonymen verdrängt werden. Überlappende kürzere Keys
+    # ('bremsscheibe' in 'bremsscheiben') werden übersprungen (bereits abgedeckt).
+    used_keys: list[str] = []
+    for key in sorted((k for k in _SYNONYME if k in low), key=len, reverse=True):
+        if any(key in longer for longer in used_keys):
+            continue
+        used_keys.append(key)
+        for s in _SYNONYME[key]:
+            v = low.replace(key, s)
+            if v not in [x.lower() for x in varianten]:
+                varianten.append(v)
+    return varianten[:6]
+
+
+def _kategorie(bauteil: str) -> str | None:
+    low = bauteil.lower()
+    for name, keys in _KATEGORIEN:
+        if any(k in low for k in keys):
+            return name
+    return None
+
+
+async def _mehrstufige_suche(fahrzeug: str, bauteil: str) -> list[dict]:
+    """Mehrstufige, akkumulierende Ersatzteilsuche (Root-Cause #1/#8).
+
+    Kein `site:`-Filter im Query-TEXT mehr (das war zusammen mit include_domains eine
+    Doppelrestriktion, die enge Anfragen auf 0 Treffer zog). Stufen: (1) Shops exakt,
+    (2) Shops mit Synonym, (3) breiter Web-Fallback, (4) breiter Web mit Synonym.
+    Es wird akkumuliert & dedupliziert, bis genug Treffer vorliegen ODER alle Stufen
+    ausgeschöpft sind.
     """
-    Kurze, gezielte Suchanfrage — Tavily akzeptiert max. ~400 Zeichen.
-    Site-Filter im Query-Text (zusätzlich zu include_domains) schränkt die
-    Treffer gezielt auf die drei geprüften Shops ein → deutlich relevantere Ergebnisse.
-    """
-    query = f"{fahrzeug} {bauteil} kaufen Preis {_SITE_FILTER}"
-    return query[:350]
+    if not TAVILY_API_KEY:
+        return []
+    varianten = _teil_varianten(bauteil)
+    haupt = varianten[0]
+    syn = varianten[1] if len(varianten) > 1 else haupt
+
+    stufen: list[tuple[str, list[str] | None]] = [
+        (f"{fahrzeug} {haupt} kaufen Preis", _SHOP_DOMAINS),      # 1: Shops, exakt
+        (f"{fahrzeug} {syn} kaufen", _SHOP_DOMAINS),              # 2: Shops, Synonym
+        (f"{fahrzeug} {haupt} Ersatzteil Preis Deutschland", None),  # 3: breiter Web-Fallback
+        (f"{fahrzeug} {syn} Ersatzteil", None),                  # 4: breiter Web, Synonym
+    ]
+
+    acc: list[dict] = []
+    seen: set[str] = set()
+    for query, domains in stufen:
+        results = await tavily_search(query[:350], count=8, include_domains=domains)
+        for r in results:
+            u = (r.get("url") or "").rstrip("/").lower()
+            if u and u not in seen:
+                seen.add(u)
+                acc.append(r)
+        # Genug brauchbare Treffer für die LLM-Strukturierung -> Stufen sparen.
+        if len(acc) >= 5:
+            break
+    return acc
+
+
+def _mindestnutzen(fahrzeug: str, bauteil: str) -> str:
+    """Ehrlicher Mindestnutzen, wenn keine kaufbare Produktseite gefunden wurde (§9):
+    erkanntes Fahrzeug + Teil + Kategorie + konkreter nächster Schritt. Erfindet nichts."""
+    kat = _kategorie(bauteil)
+    kat_satz = f" Kategorie: {kat}." if kat else ""
+    return (
+        f"Für **{fahrzeug}** – **{bauteil}** konnten aktuell keine eindeutig kaufbaren "
+        f"Angebote verifiziert werden.{kat_satz} Für eine exakte Zuordnung hilft eine "
+        f"genauere Angabe: die **FIN/Fahrgestellnummer** oder ein konkretes Maß "
+        f"(z. B. Bremsscheiben-Durchmesser, Ø in mm). Nächster sinnvoller Schritt: die "
+        f"Suche mit exakter Motor-/Ausstattungsvariante oder einer OE-/OEM-Nummer "
+        f"wiederholen. Es wurden bewusst keine unbestätigten Teilenummern angezeigt."
+    )
 
 
 @router.post("/suche")
@@ -98,19 +203,14 @@ async def ersatzteil_suche(
     body: SucheBody,
     _user_id: int = Depends(require_ersatzteil_access),
 ):
-    query = _build_query(body.fahrzeug, body.bauteil)
-
-    web_results: list[dict] = []
-    if TAVILY_API_KEY:
-        web_results = await tavily_search(query, count=8, include_domains=_SHOP_DOMAINS)
+    web_results = await _mehrstufige_suche(body.fahrzeug, body.bauteil)
 
     if not web_results:
+        # Kein leeres "nichts gefunden": ehrlicher Mindestnutzen (§9) statt Sackgasse.
         return {
             "suchanfrage": {"fahrzeug": body.fahrzeug, "bauteil": body.bauteil},
             "ergebnisse": [],
-            "empfehlung": "Für diese Suche wurden aktuell keine Angebote gefunden. "
-                           "Versuche es mit einer präziseren Bauteil-Bezeichnung "
-                           "(z. B. mit Fahrzeug-Generation wie 'E92' statt nur 'M3').",
+            "empfehlung": _mindestnutzen(body.fahrzeug, body.bauteil),
             "empfohlener_index": None,
             "quelle": "web",
             "belege": [],
@@ -149,11 +249,17 @@ async def ersatzteil_suche(
     if not isinstance(ergebnisse, list):
         ergebnisse = []
 
+    # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren:
+    # ehrlicher Mindestnutzen statt einer inhaltsleeren Empfehlung (§9).
+    empfehlung = result.get("empfehlung", "")
+    if not ergebnisse:
+        empfehlung = _mindestnutzen(body.fahrzeug, body.bauteil)
+
     return {
         "suchanfrage": {"fahrzeug": body.fahrzeug, "bauteil": body.bauteil},
         "ergebnisse": ergebnisse,
-        "empfehlung": result.get("empfehlung", ""),
-        "empfohlener_index": result.get("empfohlener_index"),
+        "empfehlung": empfehlung,
+        "empfohlener_index": result.get("empfohlener_index") if ergebnisse else None,
         "quelle": "web",
         "belege": belege,
     }

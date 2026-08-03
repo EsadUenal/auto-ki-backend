@@ -102,6 +102,28 @@ def _generation_tokens(text: str) -> list[str]:
     return out
 
 
+def _wort_tokens(text: str) -> set[str]:
+    """Alle alphanumerischen Wort-Token eines Textes (lowercase)."""
+    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if t}
+
+
+def _modell_tokens(name: str) -> set[str]:
+    """Unterscheidungskräftige Modell-Token aus einem Modellnamen ODER einer
+    Motorvarianten-Bezeichnung — strukturiert, KEIN Fahrzeug-Hardcoding.
+
+    Behalten werden nur Token mit mindestens einem Buchstaben und Länge >= 3
+    ('insignia', 'mokka', 'golf', 'glc', '3er', '320d', 'c200'). Bewusst verworfen:
+    reine Zahlen ('200', '220' — mehrdeutig über Modelle hinweg) und Einzelbuchstaben
+    ('c', 'e' — die Mercedes-Klassenbuchstaben sind ohne Zahl nicht trennscharf).
+    So bleibt 'GLC' von 'C-Klasse', '5er' von '3er', 'Passat' von 'Golf' trennbar.
+    """
+    out: set[str] = set()
+    for t in re.split(r"[^a-z0-9]+", (name or "").lower()):
+        if len(t) >= 3 and not t.isdigit() and re.search(r"[a-z]", t):
+            out.add(t)
+    return out
+
+
 def _kraftstoff_im_text(text: str) -> str | None:
     t = text.lower()
     for norm, keys in _KRAFTSTOFF_WORTE.items():
@@ -187,6 +209,19 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
     def ab(n: int):
         nonlocal stufe
         stufe = min(_UNGEEIGNET, stufe + n)
+
+    # ── HARTE MODELLTREUE (zuerst) — Root-Cause #5 ────────────────────────────
+    # Nennt das lokale Preis-Umfeld ein FREMDES Modell (anderes Modell irgendeiner
+    # Marke, inkl. Motor-Verkaufsbezeichnung wie '520d' statt '320d') und NICHT das
+    # Zielmodell, wird der Datenpunkt hart verworfen — kein Mokka im Insignia-Median.
+    worte = _wort_tokens(fenster)
+    ziel_model = ziel.get("modell_tokens") or set()
+    fremd_model = ziel.get("fremd_modelle") or set()
+    fremd_treffer = worte & fremd_model
+    if fremd_treffer and not (worte & ziel_model):
+        b.vergleichbarkeit = "ungeeignet"
+        b.gruende = [f"anderes Modell im Preisumfeld ({sorted(fremd_treffer)[0]})"]
+        return b
 
     codes = _generation_tokens(fenster)
     ziel_gen = ziel.get("generation_tokens") or set()
@@ -297,13 +332,38 @@ def _datenqualitaet(sehr: int, aehnlich: int, verwendet: int) -> str:
     return "niedrig"
 
 
-def baue_ziel(baureihe: dict | None, motor_match: dict | None, req, alle_baureihen: list[dict] | None) -> dict:
+def modell_relevant(r: dict, ziel: dict) -> bool:
+    """Best-effort-Filter für die ANGEZEIGTEN Rechercheseiten (belege/Kontext):
+    verwirft eine Seite, die klar ein FREMDES Modell nennt und NICHT das Zielmodell
+    (z.B. 'BMW 4er' / 'Mercedes C-Klasse' im 3er-Check). Neutrale Seiten (kein klares
+    Modellsignal) bleiben als Recherchequelle erhalten. Die harte Vergleichs-Filterung
+    läuft ohnehin datenpunktgenau in _bewerte — dies verbessert nur die Quellenanzeige.
+    """
+    worte = _wort_tokens(f"{r.get('title', '')} {r.get('content', '')}")
+    ziel_model = ziel.get("modell_tokens") or set()
+    fremd = ziel.get("fremd_modelle") or set()
+    if ziel_model and (worte & ziel_model):
+        return True
+    if fremd and (worte & fremd):
+        return False
+    return True
+
+
+def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
+              alle_baureihen: list[dict] | None,
+              alle_motorvarianten: list[dict] | None = None) -> dict:
     """Baut das Ziel-Profil für die Vergleichbarkeitsbewertung.
 
     `fremd_generationen` = Generations-Kürzel ANDERER Baureihen desselben Modells
     (z.B. E90/F30/E46 beim 3er) — daten-getrieben aus der DB, kein Hardcoding. Ein
     Datenpunkt, dessen Snippet ein Fremd-Kürzel trägt, wird als 'ungeeignet'
     verworfen (die berüchtigte E90-7.000-€-Karre beim G20).
+
+    `modell_tokens` / `fremd_modelle` = HARTE Modelltreue (Root-Cause #5): trennt
+    das Zielmodell strukturiert von ALLEN anderen Modellen (jeder Marke) inkl. deren
+    Motor-Verkaufsbezeichnungen. Ein Opel Mokka darf nie in den Insignia-Vergleich,
+    ein 5er nie in den 3er, ein GLC nie in die C-Klasse — daten-getrieben, kein
+    Modell-Hardcoding.
     """
     gen: set[str] = set()
     if baureihe:
@@ -319,10 +379,32 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req, alle_baureih
                 fremd |= set(_generation_tokens(r.get("generation", "")))
                 fremd |= set(_generation_tokens(r.get("id", "")))
     fremd -= gen
+
+    # ── Modelltreue: Ziel- vs. Fremd-Modell-Token (inkl. Motorbezeichnungen) ──
+    ziel_id = baureihe.get("id") if baureihe else None
+    modell_tokens: set[str] = set()
+    fremd_modelle: set[str] = set()
+    if baureihe:
+        modell_tokens |= _modell_tokens(baureihe.get("modell", ""))
+        for m in alle_motorvarianten or []:
+            if m.get("baureihe_id") == ziel_id:
+                modell_tokens |= _modell_tokens(m.get("bezeichnung", ""))
+        for r in alle_baureihen or []:
+            if r.get("id") != ziel_id:
+                fremd_modelle |= _modell_tokens(r.get("modell", ""))
+        for m in alle_motorvarianten or []:
+            if m.get("baureihe_id") != ziel_id:
+                fremd_modelle |= _modell_tokens(m.get("bezeichnung", ""))
+        # Alles, was auch zum Ziel gehört, ist KEIN Fremdsignal (z.B. gemeinsame
+        # Trim-/Klassenwörter). Verhindert Fehl-Verwerfungen echter Zieltreffer.
+        fremd_modelle -= modell_tokens
+
     kraftstoff = (motor_match or {}).get("kraftstoff") or getattr(req, "kraftstoff", None)
     return {
         "generation_tokens": gen,
         "fremd_generationen": fremd,
+        "modell_tokens": modell_tokens,
+        "fremd_modelle": fremd_modelle,
         "baujahr": getattr(req, "baujahr", None),
         "kilometerstand": getattr(req, "kilometerstand", None),
         "kraftstoff": kraftstoff,

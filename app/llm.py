@@ -757,6 +757,7 @@ Antwort verwenden (klar als Web-Quelle gekennzeichnet) — auch wenn er nur unge
 async def chat_stream(
     message: str,
     verlauf: list[dict],
+    fahrzeug_kontext: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Events:
@@ -778,8 +779,16 @@ async def chat_stream(
 
     t_detect = time.perf_counter()
     fahrzeuge = _erkenne_fahrzeuge(message, verlauf)  # [(baureihe_id, segment_text), ...]
+    # Discover-Fast-Path: ist ein Fahrzeug vorausgewählt (Entdecken-Seite) und die
+    # Text-Erkennung findet nichts (typische Folgefrage ohne Modellnennung), die
+    # Baureihe DETERMINISTISCH aus dem übergebenen Kontext übernehmen — kein erneutes
+    # Raten, zuverlässiger DB-Kontext -> seltener unnötige Websuche. Der Kontext wird
+    # pro Request übergeben (kein geteilter Cache) -> kein Leak zwischen Fahrzeugen.
+    if not fahrzeuge and fahrzeug_kontext:
+        for bid in _suche_baureihen_in_text(fahrzeug_kontext.lower()):
+            fahrzeuge.append((bid, fahrzeug_kontext))
     baureihe_ids = [bid for bid, _ in fahrzeuge]
-    print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids}", flush=True)
+    print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids} (ctx={bool(fahrzeug_kontext)})", flush=True)
 
     # ── 1. DB-Kontext aufbauen ───────────────────────────────────────────────
     # Status nur zeigen wenn tatsächlich eine Baureihe erkannt wurde — bei normalem

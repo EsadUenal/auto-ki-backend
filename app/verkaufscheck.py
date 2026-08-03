@@ -15,12 +15,13 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
-from app.database import get_alle_baureihen_kurz
+from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
-from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
+from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
+from app.marktrecherche import vertiefe_marktrecherche
 from app.key_findings import build_key_findings_verkauf
 from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
@@ -246,15 +247,32 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     db_ctx = build_db_context(baureihe, motor_match)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
-    web_results = curate_results(web_results_roh, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_VERKAUFSCHECK_QUELLEN)
+
+    # Marktvergleich 2.0 + adaptive Recherche (harte Modelltreue via baue_ziel; die
+    # Recherche wird vertieft, bis genug akzeptierte, modelltreue Vergleiche vorliegen).
+    ziel = baue_ziel(baureihe, motor_match, req,
+                     get_alle_baureihen_kurz() if baureihe else [],
+                     get_alle_motorvarianten_kurz() if baureihe else [])
+    if baureihe and TAVILY_API_KEY:
+        deep_queries = [
+            " ".join(filter(None, [req.marke, req.modell, str(req.baujahr) if req.baujahr else None,
+                                   "gebraucht kaufen Deutschland"])),
+            " ".join(filter(None, [req.marke, req.modell, req.motor, "Preis gebraucht Deutschland"])),
+            f"{req.marke} {req.modell} gebrauchtwagen mobile.de autoscout24",
+            " ".join(filter(None, [req.marke, req.modell, baureihe.get("generation", ""),
+                                   "Gebrauchtpreis Deutschland"])),
+        ]
+        web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
+            web_results_roh, deep_queries, ziel, req.preis_vorstellung, US_QUELLEN_AUSSCHLUSS,
+            count=8, zweck="verkaufscheck-markt")
+    else:
+        marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
+
+    # Fachfremde Modell-Seiten aus den ANGEZEIGTEN Quellen/Kontext aussortieren.
+    web_relevant = [r for r in web_results_roh if modell_relevant(r, ziel)]
+    web_results = curate_results(web_relevant, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_VERKAUFSCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
-
-    # Marktvergleich 2.0: deterministische Preis-Datenpunkte (aus ALLEN Rohtreffern)
-    # + robuste Statistik (Median/Quartilsbereich) statt LLM-erfundener Spanne.
-    # Angebot = Preisvorstellung.
-    ziel = baue_ziel(baureihe, motor_match, req, get_alle_baureihen_kurz() if baureihe else [])
-    marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
 
     # 4. Gemini-Analyse
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,

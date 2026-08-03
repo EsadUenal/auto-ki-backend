@@ -15,12 +15,13 @@ import logging
 
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
-from app.database import get_alle_baureihen_kurz
+from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
-from app.marktvergleich import analysiere_markt, baue_ziel, prompt_block as markt_prompt_block
+from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
+from app.marktrecherche import vertiefe_marktrecherche
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.postprocess import postprocess_answer
@@ -203,18 +204,35 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     db_ctx = build_db_context(baureihe, motor_match)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
-    # Quellenqualität für LLM-Kontext/Belege: Marktplätze bevorzugt, Social Media/
-    # Duplikate raus, auf so viele Quellen wie nötig begrenzt.
-    web_results = curate_results(web_results_roh, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
+
+    # Marktvergleich 2.0 + adaptive Recherche: Ziel-Profil (harte Modelltreue) bauen,
+    # dann die Recherche adaptiv VERTIEFEN, bis genug akzeptierte, modelltreue
+    # Vergleiche vorliegen (nicht anhand roher Trefferzahl aufhören — #4/#7).
+    ziel = baue_ziel(baureihe, motor_match, req,
+                     get_alle_baureihen_kurz() if baureihe else [],
+                     get_alle_motorvarianten_kurz() if baureihe else [])
+    if baureihe and TAVILY_API_KEY:
+        deep_queries = [
+            " ".join(filter(None, [req.marke, req.modell, str(req.baujahr) if req.baujahr else None,
+                                   "gebraucht kaufen Deutschland"])),
+            " ".join(filter(None, [req.marke, req.modell, req.motor, "Preis gebraucht Deutschland"])),
+            f"{req.marke} {req.modell} gebrauchtwagen mobile.de autoscout24",
+            " ".join(filter(None, [req.marke, req.modell, baureihe.get("generation", ""),
+                                   "Gebrauchtpreis Deutschland"])),
+        ]
+        web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
+            web_results_roh, deep_queries, ziel, req.preis_eur, US_QUELLEN_AUSSCHLUSS,
+            count=8, zweck="kaufcheck-markt")
+    else:
+        marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
+
+    # Quellenqualität für LLM-Kontext/Belege: fachfremde Modell-Seiten aussortieren
+    # (kein 'BMW 4er'/'Mercedes C-Klasse' als 3er-Quelle), dann Marktplätze bevorzugt,
+    # Social Media/Duplikate raus, auf so viele Quellen wie nötig begrenzt.
+    web_relevant = [r for r in web_results_roh if modell_relevant(r, ziel)]
+    web_results = curate_results(web_relevant, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
-
-    # Marktvergleich 2.0: aus den Web-Snippets deterministisch einzelne Preis-
-    # Datenpunkte extrahieren (aus ALLEN Rohtreffern — mehr Vergleichsbasis),
-    # Vergleichbarkeit gegen das Inserat bewerten und daraus robuste Statistik
-    # (Median + Quartils-Spanne) berechnen — statt die Spanne vom LLM erfinden zu lassen.
-    ziel = baue_ziel(baureihe, motor_match, req, get_alle_baureihen_kurz() if baureihe else [])
-    marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
 
     # 4. Gemini-Analyse
     motor_status = (

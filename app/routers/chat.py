@@ -16,12 +16,12 @@ router = APIRouter(default_response_class=UTF8JSONResponse)
 limiter = Limiter(key_func=get_remote_address)
 
 
-async def _sse_generator(message: str, verlauf: list[dict]):
+async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: str | None = None):
     """SSE-Stream: Textfragmente + abschließendes Meta-Event."""
     full_text = []
     meta = {}
 
-    async for event in chat_stream(message, verlauf):
+    async for event in chat_stream(message, verlauf, fahrzeug_kontext=fahrzeug_kontext):
         if event["type"] == "status":
             data = json.dumps({"status": event["text"]}, ensure_ascii=False)
             yield f"data: {data}\n\n"
@@ -62,7 +62,7 @@ async def chat_endpunkt(body: ChatRequest, request: Request):
 
     if body.stream:
         return StreamingResponse(
-            _sse_generator(body.message, verlauf),
+            _sse_generator(body.message, verlauf, body.fahrzeug_kontext),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -72,7 +72,7 @@ async def chat_endpunkt(body: ChatRequest, request: Request):
 
     full_text = []
     meta = {}
-    async for event in chat_stream(body.message, verlauf):
+    async for event in chat_stream(body.message, verlauf, fahrzeug_kontext=body.fahrzeug_kontext):
         if event["type"] == "text":
             full_text.append(event["delta"])
         elif event["type"] == "meta":

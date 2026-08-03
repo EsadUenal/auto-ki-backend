@@ -31,6 +31,12 @@ class ChatRequest(BaseModel):
     verlauf: list[ChatMessage] = Field(default_factory=list, max_length=_MAX_VERLAUF_LEN)
     bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
     stream: bool = True
+    # Discover-Fast-Path: auf der Entdecken-Seite ist das Fahrzeug bereits gewählt.
+    # Das Frontend übergibt es hier (z.B. "BMW 3er G20"), damit das Backend die
+    # Baureihe deterministisch übernimmt statt sie bei jeder Nachricht neu aus dem
+    # Text zu erraten. Per-Request übergeben -> KEIN geteilter Cache, kein Leak
+    # zwischen Fahrzeugen/Nutzern.
+    fahrzeug_kontext: str | None = Field(default=None, max_length=120)
 
 
 class AnalyseFrageRequest(BaseModel):
