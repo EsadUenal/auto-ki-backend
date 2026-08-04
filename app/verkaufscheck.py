@@ -21,7 +21,13 @@ from app.evidence import (
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
-from app.marktrecherche import vertiefe_marktrecherche
+from app.marktrecherche import (
+    vertiefe_marktrecherche, baue_deep_queries, research_status, RechercheUnzureichend,
+    NACHRICHT_UNZUREICHEND,
+)
+from app.preisurteil import (
+    bewerte_preis, verkaufs_strategie, verkaufs_prompt_block, prompt_block as preis_prompt_block,
+)
 from app.key_findings import build_key_findings_verkauf
 from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
@@ -87,13 +93,14 @@ Einordnung dieses Fahrzeugs in den Markt: technische Gründe, was den Preis hebt
 
 ## (b) Empfohlene Preisspanne
 
-| Preis-Kategorie | Betrag (€) | Erwartete Verkaufszeit |
+| Preis-Kategorie | Betrag (€) | Erwartete Vermarktung |
 |-----------------|-----------|------------------------|
-| Schnellverkauf | XX.XXX | ~X–Y Wochen |
-| Empfohlener Preis | XX.XXX | ~X–Y Monate |
-| Maximalpreis | XX.XXX | ~X–Y Monate |
+| Schnellverkauf | XX.XXX | voraussichtlich schneller |
+| Empfohlener Preis | XX.XXX | durchschnittliche Vermarktungsdauer |
+| Maximalpreis | XX.XXX | wahrscheinlich längere Vermarktung |
 
-Kurze Begründung der Spanne.
+Übernimm die Beträge und die Vermarktungs-Kategorien GENAU aus dem Block
+"DETERMINISTISCHE PREISSTRATEGIE". Kurze Begründung der Spanne.
 Falls Preisvorstellung angegeben: einordnen (realistisch / zu hoch / zu niedrig).
 
 ## (c) Preis-Optimierungstipps
@@ -116,7 +123,8 @@ Zu teure Maßnahmen im Verhältnis zum Mehrwert.
 - Verankere schnellverkaufs_preis, empfohlener_preis und maximal_preis an der aus dem Web ermittelten Marktspanne (marktpreis_min–marktpreis_max).
 - empfohlener_preis ODER maximal_preis dürfen NUR dann ÜBER marktpreis_max liegen, wenn es durch KONKRETE, wirklich vergleichbare Angebote oder klar quantifizierte wertsteigernde Faktoren (z.B. seltene Ausstattung mit belegbarem Aufpreis) nachvollziehbar begründet ist. Nenne die Abweichung dann ausdrücklich in EURO UND PROZENT (z.B. "+1.500 €, ~7 % über der Markt-Obergrenze") samt konkreter Begründung. Pauschalaussagen wie "gute Ausstattung rechtfertigt das" sind KEINE Begründung.
 - Sind die Web-Daten schwach, widersprüchlich oder nicht direkt vergleichbar (andere Karosserie/Motorvariante, stark abweichende Laufleistung/Baujahr, sehr breite Streuung): setze KEINE künstlich weite Marktspanne, kennzeichne die Unsicherheit deutlich im Bericht und lege empfohlener_preis/maximal_preis dann NICHT deutlich über marktpreis_max.
-- Erfinde KEINE präzisen Verkaufszeiten. Gib verkaufsdauer_* nur als grobe Orientierung an und nur, wenn eine belastbare Grundlage (Marktnachfrage aus den Quellen) existiert — sonst grob halten und die Unsicherheit benennen.
+- Erfinde KEINE präzisen Verkaufszeiten (keine Tage/Wochen/Monate). Für die Vermarktungsdauer verwende AUSSCHLIESSLICH die drei Kategorien aus dem Block "DETERMINISTISCHE PREISSTRATEGIE" ("voraussichtlich schneller" | "durchschnittliche Vermarktungsdauer" | "wahrscheinlich längere Vermarktung"). Die Zahlfelder verkaufsdauer_tage_* bleiben null.
+- Die drei Preise (Schnellverkauf/Empfohlen/Maximal) sind vom Backend deterministisch aus dem Marktvergleich vorgegeben — übernimm sie unverändert und erzeuge KEINE eigenen Preise.
 
 REGELN:
 1. Neupreis und Specs nur aus DB-Profil.
@@ -253,20 +261,26 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     ziel = baue_ziel(baureihe, motor_match, req,
                      get_alle_baureihen_kurz() if baureihe else [],
                      get_alle_motorvarianten_kurz() if baureihe else [])
-    if baureihe and TAVILY_API_KEY:
-        deep_queries = [
-            " ".join(filter(None, [req.marke, req.modell, str(req.baujahr) if req.baujahr else None,
-                                   "gebraucht kaufen Deutschland"])),
-            " ".join(filter(None, [req.marke, req.modell, req.motor, "Preis gebraucht Deutschland"])),
-            f"{req.marke} {req.modell} gebrauchtwagen mobile.de autoscout24",
-            " ".join(filter(None, [req.marke, req.modell, baureihe.get("generation", ""),
-                                   "Gebrauchtpreis Deutschland"])),
-        ]
+    if TAVILY_API_KEY and req.marke and req.modell:
+        deep_queries = baue_deep_queries(req, baureihe.get("generation") if baureihe else None)
         web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_vorstellung, US_QUELLEN_AUSSCHLUSS,
-            count=8, zweck="verkaufscheck-markt")
+            count=10, zweck="verkaufscheck-markt")
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
+
+    # ── Quality-Gate (§0/§1/§4) ──────────────────────────────────────────────────
+    # Reicht die Datenbasis nicht für einen belastbaren Marktwert, wird KEINE
+    # Preisstrategie erzeugt und der LLM-Call gespart -> research_failed. §10 verbietet
+    # ausdrücklich, eine niedrige Qualität einfach zu akzeptieren und trotzdem exakte
+    # Preise/Verkaufszeiten auszugeben.
+    status = research_status(marktanalyse)
+    if status == "research_failed":
+        raise RechercheUnzureichend(marktanalyse, NACHRICHT_UNZUREICHEND)
+
+    # Kanonisches Preisurteil + deterministische Preisstrategie (§6/§10/§13).
+    price_assessment = bewerte_preis(marktanalyse, req.preis_vorstellung, check_typ="verkauf")
+    strategie = verkaufs_strategie(marktanalyse)
 
     # Fachfremde Modell-Seiten aus den ANGEZEIGTEN Quellen/Kontext aussortieren.
     web_relevant = [r for r in web_results_roh if modell_relevant(r, ziel)]
@@ -286,7 +300,10 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
                               marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
     markt_block = markt_prompt_block(marktanalyse)
-    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx, markt_block, evidence_block]))
+    preis_block = preis_prompt_block(price_assessment)
+    strategie_block = verkaufs_prompt_block(strategie)
+    user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx,
+                                         markt_block, preis_block, strategie_block, evidence_block]))
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
@@ -314,6 +331,19 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     else:
         enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
 
+    # §10/§11/§13: Preisstrategie DETERMINISTISCH aus dem validierten Marktvergleich
+    # verankern — die vom LLM genannten Preise werden NICHT übernommen. Verkaufszeiten
+    # nur als Kategorie; keine erfundenen Tageszahlen.
+    if strategie:
+        result["schnellverkaufs_preis"] = strategie["schnellverkaufs_preis"]
+        result["empfohlener_preis"] = strategie["empfohlener_preis"]
+        result["maximal_preis"] = strategie["maximal_preis"]
+        result["verkaufsdauer_schnell"] = strategie["verkaufsdauer_schnell"]
+        result["verkaufsdauer_empfohlen"] = strategie["verkaufsdauer_empfohlen"]
+        result["verkaufsdauer_maximal"] = strategie["verkaufsdauer_maximal"]
+    result["verkaufsdauer_tage_schnell"] = None
+    result["verkaufsdauer_tage_maximal"] = None
+
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
     gueltige = valid_evidence_ids(insights)
@@ -326,7 +356,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
 
     # Phase 2: Kern-Erkenntnisse deterministisch verdichten (Marktposition, fehlende
     # Angaben, wertsteigernde Ausstattung, Markt-Datenqualität) — kein weiteres LLM.
-    key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights)
+    key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights, price_assessment)
 
     # Phase 4: deterministische Inseratsanalyse (Qualität, fehlende Angaben,
     # Verkaufsargumente, Widersprüche, Titelvorschlag) — kein LLM. Die optimierte
@@ -341,6 +371,11 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
         "empfohlener_preis":           result.get("empfohlener_preis"),
         "verkaufsdauer_tage_schnell":  result.get("verkaufsdauer_tage_schnell"),
         "verkaufsdauer_tage_maximal":  result.get("verkaufsdauer_tage_maximal"),
+        "verkaufsdauer_schnell":       result.get("verkaufsdauer_schnell"),
+        "verkaufsdauer_empfohlen":     result.get("verkaufsdauer_empfohlen"),
+        "verkaufsdauer_maximal":       result.get("verkaufsdauer_maximal"),
+        "price_assessment":            price_assessment,
+        "research_status":             status,
         "marktpreis_min":              result.get("marktpreis_min"),
         "marktpreis_max":              result.get("marktpreis_max"),
         "baureihe_erkannt":            baureihe["id"] if baureihe else None,

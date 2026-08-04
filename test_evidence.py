@@ -120,14 +120,14 @@ MOTOR_DIESEL = {"bezeichnung": "320d", "kraftstoff": "Diesel", "schwachstellen_m
 MOTOR_PHEV = {"bezeichnung": "330e", "kraftstoff": "Plug-in-Hybrid", "schwachstellen_motor": []}
 
 _rk_diesel = {i.titel: i for i in build_insights(BAUREIHE_HV, MOTOR_DIESEL, [], req(2020)) if i.kategorie == "rueckruf"}
-hv_d = next(i for t, i in _rk_diesel.items() if "Hochvolt" in t)
 brems_d = next(i for t, i in _rk_diesel.items() if "Bremskraft" in t)
-check("11: Hochvolt-Rückruf beim 320d-Diesel -> applicability 'unklar' (nicht betrifft-Fahrzeug)",
-      hv_d.applicability == "unklar")
-check("11: Hochvolt-Rückruf beim Diesel -> confidence reduziert (niedrig)", hv_d.confidence == "niedrig")
-check("11: Titel als Baureihen-Hinweis gekennzeichnet (nicht direkt zutreffend)",
-      "Baureihe" in hv_d.titel)
-check("11: Hinweis auf FIN-Prüfung im Einfluss", "FIN" in (hv_d.einfluss or ""))
+# §8 (Reliability-Sprint): Ein Hochvolt-/PHEV-Rückruf bei EINDEUTIG erkanntem Diesel
+# wird VOLLSTÄNDIG aus den sichtbaren Findings entfernt — NICHT mehr als "unklare
+# Betroffenheit" angezeigt.
+check("11: Hochvolt-Rückruf beim 320d-Diesel -> vollständig entfernt (nicht sichtbar)",
+      not any("Hochvolt" in t for t in _rk_diesel))
+check("11: nicht betroffener Rückruf taucht auch nicht in 'Was jetzt?' auf (kein Insight)",
+      all("Hochvolt" not in i.titel for i in _rk_diesel.values()))
 check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> applicability 'exakt'",
       brems_d.applicability == "exakt" and brems_d.confidence == "hoch")
 
@@ -143,10 +143,10 @@ check("12: Motor nicht erkannt -> Hochvolt-Applicability 'unklar' (nicht raten)"
 
 _rk_2023 = [i for i in build_insights(BAUREIHE_HV, MOTOR_DIESEL, [], req(2023)) if i.kategorie == "rueckruf"]
 check("14: Baujahr 2023 außerhalb 2019-2020 -> Rückrufe ausgelassen", len(_rk_2023) == 0)
-check("15: KBA-Referenz bleibt am (Baureihen-)Rückruf erhalten",
-      any(q.ref == "010078" for q in hv_d.quellen))
+check("15: KBA-Referenz bleibt am (betroffenen) Rückruf erhalten",
+      any(q.ref == "010078" for q in hv_p.quellen))
 check("16: severity/confidence/applicability getrennt (Rückruf hat applicability-Feld, keine severity)",
-      hv_d.applicability is not None and hv_d.schweregrad is None)
+      hv_p.applicability is not None and hv_p.schweregrad is None)
 
 # ── 3) Webbasierter Marktpreis -> Web/Marktvergleich (Marktvergleich 2.0) ────
 mv = [i for i in ins if i.kategorie == "marktvergleich"]

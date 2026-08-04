@@ -104,6 +104,16 @@ _HERSTELLER_MARKEN = frozenset({
 })
 
 
+# §9: Informations-/Ratgeber-/Nachschlage-Seiten sind KEINE konkreten Vergleichs-
+# inserate. Ihre Preisangaben (Baujahr-Preistabellen, Steuer-/Ratgeber-Seiten,
+# Konfiguratoren) dürfen NICHT in den Marktmedian einfließen — höchstens als
+# Hintergrundquelle. fahrzeugschein.de ist der im Sprint konkret genannte Fall.
+_INFO_NONMARKET_DOMAINS = frozenset({
+    "fahrzeugschein.de", "kfz-steuer.de", "steuerklassen.com",
+    "carwow.de", "carwow.co.uk", "adac.de",
+})
+
+
 def _domain_von(url: str) -> str:
     """Extrahiert den Domainnamen (ohne 'www.') aus einer URL."""
     try:
@@ -111,6 +121,17 @@ def _domain_von(url: str) -> str:
     except Exception:
         return ""
     return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def ist_info_domain(url: str) -> bool:
+    """True für Informations-/Ratgeber-/Nachschlage-Seiten, deren Preisangaben NICHT
+    als konkrete Marktbeobachtung (Median-Datenpunkt) zählen dürfen (§9). Marktplätze
+    (mobile.de, autoscout24, autouncle) sind bewusst NICHT enthalten."""
+    domain = _domain_von(url)
+    if not domain:
+        return False
+    return (_enthaelt_domain(domain, _INFO_NONMARKET_DOMAINS)
+            or _enthaelt_domain(domain, _NACHSCHLAGEWERK_DOMAINS))
 
 
 def _ist_herstellerseite(domain: str) -> bool:
@@ -265,12 +286,13 @@ _CACHE_TTL_S = 300.0
 _cache: dict[tuple, tuple[float, list[dict]]] = {}
 
 
-def _cache_key(query: str, count: int, include_domains, exclude_domains) -> tuple:
+def _cache_key(query: str, count: int, include_domains, exclude_domains, include_raw_content=False) -> tuple:
     return (
         query,
         count,
         tuple(include_domains) if include_domains else None,
         tuple(exclude_domains) if exclude_domains else None,
+        bool(include_raw_content),
     )
 
 
@@ -279,6 +301,7 @@ async def tavily_search(
     count: int = 5,
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    include_raw_content: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Ruft die Tavily Search API auf (POST, JSON-Body).
@@ -302,7 +325,7 @@ async def tavily_search(
     # filtert sie zur Sicherheit trotzdem nochmal heraus.
     exclude_domains = list({*(exclude_domains or []), *SOCIAL_MEDIA_AUSSCHLUSS})
 
-    key = _cache_key(query, count, include_domains, exclude_domains)
+    key = _cache_key(query, count, include_domains, exclude_domains, include_raw_content)
     cached = _cache.get(key)
     if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
         log.debug("Tavily Cache-Treffer für %r", query[:80])
@@ -315,7 +338,11 @@ async def tavily_search(
         "max_results":  count,
         "include_answer":     False,
         "include_images":     False,
-        "include_raw_content": False,
+        # Raw-Content nur wenn explizit angefordert (§2 Punkt 8): liefert mehr Text
+        # pro Treffer -> mehr extrahierbare Preis-Datenpunkte, wenn die Snippets für
+        # eine belastbare Marktbasis nicht reichen. Bleibt search_depth="basic"
+        # (1 Credit) — Raw-Content ist im Basic-Modus ohne Aufpreis abrufbar.
+        "include_raw_content": bool(include_raw_content),
     }
     if include_domains:
         body["include_domains"] = include_domains

@@ -32,6 +32,7 @@ import statistics
 from urllib.parse import urlparse
 
 from app.models import Marktanalyse, Preisbeobachtung
+from app.web_search import ist_info_domain as _ist_info_domain
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,15 @@ _UNGEEIGNET = len(_STUFEN) - 1
 # derselben Anzeige, oder Fehl-Assoziation Preis↔km) — dann KEIN Schein-Median
 # ausgeben, sondern ehrlich auf die unzuverlässige Datenbasis hinweisen.
 _MAX_REL_SPANNE = 0.6
+
+# §9: Marker im Preisumfeld, die einen Preis als Finanzierungs-/Leasing-/Monatsrate
+# ODER Neuwagen-/Listenpreis entlarven — solche Werte sind KEINE Gebrauchtwagen-
+# Gesamtpreise und dürfen nicht in den Marktmedian einfließen.
+_FINANZ_MARKERS = (
+    "leasing", "finanzierung", "monatlich", "mtl.", "mtl ", "/monat", "pro monat",
+    "im monat", "anzahlung", "monatsrate", "€/mon", "eur/mon", "raten ab", "/mon.",
+    "neuwagen", "neupreis", "listenpreis", "uvp", "ab werk",
+)
 
 # Preis: Zahl mit Tausenderpunkten ODER 4–6 Ziffern, GEFOLGT von € / EUR.
 _RE_PREIS = re.compile(r"(\d{1,3}(?:\.\d{3})+|\d{4,6})\s*(?:€|eur\b)", re.IGNORECASE)
@@ -173,6 +183,14 @@ def _kraftstoff_im_text(text: str) -> str | None:
     return None
 
 
+def _ist_finanzierungspreis(fenster: str) -> bool:
+    """True, wenn das Preisumfeld einen Finanzierungs-/Leasing-/Monats- oder
+    Neuwagenpreis-Marker enthält (§9) — dann ist der Betrag KEIN belastbarer
+    Gebraucht-Gesamtpreis und wird nicht als Marktbeobachtung gezählt."""
+    t = fenster.lower()
+    return any(m in t for m in _FINANZ_MARKERS)
+
+
 def _naechster(treffer: list[re.Match], pos: int) -> re.Match | None:
     """Der zum Preis (an Position `pos`) nächstgelegene Treffer innerhalb _FENSTER."""
     best = None
@@ -225,6 +243,9 @@ def _extrahiere_aus_text(text: str, url: str) -> list[Preisbeobachtung]:
 
         # Lokales Textfenster (für Generations-/Kraftstoff-Prüfung der Vergleichbarkeit).
         fenster = text[max(0, pos - _FENSTER): pos + _FENSTER]
+        # §9: Finanzierungs-/Leasing-/Monats-/Neuwagenpreise nicht als Marktbeobachtung.
+        if _ist_finanzierungspreis(fenster):
+            continue
         out.append(_roh_beobachtung(preis, km, jahr, domain, url, fenster))
     return out
 
@@ -318,26 +339,58 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
     return b
 
 
-def _trim_ausreisser(beob: list[Preisbeobachtung]) -> tuple[list, list]:
-    """Robuste Ausreißer-Entfernung per Tukey-Zaun (Q1−1.5·IQR … Q3+1.5·IQR).
+def _cap_pro_url(beob: list[Preisbeobachtung], max_pro_url: int = 5) -> list[Preisbeobachtung]:
+    """Begrenzt den Beitrag EINER Rechercheseite (§9/§12): Aggregat-/Übersichtsseiten
+    liefern oft viele, teils mis-assoziierte Preis/km/Baujahr-Tripel (drei verschiedene
+    Preise mit identischem km — der km gehört in Wahrheit nur zu EINEM Inserat). Ohne
+    Deckelung dominiert eine einzelne verrauschte Seite die Statistik und verbreitert
+    die Streuung künstlich. Reihenfolge (spezifischste zuerst) bleibt erhalten."""
+    zaehler: dict[str, int] = {}
+    out: list[Preisbeobachtung] = []
+    for b in beob:
+        u = b.quelle_url or ""
+        zaehler[u] = zaehler.get(u, 0) + 1
+        if zaehler[u] <= max_pro_url:
+            out.append(b)
+    return out
 
-    Verhindert, dass ein einzelner Fehl-/Fremdpreis (z.B. ein versehentlich als
-    'ähnlich' klassifizierter Fremdmodell-Treffer wie ein Audi RS4 für 43.000 €)
-    sowohl die Spanne verzerrt ALS AUCH als scheinbares Vergleichsfahrzeug angezeigt
-    wird. Greift erst ab 4 Werten (darunter ist ein IQR nicht sinnvoll).
+
+def _trim_ausreisser(beob: list[Preisbeobachtung]) -> tuple[list, list]:
+    """Robuster Kern der Preisbeobachtungen um den Median (MAD + relatives Sanity-Band).
+
+    Ersetzt den reinen Tukey-Zaun: bei der aus Snippet-Text extrahierten Datenbasis
+    treten NICHT nur einzelne Ausreißer auf, sondern strukturelles Rauschen (Fehl-
+    Extraktionen wie ein 1.631-€-Fragment, mis-assoziierte Aggregat-Preise, gemischte
+    Trims). Der Median-basierte MAD-Zaun ist gegen solche Kontamination robuster als
+    der Quartils-basierte Tukey-Zaun und identifiziert den kohärenten Marktkern —
+    genau das, was für einen belastbaren Marktwert (§0/§3) nötig ist.
+
+    - Relatives Sanity-Band: ein WIRKLICH vergleichbares Fahrzeug liegt selten unter
+      ~55 % oder über ~165 % des Medians (entfernt Fragmente/Fremdpreise hart).
+    - MAD-Zaun (median. absolute Abweichung, skaliert): entfernt den bimodalen
+      Rand (z.B. deutlich teurere, unmarkierte höherwertige Angebote).
+    Gibt (behalten, entfernt) zurück. Bricht NICHT vorschnell ab, wenn viel Rauschen
+    vorliegt — der kohärente Kern IST das Ziel; bleibt zu wenig übrig, greift später
+    der Streuungs-Guard und stuft ehrlich als unzuverlässig ein.
     """
     if len(beob) < 4:
         return beob, []
-    preise = sorted(b.preis_eur for b in beob)
-    q = statistics.quantiles(preise, n=4, method="inclusive")
-    q1, q3 = q[0], q[2]
-    iqr = q3 - q1
-    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    preise = [b.preis_eur for b in beob]
+    med = statistics.median(preise)
+    if med <= 0:
+        return beob, []
+    lo_band, hi_band = med * 0.55, med * 1.65
+    abw = statistics.median([abs(p - med) for p in preise])
+    if abw > 0:
+        lo_mad, hi_mad = med - 3.0 * 1.4826 * abw, med + 3.0 * 1.4826 * abw
+        lo, hi = max(lo_band, lo_mad), min(hi_band, hi_mad)
+    else:
+        lo, hi = lo_band, hi_band
     behalten = [b for b in beob if lo <= b.preis_eur <= hi]
     entfernt = [b for b in beob if not (lo <= b.preis_eur <= hi)]
-    # Sicherheitsnetz: nie mehr als ~1/3 als Ausreißer verwerfen (sonst ist die
-    # Grundgesamtheit einfach breit gestreut, kein Ausreißerproblem).
-    if len(entfernt) > len(beob) // 3:
+    # Bleibt ein zu kleiner Kern übrig, war die Filterung zu aggressiv für diese
+    # Datenlage -> lieber ungetrimmt weitergeben (der Streuungs-Guard entscheidet dann).
+    if len(behalten) < max(4, len(beob) // 4):
         return beob, []
     return behalten, entfernt
 
@@ -358,14 +411,42 @@ def _r100(x: float) -> int:
     return int(round(x / 100.0) * 100)
 
 
-def _datenqualitaet(sehr: int, aehnlich: int, verwendet: int) -> str:
-    """Confidence NICHT allein aus Anzahl — Match-Qualität zählt mit. Bewusst
-    konservativ: die Datenpunkte sind heuristisch aus Snippet-Text extrahiert
-    (keine verifizierten Einzelinserate), daher "hoch" nur bei vielen, überwiegend
-    sehr ähnlichen Treffern."""
-    if verwendet >= 10 and sehr >= 6:
+def _datenqualitaet(verwendet: list[Preisbeobachtung], median: int | None,
+                    lo: int | None, hi: int | None) -> str:
+    """Datenqualität aus einer belastbaren MISCHUNG (§3) — nicht aus einer starren
+    Trefferzahl allein:
+
+      - mehrere wirklich vergleichbare Fahrzeuge (Anzahl + Anteil sehr ähnlich)
+      - Quellenvielfalt (mehrere unabhängige Portale/Domains)
+      - Attribut-Vollständigkeit (Baujahr und/oder km je Datenpunkt)
+      - kontrollierte Preisstreuung (Quartilsspanne relativ zum Median)
+
+    "hoch" ist der ANGESTREBTE Normalfall für gängige Fahrzeuge und wird ehrlich nur
+    vergeben, wenn diese Mischung erreicht ist. "mittel" ist die seltene Ausnahme mit
+    weiterhin belastbarer Basis. Sonst "niedrig" (= nicht auslieferbar, §0/§4).
+    """
+    n = len(verwendet)
+    if n == 0 or not median:
+        return "niedrig"
+    domains = {b.quelle_domain for b in verwendet if b.quelle_domain}
+    mit_attr = sum(1 for b in verwendet if b.baujahr is not None or b.kilometerstand is not None)
+    quellenvielfalt = len(domains)
+    attr_ratio = mit_attr / n
+    rel_spanne = (hi - lo) / median if (lo is not None and hi is not None and median) else 1.0
+
+    # Alle Datenpunkte in `verwendet` sind bereits mindestens "ähnlich" (Baujahr/km im
+    # Rahmen, kein Fremdmodell). Die echten Qualitätssignale sind daher: Menge,
+    # Quellenvielfalt (unabhängige Portale), Attribut-Vollständigkeit und ENGE Streuung.
+    #
+    # (a) Viele Treffer, >=2 Portale, überwiegend attributvollständig, sehr enge Streuung.
+    if n >= 8 and quellenvielfalt >= 2 and attr_ratio >= 0.5 and rel_spanne <= 0.30:
         return "hoch"
-    if verwendet >= 4:
+    # (b) Etwas weniger Treffer, dafür breitere Quellenvielfalt (>=3 Portale), enge Streuung.
+    if n >= 6 and quellenvielfalt >= 3 and attr_ratio >= 0.5 and rel_spanne <= 0.40:
+        return "hoch"
+    # Seltene Ausnahme (§3): belastbare Basis, aber nicht "hoch" — weniger Treffer/
+    # Vielfalt oder etwas breitere (noch kontrollierte) Streuung.
+    if n >= 4 and quellenvielfalt >= 2 and rel_spanne <= _MAX_REL_SPANNE:
         return "mittel"
     return "niedrig"
 
@@ -494,7 +575,16 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     roh: list[Preisbeobachtung] = []
     for r in web_results or []:
         url = r.get("url", "") or ""
-        text = f"{r.get('title','')}\n{r.get('content','')}"
+        # §9: Informations-/Ratgeber-/Nachschlage-Seiten (z.B. fahrzeugschein.de) sind
+        # KEINE konkreten Vergleichsinserate — ihre Preisangaben zählen nicht in den
+        # Median. Sie bleiben höchstens Hintergrundquelle (Kontext/belege), tragen aber
+        # keinen Marktdatenpunkt bei.
+        if _ist_info_domain(url):
+            continue
+        # Raw-Content (falls angefordert) mitverwenden — mehr Text = mehr extrahierbare
+        # Preis-Datenpunkte. Groß gedeckelt gegen pathologische Seitengrößen.
+        raw = (r.get("raw_content") or "")[:20_000]
+        text = f"{r.get('title','')}\n{r.get('content','')}\n{raw}"
         roh.extend(_extrahiere_aus_text(text, url))
 
     bewertet = [_bewerte(b, ziel) for b in roh]
@@ -531,7 +621,11 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     if len(mit_attr) >= 5:
         kandidaten = mit_attr
 
-    # Ausreißer-Preise entfernen (Tukey) — bevor gezählt/gemittelt/angezeigt wird.
+    # §9/§12: Beitrag einer einzelnen (oft aggregierenden) Rechercheseite deckeln,
+    # damit eine verrauschte Übersichtsseite die Statistik nicht dominiert.
+    kandidaten = _cap_pro_url(kandidaten)
+
+    # Robusten Marktkern bilden (MAD + Sanity-Band) — bevor gezählt/gemittelt/angezeigt wird.
     verwendet, _entfernt = _trim_ausreisser(kandidaten)
 
     # Domains NUR der tatsächlich verwendeten Vergleiche (keine Quelle nennen, die
@@ -587,7 +681,7 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     ma.median_eur = median
     ma.spanne_min_eur = lo
     ma.spanne_max_eur = hi
-    ma.datenqualitaet = _datenqualitaet(ma.anzahl_sehr_aehnlich, ma.anzahl_aehnlich, len(verwendet))
+    ma.datenqualitaet = _datenqualitaet(verwendet, median, lo, hi)
     ma.beobachtungen = verwendet
     if angebot_eur:
         ma.differenz_eur = angebot_eur - median

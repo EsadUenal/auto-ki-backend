@@ -21,7 +21,11 @@ from app.evidence import (
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
-from app.marktrecherche import vertiefe_marktrecherche
+from app.marktrecherche import (
+    vertiefe_marktrecherche, baue_deep_queries, research_status, RechercheUnzureichend,
+    NACHRICHT_UNZUREICHEND,
+)
+from app.preisurteil import bewerte_preis, preis_bewertung_aus_verdict, prompt_block as preis_prompt_block
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.postprocess import postprocess_answer
@@ -211,20 +215,28 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     ziel = baue_ziel(baureihe, motor_match, req,
                      get_alle_baureihen_kurz() if baureihe else [],
                      get_alle_motorvarianten_kurz() if baureihe else [])
-    if baureihe and TAVILY_API_KEY:
-        deep_queries = [
-            " ".join(filter(None, [req.marke, req.modell, str(req.baujahr) if req.baujahr else None,
-                                   "gebraucht kaufen Deutschland"])),
-            " ".join(filter(None, [req.marke, req.modell, req.motor, "Preis gebraucht Deutschland"])),
-            f"{req.marke} {req.modell} gebrauchtwagen mobile.de autoscout24",
-            " ".join(filter(None, [req.marke, req.modell, baureihe.get("generation", ""),
-                                   "Gebrauchtpreis Deutschland"])),
-        ]
+    # Adaptive, qualitäts-gesteuerte Recherche auch OHNE erkannte Baureihe, sofern
+    # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
+    # Qualitätsschwelle trotzdem erreichen können).
+    if TAVILY_API_KEY and req.marke and req.modell:
+        deep_queries = baue_deep_queries(req, baureihe.get("generation") if baureihe else None)
         web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_eur, US_QUELLEN_AUSSCHLUSS,
-            count=8, zweck="kaufcheck-markt")
+            count=10, zweck="kaufcheck-markt")
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
+
+    # ── Quality-Gate (§0/§1/§4) ──────────────────────────────────────────────────
+    # Reicht die Datenbasis nach voller Vertiefung nicht für einen belastbaren
+    # Marktwert (kein Median / Qualität bliebe "niedrig"), wird KEIN fertiger Bericht
+    # erzeugt und der teure LLM-Call gespart: research_failed -> Router erstattet das
+    # Kontingent zurück. Eine niedrige Datenqualität ist kein auslieferbares Ergebnis.
+    status = research_status(marktanalyse)
+    if status == "research_failed":
+        raise RechercheUnzureichend(marktanalyse, NACHRICHT_UNZUREICHEND)
+
+    # Kanonisches, deterministisches Preisurteil (§6/§7/§13) — EINE Quelle der Wahrheit.
+    price_assessment = bewerte_preis(marktanalyse, req.preis_eur, check_typ="kauf")
 
     # Quellenqualität für LLM-Kontext/Belege: fachfremde Modell-Seiten aussortieren
     # (kein 'BMW 4er'/'Mercedes C-Klasse' als 3er-Quelle), dann Marktplätze bevorzugt,
@@ -247,7 +259,9 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
                               marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
     markt_block = markt_prompt_block(marktanalyse)
-    user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx, markt_block, evidence_block]))
+    preis_block = preis_prompt_block(price_assessment)
+    user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx,
+                                         markt_block, preis_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
     # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
     # (routers/kaufcheck.py), der einheitlich das Check-Kontingent zurückerstattet
@@ -283,14 +297,10 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     elif hat_web:            quelle, vertrauen = "web", "niedrig"
     else:                    quelle, vertrauen = "gemischt", "niedrig"
 
-    # Sicherheitsnetz gegen Schema-Abweichung: Gemini driftet trotz fest
-    # vorgegebenem Enum (siehe _SYSTEM oben) gelegentlich zu naheliegenden,
-    # nicht im Schema stehenden Synonymen (z.B. "guter_deal" statt "guenstig").
-    # Ohne diese Normalisierung landet der rohe Snake-Case-Wert unübersetzt im
-    # Frontend, statt als lesbarer Text angezeigt zu werden.
-    preis_wert = _PREIS_BEWERTUNG_SYNONYME.get(
-        result.get("preis_bewertung", "unbekannt"), result.get("preis_bewertung", "unbekannt")
-    )
+    # Preisbewertung deterministisch aus dem KANONISCHEN Preisurteil ableiten (§6/§13)
+    # — NICHT mehr vom LLM. So kann das Frontend-Badge (preis_bewertung) niemals dem
+    # kanonischen Verdikt/Bericht widersprechen (der zentrale 320d-Widerspruch).
+    preis_wert = preis_bewertung_aus_verdict(price_assessment.verdict)
 
     # Marktpreis-Spanne: liegt eine belastbare deterministische Marktanalyse vor,
     # ist SIE die Wahrheit (robuster Median/Quartilsbereich) — die LLM-Spanne wird
@@ -315,12 +325,14 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     # Phase 2: Kern-Erkenntnisse deterministisch aus den bereits vorhandenen Daten
     # verdichten (Marktanalyse in insights, Rückruf-Applicability, Schwachstellen,
     # Inserat-Widersprüche) — kein weiteres LLM, referenziert nur echte Insight-IDs.
-    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights)
+    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights, price_assessment)
 
     return {
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
         "preis_bewertung":  preis_wert,
+        "price_assessment": price_assessment,
+        "research_status":  status,
         "marktpreis_min":   result.get("marktpreis_min"),
         "marktpreis_max":   result.get("marktpreis_max"),
         "baureihe_erkannt": baureihe["id"] if baureihe else None,

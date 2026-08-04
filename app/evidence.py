@@ -108,14 +108,16 @@ def _rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: 
                 return ("exakt", "hoch", "Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.", "")
             return ("wahrscheinlich", "mittel",
                     "Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen.", "")
-        # Klarer Antriebs-Widerspruch (z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist Diesel)
-        # -> NICHT als direkt zutreffend markieren.
+        # Klarer Antriebs-Widerspruch (§8): z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist
+        # nachweislich Diesel. Die Motorisierung ist ERKANNT und passt eindeutig NICHT
+        # -> "nicht_betroffen". build_insights entfernt solche Rückrufe VOLLSTÄNDIG aus
+        # den sichtbaren Findings (kein Anzeigen als "unklare Betroffenheit").
         scope_label = {"phev": "Plug-in-Hybrid-/Hochvolt-Varianten", "elektro": "Elektro-Varianten",
                        "diesel": "Diesel-Varianten", "benzin": "Benzin-Varianten",
                        "mild": "Mild-Hybrid-Varianten"}.get(scope, "bestimmte Varianten")
-        return ("unklar", "niedrig",
-                f"Betrifft laut Datenlage {scope_label} — dein Fahrzeug gehört voraussichtlich nicht dazu. {hinweis_fin}",
-                f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt nicht dazu.")
+        return ("nicht_betroffen", "hoch",
+                f"Betrifft laut Datenlage {scope_label} — die erkannte Motorisierung gehört nicht dazu.",
+                f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt eindeutig nicht dazu.")
 
     # Kein Antriebs-Scope erkennbar -> allgemeiner Baureihen-Rückruf (z.B. Bremse,
     # Lenkung): gilt unabhängig von der Motorisierung.
@@ -241,6 +243,11 @@ def build_insights(
         # zutreffend für einen reinen Diesel markiert.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
             r, passt, kba, motor_match)
+        # §8: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
+        # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
+        # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
+        if applicability == "nicht_betroffen":
+            continue
         beschr = (r.get("mangel") or "").strip()
         if r.get("abhilfe"):
             beschr = f"{beschr} — Abhilfe: {r['abhilfe'].strip()}"
@@ -323,11 +330,46 @@ def _verwendete_quellen(web_quellen, marktanalyse):
         if u and u not in used_urls:
             used_urls.append(u)
     if not used_urls:
-        return web_quellen
+        return _dedup_quellen(web_quellen)
     per_url = {q.url: q for q in web_quellen if getattr(q, "url", None)}
     out = []
     for u in used_urls:
         out.append(per_url.get(u) or EvidenceQuelle(typ="web", url=u, titel=_domain_titel(u)))
+    # §12: nach kanonischer URL bzw. Domain+Titel deduplizieren, damit nicht dieselbe
+    # Quelle doppelt erscheint (der berüchtigte "12gebrauchtwagen.de, 12gebrauchtwagen.de").
+    return _dedup_quellen(out)
+
+
+def _kanon_url(url: str | None) -> str:
+    """Kanonische URL für die Dedup: Domain + Pfad ohne Query/Fragment/trailing Slash."""
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        return f"{p.netloc.lower().removeprefix('www.')}{p.path.rstrip('/')}"
+    except Exception:
+        return url
+
+
+def _dedup_quellen(quellen):
+    """Dedupliziert EvidenceQuelle-Liste nach kanonischer URL UND nach Anzeige-Identität
+    (Domain + Titel) — verhindert sowohl exakte Query-Duplikate als auch zwei
+    Domain-Fallback-Einträge derselben Quelle. Reihenfolge bleibt erhalten."""
+    out = []
+    gesehen_url: set[str] = set()
+    gesehen_anzeige: set[tuple] = set()
+    for q in quellen or []:
+        ku = _kanon_url(getattr(q, "url", None))
+        anzeige = (_domain_titel(getattr(q, "url", "") or ""), (getattr(q, "titel", None) or "").strip().lower())
+        if ku and ku in gesehen_url:
+            continue
+        if anzeige in gesehen_anzeige:
+            continue
+        if ku:
+            gesehen_url.add(ku)
+        gesehen_anzeige.add(anzeige)
+        out.append(q)
     return out
 
 

@@ -20,7 +20,8 @@ import logging
 import re
 from datetime import date
 
-from app.models import Insight, KeyFinding
+from app.models import Insight, KeyFinding, PriceAssessment
+from app.preisurteil import bewerte_preis
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,88 @@ def _marktvergleich_insight(insights: list[Insight]) -> Insight | None:
         if i.kategorie == "marktvergleich":
             return i
     return None
+
+
+def _pa_from_insights(insights: list[Insight], check_typ: str) -> PriceAssessment | None:
+    """Fallback: kanonisches Preisurteil aus der Marktanalyse des Marktvergleich-
+    Insights ableiten, falls der Aufrufer keins übergibt (Rückwärtskompatibilität)."""
+    mv = _marktvergleich_insight(insights)
+    ma = mv.marktanalyse if mv else None
+    if not ma:
+        return None
+    return bewerte_preis(ma, ma.angebot_eur, check_typ=check_typ)
+
+
+def _preis_finding_kauf(pa: PriceAssessment, ev_id: str) -> KeyFinding:
+    """EIN Preis-Finding, abgeleitet aus dem KANONISCHEN Preisurteil (§6) — nie eine
+    eigene, abweichende Bewertung derselben Zahlen."""
+    diff = abs(pa.difference_eur or 0)
+    median = pa.median_eur
+    pct = pa.difference_percent or 0.0
+    ev = [ev_id]
+    v = pa.verdict
+    if v == "deutlich_unter":
+        return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💰",
+            titel="Ungewöhnlich günstiger Preis",
+            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}. "
+                         f"Preis, Fahrzeughistorie und Verkäuferangaben besonders sorgfältig prüfen.",
+            wert=f"↓ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
+            evidence_ids=ev, prioritaet=_P_PREIS_UNGEWOEHNLICH)
+    if v == "unter":
+        return KeyFinding(id="", kategorie="preis", stufe=STUFE_CHANCE, icon="💰",
+            titel="Unter Marktpreis",
+            beschreibung=f"{pa.begruendung} Median der Vergleichspreise: {_eur(median)}.",
+            wert=f"↓ {_eur(diff)} · {_pct(pct)}", evidence_ids=ev, prioritaet=_P_PREIS_UNTER)
+    if v == "marktgerecht":
+        return KeyFinding(id="", kategorie="preis", stufe=STUFE_INFO, icon="💰",
+            titel="Preis marktgerecht",
+            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            evidence_ids=ev, prioritaet=_P_PREIS_INFO)
+    if v == "oberes_segment":
+        return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
+            titel="Oberes Marktsegment",
+            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
+            evidence_ids=ev, prioritaet=_P_PREIS_UEBER)
+    if v == "ueber":
+        return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
+            titel="Über Marktpreis",
+            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
+            evidence_ids=ev, prioritaet=_P_PREIS_UEBER)
+    # deutlich_ueber
+    return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
+        titel="Deutlich über Marktpreis",
+        beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+        wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
+        evidence_ids=ev, prioritaet=_P_PREIS_UEBER + 10)
+
+
+def _preis_finding_verkauf(pa: PriceAssessment, ev_id: str) -> KeyFinding:
+    """Marktpositions-Finding (Verkauf) aus dem KANONISCHEN Preisurteil (§6)."""
+    diff = abs(pa.difference_eur or 0)
+    median = pa.median_eur
+    pct = pa.difference_percent or 0.0
+    ev = [ev_id]
+    if pa.verdict in ("oberes_segment", "ueber", "deutlich_ueber"):
+        return KeyFinding(id="", kategorie="marktposition", stufe=STUFE_WARNUNG, icon="📊",
+            titel="Zielpreis über Marktniveau",
+            beschreibung=f"Mit {_eur(pa.median_eur + (pa.difference_eur or 0))} liegst du {_eur(diff)} "
+                         f"bzw. {_pct(pct)} über dem Median vergleichbarer Fahrzeuge ({_eur(median)}). "
+                         f"{pa.begruendung}",
+            wert=f"↑ {_pct(pct)} über Median", aktion=pa.recommendation,
+            evidence_ids=ev, prioritaet=_P_V_PREIS_UEBER)
+    if pa.verdict in ("unter", "deutlich_unter"):
+        return KeyFinding(id="", kategorie="marktposition", stufe=STUFE_CHANCE, icon="📊",
+            titel="Zielpreis unter Marktniveau — Spielraum nach oben",
+            beschreibung=f"Du liegst {_eur(diff)} bzw. {_pct(pct)} unter dem Median "
+                         f"({_eur(median)}). Ein höherer Startpreis ist realistisch.",
+            wert=f"↓ {_pct(pct)} unter Median", evidence_ids=ev, prioritaet=_P_V_PREIS_POS)
+    return KeyFinding(id="", kategorie="marktposition", stufe=STUFE_INFO, icon="📊",
+        titel="Zielpreis nah am Marktmedian",
+        beschreibung=f"Dein Zielpreis liegt sehr nah am Median vergleichbarer Fahrzeuge "
+                     f"({_eur(median)}, {_pct(pct)} Abweichung) — realistisch angesetzt.",
+        evidence_ids=ev, prioritaet=_P_V_PREIS_INFO)
 
 
 _PS_RE = re.compile(r"(\d{2,3})\s*ps\b", re.IGNORECASE)
@@ -163,70 +246,17 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
 # ══ KAUFCHECK ════════════════════════════════════════════════════════════════
 
 def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None,
-                            insights: list[Insight]) -> list[KeyFinding]:
+                            insights: list[Insight],
+                            price_assessment: PriceAssessment | None = None) -> list[KeyFinding]:
     findings: list[KeyFinding] = []
 
-    # ── A) Preisabweichung / Betrugssignal (aus deterministischer Marktanalyse) ──
+    # ── A) Preis-Finding aus dem KANONISCHEN Preisurteil (§6) — genau EINE Bewertung ──
     mv = _marktvergleich_insight(insights)
-    ma = mv.marktanalyse if mv else None
+    pa = price_assessment or _pa_from_insights(insights, "kauf")
     preis_finding_erzeugt = False
-    if ma and ma.median_eur and ma.angebot_eur and ma.differenz_pct is not None:
-        pct = ma.differenz_pct                 # Angebot − Median (negativ = unter Markt)
-        diff = ma.differenz_eur or 0
-        gut = ma.datenqualitaet in ("mittel", "hoch")
-        caveat = "" if gut else " (auf begrenzter Datenbasis)"
-        ev = [mv.id]
-        if pct <= -20 and gut:
-            # Ungewöhnlich günstig — NEUTRAL, KEIN Betrugssignal. Ein niedriger Preis
-            # allein beweist keinen Betrug; nur zu sorgfältiger Prüfung anhalten.
-            findings.append(KeyFinding(
-                id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💰",
-                titel="Ungewöhnlich günstiger Preis",
-                beschreibung=f"Das Angebot liegt {_eur(abs(diff))} bzw. {_pct(pct)} unter dem "
-                             f"ermittelten Marktmedian ({_eur(ma.median_eur)}). Preis, "
-                             f"Fahrzeughistorie und Verkäuferangaben deshalb besonders "
-                             f"sorgfältig prüfen.",
-                wert=f"↓ {_eur(abs(diff))} · {_pct(pct)}",
-                aktion="Papiere, Servicehistorie und Fahrzeugzustand vor Zahlung genau prüfen.",
-                evidence_ids=ev, prioritaet=_P_PREIS_UNGEWOEHNLICH))
-            preis_finding_erzeugt = True
-        elif pct <= -8:
-            findings.append(KeyFinding(
-                id="", kategorie="preis", stufe=STUFE_CHANCE, icon="💰",
-                titel="Deutlich unter Marktpreis",
-                beschreibung=f"Das Angebot liegt rund {_eur(abs(diff))} bzw. {_pct(pct)} unter "
-                             f"dem Median der verwendeten Vergleichspreise ({_eur(ma.median_eur)}).{caveat}",
-                wert=f"↓ {_eur(abs(diff))} · {_pct(pct)}",
-                evidence_ids=ev, prioritaet=_P_PREIS_UNTER))
-            preis_finding_erzeugt = True
-        elif pct >= 20:
-            findings.append(KeyFinding(
-                id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
-                titel="Deutlich über Marktpreis",
-                beschreibung=f"Das Angebot liegt rund {_eur(abs(diff))} bzw. {_pct(pct)} über "
-                             f"dem Median vergleichbarer Fahrzeuge ({_eur(ma.median_eur)}).{caveat}",
-                wert=f"↑ {_eur(abs(diff))} · {_pct(pct)}",
-                aktion="Preis nachverhandeln oder günstigere Alternativen prüfen.",
-                evidence_ids=ev, prioritaet=_P_PREIS_UEBER + 10))
-            preis_finding_erzeugt = True
-        elif pct >= 8:
-            findings.append(KeyFinding(
-                id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
-                titel="Über Marktpreis",
-                beschreibung=f"Das Angebot liegt rund {_eur(abs(diff))} bzw. {_pct(pct)} über "
-                             f"dem Median vergleichbarer Fahrzeuge ({_eur(ma.median_eur)}).{caveat}",
-                wert=f"↑ {_eur(abs(diff))} · {_pct(pct)}",
-                aktion="Spielraum zum Nachverhandeln vorhanden.",
-                evidence_ids=ev, prioritaet=_P_PREIS_UEBER))
-            preis_finding_erzeugt = True
-        else:
-            findings.append(KeyFinding(
-                id="", kategorie="preis", stufe=STUFE_INFO, icon="💰",
-                titel="Preis marktgerecht",
-                beschreibung=f"Das Angebot liegt nahe am Median vergleichbarer Fahrzeuge "
-                             f"({_eur(ma.median_eur)}, {_pct(pct)} Abweichung).{caveat}",
-                evidence_ids=ev, prioritaet=_P_PREIS_INFO))
-            preis_finding_erzeugt = True
+    if pa and pa.verdict != "unbekannt" and pa.median_eur and pa.difference_eur is not None and mv:
+        findings.append(_preis_finding_kauf(pa, mv.id))
+        preis_finding_erzeugt = True
 
     # ── D) Inserat-Widersprüche (rein deterministisch, keine Evidence) ──────────
     findings += _widerspruch_findings(req, baureihe, motor_match)
@@ -384,42 +414,17 @@ def _ausstattung_treffer(ausstattung: list[str]) -> list[str]:
 
 
 def build_key_findings_verkauf(req, baureihe: dict | None, motor_match: dict | None,
-                               insights: list[Insight]) -> list[KeyFinding]:
+                               insights: list[Insight],
+                               price_assessment: PriceAssessment | None = None) -> list[KeyFinding]:
     findings: list[KeyFinding] = []
 
-    # ── A) Marktposition (Zielpreis vs. Median) ─────────────────────────────────
+    # ── A) Marktposition aus dem KANONISCHEN Preisurteil (§6) ────────────────────
     mv = _marktvergleich_insight(insights)
     ma = mv.marktanalyse if mv else None
-    if ma and ma.median_eur and ma.angebot_eur and ma.differenz_pct is not None:
-        pct = ma.differenz_pct                 # Zielpreis − Median
-        diff = ma.differenz_eur or 0
-        caveat = "" if ma.datenqualitaet in ("mittel", "hoch") else " (auf begrenzter Datenbasis)"
-        ev = [mv.id]
-        if pct >= 8:
-            findings.append(KeyFinding(
-                id="", kategorie="marktposition", stufe=STUFE_WARNUNG, icon="📊",
-                titel="Zielpreis über Marktniveau",
-                beschreibung=f"Mit {_eur(ma.angebot_eur)} liegst du {_eur(abs(diff))} bzw. {_pct(pct)} "
-                             f"über dem Median vergleichbarer Fahrzeuge ({_eur(ma.median_eur)}).{caveat}",
-                wert=f"↑ {_pct(pct)} über Median",
-                aktion="Höheren Preis nur bei belegbaren Vorteilen ansetzen — sonst verlängert er die Verkaufszeit.",
-                evidence_ids=ev, prioritaet=_P_V_PREIS_UEBER))
-        elif pct <= -8:
-            findings.append(KeyFinding(
-                id="", kategorie="marktposition", stufe=STUFE_CHANCE, icon="📊",
-                titel="Zielpreis unter Marktniveau — Spielraum nach oben",
-                beschreibung=f"Mit {_eur(ma.angebot_eur)} liegst du {_eur(abs(diff))} bzw. {_pct(pct)} "
-                             f"unter dem Median ({_eur(ma.median_eur)}). Ein höherer Startpreis ist realistisch.{caveat}",
-                wert=f"↓ {_pct(pct)} unter Median",
-                evidence_ids=ev, prioritaet=_P_V_PREIS_POS))
-        else:
-            findings.append(KeyFinding(
-                id="", kategorie="marktposition", stufe=STUFE_INFO, icon="📊",
-                titel="Zielpreis nah am Marktmedian",
-                beschreibung=f"Dein Zielpreis ({_eur(ma.angebot_eur)}) liegt sehr nah am Median "
-                             f"vergleichbarer Fahrzeuge ({_eur(ma.median_eur)}, {_pct(pct)} Abweichung) — realistisch angesetzt.{caveat}",
-                evidence_ids=ev, prioritaet=_P_V_PREIS_INFO))
-    elif ma and ma.median_eur:
+    pa = price_assessment or _pa_from_insights(insights, "verkauf")
+    if pa and pa.median_eur and pa.difference_eur is not None and mv:
+        findings.append(_preis_finding_verkauf(pa, mv.id))
+    elif ma and ma.median_eur and mv:
         findings.append(KeyFinding(
             id="", kategorie="marktposition", stufe=STUFE_INFO, icon="📊",
             titel="Aktueller Marktmedian",

@@ -62,7 +62,24 @@ async def main():
     print("Analyse läuft (DB + Websuche + Gemini)…")
     print("-" * 72)
 
-    result = await run_kaufcheck(req)
+    from app.marktrecherche import RechercheUnzureichend
+    try:
+        result = await run_kaufcheck(req)
+    except RechercheUnzureichend as exc:
+        # Quality-Gate (§0/§4): keine belastbare Marktdatenbasis -> kein fertiger
+        # Bericht, Kontingent würde erstattet. Für den Live-Smoketest kein Fehler,
+        # sondern das erwartete Verhalten bei dünner Datenlage.
+        print("\nRESEARCH_FAILED (Quality-Gate): kein belastbarer Marktwert -> Kontingent-Rückgabe.")
+        print(exc.nachricht)
+        print("\n" + SEP + "\nTest abgeschlossen (research_failed).\n" + SEP)
+        return
+    if result.get("research_status") == "research_failed":
+        print("\nRESEARCH_FAILED:", result.get("bericht"))
+        return
+    print(f"\nresearch_status  : {result.get('research_status')}")
+    pa = result.get("price_assessment")
+    if pa:
+        print(f"price_assessment : {pa.verdict} | {pa.label} | conf={pa.confidence}")
 
     # ── Bericht ──────────────────────────────────────────────────────────────
     print("\nBERICHT:\n")

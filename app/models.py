@@ -161,6 +161,34 @@ class Marktanalyse(BaseModel):
     beobachtungen: list[Preisbeobachtung] = Field(default_factory=list)  # nur verwendete
 
 
+class PriceAssessment(BaseModel):
+    """Kanonisches, DETERMINISTISCHES Preisurteil (§6/§7/§13).
+
+    Genau EINE Quelle der Wahrheit für die Preisbewertung. Alle Ausgabebereiche
+    (obere Zusammenfassung, Key Findings, "Warum?", Langbericht, Risiko, Handlung)
+    leiten ihre Preisaussage aus DIESEM Objekt ab — es gibt keine getrennte
+    LLM-Neubewertung derselben Zahlen. Median/Spanne/Verdikt/Confidence stammen
+    ausschließlich aus der deterministischen Marktanalyse.
+
+    Zentraler Grundsatz (§6): Innerhalb einer breiten Spanne zu liegen bedeutet
+    NICHT automatisch "marktgerecht" — Medianabweichung UND Lage in der Spanne
+    werden gemeinsam berücksichtigt.
+    """
+    # deutlich_unter | unter | marktgerecht | oberes_segment | ueber | deutlich_ueber | unbekannt
+    verdict: str = "unbekannt"
+    label: str = "Preis nicht bewertbar"          # nutzerlesbares Kurzlabel
+    median_eur: int | None = None
+    lower_bound_eur: int | None = None            # typischer Marktbereich (unteres Quartil)
+    upper_bound_eur: int | None = None            # typischer Marktbereich (oberes Quartil)
+    difference_eur: int | None = None             # Angebot − Median (negativ = unter Median)
+    difference_percent: float | None = None
+    # unter_spanne | unteres_drittel | mittig | oberes_drittel | ueber_spanne | unbekannt
+    position_in_range: str = "unbekannt"
+    confidence: str = "niedrig"                   # = Datenqualität der Marktanalyse
+    recommendation: str = ""                      # konkrete Handlungsempfehlung (deterministisch)
+    begruendung: str = ""                         # ein Satz: Median-Lage + Spannen-Lage kombiniert
+
+
 class Insight(BaseModel):
     """Eine nachvollziehbare Erkenntnis mit Herkunft (Provenance).
 
@@ -242,6 +270,14 @@ class KaufCheckResponse(BaseModel):
     # deterministisch aus den obigen Daten. Additiv -> alte Checks ohne dieses Feld
     # laden weiter (Default []).
     key_findings: list[KeyFinding] = Field(default_factory=list)
+    # Reliability-Sprint: kanonisches, deterministisches Preisurteil (§6/§7/§13).
+    # Alle Preis-Ausgaben leiten sich hieraus ab. None nur bei Alt-Checks.
+    price_assessment: PriceAssessment | None = None
+    # Reliability-Sprint: Ergebnis der Quality-Gate-Pipeline (§1/§14).
+    # "completed_high" (Normalfall) | "completed_medium" (selten) — ein
+    # "research_failed" wird NICHT als fertiger Check ausgeliefert (Kontingent
+    # erstattet). Default für Alt-Checks: completed_high.
+    research_status: str = "completed_high"
 
 
 # ---------- Verkaufs-Check ----------
@@ -328,11 +364,18 @@ class InseratOptimierung(BaseModel):
 
 class VerkaufsCheckResponse(BaseModel):
     bericht: str                                   # Markdown-Bericht
-    schnellverkaufs_preis: int | None = None       # unteres Ende — zügiger Verkauf
-    maximal_preis: int | None = None               # oberes realistisches Ende
-    empfohlener_preis: int | None = None           # empfohlene Mitte
-    verkaufsdauer_tage_schnell: int | None = None  # geschätzte Tage bei Schnellverkauf
-    verkaufsdauer_tage_maximal: int | None = None  # geschätzte Tage bei Maximalpreis
+    schnellverkaufs_preis: int | None = None       # unteres Ende — zügiger Verkauf (= Marktvergleich-Untergrenze)
+    maximal_preis: int | None = None               # oberes realistisches Ende (= Marktvergleich-Obergrenze)
+    empfohlener_preis: int | None = None           # empfohlene Mitte (= Marktmedian)
+    # §11: KEINE scheinpräzisen Tageszahlen mehr, wenn keine belastbaren historischen
+    # Standzeitdaten vorliegen — bleiben None. Stattdessen Vermarktungs-KATEGORIEN.
+    verkaufsdauer_tage_schnell: int | None = None
+    verkaufsdauer_tage_maximal: int | None = None
+    # §11: Vermarktungsdauer als Kategorie ("voraussichtlich schneller" |
+    # "durchschnittliche Vermarktungsdauer" | "wahrscheinlich längere Vermarktung").
+    verkaufsdauer_schnell: str | None = None
+    verkaufsdauer_empfohlen: str | None = None
+    verkaufsdauer_maximal: str | None = None
     marktpreis_min: int | None = None              # Markt-Untergrenze aus Web
     marktpreis_max: int | None = None              # Markt-Obergrenze aus Web
     baureihe_erkannt: str | None = None
@@ -358,6 +401,12 @@ class VerkaufsCheckResponse(BaseModel):
     # gespeicherten Checks liegt eine bereits erzeugte Version hier (persistiert)
     # vor -> kein neuer LLM-Call.
     inserat_optimierung: InseratOptimierung | None = None
+    # Reliability-Sprint: kanonisches, deterministisches Preisurteil (§6/§7/§13) —
+    # dieselbe Quelle für obere Zusammenfassung, Bericht, Key Findings und Strategie.
+    price_assessment: PriceAssessment | None = None
+    # Reliability-Sprint: Quality-Gate-Ergebnis (§1/§14). "completed_high" |
+    # "completed_medium"; "research_failed" wird nicht als fertiger Check geliefert.
+    research_status: str = "completed_high"
 
 
 # ---------- Phase 5: VIRA Dealer (Händler-Bestand) ----------

@@ -17,6 +17,7 @@ from pydantic import BaseModel, field_validator
 from app.car_lookup import call_gemini_json
 from app.config import TAVILY_API_KEY
 from app.ersatzteil_gate import require_ersatzteil_access
+from app.ersatzteil_kompat import parse_fahrzeug, parse_bauteil, klassifiziere, HINWEIS_UNCERTAIN
 from app.gemini_retry import RateLimitExhausted
 from app.utf8 import UTF8JSONResponse
 from app.web_search import results_to_belege, tavily_search
@@ -85,6 +86,7 @@ AUSGABE: Ausschließlich gültiges JSON, kein Text davor oder danach.
       "marke_typ": "oem" | "original" | "nachbau" | "unbekannt",
       "qualitaetsstufe": "<kurzer Begriff, z.B. 'Erstausrüster-Qualität', 'Premium-Nachbau', 'Budget-Nachbau'>",
       "url": "<direkte Produkt-URL aus den Quellen>",
+      "passt_fahrzeug": "<für welches Fahrzeug/Variante das Teil laut Quelle ist — so genau wie belegt, z.B. 'BMW M3 E92' oder 'BMW 3er E90/E92 318i-330i'; leer wenn die Quelle es nicht sagt>",
       "hinweis": "<1 kurzer Satz: Besonderheit, Lieferzeit o.ä.>"
     }
   ],
@@ -99,7 +101,8 @@ REGELN:
 4. Maximal 8 Einträge, sortiert nach Preis aufsteigend.
 5. Wenn KEINE brauchbaren Treffer in den Web-Ergebnissen stehen, gib "ergebnisse": [] zurück und erkläre in "empfehlung" ehrlich, dass keine Angebote gefunden wurden.
 6. Die Empfehlung soll dem Nutzer Sicherheit geben: worauf er beim gewählten Teil achten sollte (Qualität vs. Preis), nicht nur "das billigste".
-7. Schreibe ausschließlich auf Deutsch, sachlich, ohne Übertreibung.\
+7. Schreibe ausschließlich auf Deutsch, sachlich, ohne Übertreibung.
+8. Fülle "passt_fahrzeug" so exakt wie die Quelle es hergibt (Marke, Modell, Performance-Variante wie M3/AMG/RS/GTI, Karosseriecode, Achse). Erfinde KEINE Passgenauigkeit. Ist das Zielfahrzeug ein Performance-Modell (z.B. M3), bestätige NUR dann Kompatibilität, wenn die Quelle genau dieses Performance-Modell nennt — ein Teil für den normalen E92 (z.B. 320i/320d) ist NICHT kompatibel mit dem M3.\
 """
 
 
@@ -198,6 +201,43 @@ def _mindestnutzen(fahrzeug: str, bauteil: str) -> str:
     )
 
 
+def _bewerte_kompatibilitaet(fahrzeug: str, bauteil: str, ergebnisse: list[dict]) -> tuple[list[dict], int | None]:
+    """§5: jedes Produkt strukturiert gegen das Zielfahrzeug einstufen.
+
+    - "rejected" (klarer Widerspruch, z.B. normale E92-Bremse für einen M3, falsche
+      Achse, anderer Hersteller) -> vollständig ausblenden.
+    - "uncertain" -> bleibt sichtbar, aber NIE empfohlen; klarer FIN/OE-Hinweis.
+    - "confirmed" -> darf empfohlen werden.
+
+    Gibt die gefilterten Ergebnisse und den Index des empfohlenen (nur "confirmed",
+    günstigstes) zurück — unabhängig davon, was das LLM als empfohlen markiert hätte.
+    """
+    fz = parse_fahrzeug(fahrzeug)
+    teil = parse_bauteil(bauteil)
+    sichtbar: list[dict] = []
+    for e in ergebnisse:
+        if not isinstance(e, dict):
+            continue
+        produkt_text = " ".join(str(e.get(k, "")) for k in ("teilename", "passt_fahrzeug", "hinweis", "url"))
+        kompat, grund = klassifiziere(fz, teil, produkt_text)
+        if kompat == "rejected":
+            # Sicherheitsrelevant falsch -> gar nicht anzeigen.
+            continue
+        e["kompatibilitaet"] = kompat
+        e["kompat_grund"] = grund
+        if kompat == "uncertain":
+            e["kompat_hinweis"] = HINWEIS_UNCERTAIN
+        sichtbar.append(e)
+
+    # Empfohlen darf NUR ein "confirmed"-Treffer sein; günstigsten wählen (Preis
+    # aufsteigend, None-Preise ans Ende).
+    confirmed = [(i, e) for i, e in enumerate(sichtbar) if e.get("kompatibilitaet") == "confirmed"]
+    if not confirmed:
+        return sichtbar, None
+    confirmed.sort(key=lambda t: (t[1].get("preis_eur") is None, t[1].get("preis_eur") or 0))
+    return sichtbar, confirmed[0][0]
+
+
 @router.post("/suche")
 async def ersatzteil_suche(
     body: SucheBody,
@@ -249,17 +289,29 @@ async def ersatzteil_suche(
     if not isinstance(ergebnisse, list):
         ergebnisse = []
 
-    # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren:
-    # ehrlicher Mindestnutzen statt einer inhaltsleeren Empfehlung (§9).
+    # §5: Kompatibilität strukturiert einstufen — "rejected" ausblenden, "uncertain"
+    # nie empfehlen, nur "confirmed" darf empfohlen werden (deterministisch, nicht LLM).
+    ergebnisse, empfohlener_index = _bewerte_kompatibilitaet(body.fahrzeug, body.bauteil, ergebnisse)
+
+    # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren
+    # (oder alle wurden als inkompatibel ausgeblendet): ehrlicher Mindestnutzen (§9).
     empfehlung = result.get("empfehlung", "")
     if not ergebnisse:
         empfehlung = _mindestnutzen(body.fahrzeug, body.bauteil)
+    elif empfohlener_index is None:
+        # Es gibt sichtbare Treffer, aber keiner ist bestätigt kompatibel -> ehrlich
+        # darauf hinweisen (§5: uncertain nie als "empfohlen" darstellen).
+        empfehlung = (
+            "Für dieses Fahrzeug konnte keine Kompatibilität eindeutig bestätigt werden. "
+            "Die angezeigten Angebote sind unverbindlich — prüfe die Passung vor der "
+            "Bestellung anhand der FIN/Fahrgestellnummer oder der OE-/OEM-Nummer. "
+        ) + (empfehlung or "")
 
     return {
         "suchanfrage": {"fahrzeug": body.fahrzeug, "bauteil": body.bauteil},
         "ergebnisse": ergebnisse,
         "empfehlung": empfehlung,
-        "empfohlener_index": result.get("empfohlener_index") if ergebnisse else None,
+        "empfohlener_index": empfohlener_index,
         "quelle": "web",
         "belege": belege,
     }

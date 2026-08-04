@@ -11,6 +11,7 @@ from app.auth import verify_api_key
 from app.check_gate import require_check_access, refund_check_credit
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.kaufcheck import run_kaufcheck
+from app.marktrecherche import RechercheUnzureichend
 from app.utf8 import UTF8JSONResponse
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,21 @@ async def kaufcheck_endpunkt(
     verify_api_key(request)
     try:
         result = await run_kaufcheck(body)
+    except RechercheUnzureichend as exc:
+        # §0/§4: keine belastbare Marktdatenbasis -> KEIN fertiger Bericht, Kontingent
+        # zurückerstatten (idempotent). Der Nutzer erhält eine freundliche Meldung mit
+        # Retry-Option; research_status="research_failed" signalisiert dem Frontend,
+        # den Check NICHT als abgeschlossen zu behandeln (nicht speichern).
+        log.info("Kaufcheck: research_failed, erstatte Kontingent zurück (user_id=%s)", user_id)
+        refund_check_credit(user_id)
+        return KaufCheckResponse(
+            bericht=exc.nachricht,
+            empfehlung="unbekannt",
+            preis_bewertung="unbekannt",
+            quelle="web",
+            vertrauen="niedrig",
+            research_status="research_failed",
+        )
     except GeminiFehlgeschlagen as exc:
         # Der Nutzer hat keine verwertbare Analyse erhalten — das bereits von
         # require_check_access() abgezogene Check-Kontingent zurückerstatten,
