@@ -464,7 +464,16 @@ def _datenqualitaet(verwendet: list[Preisbeobachtung], median: int | None,
     sehr_n = sum(1 for b in verwendet if b.vergleichbarkeit == "sehr_aehnlich")
     aehn_n = sum(1 for b in verwendet if b.vergleichbarkeit == "aehnlich")
     listing_n = sum(1 for b in verwendet if b.source_type == "listing")
-    beide_n = sum(1 for b in verwendet if b.baujahr is not None and b.kilometerstand is not None)
+    # §Phase 1-3/6: Kategorie-/Aggregatorseiten-Herkunft darf selbst mit vollem
+    # Baujahr+km-Attribut NICHT als "konkretes Einzelfahrzeug" zählen (harte
+    # Abgrenzung von der reinen "unknown"-Fallback-Heuristik) — in der echten
+    # Pipeline erreichen solche Punkte `verwendet` inzwischen ohnehin nicht mehr
+    # (analysiere_markt filtert source_type=="category" bereits vor `kandidaten`
+    # heraus); diese Bedingung ist ein zusätzliches Sicherheitsnetz für direkte
+    # Aufrufer dieser Funktion (z.B. Tests).
+    beide_n = sum(1 for b in verwendet
+                  if b.baujahr is not None and b.kilometerstand is not None
+                  and b.source_type != "category")
     # "Konkretes Einzelfahrzeug"-Signal: echte Listing-URL ODER vollständiges
     # Baujahr+km-Paar am Datenpunkt (siehe Empirie-Hinweis oben) — je nachdem, was
     # mehr zählt (nie doppelt gezählt).
@@ -641,6 +650,17 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
         # Preis-Datenpunkte. Groß gedeckelt gegen pathologische Seitengrößen.
         raw = (r.get("raw_content") or "")[:20_000]
         text = f"{r.get('title','')}\n{r.get('content','')}\n{raw}"
+        # §Phase 2: die enge Zeichen-Fenster-Zuordnung (_FENSTER=130, s.o.) ist die
+        # bestehende Absicherung dafür, dass km/Baujahr eines Preises NICHT einem
+        # NACHBAR-Fahrzeug im selben Snippet zugeordnet werden — ein Snippet mit
+        # mehreren sauber je-Preis attribuierten Fahrzeugen (z.B. eine Portal-
+        # Trefferliste mit "Preis X km Y EZ Z . Preis X2 km Y2 EZ Z2 . ...") bleibt
+        # daher weiterhin je Fahrzeug einzeln zählbar (das ist die tragende
+        # Sprint-3-Empirie, ohne die kaum ein Fahrzeug HOCH/MITTEL erreichen würde).
+        # Der eigentliche Aggregator-/Kategorie-Fall (12gebrauchtwagen.de u.ä. —
+        # eine Modell-/Motor-Suchseite OHNE einzeln geprüfte Inserate) wird bereits
+        # auf URL-Ebene erkannt (ist_kategorieseite/ist_generische_suchseite) und
+        # dort als source_type="category" markiert, s.o.
         roh.extend(_extrahiere_aus_text(text, url, source_type))
 
     bewertet = [_bewerte(b, ziel) for b in roh]
@@ -655,9 +675,20 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
         gesehen.add(key)
         uniq.append(b)
 
-    sehr = [b for b in uniq if b.vergleichbarkeit == "sehr_aehnlich"]
-    aehn = [b for b in uniq if b.vergleichbarkeit == "aehnlich"]
-    bedingt = [b for b in uniq if b.vergleichbarkeit == "bedingt"]
+    # §Phase 1-3 (Kernfix): Kategorie-/Such-/Aggregatorseiten sind KEIN konkretes
+    # Vergleichsfahrzeug — ihre Datenpunkte dürfen Median, Quartile, Similarity-
+    # Zählung und Datenqualität NICHT beeinflussen. Sie bleiben ausschließlich als
+    # transparent ausgewiesene Hintergrundquelle erhalten (hintergrund_domains).
+    nutzbar = [b for b in uniq if b.source_type != "category"]
+    hintergrund = [b for b in uniq if b.source_type == "category"]
+    hintergrund_domains: list[str] = []
+    for b in hintergrund:
+        if b.quelle_domain and b.quelle_domain not in hintergrund_domains:
+            hintergrund_domains.append(b.quelle_domain)
+
+    sehr = [b for b in nutzbar if b.vergleichbarkeit == "sehr_aehnlich"]
+    aehn = [b for b in nutzbar if b.vergleichbarkeit == "aehnlich"]
+    bedingt = [b for b in nutzbar if b.vergleichbarkeit == "bedingt"]
 
     # Für die Preisberechnung bevorzugt sehr_aehnlich + aehnlich; "bedingt" nur als
     # Fallback bei zu wenig Daten. "ungeeignet" NIE.
@@ -700,6 +731,7 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
         anzahl_bedingt=sum(1 for b in verwendet if b.vergleichbarkeit == "bedingt"),
         angebot_eur=angebot_eur,
         quellen_domains=domains,
+        hintergrund_domains=hintergrund_domains,
     )
 
     def _unzuverlaessig(grund: str) -> Marktanalyse:

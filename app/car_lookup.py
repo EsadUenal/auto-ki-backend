@@ -17,6 +17,7 @@ from google.genai import types as genai_types
 from app.config import GEMINI_API_KEY, LLM_MODEL
 from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen
+from app.recall_filter import gefilterte_rueckrufe
 
 log = logging.getLogger(__name__)
 
@@ -248,8 +249,17 @@ def find_motor(baureihe: dict, hint: str | None) -> dict | None:
 
 # ---------- DB-Kontext ----------
 
-def build_db_context(baureihe: dict | None, motor_match: dict | None) -> str:
-    """Baut den strukturierten DB-Kontext-String (Specs, Schwachstellen, Rückrufe)."""
+def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: int | None = None) -> str:
+    """Baut den strukturierten DB-Kontext-String (Specs, Schwachstellen, Rückrufe).
+
+    §Phase 7 (Reliability-Sprint 4): Rückrufe laufen NICHT mehr ungefiltert aus der
+    DB in den Prompt — das war der Hauptleck-Punkt, durch den z.B. ein Hochvolt-/
+    PHEV-Rückruf trotz erkanntem Diesel im LLM-Bericht auftauchen konnte, obwohl
+    dieselbe Applicability-Prüfung ihn für die strukturierten Insights bereits
+    korrekt herausfilterte. `gefilterte_rueckrufe` ist die EINE zentrale
+    Allowed-List (app/recall_filter.py), die hier wie in evidence.py verwendet
+    wird — inkl. der Applicability-Formulierung im Text (das LLM erfährt nicht nur
+    DASS ein Rückruf gilt, sondern WIE sicher)."""
     if baureihe is None:
         return "Kein geprüftes DB-Profil für dieses Fahrzeug vorhanden."
 
@@ -312,12 +322,13 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None) -> str:
             )
         lines.append("")
 
-    if baureihe.get("rueckrufe"):
-        lines.append("### KBA-Rückrufe:")
-        for r in baureihe["rueckrufe"]:
-            lines.append(
-                f"  {r.get('datum','?')}: {r.get('mangel','?')} — {r.get('abhilfe','?')} (Ref: {r.get('kba_referenz','?')})"
-            )
+    # §Phase 7: NUR die zentral gefilterte Allowed-List (kein Antriebs-Widerspruch,
+    # kein Baujahr-Ausschluss) — mit Applicability-Wortlaut statt nacktem Text.
+    erlaubte_rueckrufe = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, baujahr)
+    if erlaubte_rueckrufe:
+        lines.append("### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
+        for r in erlaubte_rueckrufe:
+            lines.append(f"  {r.get('datum','?')}: {r['text']} (Ref: {r.get('kba_referenz','?')})")
 
     return "\n".join(lines)
 

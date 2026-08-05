@@ -28,6 +28,7 @@ from google.genai import types as genai_types
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
+from app.recall_filter import gefilterte_rueckrufe, _norm_kraftstoff
 from app.web_search import (
     tavily_search, results_to_context, results_to_belege, curate_results,
     US_QUELLEN_AUSSCHLUSS as _US_QUELLEN_AUSSCHLUSS,
@@ -152,8 +153,22 @@ def _vector_search(query: str, baureihe_ids: list[str], n: int = 3) -> list[str]
 
 # ---------- DB-Kontext aufbauen ----------
 
-def _sql_context(baureihe_ids: list[str]) -> str:
-    """Liest alle harten Fakten aus SQLite und baut einen strukturierten Kontext-String."""
+def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> str:
+    """Liest alle harten Fakten aus SQLite und baut einen strukturierten Kontext-String.
+
+    §Phase 7 (Reliability-Sprint 4): Rückrufe liefen hier bisher KOMPLETT ungefiltert
+    aus der DB in den Chat-Prompt (derselbe Leck-Punkt wie build_db_context im Kauf-/
+    Verkaufscheck) — ein Hochvolt-/PHEV-Rückruf konnte im allgemeinen Chat also auch
+    für ein erkanntes Diesel-Fahrzeug auftauchen. Der Chat kennt anders als Kauf-/
+    Verkaufscheck KEINE strukturierte Motorisierung (`fahrzeug_kontext` ist reiner
+    Freitext, `ChatRequest.fahrzeug_kontext`) — `fuel_hint_text` (Nutzer-Nachricht +
+    Fahrzeug-Kontext-Freitext) wird deshalb best-effort auf einen Kraftstoff-Begriff
+    geprüft (dieselbe `_norm_kraftstoff`-Erkennung wie evidence.py/recall_filter.py).
+    Wird kein Kraftstoff erkannt, filtert `gefilterte_rueckrufe` trotzdem: variantens-
+    pezifische Rückrufe landen dann als "unclear" (mit FIN-Hinweis) im Kontext statt
+    roh — nie als unqualifizierte Tatsachenbehauptung."""
+    erkannter_kraftstoff = _norm_kraftstoff(fuel_hint_text) if fuel_hint_text else None
+    fuel_motor_match = {"kraftstoff": erkannter_kraftstoff} if erkannter_kraftstoff else None
     parts = []
     # EINE Batch-Abfrage für marke/modell/generation aller Fahrzeuge statt einer
     # eigenen Connection + Query pro Fahrzeug (relevant bei Mehrfahrzeug-Nachrichten).
@@ -224,13 +239,12 @@ def _sql_context(baureihe_ids: list[str]) -> str:
                     f"(Baujahre: {s['betroffene_baujahre']})"
                 )
 
-        if data["rueckrufe"]:
-            lines.append("\n### KBA-Rückrufe:")
-            for r in data["rueckrufe"]:
-                lines.append(
-                    f"  {r['datum']}: {r['mangel']} — Abhilfe: {r['abhilfe']} "
-                    f"(Ref: {r['kba_referenz']})"
-                )
+        # §Phase 7: zentrale Allowed-List statt rohem DB-Dump (s.o.).
+        erlaubte_rueckrufe = gefilterte_rueckrufe(data["rueckrufe"], fuel_motor_match, None)
+        if erlaubte_rueckrufe:
+            lines.append("\n### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
+            for r in erlaubte_rueckrufe:
+                lines.append(f"  {r['datum']}: {r['text']} (Ref: {r['kba_referenz']})")
 
         parts.append("\n".join(lines))
 
@@ -801,8 +815,11 @@ async def chat_stream(
     if baureihe_ids:
         # SQLite (_sql_context) und ChromaDB (_vector_search) sind unabhängige,
         # blockierende Aufrufe — parallel in Threads statt nacheinander ausführen.
+        # §Phase 7: Freitext (Nutzer-Nachricht + Fahrzeug-Kontext) für die best-effort
+        # Kraftstofferkennung im Rückruf-Filter — kein strukturierter Motor im Chat.
+        _fuel_hint = f"{message} {fahrzeug_kontext or ''}"
         sql_ctx, vec_docs = await asyncio.gather(
-            asyncio.to_thread(_sql_context, baureihe_ids),
+            asyncio.to_thread(_sql_context, baureihe_ids, _fuel_hint),
             asyncio.to_thread(_vector_search, message, baureihe_ids),
         )
     else:

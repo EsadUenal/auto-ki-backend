@@ -33,6 +33,8 @@ from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
 from app.vehicle_identity import VehicleIdentity
 from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
+from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
+from app.report_validator import pruefe_bericht
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
@@ -255,7 +257,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     motor_match = find_motor(baureihe, req.motor) if baureihe else None
 
     # 2. DB-Kontext
-    db_ctx = build_db_context(baureihe, motor_match)
+    db_ctx = build_db_context(baureihe, motor_match, req.baujahr)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
@@ -268,9 +270,11 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     if TAVILY_API_KEY and req.marke and req.modell:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
+        # §Phase 0/13: siehe Kommentar in kaufcheck.py — max_results 20 statt 10,
+        # gemessen deutlich mehr extrahierbare Datenpunkte ohne Mehrkosten.
         web_results_roh, marktanalyse, diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_vorstellung, US_QUELLEN_AUSSCHLUSS,
-            count=10, zweck="verkaufscheck-markt", rare_queries=rare_queries, bypass_cache=retry)
+            count=20, zweck="verkaufscheck-markt", rare_queries=rare_queries, bypass_cache=retry)
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
         diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
@@ -318,6 +322,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         # Verkaufsdauer-Zahl ("innerhalb von 3-4 Wochen"), falls das LLM sie trotz
         # Anweisung erzeugt hat. Nur in Sätzen mit Verkaufs-/Vermarktungskontext.
         result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
+        # §Phase 8: letztes Sicherheitsnetz gegen ausgeschlossene Rückrufe im
+        # Freitext-Bericht (dieselbe Absicherung wie im Kaufcheck, siehe kaufcheck.py).
+        if baureihe and baureihe.get("rueckrufe"):
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+            if _ausgeschlossen:
+                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+                result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
         # Preis-Konsistenz: liegt empfohlener/maximaler Preis spürbar über der
         # Markt-Obergrenze ohne transparente Begründung, den Aufschlag deterministisch
         # in Euro UND Prozent kenntlich machen (verändert die Preise selbst nicht).

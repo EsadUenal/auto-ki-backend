@@ -30,6 +30,8 @@ from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
 from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
+from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
+from app.report_validator import pruefe_bericht
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
@@ -208,7 +210,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     motor_match = find_motor(baureihe, req.motor) if baureihe else None
 
     # 2. DB-Kontext
-    db_ctx = build_db_context(baureihe, motor_match)
+    db_ctx = build_db_context(baureihe, motor_match, req.baujahr)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
@@ -225,9 +227,16 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     if TAVILY_API_KEY and req.marke and req.modell:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
+        # §Phase 0/13 (gemessen, scripts/diagnose_provider_matrix.py): max_results
+        # 20 statt 10 verdoppelt die extrahierbaren Preis-Datenpunkte bei BMW 320d
+        # (48->86) und Insignia (104->229) OHNE Mehrkosten (Tavily "basic" ist pro
+        # Request, nicht pro Ergebnis, abgerechnet) und ohne den Latenz-/
+        # Zeitüberschreitungs-Nachteil von search_depth="advanced" (2-4x langsamer,
+        # ein Lauf schlug in der Messung sogar fehl). "advanced" bleibt daher NICHT
+        # produktiv verdrahtet — siehe app/web_search.py::tavily_search(search_depth=).
         web_results_roh, marktanalyse, diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_eur, US_QUELLEN_AUSSCHLUSS,
-            count=10, zweck="kaufcheck-markt", rare_queries=rare_queries, bypass_cache=retry)
+            count=20, zweck="kaufcheck-markt", rare_queries=rare_queries, bypass_cache=retry)
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
         diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
@@ -280,6 +289,16 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # §26 defensiv: auch der Kaufcheck-Bericht kann einen Wiederverkaufs-Ausblick
         # enthalten — dieselbe Absicherung wie im Verkaufscheck.
         result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
+        # §Phase 8: letztes Sicherheitsnetz — auch wenn db_ctx/evidence_block bereits
+        # gefiltert waren (§Phase 7), kann das LLM Begriffe frei kombinieren
+        # (z.B. aus dem Schwachstellen-/DB-Profil-Text). Entfernt NUR Sätze/Zeilen,
+        # die eindeutig einem für dieses Fahrzeug ausgeschlossenen Rückruf zuordenbar
+        # sind (z.B. Hochvolt-Rückruf bei erkanntem Diesel).
+        if baureihe and baureihe.get("rueckrufe"):
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+            if _ausgeschlossen:
+                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+                result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,

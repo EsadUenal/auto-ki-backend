@@ -95,45 +95,51 @@ def _pa_from_insights(insights: list[Insight], check_typ: str) -> PriceAssessmen
 
 def _preis_finding_kauf(pa: PriceAssessment, ev_id: str) -> KeyFinding:
     """EIN Preis-Finding, abgeleitet aus dem KANONISCHEN Preisurteil (§6) — nie eine
-    eigene, abweichende Bewertung derselben Zahlen."""
+    eigene, abweichende Bewertung derselben Zahlen.
+
+    §Phase 12 (Reliability-Sprint 4): KEIN angehängter "Median vergleichbarer
+    Fahrzeuge: X €"-Satz mehr — dieselbe Zahl steht bereits IMMER sichtbar oben in
+    den Markt-Kennzahlen (MarketMetrics, ResultSummary.tsx) UND im ausklappbaren
+    "Warum diese Preisbewertung?"-Beleg. `pa.begruendung` bleibt als kurze,
+    NICHT-redundante Einordnung; Details/Zahlen -> "siehe oben" statt Wiederholung.
+    """
     diff = abs(pa.difference_eur or 0)
-    median = pa.median_eur
     pct = pa.difference_percent or 0.0
     ev = [ev_id]
     v = pa.verdict
     if v == "deutlich_unter":
         return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💰",
             titel="Ungewöhnlich günstiger Preis",
-            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}. "
-                         f"Preis, Fahrzeughistorie und Verkäuferangaben besonders sorgfältig prüfen.",
+            beschreibung=f"{pa.begruendung} Preis, Fahrzeughistorie und Verkäuferangaben "
+                         f"besonders sorgfältig prüfen.",
             wert=f"↓ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
             evidence_ids=ev, prioritaet=_P_PREIS_UNGEWOEHNLICH)
     if v == "unter":
         return KeyFinding(id="", kategorie="preis", stufe=STUFE_CHANCE, icon="💰",
             titel="Unter Marktpreis",
-            beschreibung=f"{pa.begruendung} Median der Vergleichspreise: {_eur(median)}.",
+            beschreibung=pa.begruendung,
             wert=f"↓ {_eur(diff)} · {_pct(pct)}", evidence_ids=ev, prioritaet=_P_PREIS_UNTER)
     if v == "marktgerecht":
         return KeyFinding(id="", kategorie="preis", stufe=STUFE_INFO, icon="💰",
             titel="Preis marktgerecht",
-            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            beschreibung=pa.begruendung,
             evidence_ids=ev, prioritaet=_P_PREIS_INFO)
     if v == "oberes_segment":
         return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
             titel="Oberes Marktsegment",
-            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            beschreibung=pa.begruendung,
             wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
             evidence_ids=ev, prioritaet=_P_PREIS_UEBER)
     if v == "ueber":
         return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
             titel="Über Marktpreis",
-            beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+            beschreibung=pa.begruendung,
             wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
             evidence_ids=ev, prioritaet=_P_PREIS_UEBER)
     # deutlich_ueber
     return KeyFinding(id="", kategorie="preis", stufe=STUFE_WARNUNG, icon="💸",
         titel="Deutlich über Marktpreis",
-        beschreibung=f"{pa.begruendung} Median vergleichbarer Fahrzeuge: {_eur(median)}.",
+        beschreibung=pa.begruendung,
         wert=f"↑ {_eur(diff)} · {_pct(pct)}", aktion=pa.recommendation,
         evidence_ids=ev, prioritaet=_P_PREIS_UEBER + 10)
 

@@ -109,16 +109,31 @@ hoch_ohne_attribute = [obs(p, d, bj=None, km=None, source_type="unknown") for p,
 check("D neu: dieselben 8 Treffer OHNE jedes Baujahr/km-Attribut -> NICHT hoch",
       _datenqualitaet(hoch_ohne_attribute, 20800, 20300, 21500) != "hoch")
 
-# Aber: Kategorieseiten-Herkunft (source_type='unknown'/'category') MIT vollständigem
-# Baujahr+km je Datenpunkt (der Tavily-Realfall — einzelne Fahrzeugzeilen INNERHALB
-# einer Such-/Kategorieseite) darf weiterhin "hoch" erreichen — sonst wäre HOCH für
-# reale Fahrzeuge strukturell unerreichbar.
+# Reliability-Sprint 4 (§Phase 1-3/6): eine erkannte Kategorie-/Aggregatorseite
+# (source_type="category") darf den Median/die Quartile/die Datenqualität NICHT
+# beeinflussen — auch NICHT mit vollständigem Baujahr+km je Datenpunkt. In der
+# echten Pipeline erreichen solche Punkte `verwendet` ohnehin nicht mehr
+# (analysiere_markt filtert source_type=="category" bereits vor der Kandidaten-
+# Bildung heraus); dieser Test prüft das zusätzliche Sicherheitsnetz in
+# `_datenqualitaet` selbst (beide_n zählt category-Herkunft nicht mit). Der
+# weiterhin tragfähige Tavily-Realfall bleibt source_type="unknown" (siehe Test
+# oben/unten) — NICHT "category".
 hoch_kategorie_mit_attributen = [obs(p, d, source_type="category") for p, d in
                                  [(20000, "mobile.de"), (20500, "mobile.de"), (21000, "autoscout24.de"),
                                   (21500, "autoscout24.de"), (20800, "mobile.de"), (21200, "autoscout24.de"),
                                   (20300, "mobile.de"), (21100, "autoscout24.de")]]
-check("D neu: Kategorieseiten-Herkunft MIT Baujahr+km je Datenpunkt -> hoch weiterhin erreichbar",
-      _datenqualitaet(hoch_kategorie_mit_attributen, 20800, 20300, 21500) == "hoch")
+check("D neu: Kategorieseiten-Herkunft MIT Baujahr+km je Datenpunkt -> NICHT hoch (§Phase 1-3)",
+      _datenqualitaet(hoch_kategorie_mit_attributen, 20800, 20300, 21500) != "hoch")
+
+# Der Tavily-Realfall (einzelne Fahrzeugzeilen INNERHALB einer noch nicht als
+# Kategorieseite erkannten Seite, source_type="unknown") bleibt tragfähig — sonst
+# wäre HOCH für reale Fahrzeuge strukturell unerreichbar (Sprint-3-Empirie).
+hoch_unknown_mit_attributen = [obs(p, d, source_type="unknown") for p, d in
+                               [(20000, "mobile.de"), (20500, "mobile.de"), (21000, "autoscout24.de"),
+                                (21500, "autoscout24.de"), (20800, "mobile.de"), (21200, "autoscout24.de"),
+                                (20300, "mobile.de"), (21100, "autoscout24.de")]]
+check("D neu: 'unknown'-Herkunft MIT Baujahr+km je Datenpunkt -> hoch weiterhin erreichbar",
+      _datenqualitaet(hoch_unknown_mit_attributen, 20800, 20300, 21500) == "hoch")
 
 # Reliability-Sprint 3 §14: harte Invariante — AUSSCHLIESSLICH "bedingt" passende
 # Treffer (0 sehr_ähnlich + 0 ähnlich) dürfen NIEMALS "hoch" ergeben, egal wie viele

@@ -119,8 +119,11 @@ check("Wenig: Methode weist auf begrenzte Datenbasis hin",
 # ── Inkohärente Streuung (gemischte Preisarten) -> kein Schein-Median ────────
 # Reale Falle: eine Quelle listet dasselbe Auto mit Cash-/Finanzierungs-/Gesamt-
 # preisen (1.690 / 13.960 / 31.384 €) -> extrahierte Datenpunkte streuen absurd.
+# (Domain bewusst NICHT 12gebrauchtwagen.de — die ist seit §Phase 1 ein real
+# erkannter Aggregator, siehe test_aggregatorseiten.py; hier testen wir den
+# Streuungs-Guard auf einer neutralen, unklassifizierten Domain.)
 WEB_STREU = [
-    {"url": "https://12gebrauchtwagen.de/x", "title": "Mercedes C 200 2019",
+    {"url": "https://beispielportal.de/x", "title": "Mercedes C 200 2019",
      "content": (
          "Mercedes C 200 1.690 € 100.000 km EZ 01/2020 . "
          "Mercedes C 200 13.960 € 100.000 km EZ 02/2020 . "

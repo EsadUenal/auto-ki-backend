@@ -81,9 +81,10 @@ async def diagnose_markt(name: str, req_kwargs: dict, *, check_typ: str = "kauf"
     print("\n-- Stufen --")
     for s in diag["stufen"]:
         print(f"  [{s.get('stufe')}] label={s.get('label')} felder={s.get('felder')} "
+              f"weggelassen={s.get('weggelassene_felder')} "
               f"domains={s.get('domains')} query={s.get('query')!r}")
         print(f"      roh={s.get('roh')} neu={s.get('neu')} akzeptiert={s.get('akzeptiert')} "
-              f"quali={s.get('quali')}")
+              f"quali={s.get('quali')} hintergrund_domains={s.get('hintergrund_domains')}")
 
     print("\n-- Ergebnis --")
     print(f"  gefunden (Datenpunkte gesamt):     {diag['gefunden_datenpunkte']}")
@@ -98,6 +99,7 @@ async def diagnose_markt(name: str, req_kwargs: dict, *, check_typ: str = "kauf"
         print(f"  source_type (verwendet): listing={listing_n} category={category_n} unknown={unknown_n}")
         print(f"  Median: {ma.median_eur} € | Spanne: {ma.spanne_min_eur}-{ma.spanne_max_eur} €")
     print(f"  Domains:                           {diag['domains']}")
+    print(f"  Hintergrund-Domains (Kategorie):   {diag.get('hintergrund_domains')}")
     print(f"  Datenqualität:                     {diag['datenqualitaet']}")
     print(f"  research_status:                   {diag['research_status']}")
     print(f"  research_failure_grund:            {diag.get('research_failure_grund')}")

@@ -162,6 +162,27 @@ class QueryStufe:
     label: str
     felder: list[str] = field(default_factory=list)
     raw_content: bool = False
+    # §Phase 4 (Diagnose): Komplement zu `felder` — am Fahrzeug vorhandene, aber auf
+    # dieser Stufe bewusst NICHT verwendete VehicleIdentity-Felder. Wird nach dem
+    # Bau aller Stufen einmalig befüllt (siehe Ende von baue_deep_queries/
+    # baue_rare_queries), rein informativ für scripts/diagnose_recherche.py.
+    weggelassene_felder: list[str] = field(default_factory=list)
+
+
+# §Phase 4 (Diagnose): vollständige Menge der VehicleIdentity-Felder, die der
+# Query-Planner grundsätzlich verwenden KÖNNTE — Grundlage für "bewusst
+# weggelassene Felder" je Stufe (Komplement zu QueryStufe.felder).
+_ALLE_IDENTITY_FELDER = (
+    "make", "model", "model_variant", "generation", "engine_name", "displacement",
+    "fuel", "horsepower", "transmission", "year", "mileage",
+)
+
+
+def _weggelassen(identity: "VehicleIdentity", verwendet: list[str]) -> list[str]:
+    """Von der Stufe bewusst NICHT verwendete, aber am Fahrzeug tatsächlich
+    vorhandene Felder (§Phase 4) — reine Diagnose-Transparenz, ändert keine Logik."""
+    return [f for f in _ALLE_IDENTITY_FELDER
+            if f not in verwendet and getattr(identity, f, None)]
 
 
 def _q(*teile) -> str:
@@ -280,6 +301,7 @@ def baue_deep_queries(identity: VehicleIdentity) -> list[QueryStufe]:
         s.query = s.query.strip()
         if s.query and s.query not in gesehen:
             gesehen.add(s.query)
+            s.weggelassene_felder = _weggelassen(identity, s.felder)
             out.append(s)
     return out
 
@@ -329,6 +351,7 @@ def baue_rare_queries(identity: VehicleIdentity) -> list[QueryStufe]:
         s.query = s.query.strip()
         if s.query and s.query not in gesehen:
             gesehen.add(s.query)
+            s.weggelassene_felder = _weggelassen(identity, s.felder)
             out.append(s)
     return out
 
@@ -365,6 +388,7 @@ async def vertiefe_marktrecherche(
     stufen_log: list[dict] = [{
         "stufe": "initial", "label": "initial", "roh": len(accumulated), "neu": len(accumulated),
         "akzeptiert": ma.verwendet, "quali": ma.datenqualitaet, "felder": [],
+        "hintergrund_domains": list(ma.hintergrund_domains),
     }]
 
     async def _laufe_stufen(stufen: list[QueryStufe], praefix: str) -> None:
@@ -383,8 +407,13 @@ async def vertiefe_marktrecherche(
             stufen_log.append({
                 "stufe": f"{praefix}{i}", "label": stufe.label, "query": stufe.query[:100],
                 "domains": stufe.include_domains, "felder": stufe.felder,
+                # §Phase 4: bewusst weggelassene Felder je Stufe (Diagnose-
+                # Transparenz — welche Nutzerdaten in dieser Stufe NICHT einflossen).
+                "weggelassene_felder": stufe.weggelassene_felder,
+                "raw_content": stufe.raw_content,
                 "roh": len(results), "neu": neu, "akzeptiert": ma.verwendet,
                 "quali": ma.datenqualitaet,
+                "hintergrund_domains": list(ma.hintergrund_domains),
             })
             if genug(ma):
                 return
@@ -416,6 +445,7 @@ async def vertiefe_marktrecherche(
         "research_failure_grund": grund,
         "hatte_technischen_fehler": hatte_technischen_fehler,
         "domains": list(ma.quellen_domains) if ma else [],
+        "hintergrund_domains": list(ma.hintergrund_domains) if ma else [],
         "dauer_ms": round((time.perf_counter() - t0) * 1000),
     }
     log.info("[RECHERCHE %s] status=%s grund=%s akzeptiert=%d/%d quali=%s stufen=%d dauer=%dms domains=%s",

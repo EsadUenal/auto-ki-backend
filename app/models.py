@@ -165,6 +165,12 @@ class Marktanalyse(BaseModel):
     methode: str | None = None          # kurze Dokumentation der Berechnungsmethode
     quellen_domains: list[str] = Field(default_factory=list)
     beobachtungen: list[Preisbeobachtung] = Field(default_factory=list)  # nur verwendete
+    # Reliability-Sprint 4 (§Phase 3): Domains, aus denen NUR Kategorie-/Such-/
+    # Aggregatorseiten-Preispunkte stammten (source_type=="category") — diese haben
+    # den Median/die Quartile/die Datenqualität NICHT beeinflusst, dienen aber als
+    # transparent ausgewiesene Hintergrund-/Discovery-Quelle. Additiv, Default leer
+    # -> alte gespeicherte Checks bleiben ladbar.
+    hintergrund_domains: list[str] = Field(default_factory=list)
 
 
 class PriceAssessment(BaseModel):
