@@ -22,8 +22,8 @@ from app.evidence import (
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
-    vertiefe_marktrecherche, baue_deep_queries, research_status, RechercheUnzureichend,
-    NACHRICHT_UNZUREICHEND,
+    vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
+    RechercheUnzureichend, nachricht_unzureichend,
 )
 from app.preisurteil import (
     bewerte_preis, verkaufs_strategie, verkaufs_prompt_block, prompt_block as preis_prompt_block,
@@ -31,7 +31,8 @@ from app.preisurteil import (
 from app.key_findings import build_key_findings_verkauf
 from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
-from app.postprocess import postprocess_answer
+from app.vehicle_identity import VehicleIdentity
+from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
@@ -219,7 +220,9 @@ def _preis_konsistenz_hinweis(
     return bericht + hinweis
 
 
-async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
+async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> dict:
+    """`retry` (§22/§33): True, wenn dies ein "Erneut versuchen" nach research_failed
+    ist — erzwingt frische Tavily-Calls statt einer identischen gecachten Antwort."""
     # 1. Baureihe erkennen (DB, blockierend) UND Marktpreise per Tavily (Netzwerk) laufen
     #    PARALLEL — die Tavily-Queries hängen nur an den Fahrzeug-Rohdaten (req.*), nicht
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
@@ -261,22 +264,26 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     ziel = baue_ziel(baureihe, motor_match, req,
                      get_alle_baureihen_kurz() if baureihe else [],
                      get_alle_motorvarianten_kurz() if baureihe else [])
+    identity = VehicleIdentity.from_market_context(baureihe, motor_match, req)
     if TAVILY_API_KEY and req.marke and req.modell:
-        deep_queries = baue_deep_queries(req, baureihe.get("generation") if baureihe else None)
-        web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
+        deep_queries = baue_deep_queries(identity)
+        rare_queries = baue_rare_queries(identity)
+        web_results_roh, marktanalyse, diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_vorstellung, US_QUELLEN_AUSSCHLUSS,
-            count=10, zweck="verkaufscheck-markt")
+            count=10, zweck="verkaufscheck-markt", rare_queries=rare_queries, bypass_cache=retry)
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
+        diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
 
-    # ── Quality-Gate (§0/§1/§4) ──────────────────────────────────────────────────
+    # ── Quality-Gate (§0/§17/§21) ────────────────────────────────────────────────
     # Reicht die Datenbasis nicht für einen belastbaren Marktwert, wird KEINE
-    # Preisstrategie erzeugt und der LLM-Call gespart -> research_failed. §10 verbietet
+    # Preisstrategie erzeugt und der LLM-Call gespart -> research_failed. §25 verbietet
     # ausdrücklich, eine niedrige Qualität einfach zu akzeptieren und trotzdem exakte
     # Preise/Verkaufszeiten auszugeben.
     status = research_status(marktanalyse)
     if status == "research_failed":
-        raise RechercheUnzureichend(marktanalyse, NACHRICHT_UNZUREICHEND)
+        grund = diag.get("research_failure_grund", "data_exhausted")
+        raise RechercheUnzureichend(marktanalyse, nachricht_unzureichend(identity, grund), grund)
 
     # Kanonisches Preisurteil + deterministische Preisstrategie (§6/§10/§13).
     price_assessment = bewerte_preis(marktanalyse, req.preis_vorstellung, check_typ="verkauf")
@@ -307,6 +314,10 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
+        # §26: Sicherheitsnetz NACH der Prompt-Regel — entfernt eine konkret erfundene
+        # Verkaufsdauer-Zahl ("innerhalb von 3-4 Wochen"), falls das LLM sie trotz
+        # Anweisung erzeugt hat. Nur in Sätzen mit Verkaufs-/Vermarktungskontext.
+        result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
         # Preis-Konsistenz: liegt empfohlener/maximaler Preis spürbar über der
         # Markt-Obergrenze ohne transparente Begründung, den Aufschlag deterministisch
         # in Euro UND Prozent kenntlich machen (verändert die Preise selbst nicht).
@@ -353,6 +364,11 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest) -> dict:
     # Der Marktvergleich ist Grundlage der Preisstrategie -> immer unter der
     # Preisbegründung zeigen, auch wenn das LLM ihn nicht referenziert.
     preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
+    # §29: "Warum diese Strategie?" darf keine Karte zeigen, die bereits unter "Warum
+    # dieser Preis?" steht (identischer Marktvergleich-Insight) — sonst erscheint die
+    # komplette Marktbegründung zweimal identisch auf derselben Seite. Nur wirklich
+    # ZUSÄTZLICHE Evidence bleibt in strategie_evidence_ids.
+    strategie_evidence_ids = [i for i in strategie_evidence_ids if i not in preis_evidence_ids]
 
     # Phase 2: Kern-Erkenntnisse deterministisch verdichten (Marktposition, fehlende
     # Angaben, wertsteigernde Ausstattung, Markt-Datenqualität) — kein weiteres LLM.

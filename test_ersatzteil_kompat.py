@@ -62,6 +62,36 @@ check("A4: gesuchte Hinterachse, Produkt Hinterachse -> confirmed", k == "confir
 k = klass("BMW 320i E92", "Bremsscheiben vorne", "Bremsscheiben Audi A4 B8 Vorderachse")
 check("Hersteller-Widerspruch (Audi-Teil beim BMW) -> rejected", k == "rejected")
 
+# ── Reliability-Sprint 3 §3/§6/§30: GTS/CRT-Sonderedition NICHT automatisch
+#    confirmed für den normalen M3, und M-Nummern nicht mehr familien-kollabiert ──
+k = klass("BMW M3 E92", "Bremsscheiben vorne", "ATE Bremsscheiben BMW E92 M3 GTS/CRT Vorderachse 370mm")
+check("Sprint3: GTS/CRT-only-Teil beim normalen M3 -> NICHT confirmed (uncertain)", k == "uncertain")
+
+k = klass("BMW M3 E92", "Bremsscheiben vorne", "Bremsscheiben BMW M4 F82 Vorderachse")
+check("Sprint3: M4-Teil beim M3-Ziel -> rejected (M2..M8 nicht mehr kollabiert)", k == "rejected")
+
+k = klass("Audi RS6 C7", "Bremsscheiben vorne", "Bremsscheiben Audi RS3 8V Vorderachse")
+check("Sprint3: RS3-Teil beim RS6-Ziel -> rejected (RS-Nummern nicht kollabiert)", k == "rejected")
+
+k = klass("BMW M3 E92 GTS", "Bremsscheiben vorne", "ATE Bremsscheiben BMW M3 E92 Vorderachse 360mm")
+check("Sprint3: normales M3-Teil beim GTS-Zielfahrzeug -> NICHT confirmed (uncertain)", k == "uncertain")
+
+# End-to-End (§6): das GTS/CRT-Teil darf auch über _bewerte_kompatibilitaet nie als
+# VIRAs Empfehlung erscheinen — nur das echte, unspezifische M3-Teil.
+ergebnisse_gts = [
+    {"teilename": "ATE Bremsscheiben BMW E92 M3 GTS/CRT Vorderachse 370mm",
+     "passt_fahrzeug": "BMW E92 M3 GTS/CRT", "hinweis": "", "url": "https://autodoc.de/gts", "preis_eur": 45},
+    {"teilename": "ATE Bremsscheiben BMW M3 E92 Vorderachse 360mm",
+     "passt_fahrzeug": "BMW M3 E92", "hinweis": "", "url": "https://autodoc.de/m3", "preis_eur": 210},
+]
+sichtbar_gts, idx_gts = _bewerte_kompatibilitaet("BMW M3 E92", "Bremsscheiben vorne", ergebnisse_gts)
+check("Sprint3: GTS/CRT-Teil (billiger) wird NICHT empfohlen, obwohl günstiger",
+      idx_gts is not None and "GTS" not in sichtbar_gts[idx_gts]["teilename"])
+check("Sprint3: stattdessen das echte M3-Teil empfohlen",
+      idx_gts is not None and sichtbar_gts[idx_gts]["teilename"].endswith("360mm"))
+check("Sprint3: GTS/CRT-Teil bleibt sichtbar, aber als uncertain markiert",
+      any("GTS" in e["teilename"] and e.get("kompatibilitaet") == "uncertain" for e in sichtbar_gts))
+
 # ── A5) Unsichere Kompatibilität NICHT als empfohlen ───────────────────────────
 ergebnisse = [
     {"teilename": "Bremsscheiben vorne", "passt_fahrzeug": "", "hinweis": "", "url": "https://autodoc.de/x1", "preis_eur": 60},

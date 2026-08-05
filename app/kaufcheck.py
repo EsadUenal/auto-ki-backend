@@ -22,13 +22,14 @@ from app.evidence import (
 )
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
-    vertiefe_marktrecherche, baue_deep_queries, research_status, RechercheUnzureichend,
-    NACHRICHT_UNZUREICHEND,
+    vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
+    RechercheUnzureichend, nachricht_unzureichend,
 )
 from app.preisurteil import bewerte_preis, preis_bewertung_aus_verdict, prompt_block as preis_prompt_block
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
-from app.postprocess import postprocess_answer
+from app.vehicle_identity import VehicleIdentity
+from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
@@ -170,7 +171,9 @@ def _format_inserat(req: KaufCheckRequest) -> str:
     return "\n".join(lines)
 
 
-async def run_kaufcheck(req: KaufCheckRequest) -> dict:
+async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
+    """`retry` (§22/§33): True, wenn dies ein "Erneut versuchen" nach research_failed
+    ist — erzwingt frische Tavily-Calls statt einer identischen gecachten Antwort."""
     # 1. Baureihe erkennen (DB, blockierend) UND Marktpreis per Tavily (Netzwerk) laufen
     #    PARALLEL — die Tavily-Queries hängen nur an den Inserat-Rohdaten (req.*), nicht
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
@@ -218,22 +221,26 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     # Adaptive, qualitäts-gesteuerte Recherche auch OHNE erkannte Baureihe, sofern
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
+    identity = VehicleIdentity.from_market_context(baureihe, motor_match, req)
     if TAVILY_API_KEY and req.marke and req.modell:
-        deep_queries = baue_deep_queries(req, baureihe.get("generation") if baureihe else None)
-        web_results_roh, marktanalyse, _diag = await vertiefe_marktrecherche(
+        deep_queries = baue_deep_queries(identity)
+        rare_queries = baue_rare_queries(identity)
+        web_results_roh, marktanalyse, diag = await vertiefe_marktrecherche(
             web_results_roh, deep_queries, ziel, req.preis_eur, US_QUELLEN_AUSSCHLUSS,
-            count=10, zweck="kaufcheck-markt")
+            count=10, zweck="kaufcheck-markt", rare_queries=rare_queries, bypass_cache=retry)
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
+        diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
 
-    # ── Quality-Gate (§0/§1/§4) ──────────────────────────────────────────────────
+    # ── Quality-Gate (§0/§17/§21) ────────────────────────────────────────────────
     # Reicht die Datenbasis nach voller Vertiefung nicht für einen belastbaren
     # Marktwert (kein Median / Qualität bliebe "niedrig"), wird KEIN fertiger Bericht
     # erzeugt und der teure LLM-Call gespart: research_failed -> Router erstattet das
     # Kontingent zurück. Eine niedrige Datenqualität ist kein auslieferbares Ergebnis.
     status = research_status(marktanalyse)
     if status == "research_failed":
-        raise RechercheUnzureichend(marktanalyse, NACHRICHT_UNZUREICHEND)
+        grund = diag.get("research_failure_grund", "data_exhausted")
+        raise RechercheUnzureichend(marktanalyse, nachricht_unzureichend(identity, grund), grund)
 
     # Kanonisches, deterministisches Preisurteil (§6/§7/§13) — EINE Quelle der Wahrheit.
     price_assessment = bewerte_preis(marktanalyse, req.preis_eur, check_typ="kauf")
@@ -270,6 +277,9 @@ async def run_kaufcheck(req: KaufCheckRequest) -> dict:
     result = await call_gemini_json(_SYSTEM, user_msg)
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
+        # §26 defensiv: auch der Kaufcheck-Bericht kann einen Wiederverkaufs-Ausblick
+        # enthalten — dieselbe Absicherung wie im Verkaufscheck.
+        result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,

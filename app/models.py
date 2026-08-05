@@ -134,6 +134,12 @@ class Preisbeobachtung(BaseModel):
     quelle_url: str | None = None
     vergleichbarkeit: str             # "sehr_aehnlich" | "aehnlich" | "bedingt" | "ungeeignet"
     gruende: list[str] = Field(default_factory=list)
+    # Reliability-Sprint 3 (§10-§13): Herkunftsart der Recherche-Seite, aus der dieser
+    # Datenpunkt extrahiert wurde — "listing" (konkretes Einzelinserat) | "category"
+    # (Such-/Übersichtsseite) | "unknown" (nicht klassifizierbar). NUR "listing" zählt
+    # in Richtung Quellenvielfalt/HIGH (siehe marktvergleich._datenqualitaet). Additiv,
+    # Default "unknown" -> alte gespeicherte Checks bleiben ladbar.
+    source_type: str = "unknown"
 
 
 class Marktanalyse(BaseModel):
@@ -210,9 +216,13 @@ class Insight(BaseModel):
     schweregrad: str | None = None    # z.B. "gering" | "mittel" | "hoch" (nur Schwachstelle Baureihe)
     # applicability = WIE SICHER die Erkenntnis GENAU DIESES Fahrzeug betrifft
     # (nur Rückrufe). Strikt getrennt von confidence (Beleglage) und schweregrad
-    # (wie schlimm): "exakt" | "wahrscheinlich" | "unklar". Ein Baureihen-Rückruf,
-    # dessen Varianten-/Antriebs-Zuordnung nicht gesichert ist, ist "unklar" —
-    # NICHT automatisch "betrifft dein Fahrzeug".
+    # (wie schlimm). Reliability-Sprint 3 (§27/§28), VIER produzierbare Stufen +
+    # eine fünfte, aktuell UNERREICHBARE (keine VIN-Erfassung im System):
+    #   "confirmed_by_vin" | "variant_match" | "series_only" | "unclear" | "incompatible"
+    # Ohne echte VIN-Prüfung wird applicability NIEMALS "confirmed_by_vin" — die
+    # stärkste tatsächlich erreichbare Stufe ("variant_match") bedeutet "KANN diese
+    # Variante betreffen, per FIN prüfen", NICHT "betrifft dein Fahrzeug garantiert".
+    # "incompatible" (Antriebs-/Variantenwiderspruch) wird vollständig ausgeblendet.
     applicability: str | None = None
     einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
     # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch

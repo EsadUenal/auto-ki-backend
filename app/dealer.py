@@ -106,12 +106,19 @@ _PREIS_MAP = {
 }
 
 
+# Reliability-Sprint 3 (§27/§36): neue Werte (variant_match/series_only/
+# confirmed_by_vin) UND die alten Vor-Sprint-3-Werte (exakt/wahrscheinlich) — alte
+# gespeicherte Checks werden beim Laden NICHT migriert (routers/checks.py liest das
+# JSON roh), also müssen beide Wertemengen hier erkannt werden.
+_RUECKRUF_RELEVANT_WERTE = ("confirmed_by_vin", "variant_match", "series_only", "exakt", "wahrscheinlich")
+
+
 def _risiko_signal(ergebnis: dict) -> str:
     """Deterministische Risikoampel aus insights/key_findings des Kaufchecks."""
     insights = ergebnis.get("insights") or []
     kfs = ergebnis.get("key_findings") or []
     rueckruf_relevant = any(
-        i.get("kategorie") == "rueckruf" and (i.get("applicability") or "").lower() in ("exakt", "wahrscheinlich")
+        i.get("kategorie") == "rueckruf" and (i.get("applicability") or "").lower() in _RUECKRUF_RELEVANT_WERTE
         for i in insights
     )
     schwach_hoch = any(
@@ -148,7 +155,7 @@ def _risiko_hinweise(ergebnis: dict) -> list[str]:
     # abdeckt (sonst doppelt: "2 relevante Rückrufe" + "Relevanter Rückruf").
     if not any("rückruf" in h.lower() for h in out):
         for i in ergebnis.get("insights") or []:
-            if i.get("kategorie") == "rueckruf" and (i.get("applicability") or "").lower() in ("exakt", "wahrscheinlich"):
+            if i.get("kategorie") == "rueckruf" and (i.get("applicability") or "").lower() in _RUECKRUF_RELEVANT_WERTE:
                 out.append("Relevanter Rückruf")
                 break
     return out[:4]

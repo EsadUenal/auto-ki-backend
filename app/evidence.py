@@ -68,11 +68,26 @@ def _paren_qualifier(betroffene: str | None) -> str | None:
 _HAT_HOCHVOLT = {"phev", "elektro"}
 
 
+# Reliability-Sprint 3 (§27/§28): "exakt" wurde bisher als "Betrifft dein Fahrzeug"
+# angezeigt — allein aus Baujahr-Text-Match + vorhandener KBA-Referenznummer, OHNE
+# jede VIN-/FIN-Prüfung (die es im System nicht gibt). Das war zu sicher formuliert.
+# Neue vierstufige Semantik (fünfte Stufe reserviert, aktuell unerreichbar):
+#   confirmed_by_vin — NUR nach echter VIN-Prüfung. Wird vom Code aktuell NIE erzeugt
+#                       (keine VIN-Erfassung im System) — bewusst kein Fake-Feature.
+#   variant_match     — Baujahr/Antriebs-Variante passt, KBA-Referenz vorhanden.
+#   series_only       — Baujahr passt bzw. allgemeiner Baureihen-Rückruf, aber ohne
+#                        die belastbarste Kombination aus Variante+Referenz.
+#   unclear           — Betroffenheit nicht bestimmbar.
+#   incompatible       — Antriebs-/Variantenwiderspruch, wird vollständig ausgeblendet.
+_HINWEIS_FIN = "Betroffenheit anhand der FIN beim Hersteller/KBA prüfen."
+
+
 def _rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: dict | None):
     """Bestimmt, WIE SICHER ein Rückruf GENAU DIESES Fahrzeug betrifft.
 
     Rückgabe: (applicability, confidence, einfluss, variant_hinweis)
-      applicability: "exakt" | "wahrscheinlich" | "unklar"
+      applicability: "variant_match" | "series_only" | "unclear" | "incompatible"
+                      (theoretisch auch "confirmed_by_vin" — aktuell nie erzeugt)
       confidence:    Beleglage des Insights ("hoch"|"mittel"|"niedrig")
       einfluss:      Handlungshinweis
       variant_hinweis: Zusatztext für die Beschreibung (oder "")
@@ -80,14 +95,14 @@ def _rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: 
     Strikt getrennte Konzepte:
       severity  = wie schlimm            (eigenes Feld, hier NICHT berührt)
       confidence= wie gut belegt         (Beleglage/Provenance)
-      applicability = betrifft dieses Fahrzeug  (Varianten-/Antriebs-Zuordnung)
+      applicability = betrifft dieses Fahrzeug  (Varianten-/Antriebs-Zuordnung) —
+        OHNE VIN-Prüfung niemals "confirmed_by_vin"/eine "Betrifft dein Fahrzeug
+        garantiert"-Aussage (§27).
     """
     text = " ".join(filter(None, [r.get("mangel"), r.get("abhilfe"), r.get("betroffene_baujahre")]))
     ist_hv_rueckruf = any(w in text.lower() for w in _HV_WORTE)
     qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
     fahrzeug_kraftstoff = _norm_kraftstoff((motor_match or {}).get("kraftstoff"))
-
-    hinweis_fin = "Betroffenheit anhand der FIN beim Hersteller/KBA prüfen."
 
     # Der Rückruf grenzt sich auf einen bestimmten Antrieb ein (Klammer-Qualifier
     # ODER klarer Hochvolt-/Hybrid-Bezug).
@@ -95,38 +110,42 @@ def _rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: 
     if scope:
         if fahrzeug_kraftstoff is None:
             # Motor nicht erkannt -> Varianten-Betroffenheit NICHT bestimmbar.
-            return ("unklar", "niedrig",
-                    f"Betroffenheit unklar — der Rückruf betrifft bestimmte Varianten. {hinweis_fin}",
+            return ("unclear", "niedrig",
+                    f"Betroffenheit unklar — der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
                     "Für die Baureihe hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
         matcht = (
             fahrzeug_kraftstoff == scope
             or (scope in _HAT_HOCHVOLT and fahrzeug_kraftstoff in _HAT_HOCHVOLT)
         )
         if matcht:
-            # Passende Variante + Baujahr-Deckung + KBA-Referenz -> stark belastbar.
+            # Passende Variante + Baujahr-Deckung + KBA-Referenz -> stärkste OHNE-VIN
+            # erreichbare Stufe: "kann diese Variante betreffen", nicht "betrifft".
             if passt is True and kba:
-                return ("exakt", "hoch", "Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.", "")
-            return ("wahrscheinlich", "mittel",
-                    "Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen.", "")
+                return ("variant_match", "hoch",
+                        f"Sicherheitsrelevant — Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
+            return ("series_only", "mittel",
+                    f"Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
         # Klarer Antriebs-Widerspruch (§8): z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist
         # nachweislich Diesel. Die Motorisierung ist ERKANNT und passt eindeutig NICHT
-        # -> "nicht_betroffen". build_insights entfernt solche Rückrufe VOLLSTÄNDIG aus
+        # -> "incompatible". build_insights entfernt solche Rückrufe VOLLSTÄNDIG aus
         # den sichtbaren Findings (kein Anzeigen als "unklare Betroffenheit").
         scope_label = {"phev": "Plug-in-Hybrid-/Hochvolt-Varianten", "elektro": "Elektro-Varianten",
                        "diesel": "Diesel-Varianten", "benzin": "Benzin-Varianten",
                        "mild": "Mild-Hybrid-Varianten"}.get(scope, "bestimmte Varianten")
-        return ("nicht_betroffen", "hoch",
+        return ("incompatible", "hoch",
                 f"Betrifft laut Datenlage {scope_label} — die erkannte Motorisierung gehört nicht dazu.",
                 f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt eindeutig nicht dazu.")
 
     # Kein Antriebs-Scope erkennbar -> allgemeiner Baureihen-Rückruf (z.B. Bremse,
     # Lenkung): gilt unabhängig von der Motorisierung.
     if passt is True and kba:
-        return ("exakt", "hoch", "Sicherheitsrelevant — Durchführung der Rückrufaktion nachweisen/prüfen.", "")
+        return ("variant_match", "hoch",
+                f"Sicherheitsrelevant — Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
     if passt is True:
-        return ("wahrscheinlich", "mittel", "Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen.", "")
-    return ("wahrscheinlich", "mittel",
-            f"Sicherheitsrelevant — Baujahr-Zuordnung nicht eindeutig. {hinweis_fin}", "")
+        return ("series_only", "mittel",
+                f"Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
+    return ("series_only", "mittel",
+            f"Sicherheitsrelevant — Baujahr-Zuordnung nicht eindeutig. {_HINWEIS_FIN}", "")
 
 
 def _jahre(text: str | None) -> list[int]:
@@ -243,10 +262,10 @@ def build_insights(
         # zutreffend für einen reinen Diesel markiert.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
             r, passt, kba, motor_match)
-        # §8: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
+        # §8/§27: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
         # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
         # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
-        if applicability == "nicht_betroffen":
+        if applicability == "incompatible":
             continue
         beschr = (r.get("mangel") or "").strip()
         if r.get("abhilfe"):
@@ -255,9 +274,11 @@ def build_insights(
             beschr = f"{beschr} (Rückruf {r['datum']})"
         if variant_hinweis:
             beschr = f"{beschr} — {variant_hinweis}"
-        # Titel signalisiert nur bei gesicherter Betroffenheit einen konkreten Rückruf;
-        # sonst als Baureihen-Hinweis kennzeichnen (kein "betrifft dein Fahrzeug").
-        if applicability == "exakt":
+        # Titel signalisiert nur bei bestbelegter (Nicht-VIN-)Stufe einen konkreten
+        # Rückruf; sonst als Baureihen-Hinweis kennzeichnen. NIE "betrifft dein
+        # Fahrzeug" ohne VIN-Prüfung (§27) — das steht nur im Frontend-Label, hier
+        # geht es nur um die Titel-Formulierung "Rückruf" vs. "Rückruf (Baureihe)".
+        if applicability in ("confirmed_by_vin", "variant_match"):
             titel = f"KBA-Rückruf: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
         else:
             titel = f"KBA-Rückruf (Baureihe): {(r.get('mangel') or 'Rückrufaktion')[:70]}".rstrip(": ").strip()
@@ -461,18 +482,36 @@ _EVIDENCE_TYP_LABEL = {
 }
 
 
+# §27/§28: Wording, das das LLM WÖRTLICH für die jeweilige Rückruf-Betroffenheits-
+# stufe übernehmen muss — verhindert, dass der Freitext-Bericht eine sicherere
+# Aussage trifft ("betrifft dein Fahrzeug") als die tatsächlich geprüfte Stufe.
+RUECKRUF_APPLICABILITY_TEXT: dict[str, str] = {
+    "confirmed_by_vin": "Für dieses Fahrzeug per FIN bestätigt",
+    "variant_match": "Kann Fahrzeuge dieser Variante betreffen — per FIN prüfen",
+    "series_only": "Für Teile der Baureihe gemeldet — per FIN prüfen",
+    "unclear": "Betroffenheit unklar — per FIN prüfen",
+}
+
+
 def format_evidence_for_prompt(insights: list[Insight]) -> str:
-    """Kompakter Evidence-Block für den LLM-Prompt: nur ID, Typ, Confidence, Titel
-    (kein aufgeblähter JSON-Blob). Leerer String, wenn keine Evidence existiert."""
+    """Kompakter Evidence-Block für den LLM-Prompt: ID, Typ, Confidence, Titel (und
+    bei Rückrufen zusätzlich die verbindliche Applicability-Formulierung, §27/§28) —
+    kein aufgeblähter JSON-Blob. Leerer String, wenn keine Evidence existiert."""
     if not insights:
         return ""
     lines = [
         "=== VERFÜGBARE EVIDENCE (Schicht A, Backend-geprüft) ===",
         "Referenziere in den *_evidence_ids-Feldern NUR IDs aus dieser Liste — sonst leere Liste.",
+        "Bei Rückrufen (kategorie=rueckruf) gilt die angegebene Betroffenheits-Formulierung "
+        "WÖRTLICH — schreibe NIEMALS 'betrifft dein Fahrzeug' ohne FIN-Prüfung.",
     ]
     for i in insights:
         label = _EVIDENCE_TYP_LABEL.get(i.kategorie, i.kategorie)
-        lines.append(f"[{i.id}] {label} | Confidence: {i.confidence} | {i.titel}")
+        zeile = f"[{i.id}] {label} | Confidence: {i.confidence} | {i.titel}"
+        if i.kategorie == "rueckruf" and i.applicability:
+            wortlaut = RUECKRUF_APPLICABILITY_TEXT.get(i.applicability, i.applicability)
+            zeile += f" | Betroffenheit: {wortlaut}"
+        lines.append(zeile)
     return "\n".join(lines)
 
 

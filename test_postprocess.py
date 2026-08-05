@@ -5,7 +5,7 @@ Kein Netzwerk-/Gemini-Aufruf nötig — reine Funktionstests der deterministisch
 Textbereinigung. Ausführen: python test_postprocess.py
 """
 
-from app.postprocess import postprocess_answer
+from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
 
 FEHLER = []
 
@@ -164,6 +164,60 @@ check("Realistischer Kaufcheck-Bericht komplett bereinigt", _KAUFCHECK_ROH, _KAU
 
 # ---------- 11) Leerer/None-Text bricht nicht ----------
 check("Leerer String bleibt leer", "", "")
+
+
+# ---------- 13) Verkaufsdauer-Guard (Reliability-Sprint 3, §26) ----------
+def check_dauer(name: str, eingabe: str, darf_enthalten: bool, muster: str):
+    ergebnis = entferne_erfundene_verkaufsdauer(eingabe)
+    enthaelt = muster in ergebnis
+    ok = enthaelt == darf_enthalten
+    if not ok:
+        FEHLER.append(f"[FEHLER] {name}\n  Ergebnis: {ergebnis!r}")
+    else:
+        print(f"[OK] {name}")
+
+
+check_dauer(
+    "§26: erfundene Verkaufsdauer im Vermarktungs-Satz wird entfernt",
+    "Sollte sich innerhalb von 3–4 Wochen kein ernsthafter Interessent finden, "
+    "empfiehlt sich eine Preisanpassung.",
+    False, "3–4 Wochen",
+)
+check_dauer(
+    "§26: TÜV-Frist bleibt unverändert (kein Verkaufs-Kontext)",
+    "Der TÜV läuft in 6 Monaten ab.",
+    True, "6 Monaten",
+)
+check_dauer(
+    "§26: Wartungsintervall bleibt unverändert (kein Verkaufs-Kontext)",
+    "Die letzte Wartung war vor 3 Monaten.",
+    True, "3 Monaten",
+)
+check_dauer(
+    "§26: Text ohne jede Zeitangabe bleibt unverändert",
+    "Der Verkauf sollte zügig erfolgen.",
+    True, "Der Verkauf sollte zügig erfolgen.",
+)
+check_dauer(
+    "§26: Standzeit-Kontext ohne explizites Verkaufswort wird ebenfalls erkannt",
+    "Bei geringer Standzeit von 2 Wochen den Preis prüfen.",
+    False, "2 Wochen",
+)
+
+# Browser-Abnahme-Fund (§38): "Nachfrage"/"senken" ohne die ursprünglichen
+# Trigger-Wörter rutschte durch — echter Live-Bericht enthielt "Sollte nach 2-3
+# Wochen keine ausreichende Nachfrage bestehen, können Sie den Preis ... senken".
+check_dauer(
+    "§26/§38: 'Nachfrage'-Kontext mit Preis-Senken-Verb (Live-Fund) wird erkannt",
+    "Sollte nach 2-3 Wochen keine ausreichende Nachfrage bestehen, können Sie den "
+    "Preis schrittweise um 250-500 € senken, um die Attraktivität zu erhöhen.",
+    False, "2-3 Wochen",
+)
+check_dauer(
+    "§26: 'senken' OHNE Preis-Kontext bleibt unverändert (z.B. Emissionen)",
+    "Die CO2-Emissionen sollen bis 2030 gesenkt werden.",
+    True, "Die CO2-Emissionen sollen bis 2030 gesenkt werden.",
+)
 
 # ---------- 12) Idempotenz: zweimaliges Anwenden ändert nichts mehr ----------
 einmal = postprocess_answer(_KAUFCHECK_ROH)

@@ -212,24 +212,29 @@ def _finalisiere(findings: list[KeyFinding]) -> list[KeyFinding]:
 # ── gemeinsame Regel-Bausteine ───────────────────────────────────────────────
 
 def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
+    """Reliability-Sprint 3 (§27/§28): applicability-Werte umbenannt. "relevant"
+    (confirmed_by_vin/variant_match/series_only) heißt jetzt bewusst NICHT mehr
+    "relevant" im Titel — ohne VIN-Prüfung ist keine dieser Stufen sicher "relevant"
+    im Sinne von gesichert betroffen; der Titel bleibt neutral ("zu prüfen")."""
     rueckrufe = [i for i in insights if i.kategorie == "rueckruf"]
-    relevant = [i for i in rueckrufe if i.applicability in ("exakt", "wahrscheinlich")]
-    unklar = [i for i in rueckrufe if i.applicability == "unklar"]
+    zu_pruefen = [i for i in rueckrufe
+                 if i.applicability in ("confirmed_by_vin", "variant_match", "series_only")]
+    unklar = [i for i in rueckrufe if i.applicability == "unclear"]
     out: list[KeyFinding] = []
 
-    if relevant:
-        titel_liste = ", ".join(_mangel_kurz(i.titel) for i in relevant[:3])
-        n = len(relevant)
+    if zu_pruefen:
+        titel_liste = ", ".join(_mangel_kurz(i.titel) for i in zu_pruefen[:3])
+        n = len(zu_pruefen)
         out.append(KeyFinding(
             id="", kategorie="rueckruf", stufe=STUFE_WARNUNG, icon="⚠️",
-            titel=f"{n} relevante{'r' if n == 1 else ''} Rückruf" + ("" if n == 1 else "e"),
+            titel=f"{n} Rückruf{'e' if n != 1 else ''} zu prüfen",
             beschreibung=titel_liste,
             aktion="Vor Kauf per FIN prüfen, ob die Rückrufaktion durchgeführt wurde.",
-            evidence_ids=[i.id for i in relevant],
+            evidence_ids=[i.id for i in zu_pruefen],
             prioritaet=_P_RUECKRUF,
         ))
     if unklar:
-        # NIE als sicher betroffen darstellen (applicability=unklar).
+        # NIE als sicher betroffen darstellen (applicability=unclear).
         n = len(unklar)
         out.append(KeyFinding(
             id="", kategorie="rueckruf", stufe=STUFE_INFO, icon="🛈",

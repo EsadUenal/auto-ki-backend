@@ -37,11 +37,14 @@ limiter = Limiter(key_func=get_remote_address)
 async def kaufcheck_endpunkt(
     body: KaufCheckRequest,
     request: Request,
+    retry: bool = False,
     user_id: int = Depends(require_check_access),
 ):
     verify_api_key(request)
     try:
-        result = await run_kaufcheck(body)
+        # §22: "Erneut versuchen" nach research_failed erzwingt frische Tavily-Calls
+        # statt derselben ggf. dünnen gecachten Antwort (?retry=true).
+        result = await run_kaufcheck(body, retry=retry)
     except RechercheUnzureichend as exc:
         # §0/§4: keine belastbare Marktdatenbasis -> KEIN fertiger Bericht, Kontingent
         # zurückerstatten (idempotent). Der Nutzer erhält eine freundliche Meldung mit

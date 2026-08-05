@@ -20,6 +20,7 @@ from app.ersatzteil_gate import require_ersatzteil_access
 from app.ersatzteil_kompat import parse_fahrzeug, parse_bauteil, klassifiziere, HINWEIS_UNCERTAIN
 from app.gemini_retry import RateLimitExhausted
 from app.utf8 import UTF8JSONResponse
+from app.vehicle_identity import VehicleIdentity
 from app.web_search import results_to_belege, tavily_search
 
 log = logging.getLogger(__name__)
@@ -116,7 +117,12 @@ class SucheBody(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("darf nicht leer sein")
-        return v[:120]
+        # Reliability-Sprint 3 §4: 120 Zeichen schnitten eine detaillierte Eingabe
+        # (Marke+Modell+Generation+Baujahr+Motor+PS+Getriebe+Antrieb) oft mitten im
+        # Wort ab, bevor die Query-Stufen überhaupt gebaut wurden. 300 Zeichen decken
+        # jede realistische Freitext-Eingabe ab; der Query-Planer selbst nutzt ohnehin
+        # nur die essenziellen Felder in der ersten Stufe (siehe _mehrstufige_suche).
+        return v[:300]
 
 
 def _teil_varianten(bauteil: str) -> list[str]:
@@ -149,32 +155,84 @@ def _kategorie(bauteil: str) -> str | None:
     return None
 
 
-async def _mehrstufige_suche(fahrzeug: str, bauteil: str) -> list[dict]:
-    """Mehrstufige, akkumulierende Ersatzteilsuche (Root-Cause #1/#8).
+# Generische Übersetzung der häufigsten Bauteil-Nomen für den EN-Fallback (Stufe C,
+# §4) — ergänzt die bestehenden _SYNONYME um eine garantiert englische Variante,
+# unabhängig davon, ob "brake discs"/"brake rotors" bereits unter den Synonymen war.
+_EN_FALLBACK: dict[str, str] = {
+    "bremsscheiben": "brake discs", "bremsscheibe": "brake disc",
+    "bremsbeläge": "brake pads", "bremsbelaege": "brake pads",
+    "stoßdämpfer": "shock absorber", "stossdaempfer": "shock absorber",
+    "querlenker": "control arm", "zündkerzen": "spark plugs",
+    "luftfilter": "air filter", "ölfilter": "oil filter", "oelfilter": "oil filter",
+    "kupplung": "clutch", "radlager": "wheel bearing",
+    "keilrippenriemen": "serpentine belt", "zahnriemen": "timing belt",
+}
 
-    Kein `site:`-Filter im Query-TEXT mehr (das war zusammen mit include_domains eine
-    Doppelrestriktion, die enge Anfragen auf 0 Treffer zog). Stufen: (1) Shops exakt,
-    (2) Shops mit Synonym, (3) breiter Web-Fallback, (4) breiter Web mit Synonym.
-    Es wird akkumuliert & dedupliziert, bis genug Treffer vorliegen ODER alle Stufen
-    ausgeschöpft sind.
+# Marken-generische Zusatzsuche (Stufe E, §4) — bekannte Erstausrüster-/Premium-
+# Nachbaumarken, KEIN Fahrzeug-Hardcoding (dieselbe Liste passt für jedes Fahrzeug).
+_TEILEMARKEN = ("ATE", "Brembo", "TRW", "Zimmermann", "Bosch", "Textar")
+
+
+def _en_fallback(bauteil: str) -> str | None:
+    low = bauteil.lower()
+    for key, en in _EN_FALLBACK.items():
+        if key in low:
+            return en
+    return None
+
+
+async def _mehrstufige_suche(fahrzeug: str, bauteil: str) -> list[dict]:
+    """Gestufte, akkumulierende Ersatzteilsuche aus der zentralen VehicleIdentity
+    (Reliability-Sprint 3 §4).
+
+    Root-Cause (bestätigt): jede Stufe pastete bisher den KOMPLETTEN rohen
+    `fahrzeug`-Freitext vor den Teilnamen — mehr Nutzerdetail (Baujahr, Getriebe,
+    Antrieb, Karosserie, PS) machte die Query länger und starrer, echte Shop-Titel
+    ("Bremsscheiben BMW M3 E92 vorne") matchten seltener. Jetzt: EINMAL die
+    VehicleIdentity bauen, dann NUR die essenziellen Token (Marke+Modell+Generation/
+    Performance-Marker) in die erste Stufe — Motor/PS/Baujahr/Getriebe/Antrieb dienen
+    primär der Validierung (ersatzteil_kompat.klassifiziere) und fließen erst in
+    späteren, gezielten Varianten-Stufen ein.
+
+    STUFE A (essenziell) -> B (Motor/Leistung-Variante) -> C (EN-Übersetzung) ->
+    D (OE/OEM) -> E (Marken-Fallback). Kein `site:`-Filter im Query-TEXT (das war
+    zusammen mit include_domains eine Doppelrestriktion, die enge Anfragen auf 0
+    Treffer zog) — Portal-Fokussierung ausschließlich über include_domains.
     """
     if not TAVILY_API_KEY:
         return []
+    identity = VehicleIdentity.from_text(fahrzeug)
+    essenziell = identity.essenziell() or fahrzeug
     varianten = _teil_varianten(bauteil)
     haupt = varianten[0]
     syn = varianten[1] if len(varianten) > 1 else haupt
+    en = _en_fallback(bauteil)
 
     stufen: list[tuple[str, list[str] | None]] = [
-        (f"{fahrzeug} {haupt} kaufen Preis", _SHOP_DOMAINS),      # 1: Shops, exakt
-        (f"{fahrzeug} {syn} kaufen", _SHOP_DOMAINS),              # 2: Shops, Synonym
-        (f"{fahrzeug} {haupt} Ersatzteil Preis Deutschland", None),  # 3: breiter Web-Fallback
-        (f"{fahrzeug} {syn} Ersatzteil", None),                  # 4: breiter Web, Synonym
+        # STUFE A — essenziell, Shops exakt.
+        (f"{essenziell} {haupt} kaufen Preis", _SHOP_DOMAINS),
+        (f"{essenziell} {syn} kaufen", _SHOP_DOMAINS),
+        # STUFE B — essenziell + Motor/Leistung-Variante (validierungsrelevante
+        # Zusatzfelder, aber NICHT alle Felder gleichzeitig — nur die suchrelevanten).
+        (f"{essenziell} {identity.motor_kurz() or ''} {haupt}".strip() + " kaufen", _SHOP_DOMAINS),
+        (f"{essenziell} {identity.leistung_kurz() or ''} {syn}".strip() + " Vorderachse Hinterachse",
+         _SHOP_DOMAINS),
+        # STUFE C — EN-Übersetzung, breiter Web-Fallback.
+        (f"{essenziell} {en}" if en else f"{essenziell} {haupt} Ersatzteil Preis Deutschland", None),
+        (f"{essenziell} {syn} Ersatzteil", None),
+        # STUFE D — OE/OEM-Nummer.
+        (f"{essenziell} {haupt} OE OEM Nummer", None),
+        # STUFE E — Marken-Fallback (generisch, keine Fahrzeug-Hardcodes).
+        (f"{essenziell} {haupt} " + " ".join(_TEILEMARKEN[:3]), None),
     ]
 
     acc: list[dict] = []
     seen: set[str] = set()
     for query, domains in stufen:
-        results = await tavily_search(query[:350], count=8, include_domains=domains)
+        q = query.strip()[:350]
+        if not q:
+            continue
+        results = await tavily_search(q, count=8, include_domains=domains)
         for r in results:
             u = (r.get("url") or "").rstrip("/").lower()
             if u and u not in seen:
@@ -293,19 +351,37 @@ async def ersatzteil_suche(
     # nie empfehlen, nur "confirmed" darf empfohlen werden (deterministisch, nicht LLM).
     ergebnisse, empfohlener_index = _bewerte_kompatibilitaet(body.fahrzeug, body.bauteil, ergebnisse)
 
-    # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren
-    # (oder alle wurden als inkompatibel ausgeblendet): ehrlicher Mindestnutzen (§9).
-    empfehlung = result.get("empfehlung", "")
+    # §30: Freitext-Empfehlung DETERMINISTISCH aus dem tatsächlich gewählten Produkt
+    # aufbauen — nicht mehr die LLM-Prosa unverändert übernehmen. Root-Cause-
+    # Absicherung: die LLM-"empfehlung" wurde VOR der Kompatibilitätsfilterung
+    # geschrieben und konnte ein anderes (ggf. verworfenes) Produkt beschreiben als
+    # den am Ende deterministisch gewählten Index — Text und Badge widersprachen sich.
+    llm_empfehlung = result.get("empfehlung", "") or ""
     if not ergebnisse:
+        # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren
+        # (oder alle wurden als inkompatibel ausgeblendet): ehrlicher Mindestnutzen (§9).
         empfehlung = _mindestnutzen(body.fahrzeug, body.bauteil)
-    elif empfohlener_index is None:
+    elif empfohlener_index is not None:
+        gewaehlt = ergebnisse[empfohlener_index]
+        anbieter_teil = f" von {gewaehlt['anbieter']}" if gewaehlt.get("anbieter") else ""
+        preis_teil = f" für {gewaehlt['preis_eur']:.0f} €".replace(".", ",") if gewaehlt.get("preis_eur") else ""
+        empfehlung = (
+            f"VIRA empfiehlt aktuell **{gewaehlt.get('teilename', 'dieses Teil')}**"
+            f"{anbieter_teil}{preis_teil}, "
+            f"da die Kompatibilität mit dem erkannten Fahrzeug am besten bestätigt ist "
+            f"({gewaehlt.get('kompat_grund', 'Kompatibilität bestätigt')})."
+        )
+        if llm_empfehlung:
+            empfehlung += f" {llm_empfehlung}"
+    else:
         # Es gibt sichtbare Treffer, aber keiner ist bestätigt kompatibel -> ehrlich
-        # darauf hinweisen (§5: uncertain nie als "empfohlen" darstellen).
+        # darauf hinweisen (§5: uncertain nie als "empfohlen" darstellen). KEIN
+        # Empfehlungsprodukt (§6/§30) — auch nicht implizit über die Prosa.
         empfehlung = (
             "Für dieses Fahrzeug konnte keine Kompatibilität eindeutig bestätigt werden. "
             "Die angezeigten Angebote sind unverbindlich — prüfe die Passung vor der "
-            "Bestellung anhand der FIN/Fahrgestellnummer oder der OE-/OEM-Nummer. "
-        ) + (empfehlung or "")
+            "Bestellung anhand der FIN/Fahrgestellnummer oder der OE-/OEM-Nummer."
+        )
 
     return {
         "suchanfrage": {"fahrzeug": body.fahrzeug, "bauteil": body.bauteil},

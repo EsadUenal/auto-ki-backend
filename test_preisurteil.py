@@ -81,17 +81,56 @@ check("10: preis_bewertung-Mapping konsistent zum Verdikt",
       preis_bewertung_aus_verdict(pa.verdict) == "teuer")
 
 # ══ §15 D 14-17 — Datenqualität & research_status ════════════════════════════
-def obs(preis, dom, bj=2019, km=120000):
+def obs(preis, dom, bj=2019, km=120000, vgl="aehnlich", source_type="listing"):
     return Preisbeobachtung(preis_eur=preis, baujahr=bj, kilometerstand=km,
                             quelle_domain=dom, quelle_url=f"https://{dom}/{preis}",
-                            vergleichbarkeit="aehnlich")
+                            vergleichbarkeit=vgl, source_type=source_type)
 
-# hoch: 8 Treffer, 2 Portale, attributvollständig, enge Streuung (rel ~0.1)
+# hoch: 8 Treffer aus ECHTEN Einzelinseraten, 2 Portale, attributvollständig, enge Streuung.
 hoch = [obs(20000, "mobile.de"), obs(20500, "mobile.de"), obs(21000, "autoscout24.de"),
         obs(21500, "autoscout24.de"), obs(20800, "mobile.de"), obs(21200, "autoscout24.de"),
         obs(20300, "mobile.de"), obs(21100, "autoscout24.de")]
 check("D: 8 nahe Treffer aus 2 Portalen, enge Streuung -> hoch",
       _datenqualitaet(hoch, 20800, 20300, 21500) == "hoch")
+
+# Reliability-Sprint 3 §14: Live-Diagnose (scripts/diagnose_recherche.py) zeigt,
+# dass Tavilys Basic-Suche für diese Query-Art so gut wie NIE echte Einzelinserat-
+# Detail-URLs liefert (0 von 22 verwendeten Datenpunkten beim BMW-320d-Testfall) —
+# ein hartes source_type=="listing"-Gate für HOCH wäre daher praktisch für JEDES
+# Fahrzeug unerreichbar gewesen (Verstoß gegen §0). Das tatsächlich beobachtbare
+# Signal für "konkretes Einzelfahrzeug" ist stattdessen Baujahr UND km GEMEINSAM am
+# Datenpunkt (siehe _datenqualitaet-Docstring "EMPIRIE-HINWEIS"). Dieselben 8 Treffer
+# OHNE jedes Attribut (weder Baujahr noch km, reine Kategorie-Statistik) dürfen
+# dagegen weiterhin NICHT "hoch" ergeben.
+hoch_ohne_attribute = [obs(p, d, bj=None, km=None, source_type="unknown") for p, d in
+                       [(20000, "mobile.de"), (20500, "mobile.de"), (21000, "autoscout24.de"),
+                        (21500, "autoscout24.de"), (20800, "mobile.de"), (21200, "autoscout24.de"),
+                        (20300, "mobile.de"), (21100, "autoscout24.de")]]
+check("D neu: dieselben 8 Treffer OHNE jedes Baujahr/km-Attribut -> NICHT hoch",
+      _datenqualitaet(hoch_ohne_attribute, 20800, 20300, 21500) != "hoch")
+
+# Aber: Kategorieseiten-Herkunft (source_type='unknown'/'category') MIT vollständigem
+# Baujahr+km je Datenpunkt (der Tavily-Realfall — einzelne Fahrzeugzeilen INNERHALB
+# einer Such-/Kategorieseite) darf weiterhin "hoch" erreichen — sonst wäre HOCH für
+# reale Fahrzeuge strukturell unerreichbar.
+hoch_kategorie_mit_attributen = [obs(p, d, source_type="category") for p, d in
+                                 [(20000, "mobile.de"), (20500, "mobile.de"), (21000, "autoscout24.de"),
+                                  (21500, "autoscout24.de"), (20800, "mobile.de"), (21200, "autoscout24.de"),
+                                  (20300, "mobile.de"), (21100, "autoscout24.de")]]
+check("D neu: Kategorieseiten-Herkunft MIT Baujahr+km je Datenpunkt -> hoch weiterhin erreichbar",
+      _datenqualitaet(hoch_kategorie_mit_attributen, 20800, 20300, 21500) == "hoch")
+
+# Reliability-Sprint 3 §14: harte Invariante — AUSSCHLIESSLICH "bedingt" passende
+# Treffer (0 sehr_ähnlich + 0 ähnlich) dürfen NIEMALS "hoch" ergeben, egal wie viele
+# Treffer/Portale/Listings vorliegen (der Insignia-Bug: 7/7 bedingt -> fälschlich hoch).
+nur_bedingt = [obs(p, d, vgl="bedingt") for p, d in
+              [(20000, "mobile.de"), (20500, "mobile.de"), (21000, "autoscout24.de"),
+               (21500, "autoscout24.de"), (20800, "mobile.de"), (21200, "autoscout24.de"),
+               (20300, "mobile.de"), (21100, "autoscout24.de")]]
+check("D neu: 8/8 ausschließlich 'bedingt' passend -> NIEMALS hoch",
+      _datenqualitaet(nur_bedingt, 20800, 20300, 21500) != "hoch")
+check("D neu: 8/8 ausschließlich 'bedingt' -> höchstens mittel",
+      _datenqualitaet(nur_bedingt, 20800, 20300, 21500) in ("mittel", "niedrig"))
 
 # mittel: 4 Treffer, 2 Portale, breitere (noch kontrollierte) Streuung
 mittel = [obs(18000, "mobile.de"), obs(22000, "autoscout24.de"),

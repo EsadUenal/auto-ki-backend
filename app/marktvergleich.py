@@ -33,6 +33,8 @@ from urllib.parse import urlparse
 
 from app.models import Marktanalyse, Preisbeobachtung
 from app.web_search import ist_info_domain as _ist_info_domain
+from app.web_search import ist_einzelinserat as _ist_einzelinserat
+from app.web_search import ist_kategorieseite as _ist_kategorieseite_intern
 
 log = logging.getLogger(__name__)
 
@@ -202,13 +204,17 @@ def _naechster(treffer: list[re.Match], pos: int) -> re.Match | None:
     return best
 
 
-def _extrahiere_aus_text(text: str, url: str) -> list[Preisbeobachtung]:
+def _extrahiere_aus_text(text: str, url: str, source_type: str = "unknown") -> list[Preisbeobachtung]:
     """Alle (Preis[, km][, Baujahr])-Datenpunkte aus EINEM Snippet-Text.
 
     Assoziation rein positionsbasiert: km/Baujahr werden nur übernommen, wenn sie
     innerhalb eines engen Fensters um den Preis stehen. Ordnung/Reihenfolge der
     Felder variiert je Portal — das enge Fenster hält Fehlzuordnungen klein; im
     Zweifel bleibt ein Feld None (senkt später die Vergleichbarkeit).
+
+    `source_type` (§10-§13): "listing" | "category" | "unknown" — wird unverändert an
+    jede extrahierte Beobachtung durchgereicht (bestimmt später, ob sie Richtung
+    HIGH/Quellenvielfalt zählen darf).
     """
     if not text:
         return []
@@ -246,16 +252,16 @@ def _extrahiere_aus_text(text: str, url: str) -> list[Preisbeobachtung]:
         # §9: Finanzierungs-/Leasing-/Monats-/Neuwagenpreise nicht als Marktbeobachtung.
         if _ist_finanzierungspreis(fenster):
             continue
-        out.append(_roh_beobachtung(preis, km, jahr, domain, url, fenster))
+        out.append(_roh_beobachtung(preis, km, jahr, domain, url, fenster, source_type))
     return out
 
 
 # Roh-Beobachtung trägt das lokale Textfenster vorübergehend in `gruende[0]` mit,
 # damit die Vergleichbarkeits-Bewertung darauf zugreifen kann (wird dort entfernt).
-def _roh_beobachtung(preis, km, jahr, domain, url, fenster) -> Preisbeobachtung:
+def _roh_beobachtung(preis, km, jahr, domain, url, fenster, source_type="unknown") -> Preisbeobachtung:
     return Preisbeobachtung(
         preis_eur=preis, kilometerstand=km, baujahr=jahr,
-        quelle_domain=domain, quelle_url=url,
+        quelle_domain=domain, quelle_url=url, source_type=source_type,
         vergleichbarkeit="", gruende=[f"\x00{fenster}"],
     )
 
@@ -413,17 +419,39 @@ def _r100(x: float) -> int:
 
 def _datenqualitaet(verwendet: list[Preisbeobachtung], median: int | None,
                     lo: int | None, hi: int | None) -> str:
-    """Datenqualität aus einer belastbaren MISCHUNG (§3) — nicht aus einer starren
-    Trefferzahl allein:
+    """Datenqualität aus einer belastbaren MISCHUNG (§14/§15) — nicht aus einer
+    starren Trefferzahl allein:
 
-      - mehrere wirklich vergleichbare Fahrzeuge (Anzahl + Anteil sehr ähnlich)
+      - mehrere wirklich vergleichbare Fahrzeuge (Anzahl + Anteil sehr ähnlich/ähnlich)
       - Quellenvielfalt (mehrere unabhängige Portale/Domains)
-      - Attribut-Vollständigkeit (Baujahr und/oder km je Datenpunkt)
+      - Attribut-VOLLständigkeit (Baujahr UND km je Datenpunkt — siehe Empirie-Hinweis)
       - kontrollierte Preisstreuung (Quartilsspanne relativ zum Median)
+      - Anteil ECHTER Einzelinserate (source_type == "listing"), sofern vorhanden
 
     "hoch" ist der ANGESTREBTE Normalfall für gängige Fahrzeuge und wird ehrlich nur
     vergeben, wenn diese Mischung erreicht ist. "mittel" ist die seltene Ausnahme mit
     weiterhin belastbarer Basis. Sonst "niedrig" (= nicht auslieferbar, §0/§4).
+
+    HARTE INVARIANTE (§14, nicht verhandelbar): 0 "sehr_aehnlich" + 0 "aehnlich" kann
+    NIEMALS "hoch" ergeben — ausschließlich "bedingt" passende Treffer sind fachlich
+    keine belastbare Basis für die höchste Qualitätsstufe, unabhängig von Trefferzahl
+    oder Quellenvielfalt.
+
+    EMPIRIE-HINWEIS (Reliability-Sprint 3, per Live-Diagnose mit scripts/
+    diagnose_recherche.py): Tavilys Basic-Suche liefert für diese Query-Art so gut
+    wie NIE echte Einzelinserat-Detail-URLs (source_type=="listing") — real
+    beobachtet: 0 von 22 verwendeten Datenpunkten beim BMW-320d-Testfall, obwohl die
+    Basis inhaltlich stark war (21/23 mit Baujahr UND km, Median stabil). Ein hartes
+    `listing_n`-Gate für HOCH wäre daher für praktisch JEDES Fahrzeug unerreichbar
+    gewesen — das hätte §0 (verbreitete Fahrzeuge erreichen normalerweise HOCH)
+    direkt verletzt. Statt der (mit dieser Datenquelle strukturell fast nie
+    erreichbaren) Seiten-URL-Klassifikation zählt daher das stärkste tatsächlich
+    beobachtbare Signal für "das ist ein konkretes Einzelfahrzeug": Baujahr UND
+    Kilometerstand GEMEINSAM am selben Datenpunkt extrahiert (nicht nur eines von
+    beiden) — eine Zeile wie "BMW 320d 2019, 89.000 km, 24.900 €" innerhalb einer
+    Such-/Kategorieseite ist inhaltlich ein echtes Einzelangebot, auch wenn die
+    Trägerseite selbst eine Kategorieseite ist. Echte Einzelinserat-URLs (falls
+    Tavily sie doch liefert) zählen zusätzlich mit voller Kraft.
     """
     n = len(verwendet)
     if n == 0 or not median:
@@ -433,16 +461,34 @@ def _datenqualitaet(verwendet: list[Preisbeobachtung], median: int | None,
     quellenvielfalt = len(domains)
     attr_ratio = mit_attr / n
     rel_spanne = (hi - lo) / median if (lo is not None and hi is not None and median) else 1.0
+    sehr_n = sum(1 for b in verwendet if b.vergleichbarkeit == "sehr_aehnlich")
+    aehn_n = sum(1 for b in verwendet if b.vergleichbarkeit == "aehnlich")
+    listing_n = sum(1 for b in verwendet if b.source_type == "listing")
+    beide_n = sum(1 for b in verwendet if b.baujahr is not None and b.kilometerstand is not None)
+    # "Konkretes Einzelfahrzeug"-Signal: echte Listing-URL ODER vollständiges
+    # Baujahr+km-Paar am Datenpunkt (siehe Empirie-Hinweis oben) — je nachdem, was
+    # mehr zählt (nie doppelt gezählt).
+    konkret_n = max(listing_n, beide_n)
 
-    # Alle Datenpunkte in `verwendet` sind bereits mindestens "ähnlich" (Baujahr/km im
-    # Rahmen, kein Fremdmodell). Die echten Qualitätssignale sind daher: Menge,
-    # Quellenvielfalt (unabhängige Portale), Attribut-Vollständigkeit und ENGE Streuung.
+    if sehr_n == 0 and aehn_n == 0:
+        # Ausschließlich "bedingt" passende Treffer (§14-Beispiel: Insignia-Fall,
+        # 7/7 bedingt). Maximal "mittel" — und nur mit einer minimalen Basis aus
+        # konkreten Einzelfahrzeugen, sonst "niedrig".
+        if n >= 4 and quellenvielfalt >= 2 and konkret_n >= 2 and rel_spanne <= _MAX_REL_SPANNE:
+            return "mittel"
+        return "niedrig"
+
+    # Alle Datenpunkte in `verwendet` sind mindestens "ähnlich" (Baujahr/km im Rahmen,
+    # kein Fremdmodell). Die echten Qualitätssignale sind daher: Menge, Quellenvielfalt
+    # (unabhängige Portale), ENGE Streuung UND ein Mindestmaß an konkreten
+    # Einzelfahrzeug-Datenpunkten (§12: reine Kategorie-/Statistik-Angaben ohne jedes
+    # Einzelfahrzeug-Attribut dürfen HOCH nicht allein tragen).
     #
     # (a) Viele Treffer, >=2 Portale, überwiegend attributvollständig, sehr enge Streuung.
-    if n >= 8 and quellenvielfalt >= 2 and attr_ratio >= 0.5 and rel_spanne <= 0.30:
+    if n >= 8 and quellenvielfalt >= 2 and attr_ratio >= 0.5 and rel_spanne <= 0.30 and konkret_n >= n * 0.5:
         return "hoch"
     # (b) Etwas weniger Treffer, dafür breitere Quellenvielfalt (>=3 Portale), enge Streuung.
-    if n >= 6 and quellenvielfalt >= 3 and attr_ratio >= 0.5 and rel_spanne <= 0.40:
+    if n >= 6 and quellenvielfalt >= 3 and attr_ratio >= 0.5 and rel_spanne <= 0.40 and konkret_n >= n * 0.5:
         return "hoch"
     # Seltene Ausnahme (§3): belastbare Basis, aber nicht "hoch" — weniger Treffer/
     # Vielfalt oder etwas breitere (noch kontrollierte) Streuung.
@@ -581,11 +627,21 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
         # keinen Marktdatenpunkt bei.
         if _ist_info_domain(url):
             continue
+        # §11: Herkunftsart EINMAL pro Seite bestimmen (Einzelinserat vs. Kategorie-/
+        # Suchseite vs. unbekannt) — bestimmt später, ob die daraus extrahierten
+        # Datenpunkte Richtung Quellenvielfalt/HIGH zählen dürfen.
+        titel = r.get("title", "")
+        if _ist_einzelinserat(url, titel):
+            source_type = "listing"
+        elif _ist_kategorieseite_intern(url, titel):
+            source_type = "category"
+        else:
+            source_type = "unknown"
         # Raw-Content (falls angefordert) mitverwenden — mehr Text = mehr extrahierbare
         # Preis-Datenpunkte. Groß gedeckelt gegen pathologische Seitengrößen.
         raw = (r.get("raw_content") or "")[:20_000]
         text = f"{r.get('title','')}\n{r.get('content','')}\n{raw}"
-        roh.extend(_extrahiere_aus_text(text, url))
+        roh.extend(_extrahiere_aus_text(text, url, source_type))
 
     bewertet = [_bewerte(b, ziel) for b in roh]
     # Deduplizieren auf (Preis, km, Baujahr) — dieselbe Anzeige taucht in mehreren

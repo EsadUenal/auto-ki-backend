@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import date
 from typing import Any
@@ -79,8 +80,22 @@ _TECHNIK_DOMAINS = frozenset({
     "de.hella.com", "boschcarservice.com",
 })
 _MARKTPLATZ_DOMAINS = frozenset({
-    "mobile.de", "autoscout24", "autouncle",
+    "mobile.de", "autoscout24", "autouncle", "kleinanzeigen.de",
 })
+
+# Generische Sammler-/Classic-/Auktionsportale (§19) — nur als zusätzliche Discovery-
+# Domain-Gruppe für die Rare-Vehicle-Ladder, kein Fahrzeug-Hardcoding. Werden NICHT
+# in _MARKTPLATZ_DOMAINS geführt, da ihre Preise (Auktionsergebnisse, Sammlerpreise)
+# eine andere Aussagekraft haben als ein normaler Gebrauchtwagen-Median.
+_CLASSIC_AUKTION_DOMAINS = frozenset({
+    "classic-trader.com", "carandclassic.com", "collectingcars.com",
+    "classicdriver.com", "bringatrailer.com", "hemmings.com", "classic.com",
+})
+
+# Öffentliche Aliase für den Markt-Query-Planner (app/marktrecherche.py, §8/§19) —
+# als Liste, weil Tavilys `include_domains` eine geordnete Liste erwartet.
+MARKTPLATZ_DOMAINS = sorted(_MARKTPLATZ_DOMAINS)
+CLASSIC_AUKTION_DOMAINS = sorted(_CLASSIC_AUKTION_DOMAINS)
 _NACHSCHLAGEWERK_DOMAINS = frozenset({"wikipedia.org"})
 _COMMUNITY_DOMAINS = frozenset({
     "motor-talk.de", "reddit.com",
@@ -132,6 +147,85 @@ def ist_info_domain(url: str) -> bool:
         return False
     return (_enthaelt_domain(domain, _INFO_NONMARKET_DOMAINS)
             or _enthaelt_domain(domain, _NACHSCHLAGEWERK_DOMAINS))
+
+
+# ============================================================================
+# Einzelinserat- vs. Kategorie-/Suchseiten-Erkennung (Reliability-Sprint 3, §10-§13)
+# ============================================================================
+#
+# Tavily liefert Discovery-Treffer — häufig darunter Kategorie-/Suchergebnis-Seiten
+# ("Opel Insignia gebraucht kaufen — AutoScout24"), die viele Fahrzeuge/Preise in
+# EINEM Snippet mischen. Ein solches Snippet darf zwar als Recherche-/Hintergrund-
+# quelle dienen, aber NICHT als eigenständiges "Vergleichsfahrzeug" gezählt werden —
+# das würde Rauschen als Marktbeobachtung tarnen und künstlich Quellenvielfalt/HIGH
+# erzeugen. Portalspezifische URL-Muster für konkrete Einzelinserate (empirisch aus
+# echten Tavily-Treffern kalibriert, siehe scripts/diagnose_recherche.py).
+_EINZELINSERAT_URL_MUSTER = (
+    re.compile(r"mobile\.de/(?:fahrzeuge/details|auto)[/.].*[?&/]id=?\d+", re.I),
+    re.compile(r"mobile\.de/.+-\d{9,}\.html", re.I),
+    re.compile(r"autoscout24\.[a-z.]+/angebote/[^/?]+-\d+", re.I),
+    re.compile(r"(?:kleinanzeigen|ebay-kleinanzeigen)\.de/s-anzeige/[^/]+/\d+", re.I),
+    re.compile(r"autouncle\.[a-z.]+/.+/(?:bil|car|fahrzeug)-\d+", re.I),
+    re.compile(r"/(?:fahrzeug|angebot|inserat|listing|vehicle)[-_/][\w-]*\d{5,}", re.I),
+)
+
+# Kategorie-/Such-/Filterseiten: Domain-Root, Listen-Pfade oder Filter-Query-Parameter
+# — liefern viele Fahrzeuge gemischt in einem Treffer, sind aber KEIN Einzelinserat.
+_KATEGORIESEITE_URL_MUSTER = (
+    re.compile(r"^/?(?:de/)?(?:gebrauchtwagen|marktplatz|fahrzeugsuche|search|angebote)/?$", re.I),
+    re.compile(r"[?&](?:makeModelVariant|fromsearch|damageUnrepaired|sort)=", re.I),
+)
+
+# Generischer Kategorieseiten-Titel: "<Marke> <Modell> gebraucht kaufen — <Domain>"
+# ohne konkreten Preis-/km-/EZ-Token im Titel selbst.
+_KATEGORIE_TITEL_MUSTER = re.compile(
+    r"gebraucht(?:wagen)?\s+kaufen\b|gebrauchtwagen\s+angebote\b|—\s*(?:auto\s?scout24|mobile\.de)",
+    re.I,
+)
+
+
+def ist_einzelinserat(url: str, title: str | None = None) -> bool:
+    """True für eine URL, die strukturell auf EIN konkretes Fahrzeuginserat zeigt
+    (§11). False für Kategorie-/Such-/Info-Seiten oder wenn unklar (konservativ:
+    im Zweifel KEIN Einzelinserat — zählt dann nicht Richtung HIGH, bleibt aber als
+    Hintergrundquelle erhalten, siehe marktvergleich.py)."""
+    if not url:
+        return False
+    domain = _domain_von(url)
+    if not domain or not _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS):
+        # Nur für bekannte Fahrzeugmarktplätze bewertbar — alles andere (Foren,
+        # Presseartikel, ...) ist per Definition kein Marktplatz-Einzelinserat.
+        return False
+    try:
+        pfad_und_query = url.split(domain, 1)[1]
+    except IndexError:
+        pfad_und_query = url
+    if any(m.search(pfad_und_query) for m in _KATEGORIESEITE_URL_MUSTER):
+        return False
+    if title and _KATEGORIE_TITEL_MUSTER.search(title) and not re.search(r"\d[.,]?\d{3}\s*(?:€|eur|km)", title, re.I):
+        return False
+    return any(m.search(url) for m in _EINZELINSERAT_URL_MUSTER)
+
+
+def ist_kategorieseite(url: str, title: str | None = None) -> bool:
+    """True für eine erkennbare Kategorie-/Such-/Übersichtsseite eines Marktplatzes
+    (§11) — Gegenstück zu `ist_einzelinserat` für Diagnosezwecke."""
+    if not url:
+        return False
+    domain = _domain_von(url)
+    if not domain or not _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS):
+        return False
+    if ist_einzelinserat(url, title):
+        return False
+    try:
+        pfad_und_query = url.split(domain, 1)[1]
+    except IndexError:
+        pfad_und_query = url
+    if any(m.search(pfad_und_query) for m in _KATEGORIESEITE_URL_MUSTER):
+        return True
+    if title and _KATEGORIE_TITEL_MUSTER.search(title):
+        return True
+    return False
 
 
 def _ist_herstellerseite(domain: str) -> bool:
@@ -296,28 +390,29 @@ def _cache_key(query: str, count: int, include_domains, exclude_domains, include
     )
 
 
-async def tavily_search(
+async def _tavily_search_intern(
     query: str,
     count: int = 5,
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
     include_raw_content: bool = False,
-) -> list[dict[str, Any]]:
-    """
-    Ruft die Tavily Search API auf (POST, JSON-Body).
+    bypass_cache: bool = False,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Interner Kern von `tavily_search`/`tavily_search_mit_status` (Reliability-
+    Sprint 3, §21/§22). Gibt (ergebnisse, hatte_technischen_fehler) zurück —
+    `hatte_technischen_fehler=True` NUR bei echtem Netzwerk-/API-Ausfall (nach
+    Ausschöpfen der Retries), NICHT bei einer legitim leeren Trefferliste (200 OK,
+    einfach nichts gefunden). Diese Unterscheidung ist die Grundlage für
+    `research_status`s technical_failure- vs. data_exhausted-Semantik (§21).
 
-    Gibt [] zurück wenn:
-      - TAVILY_API_KEY nicht gesetzt (Websuche deaktiviert)
-      - Netzwerkfehler oder API-Fehler (nie weitergeworfen)
-
-    search_depth="basic": 1 Credit pro Abfrage — sparsamster Modus.
-    include_domains: optional — beschränkt die Suche auf bestimmte Shops/Quellen.
-    exclude_domains: optional — blendet z.B. US-zentrierte Auto-Portale aus,
-      deren Modelljahre/Ausstattungen vom europäischen Markt abweichen.
+    `bypass_cache=True` (Retry, §22): überspringt NUR das Cache-LESEN — ein frischer
+    Request wird ausgeführt und das Ergebnis danach normal gecacht (kommt allen
+    späteren, nicht-bypassenden Aufrufern zugute). Verhindert, dass ein Retry exakt
+    dieselbe (ggf. dünne) gecachte Antwort wiederverwendet.
     """
     if not TAVILY_API_KEY:
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
-        return []
+        return [], True   # kein API-Key = technischer Ausfall, keine Datenknappheit
 
     # Social Media grundsätzlich ausschließen (spart Tavily-Ergebnis-Slots für
     # tatsächlich brauchbare Quellen) — zusätzlich zu vom Aufrufer übergebenen
@@ -326,10 +421,11 @@ async def tavily_search(
     exclude_domains = list({*(exclude_domains or []), *SOCIAL_MEDIA_AUSSCHLUSS})
 
     key = _cache_key(query, count, include_domains, exclude_domains, include_raw_content)
-    cached = _cache.get(key)
-    if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
-        log.debug("Tavily Cache-Treffer für %r", query[:80])
-        return cached[1]
+    if not bypass_cache:
+        cached = _cache.get(key)
+        if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
+            log.debug("Tavily Cache-Treffer für %r", query[:80])
+            return cached[1], False
 
     body: dict[str, Any] = {
         "api_key":      TAVILY_API_KEY,
@@ -350,6 +446,7 @@ async def tavily_search(
         body["exclude_domains"] = exclude_domains
 
     results: list[dict[str, Any]] = []
+    hatte_fehler = False
     for versuch in range(_MAX_RETRIES):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -358,11 +455,13 @@ async def tavily_search(
                 data = resp.json()
                 results = data.get("results", [])
                 log.info("Tavily Search: %d Ergebnisse für %r", len(results), query[:80])
+                hatte_fehler = False
                 break
 
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             transient = status_code == 429 or status_code >= 500
+            hatte_fehler = True
             if transient and versuch < _MAX_RETRIES - 1:
                 delay = _BACKOFF_BASIS_S * (2 ** versuch)
                 log.warning("Tavily %s (Versuch %d/%d) für %r — warte %.0fs",
@@ -373,6 +472,7 @@ async def tavily_search(
                         status_code, query[:60], exc.response.text[:200])
             break
         except Exception as exc:
+            hatte_fehler = True
             log.warning("Tavily Fehler (%s): %s", type(exc).__name__, exc)
             break
 
@@ -384,7 +484,54 @@ async def tavily_search(
             aeltester = min(_cache, key=lambda k: _cache[k][0])
             del _cache[aeltester]
         _cache[key] = (time.monotonic(), results)
-    return results
+    return results, hatte_fehler
+
+
+async def tavily_search(
+    query: str,
+    count: int = 5,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    include_raw_content: bool = False,
+    bypass_cache: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Ruft die Tavily Search API auf (POST, JSON-Body).
+
+    Gibt [] zurück wenn:
+      - TAVILY_API_KEY nicht gesetzt (Websuche deaktiviert)
+      - Netzwerkfehler oder API-Fehler (nie weitergeworfen)
+
+    search_depth="basic": 1 Credit pro Abfrage — sparsamster Modus.
+    include_domains: optional — beschränkt die Suche auf bestimmte Shops/Quellen.
+    exclude_domains: optional — blendet z.B. US-zentrierte Auto-Portale aus,
+      deren Modelljahre/Ausstattungen vom europäischen Markt abweichen.
+    bypass_cache: optional (§22) — überspringt das Cache-Lesen für einen echten
+      Retry statt derselben (ggf. dünnen) gecachten Antwort.
+
+    Für die feinere technical_failure-/data_exhausted-Unterscheidung (§21) siehe
+    `tavily_search_mit_status`.
+    """
+    ergebnisse, _hatte_fehler = await _tavily_search_intern(
+        query, count, include_domains, exclude_domains, include_raw_content, bypass_cache)
+    return ergebnisse
+
+
+async def tavily_search_mit_status(
+    query: str,
+    count: int = 5,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    include_raw_content: bool = False,
+    bypass_cache: bool = False,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Wie `tavily_search`, gibt zusätzlich zurück, ob ein ECHTER technischer Fehler
+    auftrat (API-Key fehlt, Netzwerk-/HTTP-Fehler nach Retries) — im Unterschied zu
+    einer legitim leeren Trefferliste. Nutzt die adaptive Marktrecherche (§21), um
+    `research_status` sauber zwischen "technical_failure" und "data_exhausted" zu
+    trennen."""
+    return await _tavily_search_intern(
+        query, count, include_domains, exclude_domains, include_raw_content, bypass_cache)
 
 
 async def tavily_search_with_fallback(

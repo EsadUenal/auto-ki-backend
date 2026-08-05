@@ -94,21 +94,25 @@ check("3: kein Median -> KEIN Preis-/Betrugs-Finding",
       not kf_of(f3, "preis") and not kf_of(f3, "betrug"))
 
 # ── 4) Exakter sicherheitsrelevanter Rückruf -> Finding ─────────────────────
+# Reliability-Sprint 3 (§27/§28): "exakt"/"wahrscheinlich" -> "variant_match"/
+# "series_only" (KANN betreffen statt "betrifft" — ohne VIN-Prüfung nie sicher).
 f4 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW, [
     mv_insight(26500, 23490, -3010, -11.4),
-    rueckruf("rueckruf-1", "KBA-Rückruf: Bremskraftverstärker", "exakt"),
-    rueckruf("rueckruf-2", "KBA-Rückruf: Lenkung", "wahrscheinlich"),
+    rueckruf("rueckruf-1", "KBA-Rückruf: Bremskraftverstärker", "variant_match"),
+    rueckruf("rueckruf-2", "KBA-Rückruf: Lenkung", "series_only"),
 ])
 rk = kf_of(f4, "rueckruf")
-check("4: relevante Rückrufe -> ein Rückruf-Finding 'warnung'",
+check("4: zu prüfende Rückrufe -> ein Rückruf-Finding 'warnung'",
       len(rk) == 1 and rk[0].stufe == "warnung")
 check("4: Rückruf-Finding zählt 2 und referenziert beide IDs",
       bool(rk) and "2" in rk[0].titel and set(rk[0].evidence_ids) == {"rueckruf-1", "rueckruf-2"})
 check("4: Aktion nennt FIN-Prüfung", bool(rk) and "FIN" in (rk[0].aktion or ""))
+check("4: Titel behauptet NICHT 'relevant' (ohne VIN nicht gesichert, §27)",
+      bool(rk) and "relevant" not in rk[0].titel.lower())
 
-# ── 5) applicability=unklar -> NIE als sicher betroffen ─────────────────────
+# ── 5) applicability=unclear -> NIE als sicher betroffen ────────────────────
 f5 = build_key_findings_kauf(REQ_BMW, BAUREIHE_BMW, MOTOR_BMW, [
-    rueckruf("rueckruf-3", "KBA-Rückruf (Baureihe): Brandgefahr der Hochvoltbatterie", "unklar"),
+    rueckruf("rueckruf-3", "KBA-Rückruf (Baureihe): Brandgefahr der Hochvoltbatterie", "unclear"),
 ])
 rk5 = kf_of(f5, "rueckruf")
 check("5: unklarer Rückruf -> Finding 'info' (nicht 'warnung'/'kritisch')",

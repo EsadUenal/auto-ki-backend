@@ -23,7 +23,10 @@ Absichtlich NICHT implementiert (zu riskant für "niemals Inhalt verändern"):
     Zeilen werden entfernt (siehe _entferne_duplikatzeilen).
 """
 
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 # ---------- Code-Fences schützen ----------
 # Dreifach-Backtick-Blöcke (falls die KI doch mal Code/Rohtext einbettet) werden
@@ -125,6 +128,93 @@ def _bereinige_zeilen(segment: str) -> str:
         vorherige_inhaltliche_zeile = zeile if zeile.strip() else None
 
     return "\n".join(ergebnis)
+
+
+# ---------- 3) Verkaufsdauer-Guard (Reliability-Sprint 3, §26) ----------
+#
+# Die STRUKTURIERTEN Felder (verkaufsdauer_schnell/empfohlen/maximal) sind bereits
+# hart auf die drei Kategorien erzwungen (app/preisurteil.py, app/verkaufscheck.py —
+# nie eine erfundene Zahl). Die Lücke war ausschließlich der freie Bericht-Text: der
+# Prompt instruiert das LLM, keine konkreten Tage/Wochen/Monate zu erfinden, aber
+# nichts prüfte das NACH der Generierung — ein "innerhalb von 3–4 Wochen" konnte
+# unverändert durchrutschen.
+#
+# Sicherheitsnetz: nur Sätze, die GLEICHZEITIG (a) eine Zeitspanne (Tage/Wochen/
+# Monate) UND (b) ein eindeutiges Verkaufs-/Vermarktungs-Kontextwort enthalten,
+# werden angefasst — TÜV-Fristen ("TÜV in 6 Monaten"), Wartungsintervalle ("Wartung
+# vor 3 Monaten") oder Garantiezeiträume bleiben unverändert, da ihnen das
+# Verkaufs-Kontextwort fehlt.
+_VERKAUF_KONTEXT_WORTE = (
+    "verkauf", "vermarkt", "inserat", "interessent", "käufer", "kaeufer",
+    "angebot online", "standzeit", "absetz", "veräußer", "veraeusser",
+    "anzeige online", "annonc", "nachfrage", "resonanz", "anfragen",
+    "preisanpassung",
+)
+
+# Zusätzlich: Preis-Verb (senken/reduzieren/anpassen) an anderer Stelle im Satz —
+# separat geprüft (nicht als Teilstring-Phrase), da es im Fließtext selten direkt
+# neben "Preis" steht ("den Preis schrittweise um 250 € senken").
+_PREIS_VERB_WORTE = ("senken", "reduzieren", "runter", "nachlass")
+
+# Zeitspanne mit optionaler einleitender Präposition — wird bei Treffer durch eine
+# neutrale, nicht-quantifizierte Formulierung ersetzt (KEINE Zahl mehr).
+_RE_VERKAUFSDAUER = re.compile(
+    r"(?:innerhalb\s+(?:von\s+)?|binnen\s+|nach\s+(?:etwa\s+|ca\.?\s+|circa\s+)?|"
+    r"in\s+(?:etwa\s+|ca\.?\s+|circa\s+)?)?"
+    r"\d+\s*(?:[-–—]\s*\d+\s*)?"
+    r"(?:tage?n?|wochen?|monate?n?)\b",
+    re.IGNORECASE,
+)
+
+_VERKAUFSDAUER_ERSATZ = "über einen angemessenen Zeitraum"
+
+# Sätze grob trennen (Punkt/Ausrufe-/Fragezeichen + Whitespace) — bewusst simpel,
+# reicht für die Kontext-Prüfung (kein vollständiger Satzparser nötig). Häufige
+# Abkürzungen vor dem Punkt werden ausgenommen, damit z.B. "ca." keine Satzgrenze
+# erzeugt und "Nach ca. 2 Wochen" als EIN Satz erhalten bleibt.
+_RE_SATZGRENZE = re.compile(
+    r"(?<!\bca)(?<!\bbzw)(?<!\bz\.B)(?<!\betc)(?<!\bd\.h)(?<=[.!?])\s+", re.IGNORECASE)
+
+
+def entferne_erfundene_verkaufsdauer(text: str) -> str:
+    """Ersetzt erfundene, konkrete Verkaufsdauer-Zeitangaben im Freitext (§26) durch
+    eine neutrale Formulierung — NUR in Sätzen mit eindeutigem Verkaufs-/
+    Vermarktungs-Kontext, um TÜV-/Wartungs-/Garantiefristen etc. nicht zu berühren.
+    Gibt den Text unverändert zurück, wenn kein solcher Satz gefunden wird."""
+    if not text:
+        return text
+
+    teile = _CODE_FENCE.split(text)
+    fences = _CODE_FENCE.findall(text)
+
+    def _bereinige_teil(teil: str) -> str:
+        zeilen = teil.split("\n")
+        neue_zeilen = []
+        for zeile in zeilen:
+            if _IST_TABELLENZEILE.match(zeile):
+                neue_zeilen.append(zeile)
+                continue
+            saetze = _RE_SATZGRENZE.split(zeile)
+            neue_saetze = []
+            for satz in saetze:
+                low = satz.lower()
+                hat_kontext = any(w in low for w in _VERKAUF_KONTEXT_WORTE) or (
+                    "preis" in low and any(w in low for w in _PREIS_VERB_WORTE)
+                )
+                if hat_kontext and _RE_VERKAUFSDAUER.search(satz):
+                    satz = _RE_VERKAUFSDAUER.sub(_VERKAUFSDAUER_ERSATZ, satz)
+                    log.info("Verkaufsdauer-Guard: erfundene Zeitangabe im Bericht ersetzt.")
+                neue_saetze.append(satz)
+            neue_zeilen.append(" ".join(neue_saetze))
+        return "\n".join(neue_zeilen)
+
+    bereinigt = [_bereinige_teil(t) for t in teile]
+    zusammengesetzt: list[str] = []
+    for i, teil in enumerate(bereinigt):
+        zusammengesetzt.append(teil)
+        if i < len(fences):
+            zusammengesetzt.append(fences[i])
+    return "".join(zusammengesetzt)
 
 
 def postprocess_answer(text: str) -> str:

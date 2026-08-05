@@ -128,18 +128,24 @@ check("11: Hochvolt-Rückruf beim 320d-Diesel -> vollständig entfernt (nicht si
       not any("Hochvolt" in t for t in _rk_diesel))
 check("11: nicht betroffener Rückruf taucht auch nicht in 'Was jetzt?' auf (kein Insight)",
       all("Hochvolt" not in i.titel for i in _rk_diesel.values()))
-check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> applicability 'exakt'",
-      brems_d.applicability == "exakt" and brems_d.confidence == "hoch")
+# Reliability-Sprint 3 (§27/§28): "exakt"/"unklar" -> "variant_match"/"unclear".
+# variant_match ist die stärkste OHNE VIN-Prüfung erreichbare Stufe (§27: niemals
+# "confirmed_by_vin" ohne echte VIN-Prüfung, die es im System nicht gibt).
+check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> applicability 'variant_match'",
+      brems_d.applicability == "variant_match" and brems_d.confidence == "hoch")
 
 _rk_phev = {i.titel: i for i in build_insights(BAUREIHE_HV, MOTOR_PHEV, [], req(2020)) if i.kategorie == "rueckruf"}
 hv_p = next(i for t, i in _rk_phev.items() if "Hochvolt" in t)
-check("13: Hochvolt-Rückruf beim 330e Plug-in-Hybrid -> applicability 'exakt'",
-      hv_p.applicability == "exakt" and hv_p.confidence == "hoch")
+check("13: Hochvolt-Rückruf beim 330e Plug-in-Hybrid -> applicability 'variant_match'",
+      hv_p.applicability == "variant_match" and hv_p.confidence == "hoch")
 
 _rk_nomotor = {i.titel: i for i in build_insights(BAUREIHE_HV, None, [], req(2020)) if i.kategorie == "rueckruf"}
 hv_n = next(i for t, i in _rk_nomotor.items() if "Hochvolt" in t)
-check("12: Motor nicht erkannt -> Hochvolt-Applicability 'unklar' (nicht raten)",
-      hv_n.applicability == "unklar")
+check("12: Motor nicht erkannt -> Hochvolt-Applicability 'unclear' (nicht raten)",
+      hv_n.applicability == "unclear")
+
+check("Sprint3: niemals 'confirmed_by_vin' (§27, keine VIN-Prüfung im System)",
+      brems_d.applicability != "confirmed_by_vin" and hv_p.applicability != "confirmed_by_vin")
 
 _rk_2023 = [i for i in build_insights(BAUREIHE_HV, MOTOR_DIESEL, [], req(2023)) if i.kategorie == "rueckruf"]
 check("14: Baujahr 2023 außerhalb 2019-2020 -> Rückrufe ausgelassen", len(_rk_2023) == 0)
