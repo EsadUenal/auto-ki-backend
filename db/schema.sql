@@ -16,6 +16,11 @@ CREATE TABLE IF NOT EXISTS baureihe (
     bauzeitraum_von         INTEGER,                -- null erlaubt (Admin-Entwurf noch unvollständig)
     bauzeitraum_bis         INTEGER,                -- null = aktuell
     karosserie              TEXT,                   -- JSON-Array, z.B. '["Coupé","Cabrio"]'
+    -- Auflösung eines zusammengefassten generation-Felds ("G20/G21") in die
+    -- einzelnen Werkscodes und ihre Karosserie. JSON-Objekt, z.B.
+    -- '{"G20":"Limousine","G21":"Touring"}'. NULL = keine geprüfte Zuordnung.
+    -- Nur explizit verifizierte Einträge, siehe app/chassis_codes.py.
+    chassis_codes           TEXT,
     segment                 TEXT,
     vorgaenger              TEXT,
 

@@ -33,12 +33,27 @@ ALLE = [
     {"id": "bmw-3er-f30", "marke": "BMW", "modell": "3er", "generation": "F30"},
     {"id": "bmw-3er-e46", "marke": "BMW", "modell": "3er", "generation": "E46"},
 ]
-ZIEL = baue_ziel(BAUREIHE, {"kraftstoff": "Diesel"},
-                 SimpleNamespace(baujahr=2020, kilometerstand=78500, kraftstoff=None), ALLE)
+# Motorvarianten wie in der Produktion mitgeben (app/kaufcheck.py übergibt
+# get_alle_motorvarianten_kurz()) — nur damit greift die Abgrenzung zwischen den
+# Motorisierungen DERSELBEN Baureihe (320d vs. 320i, Marktanalyse-Sprint §5).
+MOTOREN = [
+    {"baureihe_id": "bmw-3er-g20-g21", "bezeichnung": "320d"},
+    {"baureihe_id": "bmw-3er-g20-g21", "bezeichnung": "320i"},
+    {"baureihe_id": "bmw-3er-g20-g21", "bezeichnung": "330i"},
+]
+ZIEL = baue_ziel(BAUREIHE, {"bezeichnung": "320d", "kraftstoff": "Diesel"},
+                 SimpleNamespace(baujahr=2020, kilometerstand=78500, kraftstoff=None),
+                 ALLE, MOTOREN)
 
 check("Ziel: Generation-Tokens g20/g21", ZIEL["generation_tokens"] == {"g20", "g21"})
-check("Ziel: Fremd-Generationen e90/f30/e46 (aus DB abgeleitet)",
-      ZIEL["fremd_generationen"] == {"e90", "f30", "e46"})
+# §DB-Trust: Fremdgenerationen und Fremdmotorlisten stammen aus ungeprueften
+# DB-Zeilen und duerfen nicht mehr hart verwerfen (app/verification.py). Ohne
+# `verification` bleiben beide Mengen leer — die Abgrenzung leisten jetzt die
+# Nutzerangabe und die Bezeichnung im Inserat selbst (siehe 1d unten).
+check("Ziel: Fremd-Generationen bleiben ohne Verifikation leer",
+      ZIEL["fremd_generationen"] == set())
+check("Ziel: Fremd-Motorvarianten bleiben ohne Verifikation leer",
+      ZIEL["fremd_motor_tokens"] == set())
 
 # Ein Snippet mit einer Mischung: gute G20-320d, eine 230.000-km-Karre, ein E90 (7k),
 # ein F30, ein Ausreißerpreis (Fremdmodell), plus ein sauberer G20.
@@ -64,8 +79,27 @@ WEB = [
 ma = analysiere_markt(WEB, ZIEL, 23490)
 preise = sorted(b.preis_eur for b in ma.beobachtungen)
 
-# 1: Zielfahrzeug wird korrekt bewertet (mind. mehrere sehr_aehnlich)
-check("1: mehrere sehr ähnliche G20-320d erkannt", ma.anzahl_sehr_aehnlich >= 3)
+# 1: Zielfahrzeug wird korrekt bewertet. Als "sehr ähnlich" gelten nur die Einträge,
+# die den Generationscode WIRKLICH im eigenen Angebotstext tragen ("BMW 320d G20
+# 29.999 € …", "BMW 320d G20 26.500 € …"). Die übrigen Zeilen des Snippets nennen
+# "G20" nicht selbst — seit der Merkmals-Segmentierung (Marktanalyse-Sprint §3/§5)
+# zieht ein Angebot die Merkmale des NACHBAR-Angebots nicht mehr in sein eigenes
+# Umfeld. Sie bleiben als "ähnlich" vollwertig im Median, gelten aber ehrlich nicht
+# mehr als generationsbestätigt.
+check("1: generationsbestätigte G20-320d erkannt", ma.anzahl_sehr_aehnlich >= 2)
+# 1b: Die übrigen Karten nennen den Generationscode nicht selbst. Seit §6 reicht
+# der Code in Seitentitel/Suchbegriff nicht mehr als Beleg für das EINZELNE
+# Fahrzeug — solche Karten sind höchstens "bedingt" und tragen die normale
+# Preisstatistik nicht mit (hier kommen sie nur über den Fallback herein, weil
+# weniger als drei generationsbestätigte Vergleiche vorliegen).
+check("1b: Karten ohne eigenen Generationscode sind höchstens 'bedingt'",
+      ma.anzahl_aehnlich == 0 and ma.anzahl_bedingt >= 3)
+check("1c: kein Angebot erbt den Generationscode des Nachbarangebots",
+      all(any("Generation bestätigt" in g for g in b.gruende)
+          for b in ma.beobachtungen if b.generation == "G20"))
+# 1d: der 320i im selben Snippet ist eine ANDERE Motorvariante derselben Baureihe
+# und darf nicht in den 320d-Median (Marktanalyse-Sprint §5).
+check("1d: BMW 320i (26.000 €) nicht im 320d-Vergleich", 26000 not in preise)
 # 2: 230.000 km darf nicht als sehr_ähnlich zählen (und nicht verwendet werden)
 check("2: 230.000-km-Fahrzeug NICHT in verwendeten Vergleichen", 18990 not in preise)
 # 3: F30 (2014, andere Generation) darf nicht als guter G20-Vergleich zählen
@@ -122,15 +156,19 @@ check("Wenig: Methode weist auf begrenzte Datenbasis hin",
 # (Domain bewusst NICHT 12gebrauchtwagen.de — die ist seit §Phase 1 ein real
 # erkannter Aggregator, siehe test_aggregatorseiten.py; hier testen wir den
 # Streuungs-Guard auf einer neutralen, unklassifizierten Domain.)
+# Die Karten nennen den Generationscode W205 jeweils SELBST — sonst wären sie seit
+# §6 nur noch "bedingt" und der Streuungs-Guard käme gar nicht mehr zum Zuge. Hier
+# soll aber genau er geprüft werden: echte, generationsbestätigte Vergleiche, deren
+# PREISE inkohärent sind.
 WEB_STREU = [
     {"url": "https://beispielportal.de/x", "title": "Mercedes C 200 2019",
      "content": (
-         "Mercedes C 200 1.690 € 100.000 km EZ 01/2020 . "
-         "Mercedes C 200 13.960 € 100.000 km EZ 02/2020 . "
-         "Mercedes C 200 31.384 € 100.000 km EZ 03/2020 . "
-         "Mercedes C 200 4.984 € 99.000 km EZ 04/2019 . "
-         "Mercedes C 200 22.106 € 99.000 km EZ 05/2019 . "
-         "Mercedes C 200 30.804 € 98.000 km EZ 06/2019")},
+         "Mercedes C 200 W205 1.690 € 100.000 km EZ 01/2020 . "
+         "Mercedes C 200 W205 13.960 € 100.000 km EZ 02/2020 . "
+         "Mercedes C 200 W205 31.384 € 100.000 km EZ 03/2020 . "
+         "Mercedes C 200 W205 4.984 € 99.000 km EZ 04/2019 . "
+         "Mercedes C 200 W205 22.106 € 99.000 km EZ 05/2019 . "
+         "Mercedes C 200 W205 30.804 € 98.000 km EZ 06/2019")},
 ]
 ZIEL_MB = baue_ziel(
     {"marke": "Mercedes-Benz", "modell": "C 200", "generation": "W205", "id": "mb-c-w205"},

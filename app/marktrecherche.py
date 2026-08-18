@@ -30,9 +30,14 @@ from urllib.parse import urlparse
 
 from app.marktvergleich import analysiere_markt
 from app.vehicle_identity import VehicleIdentity
+from app.marktvergleich import ist_teile_suchseite
 from app.web_search import (
     CLASSIC_AUKTION_DOMAINS,
     MARKTPLATZ_DOMAINS,
+    hat_brauchbaren_raw_content,
+    hole_raw_content,
+    ist_info_domain,
+    ist_marktplatz_domain,
     tavily_search_mit_status,
 )
 
@@ -115,30 +120,123 @@ def _merge(dst: list[dict], seen: set[str], results: list[dict]) -> int:
     return neu
 
 
-def genug(ma) -> bool:
-    """Die Recherche DARF früh enden: belastbarer Median UND HOHE Datenqualität.
+# Sicherheitsdeckel für die Extract-Nachladung je Marktanalyse. BEWUSST großzügig:
+# er soll einen Ausreißer begrenzen, nicht die Qualität steuern. Der reale Bedarf
+# liegt nach Messung deutlich darunter (siehe Diagnose-Statistik `extract`).
+MAX_EXTRACT_URLS = 24
 
-    Bewusst streng auf "hoch" (nicht "mittel"): populäre Fahrzeuge sollen den
-    Normalfall "hoch" tatsächlich per Recherche erreichen, statt bei der ersten
-    mittleren Stufe abzubrechen (§0/§17). Wird "hoch" nicht erreicht, laufen ALLE
-    Stufen (inkl. Rare-Ladder bei Datennot, §19) — erst danach entscheidet der
-    Aufrufer über completed_medium bzw. research_failed.
+
+def ist_extract_kandidat(r: dict) -> bool:
+    """Lohnt es, für diesen Suchtreffer den Seiteninhalt nachzuladen (§2)?
+
+    Nur echte Fahrzeugmarktplätze ohne brauchbaren Inhalt. Ratgeber-/Info-Seiten und
+    Teile-/Zubehör-Suchen liefern ohnehin keine Marktbeobachtung — für sie wäre der
+    Extract verschwendetes Budget. Treffer, die bereits genug `raw_content`
+    mitbringen, werden nie nachgeladen.
     """
-    return bool(ma and ma.median_eur and ma.datenqualitaet == "hoch")
+    url = r.get("url") or ""
+    if not url or hat_brauchbaren_raw_content(r):
+        return False
+    if ist_info_domain(url) or ist_teile_suchseite(url, r.get("title")):
+        return False
+    return ist_marktplatz_domain(url)
+
+
+async def ergaenze_raw_content(results: list[dict], budget: int) -> tuple[int, dict, int]:
+    """Lädt fehlenden Seiteninhalt für relevante Marktseiten nach.
+
+    Der nachgeladene Inhalt wird IN DIE VORHANDENEN Treffer geschrieben — es
+    entsteht keine zweite Auswertungsschiene: die Karten-Segmentierung und die
+    Fahrzeugvalidierung laufen anschließend exakt wie bei Treffern, die ihren
+    `raw_content` direkt aus der Suche mitgebracht haben.
+
+    Gibt (Anzahl ergänzter Treffer, Statistik, verbrauchtes Budget) zurück.
+    """
+    if budget <= 0:
+        return 0, {}, 0
+    kandidaten = [r for r in results if ist_extract_kandidat(r)][:budget]
+    if not kandidaten:
+        return 0, {}, 0
+    inhalte, statistik = await hole_raw_content([r["url"] for r in kandidaten])
+    ergaenzt = 0
+    for r in kandidaten:
+        inhalt = inhalte.get(r["url"])
+        if inhalt:
+            r["raw_content"] = inhalt
+            ergaenzt += 1
+    return ergaenzt, statistik, len(kandidaten)
+
+
+def genug(ma) -> bool:
+    """Abbruchkriterium der Recherche: das bestmögliche Ergebnis ist erreicht.
+
+    Bewusst NUR `completed_high` (§11). Ein bereits erreichtes `completed_medium`
+    beendet die Suche NICHT — es kann durch zusätzliche Plattformen noch zu HIGH
+    werden. Das war früher gefährlich, weil `analysiere_markt` immer auf dem
+    GESAMTEN akkumulierten Pool rechnet und eine spätere, breitere Stufe ein gutes
+    Zwischenergebnis wieder verwässern konnte. Genau davor schützt jetzt die
+    best_so_far-Logik in `vertiefe_marktrecherche`: weitergesucht wird, aber ein
+    einmal erreichter Stand kann nicht mehr verloren gehen.
+    """
+    return research_status(ma) == "completed_high"
 
 
 def research_status(ma) -> str:
     """Quality-Gate-Ergebnis (§0/§17): completed_high | completed_medium | research_failed.
 
-    - "hoch"  + belastbarer Median -> completed_high (Normalfall)
-    - "mittel"+ belastbarer Median -> completed_medium (seltene Ausnahme)
-    - sonst (kein Median / "niedrig") -> research_failed
+    Zwei UNABHÄNGIGE Achsen (§2/§9/§10):
+      - Datenqualität   = wie zuverlässig/ähnlich sind die einzelnen Fahrzeuge
+      - Marktabdeckung  = wie viele unabhängige Plattformen haben beigetragen
+
+    Regeln:
+      - "hoch"   + Median + Marktabdeckung "gut"/"breit"  -> completed_high
+      - "hoch"   + Median + nur EINE Plattform            -> completed_medium
+      - "mittel" + Median                                 -> completed_medium
+      - sonst (kein Median / "niedrig")                   -> research_failed
+
+    Zusätzliche Deckelung (§B): musste die Preisstatistik mangels ausreichend guter
+    Vergleiche auf nur "bedingt" passende Beobachtungen zurückgreifen
+    (`fallback_bedingt`), ist das Ergebnis höchstens completed_medium — auch wenn
+    Streuung und Trefferzahl formal für "hoch" reichen würden.
+
+    Der Single-Source-Deckel (§9) ist die ehrliche Aussage, nicht ein Abbruch: eine
+    saubere Basis aus acht validierten Angeboten EINER Plattform liefert ein
+    Ergebnis — mit hoher Datenqualität, eingeschränkter Marktabdeckung und
+    höchstens mittlerem Gesamtvertrauen. Eine einzige Domain führt ausdrücklich
+    NICHT mehr automatisch zu research_failed.
     """
-    if ma and ma.median_eur and ma.datenqualitaet == "hoch":
-        return "completed_high"
-    if ma and ma.median_eur and ma.datenqualitaet == "mittel":
+    if not (ma and ma.median_eur):
+        return "research_failed"
+    if ma.datenqualitaet == "hoch":
+        if getattr(ma, "fallback_bedingt", False):
+            return "completed_medium"
+        return "completed_high" if ma.marktabdeckung in ("gut", "breit") else "completed_medium"
+    if ma.datenqualitaet == "mittel":
         return "completed_medium"
     return "research_failed"
+
+
+# Rangfolge für den best_so_far-Vergleich (§11) — je höher, desto besser.
+_STATUS_RANG = {"research_failed": 0, "completed_medium": 1, "completed_high": 2}
+_QUALI_RANG = {"niedrig": 0, "mittel": 1, "hoch": 2}
+_ABDECKUNG_RANG = {"eingeschraenkt": 0, "gut": 1, "breit": 2}
+
+
+def bewertungsrang(ma) -> tuple[int, int, int, int]:
+    """Vergleichbare Güte einer Marktanalyse (§11).
+
+    Reihenfolge der Kriterien: Gesamtstatus zuerst (ein auslieferbares Ergebnis
+    schlägt jedes nicht auslieferbare), dann Datenqualität, dann Marktabdeckung,
+    zuletzt die Zahl der verwendeten Vergleiche als Feinunterscheidung.
+    """
+    if not ma:
+        return (0, 0, 0, 0)
+    return (
+        _STATUS_RANG.get(research_status(ma), 0),
+        _QUALI_RANG.get(ma.datenqualitaet, 0),
+        _ABDECKUNG_RANG.get(getattr(ma, "marktabdeckung", "eingeschraenkt"), 0),
+        ma.verwendet or 0,
+    )
 
 
 def research_failure_grund(ma, hatte_technischen_fehler: bool) -> str:
@@ -235,9 +333,16 @@ def baue_deep_queries(identity: VehicleIdentity) -> list[QueryStufe]:
 
     # STUFE B — dieselbe enge Formulierung, portal-spezifisch (§8: mobile.de,
     # autoscout24.de, kleinanzeigen.de, autouncle — kein site:-Text, nur include_domains).
+    # raw_content=True (Reliability-Sprint-4-Nachbesserung, empirisch belegt per
+    # scripts/diagnose_bmw320d_root_cause.py + direktem Tavily-Extract-Vergleich):
+    # die kurzen Search-Snippets dieser Portale reichten oft nicht für extrahierbare
+    # Preis-Datenpunkte, während derselbe volle Seiteninhalt (raw_content/Extract)
+    # deutlich mehr lieferte (kleinanzeigen.de: 37 statt vereinzelter Punkte).
+    # raw_content kostet KEINEN zusätzlichen Tavily-Credit (search_depth bleibt
+    # "basic") — nur mehr Text pro ohnehin bezahltem Treffer.
     stufen.append(QueryStufe(
         query=_ohne_dup(essenziell, motor, jahr, getriebe, "gebraucht kaufen"),
-        include_domains=MARKTPLATZ_DOMAINS, label="portal-eng",
+        include_domains=MARKTPLATZ_DOMAINS, label="portal-eng", raw_content=True,
         felder=[f for f in ("make", "model", "generation", "engine_name", "year") if getattr(identity, f, None)],
     ))
 
@@ -251,7 +356,7 @@ def baue_deep_queries(identity: VehicleIdentity) -> list[QueryStufe]:
             km_hinweis = f"{lo}-{hi} km"
         stufen.append(QueryStufe(
             query=_ohne_dup(essenziell, motor, f"{jahr - 1} {jahr} {jahr + 1}", km_hinweis, "gebraucht"),
-            include_domains=MARKTPLATZ_DOMAINS, label="fenster-jahr-km",
+            include_domains=MARKTPLATZ_DOMAINS, label="fenster-jahr-km", raw_content=True,
             felder=[f for f in ("make", "model", "engine_name", "year", "mileage") if getattr(identity, f, None)],
         ))
 
@@ -383,16 +488,54 @@ async def vertiefe_marktrecherche(
     accumulated: list[dict] = list(initial_results or [])
     seen: set[str] = {_norm_url(r.get("url", "")) for r in accumulated}
     hatte_technischen_fehler = False
+    # Extract-Nachladung: Budget und Verbrauch über ALLE Query-Stufen hinweg.
+    extract_budget_verbraucht = 0
+    extract_gesamt: dict[str, int] = {}
+    extract_ergaenzt = 0
 
     ma = analysiere_markt(accumulated, ziel, angebot_eur)
     stufen_log: list[dict] = [{
         "stufe": "initial", "label": "initial", "roh": len(accumulated), "neu": len(accumulated),
-        "akzeptiert": ma.verwendet, "quali": ma.datenqualitaet, "felder": [],
+        "akzeptiert": ma.verwendet, "quali": ma.datenqualitaet,
+        "abdeckung": ma.marktabdeckung, "felder": [],
         "hintergrund_domains": list(ma.hintergrund_domains),
     }]
 
+    # ── best_so_far (§11, verpflichtend) ─────────────────────────────────────
+    # Ein bereits brauchbares Ergebnis darf durch spätere Recherche NIEMALS
+    # verschlechtert werden. `analysiere_markt` rechnet immer auf dem GESAMTEN
+    # akkumulierten Pool — eine spätere, breitere Stufe (bis hin zur Rare-Ladder)
+    # kann einen guten Zwischenstand also nachträglich verwässern. Deshalb wird
+    # nach JEDER Stufe der beste bisher erreichte Stand samt der zu ihm gehörenden
+    # Trefferliste festgehalten und am Ende zurückgegeben. Weitergesucht wird
+    # trotzdem — nur verlieren kann man nichts mehr.
+    best_ma = ma
+    best_results: list[dict] = list(accumulated)
+    best_rang = bewertungsrang(ma)
+    best_stufe = "initial"
+    best_verlauf: list[dict] = [{
+        "stufe": "initial", "rang": list(best_rang), "uebernommen": True,
+        "status": research_status(ma), "quali": ma.datenqualitaet,
+        "abdeckung": ma.marktabdeckung, "verwendet": ma.verwendet,
+    }]
+
+    def _pruefe_best(stufe_name: str) -> bool:
+        """Übernimmt den aktuellen Stand, wenn er besser ist. Gibt zurück, ob übernommen."""
+        nonlocal best_ma, best_results, best_rang, best_stufe
+        rang = bewertungsrang(ma)
+        besser = rang > best_rang
+        if besser:
+            best_ma, best_results, best_rang, best_stufe = ma, list(accumulated), rang, stufe_name
+        best_verlauf.append({
+            "stufe": stufe_name, "rang": list(rang), "uebernommen": besser,
+            "status": research_status(ma), "quali": ma.datenqualitaet,
+            "abdeckung": ma.marktabdeckung, "verwendet": ma.verwendet,
+            "bester_stand": best_stufe,
+        })
+        return besser
+
     async def _laufe_stufen(stufen: list[QueryStufe], praefix: str) -> None:
-        nonlocal ma, hatte_technischen_fehler
+        nonlocal ma, hatte_technischen_fehler, extract_budget_verbraucht, extract_ergaenzt
         for i, stufe in enumerate(stufen[:max_stufen], 1):
             if not stufe.query or not stufe.query.strip():
                 continue
@@ -402,19 +545,32 @@ async def vertiefe_marktrecherche(
                 bypass_cache=bypass_cache,
             )
             hatte_technischen_fehler = hatte_technischen_fehler or fehler
+            # Fehlenden Seiteninhalt VOR dem Merge nachladen — sonst landet ein
+            # Treffer ohne raw_content im Pool und wird von `_merge` bei einer
+            # späteren Stufe als Dublette abgewiesen, obwohl er dort mit Inhalt
+            # gekommen wäre.
+            ergaenzt, extract_stat, verbraucht = await ergaenze_raw_content(
+                results, MAX_EXTRACT_URLS - extract_budget_verbraucht)
+            extract_budget_verbraucht += verbraucht
+            extract_ergaenzt += ergaenzt
+            for k, v in (extract_stat or {}).items():
+                extract_gesamt[k] = extract_gesamt.get(k, 0) + v
             neu = _merge(accumulated, seen, results)
             ma = analysiere_markt(accumulated, ziel, angebot_eur)
+            stufen_name = f"{praefix}{i}"
             stufen_log.append({
-                "stufe": f"{praefix}{i}", "label": stufe.label, "query": stufe.query[:100],
+                "stufe": stufen_name, "label": stufe.label, "query": stufe.query[:100],
                 "domains": stufe.include_domains, "felder": stufe.felder,
                 # §Phase 4: bewusst weggelassene Felder je Stufe (Diagnose-
                 # Transparenz — welche Nutzerdaten in dieser Stufe NICHT einflossen).
                 "weggelassene_felder": stufe.weggelassene_felder,
                 "raw_content": stufe.raw_content,
                 "roh": len(results), "neu": neu, "akzeptiert": ma.verwendet,
-                "quali": ma.datenqualitaet,
+                "extract_ergaenzt": ergaenzt,
+                "quali": ma.datenqualitaet, "abdeckung": ma.marktabdeckung,
                 "hintergrund_domains": list(ma.hintergrund_domains),
             })
+            _pruefe_best(stufen_name)
             if genug(ma):
                 return
 
@@ -423,14 +579,18 @@ async def vertiefe_marktrecherche(
 
         # §19: generische Rare-Vehicle-Erweiterung NUR bei objektiver Datennot nach
         # voller Standard-Ladder — nicht an eine Fahrzeugerkennung gekoppelt. "Datennot"
-        # heißt: nach der vollen Standard-Ladder wäre das Ergebnis research_failed
-        # (kein belastbarer Median ODER Qualität weiterhin "niedrig") — NICHT nur eine
-        # rohe verwendet-Zählung, denn auch mit mehreren Datenpunkten kann der
-        # Streuungs-Guard in analysiere_markt() den Median verwerfen (§0: kein
-        # Schein-Median trotz vorhandener Rohdaten).
-        if not genug(ma) and research_status(ma) == "research_failed" and rare_queries:
+        # heißt: der BESTE bisher erreichte Stand (nicht der zufällig letzte) wäre
+        # research_failed — kein belastbarer Median ODER Qualität weiterhin "niedrig".
+        # NICHT nur eine rohe verwendet-Zählung, denn auch mit mehreren Datenpunkten
+        # kann der Streuungs-Guard in analysiere_markt() den Median verwerfen (§0:
+        # kein Schein-Median trotz vorhandener Rohdaten).
+        if research_status(best_ma) == "research_failed" and rare_queries:
             await _laufe_stufen(rare_queries, "rare-")
 
+    # §11: IMMER die beste während der gesamten Recherche erreichte Analyse
+    # zurückgeben — nie den zufällig letzten (womöglich verwässerten) Stand.
+    ma = best_ma
+    accumulated = best_results
     status = research_status(ma)
     grund = research_failure_grund(ma, hatte_technischen_fehler) if status == "research_failed" else None
     diagnose = {
@@ -441,14 +601,24 @@ async def vertiefe_marktrecherche(
         "akzeptiert": ma.verwendet if ma else 0,
         "verworfen": (ma.gefunden - ma.verwendet) if ma else 0,
         "datenqualitaet": ma.datenqualitaet if ma else "niedrig",
+        "marktabdeckung": ma.marktabdeckung if ma else "eingeschraenkt",
+        "anzahl_domains": ma.anzahl_domains if ma else 0,
+        # §11: nachvollziehbarer best_so_far-Verlauf für die Diagnose.
+        "best_so_far": best_verlauf,
+        "bester_stand_stufe": best_stufe,
         "research_status": status,
         "research_failure_grund": grund,
         "hatte_technischen_fehler": hatte_technischen_fehler,
+        # §7: Verbrauch der Extract-Nachladung (Calls, URLs, Cache-Treffer, Fehler).
+        "extract": dict(extract_gesamt, ergaenzte_seiten=extract_ergaenzt,
+                        budget=MAX_EXTRACT_URLS, budget_verbraucht=extract_budget_verbraucht),
         "domains": list(ma.quellen_domains) if ma else [],
         "hintergrund_domains": list(ma.hintergrund_domains) if ma else [],
         "dauer_ms": round((time.perf_counter() - t0) * 1000),
     }
-    log.info("[RECHERCHE %s] status=%s grund=%s akzeptiert=%d/%d quali=%s stufen=%d dauer=%dms domains=%s",
+    log.info("[RECHERCHE %s] status=%s grund=%s akzeptiert=%d/%d quali=%s abdeckung=%s "
+             "bester_stand=%s stufen=%d dauer=%dms domains=%s",
              zweck, status, grund, diagnose["akzeptiert"], diagnose["gefunden_datenpunkte"],
-             diagnose["datenqualitaet"], len(stufen_log), diagnose["dauer_ms"], diagnose["domains"])
+             diagnose["datenqualitaet"], diagnose["marktabdeckung"], best_stufe,
+             len(stufen_log), diagnose["dauer_ms"], diagnose["domains"])
     return accumulated, ma, diagnose

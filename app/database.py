@@ -316,7 +316,87 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             if spalte not in mv_existing:
                 conn.execute(f"ALTER TABLE motorvariante ADD COLUMN {spalte} {sql_typ}")
 
+    _migriere_chassis_codes(conn)
+    _migriere_verification(conn)
+
     conn.commit()
+
+
+def _migriere_verification(conn: sqlite3.Connection) -> None:
+    """Vertrauensstufen je Fakt (additiv, idempotent, ohne Datenschreiben).
+
+    Legt ausschließlich die Spalte `verification` an. Es wird KEINE Zeile befüllt:
+    ein fehlender Eintrag gilt in app/verification.py als `unverified`, und genau
+    das ist für die bestehenden Daten die ehrliche Aussage. Ein Massenschreiben
+    über 421 Baureihen würde nur eine Verifikation vortäuschen, die nie
+    stattgefunden hat.
+
+    Format (JSON-Objekt je Baureihe), Beispiel:
+        {"generation": {"status": "verified", "source": "...", "date": "2026-08-18"},
+         "chassis_codes": {"status": "reviewed"}}
+    """
+    br_existiert = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='baureihe'"
+    ).fetchone()
+    if not br_existiert:
+        return
+    spalten = {r[1] for r in conn.execute("PRAGMA table_info(baureihe)").fetchall()}
+    if "verification" not in spalten:
+        conn.execute("ALTER TABLE baureihe ADD COLUMN verification TEXT")
+        log.info("Spalte baureihe.verification angelegt (alle Werte NULL = unverified).")
+
+
+def _migriere_chassis_codes(conn: sqlite3.Connection) -> None:
+    """Zuordnung Chassiscode -> Karosserie je Baureihenfamilie (additiv, idempotent).
+
+    Ein `generation`-Feld wie "G20/G21" fasst zwei Werkscodes zusammen, die sich nur
+    in der Karosserie unterscheiden. Diese Spalte hält die geprüfte Auflösung, damit
+    der Marktvergleich aus "Limousine" auf G20 und aus "Touring" auf G21 schließen
+    kann.
+
+    Zwei bewusste Entscheidungen:
+
+    1. `generation` bleibt UNVERÄNDERT. Der String ist Teil des Lookup-Schlüssels
+       (`get_baureihe(marke, modell, generation)`) — ihn umzuschreiben würde die
+       Fahrzeugerkennung brechen.
+    2. Gefüllt wird ausschließlich aus der explizit verifizierten Liste in
+       app/chassis_codes.py, nicht aus einer Ableitungsregel. Begründung dort.
+
+    Der Seed läuft genau einmal (Marker in `schema_migrations`), damit spätere
+    manuelle Korrekturen an einzelnen Baureihen nicht bei jedem App-Start wieder
+    überschrieben werden. Bestehende Zeilen werden nie gelöscht; gesetzt wird nur
+    die neue Spalte, und auch die nur, wenn sie noch leer ist.
+    """
+    from app.chassis_codes import SEED_MARKER, VERIFIZIERTE_CHASSIS_CODES
+
+    br_existiert = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='baureihe'"
+    ).fetchone()
+    if not br_existiert:
+        return
+
+    spalten = {r[1] for r in conn.execute("PRAGMA table_info(baureihe)").fetchall()}
+    if "chassis_codes" not in spalten:
+        conn.execute("ALTER TABLE baureihe ADD COLUMN chassis_codes TEXT")
+
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE name=?", (SEED_MARKER,)).fetchone():
+        return
+
+    gesetzt, fehlend = 0, []
+    for baureihe_id, mapping in VERIFIZIERTE_CHASSIS_CODES.items():
+        treffer = conn.execute("SELECT chassis_codes FROM baureihe WHERE id=?",
+                               (baureihe_id,)).fetchone()
+        if treffer is None:
+            fehlend.append(baureihe_id)
+            continue
+        if treffer[0]:                      # bereits gepflegt -> nicht überschreiben
+            continue
+        conn.execute("UPDATE baureihe SET chassis_codes=? WHERE id=?",
+                     (json.dumps(mapping, ensure_ascii=False), baureihe_id))
+        gesetzt += 1
+    conn.execute("INSERT INTO schema_migrations (name) VALUES (?)", (SEED_MARKER,))
+    log.info("chassis_codes-Seed: %d Baureihen gesetzt, %d nicht gefunden (%s).",
+             gesetzt, len(fehlend), fehlend or "-")
 
 
 def ensure_tables() -> None:
@@ -382,6 +462,18 @@ def _parse_json_field(value: str | None) -> list:
         return [value]
 
 
+def _parse_json_dict(value: str | None) -> dict:
+    """JSON-Objektfeld -> dict. Alles Unerwartete ergibt {} (nie einen Teil-Treffer),
+    damit eine beschädigte Zelle keine halbe Zuordnung liefert."""
+    if not value:
+        return {}
+    try:
+        geladen = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return geladen if isinstance(geladen, dict) else {}
+
+
 def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
@@ -396,6 +488,10 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         baureihe_id = result["id"]
 
         result["karosserie"] = _parse_json_field(result.get("karosserie"))
+        # Zuordnung Chassiscode -> Karosserie als DICT (nicht als Liste wie die
+        # übrigen JSON-Felder). Fehlt die Spalte oder ist sie leer, bleibt {} —
+        # der Aufrufer leitet dann keine Generation ab.
+        result["chassis_codes"] = _parse_json_dict(result.get("chassis_codes"))
 
         result["ausstattungslinien"] = [
             dict(r) for r in conn.execute(
@@ -509,12 +605,16 @@ def _cached_alle(key: str, sql: str) -> list[dict]:
 
 
 def get_alle_baureihen_kurz() -> list[dict]:
-    """id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis für ALLE Baureihen —
-    gecacht (siehe oben), identische Spalten wie die bisherigen Direktabfragen in
-    llm._suche_baureihen_in_text() und car_lookup.find_baureihe()."""
+    """id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis,karosserie für ALLE
+    Baureihen — gecacht (siehe oben). Enthält die Spalten der bisherigen Direktabfragen
+    in llm._suche_baureihen_in_text() und car_lookup.find_baureihe(); `karosserie` kam
+    additiv hinzu, weil die Variantenerkennung (marktvergleich._variantenvokabular)
+    einwortige Variantenphrasen gegen die real vorkommenden Karosseriewerte prüft.
+    Der Wert bleibt hier der ROHE JSON-Text der Spalte."""
     return _cached_alle(
         "baureihen",
-        "SELECT id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis FROM baureihe",
+        "SELECT id,marke,modell,generation,bauzeitraum_von,bauzeitraum_bis,karosserie,"
+        "verification FROM baureihe",
     )
 
 

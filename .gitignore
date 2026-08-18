@@ -17,6 +17,11 @@ db/chroma/
 !.env.example
 wiederherstellungspasswort.txt
 
+# Diagnose-Rohdaten (scripts/diagnose_marktanalyse.py --speichern)
+# Enthalten fremde Web-/Fahrzeugdaten aus echten Suchlaeufen (Seitentexte, Inserate)
+# — reines Analysematerial, gehoert nicht ins Repo.
+diagnose_runs/
+
 # IDE
 .vscode/
 .idea/

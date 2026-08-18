@@ -94,7 +94,21 @@ _CLASSIC_AUKTION_DOMAINS = frozenset({
 
 # Öffentliche Aliase für den Markt-Query-Planner (app/marktrecherche.py, §8/§19) —
 # als Liste, weil Tavilys `include_domains` eine geordnete Liste erwartet.
-MARKTPLATZ_DOMAINS = sorted(_MARKTPLATZ_DOMAINS)
+#
+# Reliability-Sprint 4 (Nachbesserung, empirisch per direktem Tavily-Aufruf
+# gefunden): Tavily validiert `include_domains` inzwischen auf eine gültige TLD
+# ("Domains must have a valid suffix") — die BARE-Namen "autoscout24"/"autouncle"
+# aus `_MARKTPLATZ_DOMAINS` (dort bewusst ohne TLD, für die _enthaelt_domain-
+# Teilstring-Klassifikation über alle Länder-TLDs hinweg) sind für den API-
+# Parameter selbst UNGÜLTIG. In der Mischung mit gültigen Domains (kleinanzeigen.de/
+# mobile.de) wurden sie bisher stillschweigend ignoriert (Tavily akzeptiert die
+# Anfrage trotzdem) — das hat die zwei Portal-/Fenster-Suchstufen faktisch auf nur
+# 2 statt 4 Portale reduziert, ein Mitverursacher der BMW-320d-Domain-Diversitäts-
+# Lücke (nur kleinanzeigen.de erreichte "genug" akzeptierte Punkte). Eigene,
+# TLD-vollständige Liste NUR für `include_domains` — die Klassifikation
+# (_MARKTPLATZ_DOMAINS, Teilstring-Match) bleibt unverändert.
+_MARKTPLATZ_DOMAINS_MIT_TLD = ("mobile.de", "autoscout24.de", "autouncle.de", "kleinanzeigen.de")
+MARKTPLATZ_DOMAINS = sorted(_MARKTPLATZ_DOMAINS_MIT_TLD)
 CLASSIC_AUKTION_DOMAINS = sorted(_CLASSIC_AUKTION_DOMAINS)
 _NACHSCHLAGEWERK_DOMAINS = frozenset({"wikipedia.org"})
 _COMMUNITY_DOMAINS = frozenset({
@@ -248,6 +262,21 @@ def ist_generische_suchseite(url: str, title: str | None = None) -> bool:
     if title and _KATEGORIE_TITEL_MUSTER.search(title) and not re.search(r"\d[.,]?\d{3}\s*(?:€|eur|km)", title, re.I):
         return True
     return False
+
+
+def ist_marktplatz_domain(url: str) -> bool:
+    """True, wenn die URL zu einem der bekannten echten Fahrzeugmarktplätze gehört
+    (mobile.de, autoscout24, autouncle, kleinanzeigen.de — inkl. Subdomains und
+    Länder-TLDs).
+
+    Fachlicher Unterschied zu einer beliebigen Domain (Marktanalyse-Sprint §3): eine
+    SUCHERGEBNIS-Seite eines echten Marktplatzes listet einzelne, real inserierte
+    Fahrzeugkarten. Eine Kategorie-/Filterseite einer Aggregator-/Ratgeberdomain
+    (12gebrauchtwagen.de u.ä.) zeigt dagegen aufbereitete Sammelangaben ohne einzeln
+    geprüfte Inserate. Nur der erste Fall darf einzelne Marktbeobachtungen liefern.
+    """
+    domain = _domain_von(url)
+    return bool(domain) and _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS)
 
 
 def ist_einzelinserat(url: str, title: str | None = None) -> bool:
@@ -528,14 +557,32 @@ async def _tavily_search_intern(
     }
     if include_domains:
         body["include_domains"] = include_domains
-    if exclude_domains:
+    # `exclude_domains` NUR ohne `include_domains` senden.
+    #
+    # Gemessen (BMW-320d-Livelauf, identische Query und Trefferzahl):
+    #   include_domains + exclude_domains -> 16 kleinanzeigen-Treffer,  1 mit raw_content
+    #   include_domains allein            -> 16 kleinanzeigen-Treffer, 16 mit raw_content
+    # Beide Parameter gemeinsam unterdrücken bei Tavily also den raw_content — und
+    # damit ausgerechnet die Seiteninhalte, aus denen die Fahrzeugkarten des
+    # Marktvergleichs stammen. Ohne sie liefert die gesamte Marktanalyse null
+    # Datenpunkte (real beobachtet: dreimal research_failed in Folge).
+    #
+    # Fachlich ist die Kombination ohnehin redundant: `include_domains` ist eine
+    # Positivliste. Wer die Suche auf mobile.de/autoscout24.de/autouncle.de/
+    # kleinanzeigen.de beschränkt, hat US-Quellen bereits ausgeschlossen. Der
+    # Ausschluss bleibt für alle Suchen OHNE Positivliste unverändert wirksam.
+    elif exclude_domains:
         body["exclude_domains"] = exclude_domains
 
     results: list[dict[str, Any]] = []
     hatte_fehler = False
     for versuch in range(_MAX_RETRIES):
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # 20s (statt vorheriger 10s): search_depth="advanced" mit raw_content
+            # braucht real gemessen bis zu ~10s (siehe scripts/diagnose_provider_
+            # matrix.py) — 10s war zu knapp und riskierte einen unfairen Timeout
+            # allein durch das Zeitlimit, nicht durch einen echten Tavily-Fehler.
+            async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(_ENDPOINT, json=body)
                 resp.raise_for_status()
                 data = resp.json()
@@ -625,6 +672,105 @@ async def tavily_search_mit_status(
 
 
 _ENDPOINT_EXTRACT = "https://api.tavily.com/extract"
+
+# ── Extract-Nachladung: Cache und Batching ───────────────────────────────────
+# Tavilys Suche liefert `raw_content` nur unzuverlässig mit — über vier gemessene
+# Live-Läufe kamen 0, 7, 11 und 11 von 15-17 gefundenen Marktplatz-Suchseiten mit
+# Inhalt zurück. Fehlt er, fehlen die Fahrzeugkarten und damit die halbe
+# Marktanalyse. Die dedizierte Extract-API lieferte dieselben Seiten dagegen
+# vollständig. Sie wird deshalb als FALLBACK eingesetzt: sie holt nur den fehlenden
+# Seiteninhalt nach, die Auswertung bleibt unverändert dieselbe.
+_EXTRACT_CACHE_VERSION = "basic-v1"      # Teil des Cache-Keys: andere Extract-Tiefe -> anderer Eintrag
+_EXTRACT_CACHE_TTL_S = 900.0             # länger als die Suche (300s): ein Seiteninhalt
+                                         # ändert sich langsamer als ein Ranking, und eine
+                                         # Marktanalyse läuft über mehrere Query-Stufen.
+_EXTRACT_CACHE_MAX = 300
+# Batchgröße: die Extract-API nimmt mehrere URLs pro Aufruf. Fünf ist der Kompromiss
+# aus wenigen Roundtrips und begrenztem Schaden bei einem Timeout — schlägt ein
+# Aufruf ganz fehl, sind höchstens fünf Seiten betroffen und der Rest läuft weiter.
+_EXTRACT_BATCH_SIZE = 5
+# Ab wann gilt vorhandener raw_content als brauchbar? Tavily liefert gelegentlich
+# leere oder Stummel-Inhalte; darauf lohnt kein Verzicht auf den Extract.
+_MIN_RAW_CONTENT_LEN = 400
+
+_extract_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def hat_brauchbaren_raw_content(result: dict[str, Any]) -> bool:
+    """True, wenn der Suchtreffer bereits genug Seiteninhalt mitbringt."""
+    return len((result.get("raw_content") or "").strip()) >= _MIN_RAW_CONTENT_LEN
+
+
+def _extract_cache_key(url: str) -> tuple[str, str]:
+    """URL + Extract-Version. Die Kanonisierung fasst dieselbe Seite zusammen, die
+    über mehrere Query-Stufen mit unterschiedlichen Tracking-Parametern auftaucht."""
+    try:
+        p = urlparse(url or "")
+        kanon = f"{p.netloc.lower().removeprefix('www.')}{p.path.rstrip('/')}"
+        if p.query:
+            kanon += f"?{p.query}"
+    except Exception:
+        kanon = (url or "").strip().lower()
+    return (kanon, _EXTRACT_CACHE_VERSION)
+
+
+async def hole_raw_content(urls: list[str]) -> tuple[dict[str, str], dict[str, int]]:
+    """Lädt fehlenden Seiteninhalt per Extract-API nach (Batch + Cache + Teilausfall).
+
+    Rein mechanisch: WELCHE URLs nachgeladen werden, entscheidet der Aufrufer
+    (app/marktrecherche.py) — hier passiert keine fachliche Relevanzbewertung.
+
+    Rückgabe: ({url: raw_content} nur für Erfolge, Statistik). Ein Fehlschlag ist
+    KEIN Fehler des Checks: die betroffene URL fehlt einfach im Ergebnis-Dict, der
+    Aufrufer behält seinen bisherigen Suchtreffer und macht weiter.
+    """
+    statistik = {"angefragt": 0, "aus_cache": 0, "extract_calls": 0,
+                 "extract_urls": 0, "erfolge": 0, "fehler": 0}
+    if not urls:
+        return {}, statistik
+
+    jetzt = time.monotonic()
+    out: dict[str, str] = {}
+    offen: list[str] = []
+    gesehen: set[tuple[str, str]] = set()
+    for url in urls:
+        key = _extract_cache_key(url)
+        if key in gesehen:              # §3: dieselbe Seite nur einmal nachladen
+            continue
+        gesehen.add(key)
+        statistik["angefragt"] += 1
+        treffer = _extract_cache.get(key)
+        if treffer and (jetzt - treffer[0]) < _EXTRACT_CACHE_TTL_S:
+            out[url] = treffer[1]
+            statistik["aus_cache"] += 1
+            continue
+        offen.append(url)
+
+    for i in range(0, len(offen), _EXTRACT_BATCH_SIZE):
+        batch = offen[i:i + _EXTRACT_BATCH_SIZE]
+        statistik["extract_calls"] += 1
+        statistik["extract_urls"] += len(batch)
+        try:
+            ergebnisse = await tavily_extract(batch)
+        except Exception as exc:        # §5: nie bis zum Nutzer durchreichen
+            log.warning("Extract-Batch fehlgeschlagen (%s): %s", type(exc).__name__, exc)
+            statistik["fehler"] += len(batch)
+            continue
+        for e in ergebnisse:
+            inhalt = (e.get("raw_content") or "").strip()
+            if not e.get("erfolg") or len(inhalt) < _MIN_RAW_CONTENT_LEN:
+                statistik["fehler"] += 1
+                continue
+            out[e["url"]] = inhalt
+            statistik["erfolge"] += 1
+            if len(_extract_cache) >= _EXTRACT_CACHE_MAX:
+                _extract_cache.pop(min(_extract_cache, key=lambda k: _extract_cache[k][0]), None)
+            _extract_cache[_extract_cache_key(e["url"])] = (time.monotonic(), inhalt)
+
+    log.info("Extract-Nachladung: %d angefragt, %d aus Cache, %d Calls, %d Erfolge, %d Fehler",
+             statistik["angefragt"], statistik["aus_cache"], statistik["extract_calls"],
+             statistik["erfolge"], statistik["fehler"])
+    return out, statistik
 
 
 async def tavily_extract(urls: list[str], *, advanced: bool = False) -> list[dict[str, Any]]:

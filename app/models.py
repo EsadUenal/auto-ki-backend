@@ -141,6 +141,72 @@ class Preisbeobachtung(BaseModel):
     # Default "unknown" -> alte gespeicherte Checks bleiben ladbar.
     source_type: str = "unknown"
 
+    # ── Marktanalyse-Sprint (§3): eine MarketObservation MUSS ein Fahrzeug sein ──
+    # Alle Felder additiv mit Default -> alte gespeicherte Checks bleiben ladbar.
+    #
+    # `listing_key` ist der STABILE Dedup-Schlüssel (§4). Er wird in dieser
+    # Reihenfolge gebildet: (1) Inserats-ID aus der URL, (2) kanonisierte
+    # Detail-URL, (3) Fahrzeugdaten + Preis + Kilometer. Die dritte Stufe ist
+    # bewusst grob genug, um dasselbe Inserat über mehrere Rechercheseiten hinweg
+    # zusammenzuführen, und gleichzeitig fein genug, um zwei tatsächlich
+    # verschiedene Fahrzeuge NICHT zu verschmelzen (Preis UND km UND Baujahr
+    # müssten identisch sein).
+    listing_key: str | None = None
+    listing_id: str | None = None
+    detail_url: str | None = None       # nur gesetzt, wenn die Quelle ein Einzelinserat ist
+    # Fahrzeugidentität, soweit AUS DEM PREISUMFELD belegbar (nie geraten, nie vom
+    # Zielfahrzeug übernommen — ein None heißt "im Text nicht nachweisbar").
+    make: str | None = None
+    model: str | None = None
+    generation: str | None = None
+    # Woher der Generationscode stammt:
+    #   "explicit_card"      — die Fahrzeugkarte nennt ihn selbst
+    #   "explicit_detail"    — die Detailseite des Inserats nennt ihn
+    #   "inferred_database"  — aus der geprüften Chassiscode/Karosserie-Zuordnung
+    #                          der Baureihenfamilie abgeleitet (app/chassis_codes.py)
+    #   "unknown"            — nicht belegbar
+    # Eine EXPLIZITE Angabe schlägt immer die Ableitung.
+    generation_evidence: str = "unknown"
+    generation_inference_reason: str | None = None
+    body: str | None = None
+    # Woher die Karosserie stammt — bewusst PARALLEL zu `generation_evidence`
+    # geführt statt als neues Schema-Konstrukt:
+    #   "card"            — der eigene, strukturell abgegrenzte Kartentext nennt sie
+    #   "detail"          — die eigene Detailseite des Inserats nennt sie
+    #   "page_context"    — NUR aus dem Kontext der Suchseite (URL-Filter wie
+    #                       "autos.typ_s:limousine" oder Seitentitel). Bleibt als
+    #                       Kontext erhalten, ist aber KEINE Listing-Identität.
+    #   "window_fallback" — aus einem bloßen Zeichenfenster ohne Kartengrenze
+    #   "unknown"         — nicht belegbar
+    # Nur "card" und "detail" dürfen Generation-Inference und Karosserie-Bestätigung
+    # tragen (siehe marktvergleich._identitaets_body).
+    body_evidence: str = "unknown"
+    fuel: str | None = None
+    engine_variant: str | None = None   # Verkaufsbezeichnung im Text, z.B. "320d"
+    horsepower: int | None = None
+    transmission: str | None = None
+    # Feinkörniger Ähnlichkeitswert 0.0-1.0 (Abstand zu Baujahr/km fließt ein) —
+    # ergänzt die grobe Stufe in `vergleichbarkeit`, ersetzt sie nicht.
+    similarity: float = 0.0
+    # Woraus der Datenpunkt stammt: "title" | "snippet" | "raw_content" — oder
+    # "window_fallback", wenn er nicht aus einer strukturell bestätigten Karte,
+    # sondern nur aus einem Zeichenfenster um den Preis stammt.
+    extraction_source: str = "snippet"
+    # ── Kartensegmentierung (app/market_card_segmenter.py) ───────────────────
+    # Wie wurde die Fahrzeugkarte abgegrenzt, aus der dieser Datenpunkt stammt?
+    # "detail_link" | "block_structure" | "title_anchor" | "single_card"
+    # | "window_fallback". Nur die ersten vier sind strukturell bestätigt.
+    segmentation_method: str = "window_fallback"
+    structural_confidence: str = "low"   # "high" | "medium" | "low"
+    start_offset: int | None = None      # Kartengrenzen im zusammengesetzten Treffertext
+    end_offset: int | None = None
+    # True, wenn die Karte NICHT strukturell abgegrenzt werden konnte und das alte
+    # Zeichenfenster einsprang. Solche Punkte sind höchstens "bedingt" (§1/§5) und
+    # dürfen die Preisstatistik nie als hochwertiger Vergleich tragen.
+    window_fallback_used: bool = True
+    # Kurzbegründung der Annahme-/Ablehnungsentscheidung (Diagnose §13).
+    acceptance_reason: str = ""
+
 
 class Marktanalyse(BaseModel):
     """Deterministisch berechneter Marktvergleich (Median + robuste Spanne) aus den
@@ -171,6 +237,23 @@ class Marktanalyse(BaseModel):
     # transparent ausgewiesene Hintergrund-/Discovery-Quelle. Additiv, Default leer
     # -> alte gespeicherte Checks bleiben ladbar.
     hintergrund_domains: list[str] = Field(default_factory=list)
+    # ── Marktanalyse-Sprint (§2): Datenqualität und Marktabdeckung sind NICHT
+    # dasselbe. `datenqualitaet` beschreibt, wie zuverlässig und wie ähnlich die
+    # einzelnen Fahrzeugbeobachtungen sind (8 eindeutig validierte 320d-G20-
+    # Angebote EINER Plattform sind eine bessere Basis als 8 gemischte 3er-
+    # Angebote aus vier Domains). `marktabdeckung` beschreibt getrennt davon, wie
+    # viele unabhängige Plattformen tatsächlich beigetragen haben. Additiv,
+    # Defaults entsprechen dem alten Verhalten -> alte Checks bleiben ladbar.
+    marktabdeckung: str = "eingeschraenkt"   # "eingeschraenkt" | "gut" | "breit"
+    anzahl_domains: int = 0
+    # True, wenn die Preisstatistik mangels ausreichend guter Beobachtungen auf nur
+    # "bedingt" passende Vergleiche zurückgreifen musste (§B). Deckelt das
+    # Gesamtvertrauen auf completed_medium (marktrecherche.research_status).
+    fallback_bedingt: bool = False
+    # Nur "bedingt" passende Beobachtungen, die die Preisstatistik NICHT beeinflusst
+    # haben (§A) — reiner Kontext/Transparenz, damit nachvollziehbar bleibt, was
+    # gefunden, aber bewusst nicht eingerechnet wurde. Additiv, Default leer.
+    kontext_beobachtungen: list[Preisbeobachtung] = Field(default_factory=list)
 
 
 class PriceAssessment(BaseModel):

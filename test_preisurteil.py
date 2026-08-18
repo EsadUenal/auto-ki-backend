@@ -11,7 +11,7 @@ sys.path.insert(0, ".")
 
 from app.models import Marktanalyse, Preisbeobachtung
 from app.preisurteil import bewerte_preis, preis_bewertung_aus_verdict
-from app.marktvergleich import _datenqualitaet
+from app.marktvergleich import _datenqualitaet, _marktabdeckung
 from app.marktrecherche import research_status
 from app.key_findings import build_key_findings_kauf
 
@@ -22,9 +22,13 @@ def check(name, cond):
         _fails.append(name)
 
 
-def ma(median, lo, hi, quali="hoch"):
+def ma(median, lo, hi, quali="hoch", abdeckung="gut"):
+    # `marktabdeckung` ist ab dem Marktanalyse-Sprint (§2/§9/§10) eine EIGENE Achse
+    # neben der Datenqualität: sie deckelt das Gesamtvertrauen, entwertet aber keine
+    # saubere Datenbasis. Default "gut" (>=2 Plattformen) = der bisherige Normalfall.
     return Marktanalyse(gefunden=20, verwendet=12, median_eur=median,
-                        spanne_min_eur=lo, spanne_max_eur=hi, datenqualitaet=quali)
+                        spanne_min_eur=lo, spanne_max_eur=hi, datenqualitaet=quali,
+                        marktabdeckung=abdeckung)
 
 
 # ══ §15 B — Preisverdikt in vier Lagen ═══════════════════════════════════════
@@ -153,16 +157,38 @@ mittel = [obs(18000, "mobile.de"), obs(22000, "autoscout24.de"),
 check("D: 4 Treffer, 2 Portale, breitere Streuung -> mittel",
       _datenqualitaet(mittel, 21000, 19000, 23500) == "mittel")
 
-# niedrig: nur 1 Portal
+# niedrig: nur 3 Beobachtungen — unabhängig von der Plattformzahl zu dünn.
 niedrig = [obs(20000, "mobile.de"), obs(21000, "mobile.de"), obs(22000, "mobile.de")]
-check("D: nur 1 Portal -> niedrig", _datenqualitaet(niedrig, 21000, 20000, 22000) == "niedrig")
+check("D: nur 3 Beobachtungen -> niedrig", _datenqualitaet(niedrig, 21000, 20000, 22000) == "niedrig")
+
+# ══ Marktanalyse-Sprint §2/§9 — Single-Source ════════════════════════════════
+# Die Domainanzahl darf die DATENQUALITÄT nicht mehr bestimmen: sechs eindeutig
+# validierte, attributvollständige, eng streuende Angebote EINER Plattform sind eine
+# hochwertige Basis. Die eingeschränkte Plattformvielfalt wirkt getrennt über die
+# Marktabdeckung (siehe research_status unten), nicht über die Datenqualität.
+single_source = [obs(20000, "kleinanzeigen.de"), obs(20500, "kleinanzeigen.de"),
+                 obs(21000, "kleinanzeigen.de"), obs(21500, "kleinanzeigen.de"),
+                 obs(20800, "kleinanzeigen.de"), obs(21200, "kleinanzeigen.de")]
+check("SS1: 6 valide Angebote EINER Plattform -> Datenqualität hoch",
+      _datenqualitaet(single_source, 20800, 20300, 21500) == "hoch")
+check("SS2: eine Plattform -> Marktabdeckung eingeschraenkt",
+      _marktabdeckung(["kleinanzeigen.de"]) == "eingeschraenkt")
+check("SS2b: zwei Plattformen -> gut",
+      _marktabdeckung(["kleinanzeigen.de", "mobile.de"]) == "gut")
+check("SS2c: drei Plattformen -> breit",
+      _marktabdeckung(["kleinanzeigen.de", "mobile.de", "autoscout24.de"]) == "breit")
+# §9: eine einzige Domain darf NICHT automatisch research_failed verursachen —
+# sie deckelt das Gesamtvertrauen auf MEDIUM.
+check("SS3: hoch + nur eine Plattform -> completed_medium (kein research_failed)",
+      research_status(ma(20000, 17000, 25000, "hoch", "eingeschraenkt")) == "completed_medium")
 
 # 14/15: niedrige Qualität -> research_failed (kein fertiger Check)
 check("14/15: niedrig -> research_failed", research_status(ma(None, None, None, "niedrig")) == "research_failed")
 check("15b: kein Median -> research_failed",
       research_status(Marktanalyse(median_eur=None, datenqualitaet="mittel")) == "research_failed")
-# 16: hoch -> completed_high
-check("16: hoch + Median -> completed_high", research_status(ma(20000, 17000, 25000, "hoch")) == "completed_high")
+# 16: hoch + ausreichende Marktabdeckung -> completed_high
+check("16: hoch + Median + Abdeckung gut -> completed_high",
+      research_status(ma(20000, 17000, 25000, "hoch")) == "completed_high")
 # 17: mittel -> completed_medium
 check("17: mittel + Median -> completed_medium", research_status(ma(20000, 17000, 25000, "mittel")) == "completed_medium")
 
