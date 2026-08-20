@@ -30,6 +30,13 @@ import tempfile
 os.environ["AUTO_KI_DB_PATH"] = os.path.join(tempfile.mkdtemp(prefix="vira_edge_"), "test.db")
 sys.path.insert(0, ".")
 
+# §Source-Policy: Der Production-Default gibt KEINE Marktquelle zum Preisbilden
+# frei (app/config.ALLOWED_MARKET_SOURCES ist leer). Dieser Test prueft die
+# ANALYSE-ENGINE und braucht dafuer die historischen/synthetischen Testdomains —
+# die Freigabe gilt ausschliesslich in diesem Testprozess und ist KEINE
+# produktive Qualifikation der Quelle. Siehe _source_policy_testharness.py.
+import _source_policy_testharness  # noqa: E402,F401
+
 from types import SimpleNamespace                                        # noqa: E402
 
 from app.marktvergleich import (                                         # noqa: E402

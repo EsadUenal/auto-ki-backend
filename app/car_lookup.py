@@ -126,7 +126,15 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
             if _modell_trifft_motor(ml_in, ml_norm, ml_kenn, bez, code):
                 motor_baureihe_ids.add(m["baureihe_id"])
 
-    scored: list[tuple[int, bool, dict]] = []
+    # §4: Nennt der Nutzer die Generation selbst ("Golf VII", "330i G20", "A3 8V"),
+    # ist das direkte Evidenz und muss die Baureihenwahl mittragen. Bisher wurde
+    # NUR gegen `r["modell"]` verglichen ("Golf") — die Generationsangabe blieb
+    # wirkungslos. Verglichen wird tokenweise und EXAKT: ein Teilstring-Match
+    # wuerde "VII" in "VIII" finden und damit genau die falsche Generation
+    # bevorzugen.
+    gen_tokens_user = {t for t in re.split(r"[^a-z0-9]+", (modell or "").lower()) if t}
+
+    scored: list[tuple[int, bool, bool, dict]] = []
     for r in rows:
         score = 0
         marke_ok = marke is None
@@ -149,15 +157,36 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
             if not modell_getroffen:
                 score += 4
             modell_getroffen = True
+        # §4: explizite Generationsangabe des Nutzers (nur bei passender Marke).
+        if marke_ok and gen_tokens_user:
+            r_gen_tokens = {t for t in re.split(r"[^a-z0-9]+",
+                                                (r.get("generation") or "").lower()) if t}
+            if r_gen_tokens & gen_tokens_user:
+                score += 3
+        # §2/§3: Ein FEHLENDER Bauzeitraum bedeutet UNBEKANNT, nicht "passt zu
+        # jedem Baujahr". Frueher wurde `None` per `or 0` / `or 9999` zu einem
+        # universellen Zeitraum aufgeblasen — eine undatierte Zeile bekam damit
+        # bei JEDEM Baujahr dieselben +5 wie eine sauber datierte und gewann den
+        # Gleichstand allein ueber die DB-Zeilenreihenfolge (belegt an
+        # `vw-golf-8`, das so die Baujahre 1995-2022 an sich zog).
+        #
+        # Der Punktwert bleibt unveraendert, damit undatierte Zeilen weiterhin
+        # als Fallback dienen koennen (§8). Neu ist nur `jahr_belegt`: es
+        # unterscheidet einen ECHTEN Datumstreffer von einem geschenkten und
+        # entscheidet den Gleichstand.
+        jahr_belegt = False
         if baujahr and score > 0:
-            bvon = r["bauzeitraum_von"] or 0
-            bbis = r["bauzeitraum_bis"] or 9999
+            bvon_roh, bbis_roh = r["bauzeitraum_von"], r["bauzeitraum_bis"]
+            datiert = bvon_roh is not None or bbis_roh is not None
+            bvon = bvon_roh or 0
+            bbis = bbis_roh or 9999
             if bvon <= baujahr <= bbis:
                 score += 5
+                jahr_belegt = datiert
             elif abs(bvon - baujahr) <= 2 or (bbis < 9999 and abs(bbis - baujahr) <= 2):
                 score += 1
         if score > 0:
-            scored.append((score, modell_getroffen, dict(r)))
+            scored.append((score, modell_getroffen, jahr_belegt, dict(r)))
 
     # Ist ein Modell angegeben, NUR Baureihen mit echtem Modell- ODER Motor-Treffer zulassen.
     # Sonst gewinnt eine andere Baureihe derselben Marke allein über Marke+Baujahr.
@@ -168,9 +197,12 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     if not scored:
         return None
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best = scored[0][2]
-    log.info("Baureihe erkannt: %s (score=%d)", best["id"], scored[0][0])
+    # Gleichstand: eine Zeile mit ECHT belegtem Bauzeitraum schlaegt eine
+    # undatierte. Ohne diesen Schluessel entschied die DB-Zeilenreihenfolge.
+    scored.sort(key=lambda x: (x[0], x[2]), reverse=True)
+    best = scored[0][3]
+    log.info("Baureihe erkannt: %s (score=%d, jahr_belegt=%s)",
+             best["id"], scored[0][0], scored[0][2])
     return get_baureihe(best["marke"], best["modell"], best["generation"])
 
 

@@ -16,13 +16,14 @@ import asyncio
 import logging
 import re
 import time
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
-from app.config import TAVILY_API_KEY
+from app.config import ALLOWED_MARKET_SOURCES, TAVILY_API_KEY
 
 log = logging.getLogger(__name__)
 
@@ -274,9 +275,95 @@ def ist_marktplatz_domain(url: str) -> bool:
     Fahrzeugkarten. Eine Kategorie-/Filterseite einer Aggregator-/Ratgeberdomain
     (12gebrauchtwagen.de u.ä.) zeigt dagegen aufbereitete Sammelangaben ohne einzeln
     geprüfte Inserate. Nur der erste Fall darf einzelne Marktbeobachtungen liefern.
+
+    §Source-Policy: Eine ausdrücklich für die Marktpreisbildung FREIGEGEBENE Quelle
+    zählt hier ebenfalls als Marktplatz. Ohne das blieben Freigabeliste und
+    Seitenklassifikation zwei getrennte Listen — eine in einer späteren Etappe neu
+    qualifizierte Quelle wäre zwar "erlaubt", würde aber als Aggregator-/
+    Kategorieseite (source_type="category") eingestuft und damit weiterhin aus der
+    Preisstatistik gefiltert. Im Production-Default ist die Freigabeliste leer;
+    dort ändert diese Regel nichts.
     """
     domain = _domain_von(url)
-    return bool(domain) and _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS)
+    if not domain:
+        return False
+    return (_enthaelt_domain(domain, _ALLOWED_MARKET_SOURCES)
+            or _enthaelt_domain(domain, _MARKTPLATZ_DOMAINS))
+
+
+# ── §Source-Policy: Freigabe fuer die automatische Marktpreisbildung ─────────
+# Technisch erreichbar ist nicht dasselbe wie freigegeben. Eine Quelle darf nur
+# dann automatisiert Median, Marktspanne und Marktabdeckung tragen, wenn sie
+# ausdruecklich freigegeben wurde. Alle uebrigen bleiben auffindbar und
+# diagnostisch sichtbar — nur eben nicht preisbildend.
+#
+# ALLOWLIST, nicht Blocklist (Etappe-1-Abschluss): Frueher stand hier eine Liste
+# GESPERRTER Domains; alles andere galt implizit als erlaubt. Damit haette jede
+# neue oder unbekannte Marktplatz-Domain automatisch den Marktpreis bestimmt,
+# ohne je qualifiziert worden zu sein. Der Default ist deshalb umgekehrt: LEER.
+#
+# WICHTIG: Das ist eine PRODUKT-/FREIGABE-Entscheidung, keine Rechtsbewertung und
+# keine Qualitaetsaussage ueber die Inserate. Die Ablehnung wird im Marktvergleich
+# bewusst getrennt begruendet und nicht mit "falsches Modell", "ungeeignetes
+# Fahrzeug" oder "schlechte Datenqualitaet" vermischt.
+#
+# Konfiguration: app/config.ALLOWED_MARKET_SOURCES (Env
+# AUTO_KI_ALLOWED_MARKET_SOURCES). Zentral genau hier ausgewertet, damit kein
+# verstreutes `if "..." in url` durch die Pipeline wandert.
+_ALLOWED_MARKET_SOURCES: frozenset[str] = ALLOWED_MARKET_SOURCES
+
+# Begruendungstext fuer den Marktvergleich — eine Stelle, ein Wortlaut.
+SOURCE_POLICY_GRUND = "Quelle für automatische Marktpreisbildung nicht freigegeben"
+
+
+def erlaubte_marktquellen() -> frozenset[str]:
+    """Aktuell fuer die automatische Marktpreisbildung freigegebene Domains."""
+    return _ALLOWED_MARKET_SOURCES
+
+
+def setze_marktquellen_freigabe(domains) -> frozenset[str]:
+    """Setzt die Freigabeliste und gibt die VORHERIGE zurueck.
+
+    Ausschliesslich fuer Test- und Replay-Harnesse gedacht (siehe
+    `marktquellen_freigabe`). Produktionscode konfiguriert ueber
+    AUTO_KI_ALLOWED_MARKET_SOURCES und ruft dies nie auf.
+    """
+    global _ALLOWED_MARKET_SOURCES
+    vorher = _ALLOWED_MARKET_SOURCES
+    _ALLOWED_MARKET_SOURCES = frozenset(
+        str(d).strip().lower() for d in (domains or ()) if str(d).strip())
+    return vorher
+
+
+@contextmanager
+def marktquellen_freigabe(domains):
+    """Kontextmanager fuer Tests/Replays: gibt `domains` NUR innerhalb des Blocks
+    frei und stellt danach den vorherigen Zustand wieder her.
+
+    Damit koennen historische Replays (deren Mitschnitte reale Domains enthalten)
+    weiter als Regressionstest der ANALYSE-ENGINE dienen, ohne dass im
+    Produktionscode eine reale Quelle freigeschaltet wird. Eine so erzeugte
+    Freigabe belegt ausdruecklich KEINE produktive Qualifikation der Quelle.
+    """
+    vorher = setze_marktquellen_freigabe(domains)
+    try:
+        yield
+    finally:
+        setze_marktquellen_freigabe(vorher)
+
+
+def darf_preisbildend_sein(url: str) -> bool:
+    """Darf ein Treffer dieser Domain in den finalen Preis-Pool einfliessen?
+
+    True NUR fuer ausdruecklich freigegebene Quellen. Unbekannte Domains sind
+    damit per Default nicht preisbildend — ueber die fachliche Eignung eines
+    freigegebenen Treffers entscheiden danach weiterhin die Pruefungen im
+    Marktvergleich.
+    """
+    if not _ALLOWED_MARKET_SOURCES:
+        return False
+    domain = _domain_von(url)
+    return bool(domain) and _enthaelt_domain(domain, _ALLOWED_MARKET_SOURCES)
 
 
 def ist_einzelinserat(url: str, title: str | None = None) -> bool:

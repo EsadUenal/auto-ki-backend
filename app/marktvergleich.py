@@ -41,6 +41,8 @@ from app.web_search import ist_info_domain as _ist_info_domain
 from app.web_search import ist_einzelinserat as _ist_einzelinserat
 from app.web_search import ist_kategorieseite as _ist_kategorieseite_intern
 from app.web_search import ist_marktplatz_domain as _ist_marktplatz_domain
+from app.web_search import SOURCE_POLICY_GRUND as _SOURCE_POLICY_GRUND
+from app.web_search import darf_preisbildend_sein as _darf_preisbildend_sein
 
 log = logging.getLogger(__name__)
 
@@ -89,13 +91,38 @@ _RE_JAHR = re.compile(r"\b((?:19|20)\d{2})\b")
 # Generations-/Chassis-Code (BMW E/F/G/U.., Mercedes W/S/C/A/X.., Audi B/C/D..).
 _RE_CODE = re.compile(r"\b([a-z]\d{2,3})\b", re.IGNORECASE)
 
+# §Wortgrenzen (Live-Audit Insignia B): Die Erkennung lief frueher als reines
+# Teilstring-Match. "elektro" traf damit den Wortanfang von "Elektron.", so dass
+# die Ausstattungszeile "Elektron. Stabilitaets-Programm Plus (ESP)" ein
+# Diesel-Inserat (3488196893, Insignia B 2.0 CDTI) hart als Elektroauto verwarf.
+#
+# Loesung ist dieselbe wie bei der Karosserie-Erkennung: unicode-sichere
+# Wortgrenzen plus EXPLIZIT gelistete Komposita. Kein Sonderfall fuer "Elektron.",
+# sondern die generelle Regel, dass ein Kraftstoffbegriff ein vollstaendiger
+# Fachbegriff sein muss. "elektronisch", "Elektronik" und "elektrisch" stehen
+# damit konstruktiv draussen — sie sind keine Kraftstoffangaben, sondern
+# Ausstattung.
 _KRAFTSTOFF_WORTE = {
     # Reihenfolge: spezifisch vor allgemein (ein Plug-in-Hybrid ist kein Benziner).
-    "hybrid": ("hybrid", "phev", "plug-in", "plugin"),
-    "elektro": ("elektro", "electric", "ev "),
-    "diesel": ("diesel", "tdi", "cdi", "hdi", "dci", "bluetec", "cdti", "crdi", "jtd"),
-    "benzin": ("benzin", "tsi", "tfsi", "gti", "petrol", "mpi", "gdi"),
+    "hybrid": ("hybrid", "hybridantrieb", "vollhybrid", "mildhybrid",
+               "phev", "plug-in", "plugin", "plug in"),
+    "elektro": ("elektro", "elektroauto", "elektrofahrzeug", "elektroantrieb",
+                "electric", "ev", "bev"),
+    "diesel": ("diesel", "dieselmotor", "dieselfahrzeug", "tdi", "cdi", "hdi",
+               "dci", "bluetec", "cdti", "crdi", "jtd"),
+    "benzin": ("benzin", "benziner", "benzinmotor", "tsi", "tfsi", "gti",
+               "petrol", "mpi", "gdi"),
 }
+_KRAFTSTOFF_RE: tuple[tuple[str, re.Pattern], ...] = tuple(
+    # Die Vorgrenze sperrt bewusst NUR Buchstaben, keine Ziffern: Kraftstoff-
+    # Kuerzel stehen regelmaessig direkt am Hubraum ("2.0CDTI", "1.6TDI"), und
+    # eine Ziffernsperre verlor im Korpus 11 echte Diesel. Fuer den Fehlerfall
+    # ("Elektron.") entscheidet ohnehin die NACH-Grenze.
+    (norm, re.compile(r"(?<![a-zäöüß])(?:"
+                      + "|".join(re.escape(k) for k in keys)
+                      + r")(?![a-zäöüß])", re.IGNORECASE))
+    for norm, keys in _KRAFTSTOFF_WORTE.items()
+)
 
 # ── Karosserie-Erkennung im Preisumfeld (§5) ─────────────────────────────────
 # Bewusst LOKAL definiert statt aus app/vehicle_identity importiert: dort liegt
@@ -393,9 +420,13 @@ def _ist_fremdmodell(worte: set[str], ziel: dict, text: str | None = None) -> st
 
 
 def _kraftstoff_im_text(text: str) -> str | None:
-    t = text.lower()
-    for norm, keys in _KRAFTSTOFF_WORTE.items():
-        if any(k in t for k in keys):
+    """Normierter Kraftstoff aus einem Text, oder None.
+
+    Wortgrenzen sind zwingend (siehe _KRAFTSTOFF_WORTE): ein Teilstring-Match
+    fand "elektro" in "Elektron." und machte aus einem CDTI-Diesel ein E-Auto.
+    """
+    for norm, rx in _KRAFTSTOFF_RE:
+        if rx.search(text or ""):
             return norm
     return None
 
@@ -406,7 +437,44 @@ def _karosserie_im_text(text: str) -> str | None:
     for label, rx in _KAROSSERIE_RE:
         if rx.search(text or ""):
             return label
+    if _insignia_st_kombi(text):
+        return "kombi"
     return None
+
+
+# ── "ST" — Opel-Insignia-Fachjargon, kein globales Karosseriewort (§ST-Fix) ───
+# Live-Fund: Listing 3488368020 "Opel Insignia 2.0 CDTI Business Edition ST" blieb
+# body=unknown und wurde dadurch nicht gegen die Ziel-Karosserie (Grand Sport /
+# Limousine) abgewertet. "ST" IST bei Opel Insignia die Kurzform von "Sports
+# Tourer" (Kombi) — aber bei anderen Marken eine Ausstattungs-/Leistungs-
+# bezeichnung (Ford Focus ST, Fiesta ST, ST-Line) und dort KEIN Karosseriesignal.
+#
+# Deshalb kein Eintrag in `_KAROSSERIE_WORTE` (das gälte markenübergreifend),
+# sondern eine eng kontextgebundene Zusatzregel: "ST" zählt nur als Kombi-Hinweis,
+# wenn DERSELBE Text bereits "Insignia" nennt — "Insignia" ist als Modellname
+# eindeutig genug, ohne dass "Opel" zusätzlich verlangt werden muss (reale
+# Inserate lassen die Marke im Fließtext oft weg). "ST-Line"/"ST Line" (Ford-
+# Ausstattungspaket) und "St." (Abkürzung, z.B. Ortsnamen wie "St. Wendel") sind
+# ausdrücklich ausgenommen.
+#
+# §4: Diese Funktion bekommt ausschließlich den bereits isolierten Kartentext
+# (`fenster`/`karte.text`) — dieselbe Textquelle, die auch der übrigen
+# Karosserie-/Motor-/Kraftstoffprüfung zugrunde liegt. Kein Zugriff auf Nachbar-
+# text, Seitentitel oder URL; ein Body-Leak aus der Nachbaranzeige ist damit
+# strukturell ausgeschlossen — dieselbe Garantie, die _varianten_zone für die
+# Motorprüfung liefert.
+_RE_INSIGNIA_WORT = re.compile(r"(?<![a-zäöüß0-9])insignia(?![a-zäöüß])",
+                               re.IGNORECASE)
+_RE_ST_KUERZEL = re.compile(
+    r"(?<![a-zäöüß0-9])st(?![a-zäöüß0-9])(?!\.)(?!-?\s*line)", re.IGNORECASE)
+
+
+def _insignia_st_kombi(text: str) -> bool:
+    """True, wenn der EIGENE Text 'ST' als Opel-Insignia-Sports-Tourer-Kürzel
+    trägt — nur dann, wenn derselbe Text auch 'Insignia' nennt."""
+    if not text or not _RE_INSIGNIA_WORT.search(text):
+        return False
+    return bool(_RE_ST_KUERZEL.search(text))
 
 
 # ── §5: Such-Intent der Quellseite ───────────────────────────────────────────
@@ -490,6 +558,68 @@ def _ps_im_text(text: str) -> int | None:
 # "320d", "330i", "m340i", "530e"; trifft bewusst NICHT "360" (Kameraausstattung),
 # "2019" (Baujahr), "b47d20" (Motorcode) oder "19zoll".
 _RE_VERKAUFSBEZEICHNUNG = re.compile(r"^(?=.*[a-z])[a-z]{0,2}\d{3}[a-z]{0,2}$")
+
+
+# Kurzer Modellcode: Buchstabenpräfix + Ziffern als VOLLSTÄNDIGER Token
+# ("A3", "A4", "Q5", "S3", "RS3"). Diese Form ist ein echter Modellname, fällt aber
+# durch die Längenschwelle von `_modell_tokens` (>= 3 Zeichen).
+#
+# Bewusst wird eine ZIFFER verlangt: rein alphabetische Kürzel wie "GT", "RS", "ST"
+# oder "M" sind Ausstattungs-/Karosseriezusätze und dürfen NIE zum Modellanker
+# werden (Ford Focus ST, Insignia ST, BMW GT). Die Ziffer ist genau das Merkmal,
+# das eine Modellfamilie von einem Kürzel trennt.
+_RE_MODELLCODE_KURZ = re.compile(r"^[a-z]{1,3}\d{1,2}$")
+
+
+def _modell_anker(marke: str, modell: str) -> set[str]:
+    """Belastbarer POSITIVER Modellanker aus einem Marke/Modell-Paar (§6).
+
+    "Opel" + "Insignia Grand Sport" -> {'insignia'}, "BMW" + "320d G20" -> {'320d'},
+    "Audi" + "A3 8V" -> {'a3'}, "Audi" + "RS3" -> {'rs3'}.
+
+    Drei Stufen, von spezifisch nach allgemein:
+
+      1. STRUKTURIERTE Bezeichnungen ab 3 Zeichen, die Buchstabe UND Ziffer
+         kombinieren ("320d", "c200", "w205"). Sie sind per Konstruktion
+         trennscharf; bei mehreren gewinnt die längste.
+      2. KURZE Modellcodes ("A3", "Q5", "S3"). Sie fallen durch die
+         Längenschwelle von `_modell_tokens`, sind aber vollwertige Modellnamen.
+         Ohne diese Stufe hatte ein Audi-Ziel GAR KEINEN direkten Anker — in der
+         Fahrzeugmatrix übernahm dann ein zufälliger Varianten-Token aus der DB
+         ('rs3' für A3, 'rs4' für A4) und verwarf jedes korrekte Inserat.
+      3. Sonst der LÄNGSTE Wort-Token. Zusätze wie "Grand", "Sport" oder "Avant"
+         beschreiben Karosserie bzw. Ausstattung und stehen auch in fremden
+         Inseraten; der längste Token ist regelmäßig der eigentliche Modellname.
+
+    Markenwörter fallen immer heraus ("Opel Insignia" -> nur 'insignia'), sonst
+    gälte jede Anzeige derselben Marke als Treffer.
+
+    Bewusst KEIN Fremdmodell-Lexikon: gesucht wird ausschließlich eine POSITIVE
+    Übereinstimmung. Lässt sich kein Anker ableiten, bleibt die Menge leer — dann
+    wird kein Match erfunden, und das Sicherheitsgate in `_bewerte` schließt.
+    """
+    marken = _marke_tokens(marke or "")
+    alle = _wort_tokens(modell or "") - marken
+
+    strukturiert = {t for t in alle if len(t) >= 3
+                    and any(c.isdigit() for c in t) and any(c.isalpha() for c in t)}
+    if strukturiert:
+        laenge = max(len(t) for t in strukturiert)
+        return {t for t in strukturiert if len(t) == laenge}
+
+    # In TEXTREIHENFOLGE, nicht als Menge: reale Eingaben nennen erst das Modell,
+    # dann die Generation ("A4 B9", "A3 8V"). Beide haben dieselbe Kurzform, nur
+    # der erste Treffer ist der Modellname — sonst geriete "b9" als Anker mit
+    # hinein und verlangte den Generationscode auf jeder Karte.
+    for t in re.split(r"[^a-z0-9]+", (modell or "").lower()):
+        if t and t not in marken and _RE_MODELLCODE_KURZ.match(t):
+            return {t}
+
+    tokens = _modell_tokens(modell or "") - marken
+    if not tokens:
+        return set()
+    laenge = max(len(t) for t in tokens)
+    return {t for t in tokens if len(t) == laenge}
 
 
 def _modell_kennungen_user(req, gen_tokens: set[str] | None = None) -> dict:
@@ -600,18 +730,47 @@ def _modell_widerspruch(text: str, ziel: dict) -> str | None:
     return None
 
 
-def _fremde_bezeichnungen_im_text(worte: set[str], ziel_motor: set[str]) -> set[str]:
-    """Motorbezeichnungen, die das INSERAT selbst nennt und die nicht zum Ziel gehören.
+# Zahlenangabe mit Einheit: "174cv", "194ps", "125kw", "000km" haben exakt die
+# FORM einer Verkaufsbezeichnung. Der Live-Audit (Opel Insignia B) hat 28 harte
+# Fehlablehnungen allein hierdurch belegt — darunter "174cv", also die ZIEL-
+# leistung in spanischer Schreibweise.
+_RE_MESSWERT = re.compile(r"\d(ps|kw|km|cv|hp|ch|nm|kg|ccm|cm|mm)$")
+
+
+def _fremde_bezeichnungen_im_text(text: str, ziel_motor: set[str]) -> set[str]:
+    """Motorbezeichnungen, die der SICHTBARE EIGENE Kartentext nennt und die nicht
+    zum Ziel gehören.
 
     DIREKTE Evidenz: Nutzerangabe gegen Inseratstext. Kommt ohne die DB-Liste aller
     Motorvarianten aus — ein "330d" im eigenen Kartentext widerspricht dem Ziel
     "320d" auch dann, wenn unsere Fahrzeug-DB gar nicht weiß, dass es einen 330d
     gibt. Greift naturgemäß nur bei zusammengeschriebenen Bezeichnungen; bei
     "C 220 d" übernehmen weiterhin Kraftstoff und Leistung.
+
+    §Rauschen (Live-Audit Insignia B, 57 von 95 harten Motor-Ablehnungen): Dass ein
+    Token die FORM einer Verkaufsbezeichnung hat, ist KEIN Beweis. Drei Filter
+    machen daraus einen:
+
+      1. Nur die Variantenzone — Vorschaubild-Syntax und Link-Ziele sind entfernt.
+         Kleinanzeigen bettet in jede Karte eine Bild-URL mit UUID ein; deren
+         Hex-Gruppen ("928c", "443d", "b803") haben exakt die Form "320d" und
+         standen für 29 harte Fehlablehnungen.
+      2. Keine Messwerte mit Einheit (_RE_MESSWERT).
+      3. Strukturelle Vergleichbarkeit: gleiche Ziffernzahl wie die Nutzer-
+         Verkaufsbezeichnung. "320d" gegen "330d" ist ein Vergleich, "320d" gegen
+         "12x" oder "1234e" ist keiner.
     """
-    if not ziel_motor:
+    if not ziel_motor or not text:
         return set()
-    return {w for w in worte if _RE_VERKAUFSBEZEICHNUNG.match(w)} - ziel_motor
+    ziffern = {sum(c.isdigit() for c in t) for t in ziel_motor}
+    treffer: set[str] = set()
+    for w in _wort_tokens(_varianten_zone(text)):
+        if not _RE_VERKAUFSBEZEICHNUNG.match(w) or _RE_MESSWERT.search(w):
+            continue
+        if sum(c.isdigit() for c in w) not in ziffern:
+            continue
+        treffer.add(w)
+    return treffer - ziel_motor
 
 
 def _motor_tokens(bezeichnung: str) -> set[str]:
@@ -1049,6 +1208,14 @@ def _km_fenster(ziel_km: int) -> tuple[float, float, float]:
             max(0.35 * ziel_km, 25_000))
 
 
+def _domain_kurz(url: str) -> str:
+    """Domain ohne www./Schema — nur fuer lesbare Begruendungstexte."""
+    try:
+        return (urlparse(url or "").netloc or "").lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
 def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
     """Deterministische Vergleichbarkeit einer Beobachtung gegen das Zielfahrzeug.
 
@@ -1100,6 +1267,16 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
     if rubrik:
         return verwirf(f"Nicht-Fahrzeugkategorie der Detailanzeige ({rubrik})")
 
+    # ── §Source-Policy (zuerst, noch vor jeder fachlichen Pruefung) ───────────
+    # Ohne ausdrueckliche Erlaubnis/API-Lizenz darf eine Quelle nicht automatisiert
+    # preisbildend werden. Das ist KEINE Aussage ueber das Inserat — es kann
+    # fachlich einwandfrei sein. Die Pruefung steht deshalb ganz vorn und traegt
+    # einen eigenen Wortlaut, damit sie im Funnel nicht mit fachlichen Ablehnungen
+    # ("falsches Modell", "ungeeignetes Fahrzeug") vermischt wird.
+    quelle = b.detail_url or b.quelle_url or ""
+    if quelle and not _darf_preisbildend_sein(quelle):
+        return verwirf(f"{_SOURCE_POLICY_GRUND} ({_domain_kurz(quelle)})")
+
     # ── HARTE MODELLTREUE (zuerst) — Root-Cause #5 ────────────────────────────
     # Nennt das lokale Preis-Umfeld ein FREMDES Modell (anderes Modell irgendeiner
     # Marke, inkl. Motor-Verkaufsbezeichnung '520d' UND marken-skopierter Zahl '520')
@@ -1136,16 +1313,24 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
     # (siehe _motor_tokens) — sonst übernehmen Kraftstoff und Leistung (unten).
     ziel_motor = ziel.get("ziel_motor_tokens") or set()
     fremd_motor = ziel.get("fremd_motor_tokens") or set()
-    motor_bestaetigt = bool(ziel_motor & worte)
+    # §Trust/§1: Der interne MOTORCODE (F20DTH, B47D20, OM651) stammt aus der
+    # ungeprüften Fahrzeug-DB und steht in Kleinanzeigen praktisch nie. Er wird
+    # deshalb GETRENNT geführt und darf nur BESTÄTIGEN, wenn die Karte ihn selbst
+    # nennt — nie die harte Prüfung scharfschalten und nie eine Abwertung
+    # auslösen, wenn er fehlt. Vorher floss er in `ziel_motor_tokens` und deckelte
+    # damit im Live-Audit 100 % aller Insignia-B-Karten auf "nicht belegt".
+    motorcode = ziel.get("motorcode_tokens") or set()
+    bestaetigend = ziel_motor | motorcode
+    motor_bestaetigt = bool(bestaetigend & worte)
     if ziel_motor and ziel.get("motor_hart", True):
         # DB-Wissen nur bei Verifikation (fremd_motor ist sonst leer) PLUS die
         # direkte Bezeichnung aus dem Inserat selbst — letztere braucht keine
         # Fahrzeug-DB, nur Nutzerangabe und Kartentext.
-        fremde = (fremd_motor & worte) | _fremde_bezeichnungen_im_text(worte, ziel_motor)
+        fremde = (fremd_motor & worte) | _fremde_bezeichnungen_im_text(fenster, ziel_motor)
         if fremde and not motor_bestaetigt:
             return verwirf(f"andere Motorvariante ({sorted(fremde)[0]})")
     if motor_bestaetigt:
-        b.engine_variant = sorted(ziel_motor & worte)[0]
+        b.engine_variant = sorted(bestaetigend & worte)[0]
         gruende.append(f"Motorvariante bestätigt ({b.engine_variant})")
         sim = min(1.0, sim + 0.05)
     elif ziel_motor:
@@ -1232,10 +1417,13 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
             hoechstens_bedingt(); sim -= 0.15
             gruende.append("Generation auf der Karte nicht belegt")
     else:
-        # Für dieses Fahrzeug kennt die Datenbasis gar keinen Generationscode
-        # (z.B. Opel Insignia B) — dann kann Bestätigung nicht verlangt werden.
-        ab(1); sim -= 0.15
-        gruende.append("Generation nicht bestätigt (kein Code bekannt)")
+        # §Trust/§4: Für dieses Fahrzeug kennt die Datenbasis gar keinen
+        # Generationscode (z.B. Opel Insignia B). Das ist eine Lücke UNSERER
+        # Referenzdaten — das Inserat dafür abzuwerten bestrafte fremdes
+        # Nichtwissen und traf im Live-Audit 100 % aller Insignia-B-Karten
+        # (166 von 166 weichen Ablehnungen trugen diesen Baustein).
+        # Unknown bleibt unknown: nicht belohnen, NICHT bestrafen.
+        gruende.append("Zielgeneration unbekannt (nicht bewertet)")
 
     ziel_bj = ziel.get("baujahr")
     if b.baujahr is not None and ziel_bj:
@@ -1289,6 +1477,39 @@ def _bewerte(b: Preisbeobachtung, ziel: dict) -> Preisbeobachtung:
         gruende.append(f"andere Karosserie ({b.body} statt {ziel_body})")
     elif ziel_body and _identitaets_body(b) == ziel_body:
         gruende.append(f"Karosserie bestätigt ({ziel_body})")
+
+    # ── §5 SICHERHEITSGATE: Ziel ohne trennscharfe Verkaufsbezeichnung ────────
+    # Nannte der Nutzer keine echte Motorbezeichnung ("2.0 Diesel 174 PS" statt
+    # "320d"), trägt die Motorprüfung nichts zur Identität bei. Ohne Ersatz würde
+    # jedes Fahrzeug mit passendem Baujahr/km vergleichbar — im Live-Audit wurde
+    # bei abgeschaltetem Motor-Token ein Ford Transit Werkstattwagen (29.999 €)
+    # zum "bedingten" Vergleich für einen Opel Insignia (§9).
+    #
+    # Als Nachweis der Zielidentität genügt EINES von beiden:
+    #   a) die Karte nennt den Modellanker selbst (Nutzerangabe vs. Listing), oder
+    #   b) die Karte nennt den Ziel-Generationscode selbst ("W205") — das ist die
+    #      spezifischere Aussage und wurde oben bereits als `explicit_card` belegt.
+    # Dazu der Kraftstoff, falls der NUTZER ihn angegeben hat (§5 B).
+    #
+    # Läuft bewusst NACH der Generationsprüfung: sonst fiele ein Fahrzeug durch,
+    # dessen Identität über den Chassiscode einwandfrei belegt ist.
+    if not ziel.get("motor_hart", True):
+        anker = ziel.get("modell_anker_user") or set()
+        sichtbar = _wort_tokens(_varianten_zone(fenster))
+        beleg = sorted(anker & sichtbar)
+        if not beleg and b.generation_evidence != "explicit_card":
+            if not anker:
+                return verwirf("keine direkte Zielidentität prüfbar (weder "
+                               "Motorbezeichnung noch Modellanker)")
+            return verwirf("Zielmodell auf der Karte nicht belegt "
+                           f"({'/'.join(sorted(anker))})")
+        # §5 B: `kraftstoff_hart` markiert genau "vom Nutzer angegeben" (oder
+        # verifizierte DB). Eine bloß aus der ungeprüften Motorvariante geerbte
+        # Zielangabe darf hier nichts fordern.
+        if ziel_kr and ziel.get("kraftstoff_hart", True) and b.fuel != ziel_kr:
+            return verwirf(f"Kraftstoff auf der Karte nicht bestätigt (Ziel {ziel_kr})")
+        if beleg:
+            gruende.append(f"Zielmodell belegt ({beleg[0]})")
 
     b.vergleichbarkeit = _STUFEN[stufe]
     b.similarity = round(max(0.0, min(1.0, sim)), 3)
@@ -1708,7 +1929,13 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
         ziel_motor_tokens = _motor_tokens(str(getattr(req, "motor", "") or ""))
     # §2: Auch der MOTORCODE (B47D20, OM651, CJCA) bestätigt die Motorisierung
     # eindeutig — manche Inserate nennen ihn statt der Verkaufsbezeichnung.
-    ziel_motor_tokens |= _motor_tokens((motor_match or {}).get("motorcode") or "")
+    # §Trust/§1: Er stammt aber aus der UNGEPRÜFTEN Fahrzeug-DB und steht in
+    # Kleinanzeigen praktisch nie. Früher floss er in `ziel_motor_tokens` und
+    # aktivierte damit die harte Motorprüfung; beim Opel Insignia B (F20DTH) war
+    # das die alleinige Ursache für "Motorisierung auf der Karte nicht belegt" auf
+    # 100 % der Karten und am Ende für research_failed. Er wird deshalb GETRENNT
+    # geführt und wirkt nur noch bestätigend.
+    motorcode_tokens = _motor_tokens((motor_match or {}).get("motorcode") or "")
     # §Trust/§9: Woher stammt die Zielmotorisierung? Eine Nutzerangabe ("320d")
     # ist DIREKTE Evidenz und trägt harte Entscheidungen unabhängig vom DB-Zustand.
     # Nur echte Verkaufsbezeichnungen zählen als Nutzer-Motorevidenz — "3er" ist
@@ -1720,7 +1947,42 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
     # genannt hat: `motor_match` ist das Ergebnis von find_motor(baureihe, req.motor).
     # Sie ist damit selbst Nutzerevidenz — und für den direkten Abgleich gegen die
     # Bezeichnung im Inserat brauchen wir die DB-Liste der übrigen Varianten nicht.
+    # §2: Hart widersprechen darf nur DIREKTE Nutzerevidenz. `motor_match` ist das
+    # Ergebnis von find_motor(baureihe, req.motor) und damit die von der Nutzer-
+    # angabe BESTÄTIGTE Verkaufsbezeichnung — sie bleibt hart. Der MOTORCODE ist
+    # dagegen ein eigenes DB-Feld, das der Nutzer nie nennt; er steckt jetzt in
+    # `motorcode_tokens` und taucht hier bewusst NICHT mehr auf. Genau darüber
+    # aktivierte der Opel Insignia B (F20DTH) früher die harte Prüfung, obwohl der
+    # Nutzer nur "2.0 Diesel 174 PS" angegeben hatte.
     motor_hart = bool(motor_user_tokens or ziel_motor_tokens)
+
+    # §5/§6: Positiver Modellanker für das Sicherheitsgate. Zuerst die konkrete
+    # NUTZERANGABE ("Insignia Grand Sport"). Fehlt sie, tritt die Selbstbezeichnung
+    # der Zielbaureihe ein — das ist kein Fremdmodell-Lexikon, sondern der Name des
+    # gesuchten Fahrzeugs selbst, und er wird ausschließlich POSITIV geprüft
+    # (Karte nennt ihn -> Evidenz; Karte nennt ihn nicht -> keine Evidenz).
+    modell_anker = _modell_anker(str(getattr(req, "marke", "") or ""),
+                                 str(getattr(req, "modell", "") or ""))
+    if not modell_anker:
+        # §4/§5: Nur OHNE direkten Nutzeranker tritt die Selbstbezeichnung der
+        # Zielbaureihe ein, ergänzt um alle STRUKTURIERTEN Zielbezeichnungen
+        # ("c200", "320d") — nötig für Modellnamen, deren Wortform nichts hergibt
+        # (aus "C-Klasse" wird sonst der Anker 'klasse', während die Inserate
+        # "C200" schreiben). Generische Wörter aus `modell_tokens` ('diesel',
+        # 'turbo', 'facelift') bleiben draußen; sie träfen jede Fremdanzeige.
+        #
+        # Hat der Nutzer sein Modell dagegen SELBST genannt, ist das direkte
+        # Evidenz und bleibt allein maßgeblich. Früher lief dieses Supplement
+        # immer mit; bei Audi (wo der direkte Anker mangels Kurzcode-Erkennung
+        # leer blieb) übernahm dadurch ein zufälliger Performance-Variantenname
+        # aus der ungeprüften DB die Rolle des Zielmodells — 'rs3' für ein A3-
+        # Ziel, 'rs4' für ein A4-Ziel. Ein Variantenname darf den ausdrücklich
+        # genannten Basismodellnamen weder ersetzen noch erweitern.
+        modell_anker = _modell_anker(str((baureihe or {}).get("marke") or ""),
+                                     str((baureihe or {}).get("modell") or ""))
+        modell_anker |= {t for t in modell_tokens
+                         if len(t) >= 3 and any(c.isdigit() for c in t)
+                         and any(c.isalpha() for c in t)}
 
     # §Trust/§14: die Liste der ÜBRIGEN Motorvarianten stammt aus der ungeprüften
     # DB. Sie darf nicht mehr allein hart verwerfen — die direkte Bezeichnung im
@@ -1733,16 +1995,20 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
                 fremd_motor_tokens |= _motor_tokens(m.get("motorcode") or "")
         fremd_motor_tokens -= ziel_motor_tokens
 
-    # Zielleistung: DB-Motorvariante zuerst, sonst aus dem Motor-Freitext ("190 PS").
-    leistung_ps = None
-    try:
-        leistung_ps = int((motor_match or {}).get("leistung_ps") or 0) or None
-    except (TypeError, ValueError):
-        leistung_ps = None
+    # Zielleistung. §5/§Trust: Die EXPLIZITE Nutzerangabe hat Vorrang vor der
+    # ungepruefeten DB-Motorvariante. Frueher gewann die DB — bei einer falsch
+    # aufgeloesten Baureihe (belegt an `vw-golf-8`: einzige Variante 2.0 TSI /
+    # 245 PS) wurde damit die Nutzerangabe "150 PS" still auf 245 PS gehoben und
+    # anschliessend jedes korrekte Inserat wegen "abweichender Motorleistung"
+    # verworfen. Prioritaet: expliziter Userinput > DB-Fallback.
     leistung_user = _ps_im_text(" ".join(
         str(getattr(req, f, "") or "") for f in ("motor", "leistung_ps", "modell")))
+    leistung_ps = leistung_user
     if not leistung_ps:
-        leistung_ps = leistung_user
+        try:
+            leistung_ps = int((motor_match or {}).get("leistung_ps") or 0) or None
+        except (TypeError, ValueError):
+            leistung_ps = None
     # §Trust/§15: harte Leistungsablehnung nur mit Nutzerangabe oder verifizierter DB.
     leistung_hart = bool(leistung_user) or is_verified(baureihe, "motorvarianten")
 
@@ -1795,7 +2061,12 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
     else:
         fremd_varianten = set()
 
-    kraftstoff = (motor_match or {}).get("kraftstoff") or getattr(req, "kraftstoff", None)
+    # §5/§Trust: Nutzerangabe zuerst. Vorher stand die DB-Motorvariante vorn —
+    # eine falsch aufgeloeste Baureihe konnte damit ein ausdrueckliches "Diesel"
+    # des Nutzers in "Benzin" verwandeln (P0-Befund `vw-golf-8`, dessen einzige
+    # Variante ein 2.0-TSI-Benziner ist). Danach haette die harte
+    # Kraftstoffpruefung jedes echte Diesel-Inserat verworfen.
+    kraftstoff = getattr(req, "kraftstoff", None) or (motor_match or {}).get("kraftstoff")
     # §Trust/§15: dasselbe Prinzip für den Kraftstoff.
     kraftstoff_hart = bool(getattr(req, "kraftstoff", None)) or is_verified(
         baureihe, "motorvarianten")
@@ -1814,6 +2085,8 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
         "marke_name": (baureihe or {}).get("marke") or getattr(req, "marke", None),
         "modell_name": (baureihe or {}).get("modell") or getattr(req, "modell", None),
         "ziel_motor_tokens": ziel_motor_tokens,
+        "motorcode_tokens": motorcode_tokens,
+        "modell_anker_user": modell_anker,
         "fremd_motor_tokens": fremd_motor_tokens,
         "leistung_ps": leistung_ps,
         "karosserie": karosserie,

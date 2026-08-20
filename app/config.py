@@ -113,3 +113,26 @@ FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-flash-li
 # Windows/PowerShell: $env:TAVILY_API_KEY = "tvly-..."
 # Dauerhaft: In .env eintragen: TAVILY_API_KEY=tvly-...
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Source-Policy: Freigabe automatischer Marktpreis-Quellen
+# ---------------------------------------------------------------------------
+# PRODUCTION-DEFAULT: LEER. Keine reale Marktplatz-Domain ist automatisch fuer die
+# Marktpreisbildung freigegeben, solange sie nicht ausdruecklich konfiguriert
+# wurde — auch dann nicht, wenn sie technisch erreichbar ist und fachlich
+# einwandfreie Inserate liefert.
+#
+# Das ist eine PRODUKT-/FREIGABE-Entscheidung, keine Rechtsbewertung und keine
+# Qualitaetsaussage ueber die Inserate. Welche Quellen ueber offizielle Such-APIs
+# bzw. Nutzungsrechte qualifiziert werden, klaert eine eigene Etappe.
+#
+# Aktivierung ohne Codeaenderung (Etappe 2+), kommaseparierte Domainliste:
+#     AUTO_KI_ALLOWED_MARKET_SOURCES=beispiel-api.de,zweite-quelle.de
+#
+# Der Marktvergleich verwirft Treffer nicht freigegebener Quellen mit einem
+# EIGENEN, neutral formulierten Grund (app/web_search.SOURCE_POLICY_GRUND) —
+# getrennt von fachlichen Ablehnungen wie "anderes Modell".
+_ROH_MARKET_SOURCES = os.environ.get("AUTO_KI_ALLOWED_MARKET_SOURCES", "")
+ALLOWED_MARKET_SOURCES = frozenset(
+    teil.strip().lower() for teil in _ROH_MARKET_SOURCES.split(",") if teil.strip()
+)

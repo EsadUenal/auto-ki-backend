@@ -26,6 +26,13 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 os.environ["AUTO_KI_DB_PATH"] = os.path.join(tempfile.mkdtemp(prefix="vira_ss_"), "test.db")
 sys.path.insert(0, ".")
 
+# §Source-Policy: Der Production-Default gibt KEINE Marktquelle zum Preisbilden
+# frei (app/config.ALLOWED_MARKET_SOURCES ist leer). Dieser Test prueft die
+# ANALYSE-ENGINE und braucht dafuer die historischen/synthetischen Testdomains —
+# die Freigabe gilt ausschliesslich in diesem Testprozess und ist KEINE
+# produktive Qualifikation der Quelle. Siehe _source_policy_testharness.py.
+import _source_policy_testharness  # noqa: E402,F401
+
 from types import SimpleNamespace                                       # noqa: E402
 
 import app.marktrecherche as mr                                        # noqa: E402
@@ -239,8 +246,17 @@ check("§11: completed_medium beendet die Recherche NICHT (HIGH bleibt anstrebba
       genug(ma_ss) is False)
 
 # Dieselben Fahrzeuge über zwei Plattformen -> Abdeckung 'gut', Vertrauen HIGH.
+#
+# §Source-Policy: Die zweite Plattform war früher mobile.de, dann autoscout24.de.
+# Beide Quellen sind für die automatische Marktpreisbildung nicht freigegeben
+# (keine Erlaubnis/API-Lizenz) und zählen deshalb bewusst NICHT mehr für die
+# Marktabdeckung — siehe app/web_search.darf_preisbildend_sein und
+# test_fuel_source_policy.py. Die AUSSAGE dieses Tests ("zwei Plattformen -> gut
+# -> completed_high") ist unverändert; nur die Wahl der zweiten Plattform musste
+# erneut auf eine freigegebene wechseln (autouncle.de — letzter verbleibender
+# _MARKTPLATZ_DOMAINS-Eintrag neben kleinanzeigen.de).
 MULTI = SINGLE_SOURCE[:3] + [
-    _seite(f"https://suchen.mobile.de/fahrzeuge/details.html?id=41234567{i}",
+    _seite(f"https://www.autouncle.de/de/gebrauchtwagen/bmw-320d-{i}-41234567{i}",
            f"BMW 320d G20 Diesel {preis} € {km}.000 km EZ 0{m}/2019")
     for i, (preis, km, m) in enumerate([("25.200", "115", 6), ("25.600", "112", 7),
                                         ("25.900", "108", 8)], start=1)
