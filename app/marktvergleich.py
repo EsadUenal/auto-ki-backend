@@ -2190,7 +2190,12 @@ def _repraesentant_rang(b: Preisbeobachtung) -> tuple:
     return (
         1 if b.listing_id else 0,
         1 if b.detail_url else 0,
-        1 if b.segmentation_method == "detail_link" else 0,
+        # "api_structured" (Etappe 3) steht hier gleichrangig neben "detail_link":
+        # beides heißt "dieser Datenpunkt gehört nachweislich zu genau EINEM
+        # Inserat". Ohne diese Gleichstellung verlöre ein strukturierter
+        # API-Datensatz die Repräsentantenwahl gegen einen aus HTML gelesenen —
+        # obwohl er die stärkere Herkunft hat.
+        1 if b.segmentation_method in ("detail_link", "api_structured") else 0,
         _CONFIDENCE_RANG.get(b.structural_confidence, 0),
         0 if b.window_fallback_used else 1,
         1 if b.body_evidence in _BODY_EVIDENCE_VERTRAUT else 0,

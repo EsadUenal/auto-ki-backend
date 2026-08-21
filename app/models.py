@@ -191,11 +191,21 @@ class Preisbeobachtung(BaseModel):
     # Woraus der Datenpunkt stammt: "title" | "snippet" | "raw_content" — oder
     # "window_fallback", wenn er nicht aus einer strukturell bestätigten Karte,
     # sondern nur aus einem Zeichenfenster um den Preis stammt.
+    #
+    # Etappe 3 ergänzt "api": der Datenpunkt stammt aus einem strukturierten
+    # Feld einer Marktplatz-API (app/market_data_provider.py), wurde also weder
+    # aus einem Snippet gelesen noch aus HTML segmentiert. Ihn stattdessen als
+    # "raw_content" auszugeben wäre eine falsche Herkunftsangabe in genau dem
+    # Feld, das die Belegkette tragen soll.
     extraction_source: str = "snippet"
     # ── Kartensegmentierung (app/market_card_segmenter.py) ───────────────────
     # Wie wurde die Fahrzeugkarte abgegrenzt, aus der dieser Datenpunkt stammt?
     # "detail_link" | "block_structure" | "title_anchor" | "single_card"
     # | "window_fallback". Nur die ersten vier sind strukturell bestätigt.
+    #
+    # Etappe 3 ergänzt "api_structured": bei einem API-Datensatz gab es gar
+    # keinen Text zu segmentieren — ein Ad-Objekt IST bereits genau ein
+    # Fahrzeug. Zählt als strukturell bestätigt.
     segmentation_method: str = "window_fallback"
     structural_confidence: str = "low"   # "high" | "medium" | "low"
     start_offset: int | None = None      # Kartengrenzen im zusammengesetzten Treffertext
