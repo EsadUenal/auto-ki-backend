@@ -197,7 +197,7 @@ GraphQL-Felder sind nicht öffentlich.
 | B Zweck | Anzeigen suchen und einzeln herunterladen |
 | C Suchen? | **Ja**, umfangreich |
 | D Einzel-Listing? | **Ja** — `GET /search-api/ad/{ad-key}` |
-| E Felder | s.u. — sehr gut, **aber zweistufig** |
+| E Felder | s.u. — sehr gut, **bereits im Suchergebnis** (Sandbox-verifiziert) |
 | F Sandbox | **In der Doku nicht erwähnt** |
 | G Auth | HTTP Basic Auth (Benutzername/Passwort), Zugang über Customer Support |
 | H Rate Limits | Nicht dokumentiert. Dokumentiert ist: **max. 2000 Anzeigen** über paginierte Ergebnisseiten, Seitengröße max. 100 (Default 20) |
@@ -216,38 +216,72 @@ Farbe, Türen, Sitze, Preisspanne, MwSt-Ausweis, Emissionsklasse, Verbrauch,
 **Umkreissuche per PLZ+Radius (nur Deutschland)**, Anbietertyp (Händler/privat),
 Änderungs-/Erstellzeitpunkt, Bildanzahl.
 
-**Der eine kritische Vorbehalt (belegt in der Doku):**
+**Der Vorbehalt aus der Dokumentanalyse — durch Sandbox-Verifikation überholt:**
 
 > Suchergebnisse liefern *weniger* Daten als der Direktabruf per ad-key.
 
-Im Suchergebnis stehen laut Doku u.a.: Ad-ID, Verkäufer-ID, Erstell-/Änderungsdatum,
-Fahrzeugklasse, Kategorie, **Make, Model**, Zustand, **Laufleistung, Kraftstoff,
-Erstzulassung, Preis**, Verkäuferdaten, **Detailseiten-URL**.
-**Nicht** im Suchergebnis genannt: Motor-/Verkaufsbezeichnung, Leistung, Getriebe,
-Karosserie — also genau die Felder, die in Etappe 1 über `sehr_aehnlich` vs.
-`ungeeignet` entscheiden.
+Aus dieser Aussage der öffentlichen Dokumentation wurde zunächst abgeleitet,
+Motor-/Verkaufsbezeichnung, Leistung, Getriebe und Karosserie stünden **nicht**
+im Suchergebnis — also genau die Felder, die in Etappe 1 über `sehr_aehnlich`
+vs. `ungeeignet` entscheiden.
 
-→ **Konsequenz für VIRA:** eine reine Suchanfrage reicht nicht. Es braucht
-`search` → dann `GET /ad/{ad-key}` je Treffer. Das ist der eigentliche
-Volumen-/Kostentreiber und muss bei der kommerziellen Klärung mit abgefragt
-werden.
+**Sandbox-Verifikation zeigt einen umfangreicheren Search-Response als aus der
+vorherigen Dokumentanalyse abgeleitet.** Der offizielle Sandbox-Zugang liefert
+je Anzeige bereits im Suchergebnis: `mobileAdId`, `detailPageUrl`, `make`,
+`model`, **`modelDescription`**, `constructionYear`, `firstRegistration`,
+`mileage`, `fuel`, **`power`**, **`gearbox`**, **`category`**, `vehicleClass`,
+`price`, `seller`, `condition`, `damageUnrepaired`.
+
+Der Direktabruf `GET /search-api/ad/{ad-key}` ergänzt gegenüber der Suche nur
+`description`, `kba`, `priceRating` und `consumptionUnit`.
+
+→ **Korrigierte Konsequenz für VIRA:** Für den Kern-Marktvergleich ist der
+Detailabruf **derzeit nicht erforderlich** — eine Suchanfrage je Fahrzeug
+genügt. Das entschärft den zuvor angenommenen Volumen-/Kostentreiber
+(statt 1 + N Requests je Fahrzeug nur 1), bleibt aber ein Punkt für die
+kommerzielle Klärung, weil Rate-Limits und Abrechnungsmodell weiterhin
+unbekannt sind.
+
+**Feldformate (Sandbox-verifiziert, nicht aus der Doku abgeleitet):**
+
+| Feld | Reales Format | Konsequenz für VIRA |
+|---|---|---|
+| `power` | nackter `int` **in kW**, ohne Einheitsfeld | Umrechnung **kW × 1,35962 → PS** zwingend; `Preisbeobachtung.horsepower` ist PS (`_RE_PS` in `marktvergleich.py`) |
+| `firstRegistration` | String **`"YYYYMM"`** ohne Trennzeichen (z.B. `"200901"`) | Jahr = erste 4 Zeichen; `constructionYear` nur als Fallback (in der Stichprobe oft `null`, wenn `firstRegistration` gesetzt ist) |
+| `price.consumerPriceGross` | **Dezimalstring** (`"15200.00"`), nicht `int`/`float`; daneben `currency`, `type` | `float()`-Konvertierung, und `currency == "EUR"` prüfen statt annehmen |
+| `vehicleClass` | in der Stichprobe durchgängig `"Car"` | Fahrzeug-Obertyp, **keine** Karosserieinformation — trägt nichts zu `body` bei |
+
+Diese Korrektur betrifft **ausschließlich die technische Feldlage**. An der
+Bewertung der Nutzungsrechte ändert sie nichts: Sandbox-Zugang ist kein
+Produktivvertrag, Status bleibt **YELLOW**, kommerzielle Nutzungsrechte und
+Preis weiterhin **Anbieterantwort ausstehend**.
 
 ### Feld-Mapping mobile.de → VIRA
 
+Quelle = wo das Feld tatsächlich herkommt. Alle Angaben Sandbox-verifiziert.
+
 | mobile.de | VIRA | Quelle |
 |---|---|---|
-| Ad-ID | `listing_id`, `listing_key` | Suche |
-| Detailseiten-URL | `detail_url`, `quelle_url` | Suche |
-| make / model | `make` / `model` | Suche |
-| modelDescription | `engine_variant` | *(Direktabruf — im Suchergebnis nicht belegt)* |
-| firstRegistration / constructionYear | `baujahr` | Suche |
-| mileage | `kilometerstand` | Suche |
-| fuel | `fuel` | Suche |
-| power (kW) | `horsepower` (kW→PS) | *(Filter belegt, Rückgabe im Suchergebnis nicht belegt)* |
-| gearbox | `transmission` | *(Direktabruf)* |
-| category / vehicleClass | `body` | *(teilweise)* |
-| price | `preis_eur` | Suche |
-| sellerType | Händler/privat (nützlich) | Suche |
+| `mobileAdId` | `listing_id`, `listing_key` | Suche |
+| `detailPageUrl` | `detail_url`, `quelle_url` | Suche |
+| `make` / `model` | `make` / `model` | Suche |
+| `modelDescription` | Listing-Freitext (Motor-Evidenz nur geprüft, siehe unten) | **Suche** |
+| `firstRegistration` (`YYYYMM`) / `constructionYear` | `baujahr` | Suche |
+| `mileage` | `kilometerstand` | Suche |
+| `fuel` | `fuel` | Suche |
+| `power` (kW) | `horsepower` (kW × 1,35962 → PS) | **Suche** |
+| `gearbox` | `transmission` | **Suche** |
+| `category` | `body` (nur bei eindeutigem Enum) | **Suche** |
+| `vehicleClass` | — (durchgängig `"Car"`, keine Karosserie) | Suche |
+| `price.consumerPriceGross` (Dezimalstring, `currency` prüfen) | `preis_eur` | Suche |
+| `seller` | Händler/privat (nützlich) | Suche |
+| — | `generation` | **nicht geliefert** → bleibt `unknown` |
+
+`modelDescription` ist **Freitext** und mischt Modell, Motor, Ausstattung und
+Karosserie ("Focus Turnier 1.6 EB Titanium XENON SHZ FSHZ TEM"). Es ist damit
+Listing-Evidenz, aber **keine** exakte Motorbezeichnung — eine Gleichsetzung
+`modelDescription == engine_variant` wäre genau die Art ungeprüfter Annahme, die
+Etappe 1 aus der Motor-Evidenz entfernt hat.
 
 ---
 
@@ -372,7 +406,7 @@ offizieller Datenzugang existiert.
 
 | Source | Offizieller Zugang | Search Listings? | Comparables? | VIRA-Felder ausreichend? | Sandbox? | Preis bekannt? | Nutzungsrecht bestätigt? | Architektur-Fit | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| **mobile.de Search API** | ja, dokumentiert (Support/API-Account) | **ja** | ja (Einzelanzeigen) | **ja**, aber erst per ad-key-Direktabruf | nicht dokumentiert | nein | **nein** | **EASY** | **YELLOW** |
+| **mobile.de Search API** | ja, dokumentiert (Support/API-Account) | **ja** | ja (Einzelanzeigen) | **ja, bereits im Suchergebnis** (Sandbox-verifiziert) | nicht dokumentiert | nein | **nein** | **EASY** | **YELLOW** |
 | **AutoScout24 DE SEARCH API** | ja, Vertriebskanal dokumentiert | ja (beworben) | ja (beworben) | **UNKNOWN** (Felder nicht öffentlich) | UNKNOWN | nein | **nein** | **MEDIUM** | **YELLOW** |
 | **AutoUncle Automotive API** | ja, B2B-Produkt | UNKNOWN | **beworben, Schema unbelegt** | **UNKNOWN** (alles hängt daran) | UNKNOWN | nein | **nein** | **EASY–MEDIUM** (Fall B) / **HARD** (Fall A) | **YELLOW** |
 | **Kleinanzeigen** | nur **eingehend** (Import) | **nein** | nein | — | — | — | nein | — | **RED** |
@@ -392,7 +426,7 @@ in einem Endkundenprodukt) abgedeckt ist.
 
 | Provider | Fit | Begründung |
 |---|---|---|
-| **mobile.de** | **EASY** | Strukturiertes JSON/XML, dokumentierte Pagination (max. 2000, Seitengröße ≤100), HTTP Basic Auth, stabile Ad-ID als `listing_key`, Detailseiten-URL frei Haus. Normalisierung minimal: kW→PS, Kraftstoff-/Getriebe-Enums auf VIRAs Vokabular. **Kein einziger Regex nötig.** Einzige echte Arbeit: zweistufiger Abruf (search → ad-key) mit Budget, analog zum bestehenden `hole_raw_content`-Budget. |
+| **mobile.de** | **EASY** | Strukturiertes JSON/XML, dokumentierte Pagination (max. 2000, Seitengröße ≤100), HTTP Basic Auth, stabile Ad-ID als `listing_key`, Detailseiten-URL frei Haus. Normalisierung minimal: kW→PS, Kraftstoff-/Getriebe-Enums auf VIRAs Vokabular. **Kein einziger Regex nötig.** Der zuvor angenommene zweistufige Abruf (search → ad-key) entfällt: Sandbox-Verifikation zeigt alle kernrelevanten Felder bereits im Suchergebnis. |
 | **AutoScout24 DE** | **MEDIUM** | GraphQL statt REST — der bestehende `httpx`-Client trägt das, aber Query-Aufbau und Feldauswahl sind ein neues Muster im Projekt. Größeres Risiko: die Felder sind unbekannt; MEDIUM ist eine Schätzung unter Vorbehalt, keine Messung. |
 | **AutoUncle Fall B** (Comparables mit Feldern) | **EASY–MEDIUM** | Ein Aufruf je Fahrzeug statt einer Query-Ladder — die gesamte `marktrecherche`-Stufenlogik würde für diesen Provider entfallen. Offen: ob je Comparable eine stabile ID/URL kommt (sonst bricht `_dedupliziere` / `_cap_pro_url`). |
 | **AutoUncle Fall A** (nur Marktwert) | **HARD** | Kein Architekturproblem, sondern ein Produktproblem: es gäbe nichts zu bewerten. `analysiere_markt`, `_bewerte`, `preisurteil` — die komplette Etappe-1-Engine wäre umgangen. Das ist keine Integration, das ist ein Produktwechsel. |
@@ -460,7 +494,7 @@ Antwort vorbeigehen — dieselbe Falle, in die `SearchProvider` bereits getappt 
 
 | Provider | Anfrage raus | Antwort | Ohne Antwort nicht entscheidbar |
 |---|---|---|---|
-| mobile.de | ja | **ausstehend** | Preis-/Volumenmodell, ad-key-Abrufkosten, AGB zu abgeleiteten Werten, Sandbox |
+| mobile.de | ja | **ausstehend** | Preis-/Volumenmodell, Rate-Limits, AGB zu abgeleiteten Werten, Produktivzugang (Sandbox liegt vor) |
 | AutoUncle | ja | **ausstehend** | **Comparables-Schema (Fall A vs. B)**, URL/ID je Comparable, Recht auf eigene Ableitungen |
 | Kleinanzeigen | ja | **ausstehend** | ob überhaupt ein Lesezugang existiert |
 | PKW.de | ja | **ausstehend** | ob die API von 2010 heute noch existiert und für Nicht-Händler zugänglich ist |
@@ -474,7 +508,8 @@ Antwort vorbeigehen — dieselbe Falle, in die `SearchProvider` bereits getappt 
    dokumentiertem Feldumfang, dokumentierter Pagination und dokumentiertem
    Auth-Verfahren**. Das Mapping ist heute schon schreibbar, EASY, und die
    Deutschland-Umkreissuche ist ein Feature, das VIRA per Websuche nie hatte.
-   Bekannte Hürde: zweistufiger Abruf für die entscheidenden Motorfelder.
+   Sandbox-Zugang liegt vor und ist technisch verifiziert; ein Detailabruf je
+   Treffer ist für den Kernvergleich nicht nötig.
 2. **AutoUncle** — wirtschaftlich wahrscheinlich der interessanteste, **falls
    Fall B**. Ein API-Aufruf je Fahrzeug gegen eine ganze Query-Ladder, 14 Länder,
    DE inklusive, tägliche Aktualisierung. Das Risiko ist binär: bei Fall A ist es
