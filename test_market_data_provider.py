@@ -183,14 +183,36 @@ check("G13: Ad ohne km -> kilometerstand None",
 print()
 print("=== H. Sandbox-Gate (§14: kein Production-Enable) ===")
 
-check("H1: Sandbox-Host erkannt",
+check("H1: offizieller Sandbox-Host wird akzeptiert",
       ist_sandbox_url("https://services.sandbox.mobile.de") is True)
+check("H1b: offizieller Host mit Pfad bleibt akzeptiert",
+      ist_sandbox_url("https://services.sandbox.mobile.de/search-api") is True)
 check("H2: Produktivhost abgelehnt",
       ist_sandbox_url("https://services.mobile.de") is False)
 check("H3: leere URL abgelehnt", ist_sandbox_url("") is False)
 check("H4: None abgelehnt", ist_sandbox_url(None) is False)
 check("H5: 'sandbox' nur im Pfad zaehlt NICHT",
       ist_sandbox_url("https://services.mobile.de/sandbox") is False)
+
+# ── Hardening-Check (nach Etappe 3): exakter Hostvergleich statt Substring ───
+check("H10: fremder Host mit 'sandbox' im Namen wird abgelehnt",
+      ist_sandbox_url("https://sandbox.evil.example") is False)
+check("H11: echter Sandbox-Host als PRAEFIX eines fremden Hosts wird abgelehnt "
+      "(Substring-Falle, per exaktem Hostvergleich behoben)",
+      ist_sandbox_url("https://services.sandbox.mobile.de.evil.example") is False)
+check("H12: 'sandbox' als Namensbestandteil einer fremden Domain wird abgelehnt",
+      ist_sandbox_url("https://evil-sandbox.example") is False)
+check("H13: HTTP statt HTTPS wird abgelehnt (Basic Auth braucht TLS)",
+      ist_sandbox_url("http://services.sandbox.mobile.de") is False)
+check("H14: eingebettete Credentials im URL-String werden abgelehnt",
+      ist_sandbox_url("https://user:pass@services.sandbox.mobile.de") is False)
+check("H15: Groß-/Kleinschreibung des Hosts ist irrelevant",
+      ist_sandbox_url("https://SERVICES.SANDBOX.MOBILE.DE") is True)
+check("H16: Subdomain des offiziellen Hosts zaehlt NICHT automatisch "
+      "(exakter Match, keine Teilstring-Grosszuegigkeit in die andere Richtung)",
+      ist_sandbox_url("https://x.services.sandbox.mobile.de") is False)
+check("H17: kaputte URL fuehrt zu False, kein Crash",
+      ist_sandbox_url("https://[::1") is False)
 
 p_prod = MobileDeProvider(base_url="https://services.mobile.de", username="u", password="p")
 try:
@@ -378,6 +400,55 @@ print("=== M. evidenztext ===")
 check("M1: None-Teile fallen raus", evidenztext("BMW", None, "320d") == "BMW 320d")
 check("M2: leere Strings fallen raus", evidenztext("BMW", "  ", "320d") == "BMW 320d")
 check("M3: leer bleibt leer", evidenztext(None, None) == "")
+
+print()
+print("=== N. Redirect-/Credential-Risiko (Hardening-Check nach Etappe 3) ===")
+
+# Ein (fiktiver, fehlkonfigurierter) Sandbox-Host antwortet mit einem Redirect
+# auf einen FREMDEN Host. Ohne `follow_redirects=False` wuerde httpx dem Ziel
+# automatisch folgen und denselben Authorization-Header (Basic-Auth-Credentials)
+# an den fremden Host mitschicken.
+aufrufe: list[str] = []
+
+
+def redirect_handler(request: httpx.Request) -> httpx.Response:
+    aufrufe.append(str(request.url))
+    if "evil.example" in request.url.host:
+        # Wuerde NIE erreicht werden duerfen — ein Aufruf hier waere der Beweis,
+        # dass Credentials dem Redirect gefolgt sind.
+        return httpx.Response(200, json={"ads": []})
+    return httpx.Response(
+        302, headers={"Location": "https://credential-sink.evil.example/steal"})
+
+
+p_redirect = MobileDeProvider(
+    base_url="https://services.sandbox.mobile.de", username="testuser", password="testpass",
+    client=httpx.AsyncClient(transport=httpx.MockTransport(redirect_handler)))
+
+try:
+    obs, fehler = lauf(p_redirect._get("/search-api/search", {"page.size": 1}))
+    ergebnis_ok = False  # ein 302 sollte NIE als brauchbares JSON durchgehen
+except Exception:
+    ergebnis_ok = True  # 302 ohne JSON-Body -> Fehler ist das korrekte Verhalten
+
+check("N1: 302-Redirect wird NICHT automatisch verfolgt "
+      "(genau 1 Request, nie der fremde Host)",
+      len(aufrufe) == 1 and "evil.example" not in aufrufe[0])
+check("N2: der fremde Redirect-Host wurde zu keinem Zeitpunkt kontaktiert",
+      not any("evil.example" in a for a in aufrufe))
+check("N3: 302-Antwort fuehrt zu einem Fehler statt zu einem stillen Fake-Erfolg",
+      ergebnis_ok)
+
+# Dieselbe Garantie auf der oeffentlichen Schnittstelle: find_comparables()
+# darf bei einem Redirect nie crashen, sondern muss ihn als technischen
+# Fehler behandeln (ueber den bestehenden allgemeinen except-Zweig).
+aufrufe.clear()
+p_redirect2 = MobileDeProvider(
+    base_url="https://services.sandbox.mobile.de", username="testuser", password="testpass",
+    client=httpx.AsyncClient(transport=httpx.MockTransport(redirect_handler)))
+obs2, fehler2 = lauf(p_redirect2.find_comparables(VehicleIdentity(make="Nichtmarke")))
+check("N4: find_comparables() faengt den Redirect ab -> ([], True), kein Crash",
+      obs2 == [] and fehler2 is True)
 
 print()
 if _FEHLER:

@@ -133,6 +133,16 @@ class Preisbeobachtung(BaseModel):
     quelle_domain: str | None = None
     quelle_url: str | None = None
     vergleichbarkeit: str             # "sehr_aehnlich" | "aehnlich" | "bedingt" | "ungeeignet"
+    # NACH der Bewertung: die menschenlesbaren Gruende fuer `vergleichbarkeit`.
+    #
+    # VOR der Bewertung nutzt `marktvergleich._bewerte` dasselbe Feld intern
+    # anders: liegt in `gruende[0]` ein `\x00`-Praefix, ist das der ROHTEXT, aus
+    # dem die Karosserie-/Motor-/Kraftstoff-Evidenz gelesen wird (gesetzt von
+    # `_roh_beobachtung` fuer Websuch-Treffer, von `app/mobile_de_provider.py`
+    # fuer API-Treffer). `_bewerte` UEBERSCHREIBT `gruende` am Ende immer mit
+    # den echten Gruenden — der Rohtext verlaesst `_bewerte` nie und erreicht
+    # nie Bericht/Frontend. Es ist die einzige Textquelle, die es dafuer gibt;
+    # kein separates Rohtext-Feld existiert (Stand Etappe 3).
     gruende: list[str] = Field(default_factory=list)
     # Reliability-Sprint 3 (§10-§13): Herkunftsart der Recherche-Seite, aus der dieser
     # Datenpunkt extrahiert wurde — "listing" (konkretes Einzelinserat) | "category"

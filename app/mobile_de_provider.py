@@ -52,6 +52,7 @@ import asyncio
 import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -123,17 +124,49 @@ _FUEL_WORT = {"diesel": "Diesel", "benzin": "Benzin",
               "elektro": "Elektro", "hybrid": "Hybrid"}
 
 
-def ist_sandbox_url(base_url: str | None) -> bool:
-    """Sicherheitsgate: nur eine erkennbare Sandbox-Basis-URL ist zulaessig.
+# Der EINZIGE Host, an den dieser Provider Basic-Auth-Credentials senden darf.
+# Verifiziert gegen die tatsaechlich konfigurierte MOBILE_DE_BASE_URL (Etappe 3,
+# Sandbox-Spike): "https://services.sandbox.mobile.de".
+#
+# Nachtraegliches Haerten (Hardening-Check nach Etappe 3): ein reiner
+# Substring-Test ("sandbox" kommt im Host vor") war zu grosszuegig — er haette
+# "sandbox.evil.example", "services.sandbox.mobile.de.evil.example" (Host-
+# Suffix-Trick: die echte Sandbox-Domain steht als PRAEFIX eines fremden
+# Hosts) und "evil-sandbox.example" faelschlich durchgelassen. Jeder dieser
+# drei haette Zugangsdaten an einen fremden Server geschickt.
+_OFFIZIELLER_SANDBOX_HOST = "services.sandbox.mobile.de"
 
-    Bewusst eine POSITIVE Erkennung ("sandbox" muss im Host vorkommen) statt
-    einer Sperrliste der Produktionshosts. Eine Sperrliste waere unvollstaendig,
-    sobald mobile.de einen weiteren Produktivhost einfuehrt; die Positivpruefung
-    faellt im Zweifel auf "nicht erlaubt".
+
+def ist_sandbox_url(base_url: str | None) -> bool:
+    """Sicherheitsgate: NUR der offizielle mobile.de-Sandbox-Host ist zulaessig.
+
+    EXAKTER, normalisierter Hostvergleich (kein Substring-Match) — sonst waere
+    jeder Host, der die Zeichenkette "sandbox" irgendwo im Namen traegt (auch
+    als Suffix eines fremden Hosts oder als Praefix wie "sandbox.evil.example"),
+    faelschlich zulaessig. Zusaetzlich verlangt:
+
+      - Schema muss "https" sein (Basic Auth ist ein Klartextverfahren —
+        ohne TLS wuerden Username/Passwort im Netz sichtbar uebertragen).
+      - Die URL darf KEIN eingebettetes Userinfo tragen
+        ("https://user:pass@services.sandbox.mobile.de") — Zugangsdaten kommen
+        ausschliesslich aus MOBILE_DE_USERNAME/_PASSWORD, nie aus dem URL-String.
+
+    `urlsplit` statt manuellem String-Split: `.hostname` ist bereits von
+    Gross-/Kleinschreibung und IPv6-Klammern bereinigt und trennt Userinfo
+    sauber vom Host, statt es faelschlich als Hostbestandteil zu behandeln.
     """
     if not base_url:
         return False
-    return "sandbox" in str(base_url).split("//", 1)[-1].split("/", 1)[0].lower()
+    try:
+        teile = urlsplit(str(base_url))
+    except ValueError:
+        return False
+    if teile.scheme != "https":
+        return False
+    if teile.username or teile.password:
+        return False
+    host = (teile.hostname or "").lower()
+    return host == _OFFIZIELLER_SANDBOX_HOST
 
 
 def kw_zu_ps(kw: Any) -> int | None:
@@ -251,6 +284,27 @@ def ad_zu_beobachtung(ad: dict[str, Any]) -> Preisbeobachtung | None:
     # `_bewerte` (Abgleich gegen `ziel_motor_tokens`) — und dieselbe Prueflogik
     # faengt dort auch den Widerspruchsfall ab, den die Sandbox liefert
     # (make/model "CITROEN/C3" bei modelDescription "C5 Aircross Shine").
+    #
+    # WARUM `gruende[0]` MIT `\x00`-PRAEFIX STATT EIN EIGENES FELD (geprueft im
+    # Hardening-Check nach Etappe 3, NICHT neu erfunden fuer diesen Provider):
+    # `Preisbeobachtung` hat KEIN separates Rohtext-/Evidenzfeld — `gruende`
+    # (list[str]) ist der einzige Textkanal, den es gibt, und `_bewerte` selbst
+    # liest bereits ausschliesslich daraus (siehe app/marktvergleich.py, Anfang
+    # von `_bewerte`: `if b.gruende and b.gruende[0].startswith("\x00")`). Der
+    # Websuch-Pfad (`_roh_beobachtung`) fuellt dasselbe Feld auf demselben Weg —
+    # dieser Provider repliziert also den BESTEHENDEN internen Vertrag von
+    # `_bewerte`, statt einen neuen zu erfinden.
+    #
+    # Ein sauberer eigener Kanal (z.B. `Preisbeobachtung.rohtext: str | None`)
+    # waere fachlich huebscher, wurde hier aber bewusst NICHT gebaut: er muesste
+    # `_bewerte` selbst aendern (die Zeile oben liest fest aus `gruende[0]`),
+    # also genau die Etappe-1-Kernfunktion anfassen, die in dieser und den
+    # vorherigen Etappen ausdruecklich NICHT veraendert werden soll — mit dem
+    # vollen Regressionsrisiko, das ein Eingriff in die am staerksten geprueften
+    # Datei des Projekts mit sich bringt, fuer einen rein kosmetischen Gewinn.
+    # Diese Loesung ist eine bewusste TECHNISCHE UEBERGANGSLOESUNG: verhaltens-
+    # gleich zum bestehenden Weg, an keiner Stelle unsicherer, aber nicht der
+    # Kanal, den man auf der gruenen Wiese entwerfen wuerde.
     text = evidenztext(
         ad.get("make"),
         ad.get("model"),
@@ -363,14 +417,34 @@ class MobileDeProvider:
 
         Der `Authorization`-Header wird von httpx aus der BasicAuth erzeugt und
         hier weder gebaut noch geloggt.
+
+        Verteidigung in der Tiefe (Hardening-Check nach Etappe 3): dies ist die
+        EINZIGE Stelle, an der tatsaechlich ein Netzwerk-Request mit Credentials
+        gebaut wird — deshalb wird der Sandbox-Host-Guard HIER noch einmal
+        geprueft, nicht nur einmalig am Einstieg von `find_comparables`.
+        `pruefe_sandbox()` wirft `MobileDeSandboxNichtKonfiguriert`, was der
+        allgemeine `except Exception`-Zweig in `find_comparables` bereits als
+        technischen Fehler behandelt — kein separater Fangzweig noetig.
+
+        `follow_redirects=False` steht hier EXPLIZIT (obwohl es bereits der
+        httpx-Standard ist): eine Redirect-Antwort (3xx) wird NICHT automatisch
+        verfolgt. Ohne das koennte ein kompromittierter/fehlkonfigurierter
+        Sandbox-Host per `Location`-Header auf einen fremden Host umleiten, und
+        httpx wuerde dorthin denselben `Authorization`-Header (und damit die
+        Basic-Auth-Credentials) mitschicken. Ein 3xx-Ergebnis liefert stattdessen
+        eine Antwort ohne JSON-Body, `resp.json()` wirft dann einen Fehler, der
+        vom aufrufenden `find_comparables` als technischer Fehler behandelt wird
+        — kein Crash, aber auch kein automatisches Hinterherlaufen.
         """
+        self.pruefe_sandbox()
         url = f"{self._base_url}{pfad}"
         auth = httpx.BasicAuth(self._username, self._password)
         headers = {"Accept": _ACCEPT}
         if self._client is not None:
-            resp = await self._client.get(url, params=params, auth=auth, headers=headers)
+            resp = await self._client.get(
+                url, params=params, auth=auth, headers=headers, follow_redirects=False)
         else:
-            async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
                 resp = await client.get(url, params=params, auth=auth, headers=headers)
         resp.raise_for_status()
         return resp.json()
