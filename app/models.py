@@ -311,7 +311,11 @@ class Insight(BaseModel):
     ("hoch" | "mittel" | "niedrig") — KEINE scheinpräzisen Prozentwerte.
     """
     id: str
-    kategorie: str                    # "schwachstelle" | "rueckruf" | "motorproblem" | "marktvergleich" | ...
+    # "schwachstelle" | "rueckruf" | "motorproblem" | "marktvergleich" | "wartung" | ...
+    # "wartung" (kritischer Wartungspunkt der erkannten Motorvariante) wird bewusst
+    # als LETZTE Sektion erzeugt, damit die fortlaufenden IDs aller übrigen
+    # Kategorien unverändert bleiben — siehe app/evidence.py::build_insights.
+    kategorie: str
     titel: str
     beschreibung: str
     quellen_typen: list[str] = Field(default_factory=list)   # abgeleitet aus quellen[].typ
@@ -383,12 +387,32 @@ class Kaufaktion(BaseModel):
     - Vollständig marktpreis-unabhängig: keine Preisaktion, keine Nachverhandlungs-
       Aktion, keine "günstig/teuer"-Aussage (§15 P1-3).
     """
-    id: str                            # stabil & inhaltsbasiert, z.B. "besichtigung-bremse"
+    id: str                            # stabil & inhaltsbasiert, z.B. "besichtigung-bremsen"
     bereich: str                       # "besichtigung" | "probefahrt" | "verkaeuferfragen" | "dokumente"
+    # typ trennt die BEIDEN EBENEN des Prüfplans strikt voneinander:
+    #   "fahrzeugspezifisch" — entstanden aus echter Evidence zu DIESEM Fahrzeug
+    #                          (Schwachstelle, Motorproblem, Rückruf, Wartungspunkt)
+    #                          oder aus einer ausdrücklichen Angabe im Inserat.
+    #   "basis"              — allgemeiner professioneller Prüfstandard, der für jeden
+    #                          Gebrauchtwagenkauf gilt. Behauptet NICHTS über dieses
+    #                          Fahrzeug ("sieh nach Rost", nicht "hier ist Rost") und
+    #                          hat deshalb korrekterweise keine evidence_ids.
+    # Das Frontend kann damit "Bei diesem Fahrzeug besonders wichtig" von
+    # "Allgemeine Checkliste" eindeutig unterscheiden.
+    typ: str = "fahrzeugspezifisch"
     # Kurze Überschrift; bei bereich="verkaeuferfragen" die KONKRETE Frage.
     titel: str
     aktion: str                        # konkrete, ausführbare Beschreibung
-    prioritaet: str                    # "kritisch" | "hoch" | "mittel"
+    # "kritisch" | "hoch" | "mittel" für fahrzeugspezifische Punkte, "basis" für den
+    # allgemeinen Prüfstandard — eine normale Basisprüfung wird bewusst NIE künstlich
+    # zu "kritisch" hochgestuft.
+    prioritaet: str
+    # Abschnittsüberschrift für Anzeige und Ausdruck (z.B. "Bremsen",
+    # "Vor Fahrtbeginn", "Fahrzeugpapiere"). Rein strukturell, keine Aussage.
+    gruppe: str | None = None
+    # Optionaler kurzer Zusatz — vor allem Sicherheits-/Rahmenhinweise
+    # ("Nur wenn kein Fahrzeug folgt und der Verkehr es sicher zulässt.").
+    hinweis: str | None = None
     # Nur EXISTIERENDE Insight-IDs (siehe `insights`).
     evidence_ids: list[str] = Field(default_factory=list)
     # Herkunft: "schwachstelle" | "motorproblem" | "rueckruf" | "wartung" | "inserat"
@@ -398,17 +422,50 @@ class Kaufaktion(BaseModel):
     rang: int = 0                      # deterministischer Sortierwert (höher = wichtiger)
 
 
-class Kaufaktionen(BaseModel):
-    """P1-3 — die vier Handlungsbereiche des Kaufchecks.
+class Pruefliste(BaseModel):
+    """EINE der vier Checklisten — ein eigenständiges, für sich druckbares Arbeitsblatt.
 
-    Additiv: alte gespeicherte Checks ohne dieses Feld bleiben gültig (alle vier
-    Listen sind dann leer). Leere Listen sind ein zulässiges, ehrliches Ergebnis —
-    ohne belastbare Evidence wird NICHTS erfunden.
+    Bewusst zwei getrennte Listen statt einer gemischten (§12): fahrzeugspezifische
+    Punkte stehen im Produkt ZUERST ("Bei diesem Fahrzeug besonders wichtig"), der
+    allgemeine Prüfstandard danach. Sie werden NICHT vorab zusammengeworfen — die
+    Trennung ist die eigentliche Aussage.
+
+    Print-/PDF-Bereitschaft: Diese Klasse trägt alles, was ein Renderer für EIN
+    Arbeitsblatt braucht (Bereich, Titelzeile, Fahrzeugbezeichnung, Punkte). Es gibt
+    bewusst KEIN übergeordnetes Sammel-Exportobjekt und keine kombinierte Liste: das
+    Produktkonzept sind vier getrennte praktische Arbeitsblätter, die einzeln
+    ausgedruckt und einzeln abgehakt werden. Ein gemeinsamer Export könnte später
+    zusätzlich entstehen, ist hier aber ausdrücklich nicht vorbereitet.
     """
-    besichtigung: list[Kaufaktion] = Field(default_factory=list)
-    probefahrt: list[Kaufaktion] = Field(default_factory=list)
-    verkaeuferfragen: list[Kaufaktion] = Field(default_factory=list)
-    dokumente: list[Kaufaktion] = Field(default_factory=list)
+    bereich: str                       # "besichtigung" | "probefahrt" | "verkaeuferfragen" | "dokumente"
+    export_title: str                  # Überschrift des Arbeitsblatts, z.B. "Besichtigungs-Checkliste"
+    # Kurzbezeichnung des Fahrzeugs für die Kopfzeile des Ausdrucks, z.B.
+    # "BMW 3er G20 (2020)". None, wenn nicht einmal Marke/Modell bekannt sind.
+    fahrzeug: str | None = None
+    fahrzeugspezifisch: list[Kaufaktion] = Field(default_factory=list)
+    basis: list[Kaufaktion] = Field(default_factory=list)
+
+
+class Kaufaktionen(BaseModel):
+    """P1-3 — der vollständige Prüfplan: vier eigenständige Checklisten.
+
+    Additiv: alte gespeicherte Checks ohne dieses Feld bleiben gültig (dann vier
+    leere Prüflisten). Leere Listen sind ein zulässiges, ehrliches Ergebnis — ohne
+    belastbare Evidence wird kein fahrzeugspezifischer Punkt erfunden; die
+    Basis-Checkliste steht trotzdem zur Verfügung.
+    """
+    besichtigung: Pruefliste = Field(
+        default_factory=lambda: Pruefliste(bereich="besichtigung",
+                                           export_title="Besichtigungs-Checkliste"))
+    probefahrt: Pruefliste = Field(
+        default_factory=lambda: Pruefliste(bereich="probefahrt",
+                                           export_title="Probefahrt-Checkliste"))
+    verkaeuferfragen: Pruefliste = Field(
+        default_factory=lambda: Pruefliste(bereich="verkaeuferfragen",
+                                           export_title="Fragen an den Verkäufer"))
+    dokumente: Pruefliste = Field(
+        default_factory=lambda: Pruefliste(bereich="dokumente",
+                                           export_title="Dokumenten-Checkliste"))
 
 
 # ---------- Kauf-Check ----------

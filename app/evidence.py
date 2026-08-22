@@ -175,7 +175,60 @@ def build_insights(
                 einfluss=einfluss,
             ))
 
-    # ── 4) Marktvergleich (Marktvergleich 2.0 — deterministisch) ───────────────
+    # ── 4) Kritische Wartungspunkte der erkannten Motorvariante ────────────────
+    # PLATZIERUNG (bewusst, gemessen): `_id` ist EIN globaler, fortlaufender Zähler
+    # über alle Kategorien. Diese Sektion steht deshalb genau hier — hinter den
+    # DB-Kategorien, aber VOR dem Marktvergleich:
+    #
+    #   * Hinter Schwachstelle/Rückruf/Motorproblem, damit deren Nummern durch die
+    #     Erweiterung unverändert bleiben (keine ID-Migration, KaufCheck-P1-3).
+    #   * VOR dem Marktvergleich, weil der Marktvergleich-Insight nur bei
+    #     vorhandenen Marktdaten entsteht. Stünde die Wartung dahinter, hinge ihre
+    #     Nummer davon ab, ob eine Marktrecherche Ergebnisse geliefert hat — und die
+    #     daraus abgeleiteten Kaufaktionen wären nicht mehr marktunabhängig (P0-1).
+    #     Genau dieser Fehler ist in der ersten Fassung aufgetreten und vom Test
+    #     "gleicher Fall mit/ohne Marktpreis" gefunden worden.
+    #
+    # Der Preis dafür ist die Nummer des Marktvergleich-Insights, die sich um die
+    # Zahl der Wartungspunkte verschiebt. Das ist folgenlos: keine Stelle im Code
+    # liest die Nummer einer Evidence-ID, der Marktvergleich wird ausschließlich
+    # über `kategorie` gefunden (`marktvergleich_id`), und gespeicherte Alt-Checks
+    # tragen ihre eigenen IDs im JSON — sie werden nie neu berechnet.
+    #
+    # NUR für den Kaufcheck: der Verkaufscheck bewertet den Marktwert, nicht die
+    # anstehende Wartung — sein Insight-Satz bleibt dadurch unverändert.
+    #
+    # `kritische_wartung` hat KEINE Baujahres-Spalte (Schema: variante_id, bauteil,
+    # intervall, hinweis). Die Applicability kommt deshalb ausschließlich über die
+    # Motorvariante: nur bei EINDEUTIG erkanntem Motor entstehen diese Insights, und
+    # ein Baujahr, das zu einer anderen Generation gehört, führt bereits in
+    # `find_baureihe`/`find_motor` zu einer anderen (oder keiner) Variante. Es wird
+    # hier bewusst KEINE eigene Baujahreslogik erfunden.
+    if check_typ == "kauf" and motor_match:
+        for w in motor_match.get("kritische_wartung") or []:
+            bauteil = (w.get("bauteil") or "").strip()
+            if not bauteil:
+                continue
+            quellen = [EvidenceQuelle(typ="motorvarianten", ref=bauteil,
+                                      titel="VIRA-Wartungsdaten (geprüft)")]
+            teile = [(w.get("hinweis") or "").strip()]
+            if w.get("intervall"):
+                teile.append(f"Vorgesehenes Intervall: {str(w['intervall']).strip()}.")
+            insights.append(Insight(
+                id=_id("wartung"),
+                kategorie="wartung",
+                titel=f"{bauteil} — kritischer Wartungspunkt ({motor_match.get('bezeichnung') or 'Motor'})",
+                beschreibung=" ".join(t for t in teile if t).strip(),
+                quellen_typen=_typen(quellen),
+                quellen=quellen,
+                # Provenance: die Daten hängen direkt an der eindeutig erkannten
+                # Motorvariante -> "hoch". Kein Bezug zum Schweregrad (den gibt es
+                # für Wartungspunkte gar nicht).
+                confidence="hoch",
+                einfluss="Vor dem Kauf Durchführung und Nachweis klären.",
+            ))
+
+    # ── 5) Marktvergleich (Marktvergleich 2.0 — deterministisch) ───────────────
     # Quellen bleiben die RECHERCHE-Seiten (typ="web") — eine allgemeine Suchseite
     # wird NICHT als einzelnes Vergleichsfahrzeug ausgegeben. Die eigentliche
     # Vergleichbarkeit/Preisbewertung kommt aus der deterministischen Marktanalyse.
@@ -187,6 +240,7 @@ def build_insights(
     mv = _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, marktpreis_max, check_typ)
     if mv:
         insights.append(mv)
+
 
     return insights
 
@@ -335,6 +389,7 @@ _EVIDENCE_TYP_LABEL = {
     "rueckruf":      "Rückruf (KBA)",
     "motorproblem":  "Motorproblem (DB, geprüft)",
     "marktvergleich": "Marktvergleich (Websuche)",
+    "wartung":       "Kritischer Wartungspunkt (DB, geprüft)",
 }
 
 

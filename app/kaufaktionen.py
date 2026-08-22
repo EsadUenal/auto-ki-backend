@@ -37,20 +37,48 @@ ist — ohne FIN-Prüfung ist das nicht belegbar. Rückrufe erzeugen ausschließ
 FIN-/Nachweis-Aktionen, deren Formulierung der vorhandenen `applicability`-Stufe
 folgt. Die Recall-Pipeline selbst wird nicht angefasst.
 
-Bekannte Grenze (bewusst, dokumentiert): `kritische_wartung` (DB-Tabelle, pro
-Motorvariante) ist echte, fahrzeugspezifische Evidence, wird von `build_insights`
-aber NICHT als Insight ausgegeben — es gibt dafür also keine referenzierbare
-Evidence-ID. Solche Aktionen tragen deshalb `kategorie="wartung"` und eine LEERE
-`evidence_ids`-Liste. Das ist keine erfundene Evidence, sondern eine fehlende
-Verlinkung; erfunden wird nichts. Die saubere Lösung wäre eine eigene
-Insight-Kategorie in `app/evidence.py` — bewusst NICHT Teil von P1-3, weil das
-die global durchnummerierten Insight-IDs verschieben würde.
+ZWEI EBENEN (Ausbau zum Kaufbegleiter)
+
+Jeder der vier Bereiche liefert zwei getrennte Listen:
+
+  fahrzeugspezifisch — alles oben Beschriebene: entsteht ausschließlich aus echter
+                       Evidence zu DIESEM Fahrzeug. Bleibt kurz oder leer, wenn die
+                       Datenlage dünn ist. Hier wird nichts erfunden.
+  basis              — der allgemeine professionelle Prüfstandard aus
+                       app/pruefplan_basis.py. Behauptet NICHTS über dieses Fahrzeug
+                       ("sieh an den typischen Stellen nach Rost", nicht "hier ist
+                       Rost") und trägt deshalb korrekterweise keine evidence_ids.
+
+Beide werden NIE zusammengeworfen (§12): die Trennung ist die eigentliche Aussage,
+und das Frontend soll "Bei diesem Fahrzeug besonders wichtig" vor "Allgemeine
+Checkliste" stellen können. Der Mengenzuwachs kommt deshalb ausdrücklich NICHT aus
+einer angehobenen Obergrenze für fahrzeugspezifische Punkte — die bleibt bei
+`MAX_SPEZIFISCH_PRO_BEREICH` —, sondern aus dem separaten Basis-Katalog.
+
+Deduplizierung über die Ebenen hinweg (§18): deckt ein fahrzeugspezifischer Punkt
+denselben Prüfschritt ab wie ein Basis-Punkt, gewinnt der konkretere und der
+Basis-Punkt entfällt für diesen Check. Das steuert das `deckt`-Feld des Katalogs —
+bewusst sparsam gesetzt, damit keine inhaltlich VERSCHIEDENE Prüfung verschwindet.
+
+Print-/PDF-Bereitschaft: Jeder Bereich wird als eigenständige `Pruefliste` mit
+Bereich, Titelzeile und Fahrzeugbezeichnung ausgegeben — vier unabhängige
+Arbeitsblätter. Es gibt bewusst KEIN Sammel-Exportobjekt und keine kombinierte
+Liste; hier wird auch noch keine PDF erzeugt, nur die Struktur dafür bereitgestellt.
+
+Evidence-Integrity (erledigt): `kritische_wartung` besaß in der ersten P1-3-Fassung
+keine referenzierbare Evidence-ID. `app/evidence.py::build_insights` gibt diese
+Wartungspunkte jetzt als eigene Insight-Kategorie "wartung" aus — angehängt NACH
+dem Marktvergleich, sodass keine einzige bestehende Insight-Nummer verschoben
+wurde. Wartungsaktionen sind damit vollwertig evidenzgebunden.
 """
 
 import logging
 import re
 
-from app.models import Insight, Kaufaktion, Kaufaktionen
+from app.models import Insight, Kaufaktion, Kaufaktionen, Pruefliste
+from app.pruefplan_basis import (
+    BASIS_BESICHTIGUNG, BASIS_PROBEFAHRT, BASIS_VERKAEUFERFRAGEN, BASIS_DOKUMENTE,
+)
 from app.recall_filter import _baujahr_passt
 
 log = logging.getLogger(__name__)
@@ -60,14 +88,34 @@ PROBEFAHRT = "probefahrt"
 VERKAEUFERFRAGEN = "verkaeuferfragen"
 DOKUMENTE = "dokumente"
 
-# §12: Der Nutzer braucht keine 25 Punkte. Obergrenze pro Bereich — aber KEINE
-# Mindestzahl: existiert nur ein belastbarer Punkt, bleibt es bei einem; existiert
-# keiner, bleibt die Liste leer.
-MAX_PRO_BEREICH = 6
+# Obergrenze NUR für die fahrzeugspezifische Ebene — und bewusst NICHT angehoben.
+# Der Umfang des Prüfplans wächst über den separaten Basis-Katalog, nicht dadurch,
+# dass mehr aus derselben dünnen Evidence herausgepresst wird. Es gibt weiterhin
+# KEINE Mindestzahl: existiert nur ein belastbarer Punkt, bleibt es bei einem;
+# existiert keiner, bleibt die Liste leer.
+MAX_SPEZIFISCH_PRO_BEREICH = 6
+
+# Rückwärtskompatibler Alias (die erste P1-3-Fassung kannte nur diesen Namen).
+MAX_PRO_BEREICH = MAX_SPEZIFISCH_PRO_BEREICH
+
+TYP_SPEZIFISCH = "fahrzeugspezifisch"
+TYP_BASIS = "basis"
 
 PRIO_KRITISCH = "kritisch"
 PRIO_HOCH = "hoch"
 PRIO_MITTEL = "mittel"
+# Eigene Stufe statt "mittel": eine allgemeine Basisprüfung ist kein Befund zu
+# diesem Fahrzeug und wird deshalb nie in dieselbe Dringlichkeitsskala einsortiert
+# (§17). Das UI kann KRITISCH / HOCH / MITTEL / BASIS getrennt darstellen.
+PRIO_BASIS = "basis"
+
+# Titelzeile der vier Arbeitsblätter (Print/PDF, §13/§14).
+EXPORT_TITEL = {
+    "besichtigung":     "Besichtigungs-Checkliste",
+    "probefahrt":       "Probefahrt-Checkliste",
+    "verkaeuferfragen": "Fragen an den Verkäufer",
+    "dokumente":        "Dokumenten-Checkliste",
+}
 
 # ── Priorisierung (§11): deterministische Ränge, höher = wichtiger ────────────
 # In Bänder gruppiert wie in app/key_findings.py, damit die Reihenfolge stabil und
@@ -82,6 +130,11 @@ _R_WARTUNG           = 520   # kritische Wartung laut DB (ohne Insight-ID)
 _R_SCHWACH_GERING    = 400   # Schwachstelle mit schweregrad gering
 _R_DOKUMENT_STANDARD = 340   # Scheckheft/Vorbesitzer: wichtig, aber selten K.-o.
 _R_ANGABE_FEHLT      = 300   # gezielte Nachfrage zu einer fehlenden Inseratangabe
+# Basis-Punkte liegen als Band UNTERHALB jeder fahrzeugspezifischen Aktion und
+# behalten innerhalb ihres Katalogs die dort definierte fachliche Reihenfolge
+# (rang = _R_BASIS - Position). Würde man beide Ebenen je zusammenführen, stünde
+# der allgemeine Standard damit automatisch hinter dem Fahrzeugspezifischen.
+_R_BASIS             = 200
 
 # Zuschläge (nie negativ, damit die Bänder ihre Reihenfolge behalten).
 _BONUS_SICHERHEIT = 40       # Bauteil mit unmittelbarer Sicherheitsrelevanz
@@ -92,6 +145,8 @@ _SCHWELLE_HOCH = 560
 
 
 def _prioritaet(rang: int) -> str:
+    if rang <= _R_BASIS:
+        return PRIO_BASIS
     if rang >= _SCHWELLE_KRITISCH:
         return PRIO_KRITISCH
     if rang >= _SCHWELLE_HOCH:
@@ -523,7 +578,8 @@ class _Sammler:
 
     def add(self, bereich: str, schluessel: str, titel: str, aktion: str, rang: int,
             *, evidence_ids: list[str] | None = None, kategorie: str | None = None,
-            schweregrad: str | None = None, kostenhinweis: str | None = None) -> None:
+            schweregrad: str | None = None, kostenhinweis: str | None = None,
+            gruppe: str | None = None) -> None:
         if not aktion:
             return
         vorhanden = self._pro_bereich[bereich].get(schluessel)
@@ -539,17 +595,28 @@ class _Sammler:
             return
         self._pro_bereich[bereich][schluessel] = Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-{schluessel}",
-            bereich=bereich, titel=titel, aktion=aktion,
+            bereich=bereich, typ=TYP_SPEZIFISCH, titel=titel, aktion=aktion,
             prioritaet=_prioritaet(rang), rang=rang,
             evidence_ids=list(evidence_ids or []), kategorie=kategorie,
-            schweregrad=schweregrad, kostenhinweis=kostenhinweis,
+            schweregrad=schweregrad, kostenhinweis=kostenhinweis, gruppe=gruppe,
         )
 
     def liste(self, bereich: str) -> list[Kaufaktion]:
         """Höchste Relevanz zuerst; bei Ranggleichheit stabil nach ID (§12)."""
         aktionen = sorted(self._pro_bereich[bereich].values(),
                           key=lambda a: (-a.rang, a.id))
-        return aktionen[:MAX_PRO_BEREICH]
+        return aktionen[:MAX_SPEZIFISCH_PRO_BEREICH]
+
+    def schluessel(self, bereich: str) -> set[str]:
+        """Themen-/Bauteilschlüssel, die in diesem Bereich fahrzeugspezifisch belegt
+        sind — Grundlage für die Basis-Dedup (§18).
+
+        Bewusst die Schlüssel der AUSGEGEBENEN Aktionen, nicht aller gesammelten:
+        ein Punkt, der durch `MAX_SPEZIFISCH_PRO_BEREICH` herausfällt, darf den
+        allgemeinen Basis-Punkt nicht mitreißen — sonst verschwände die Prüfung
+        vollständig aus der Checkliste.
+        """
+        return {a.id.split("-", 1)[1] for a in self.liste(bereich)}
 
 
 _ID_PREFIX = {
@@ -562,16 +629,73 @@ _ID_PREFIX = {
 
 # ── Öffentliche API ──────────────────────────────────────────────────────────
 
+def _fahrzeug_kurzbezeichnung(req, baureihe: dict | None) -> str | None:
+    """Kopfzeile für den Ausdruck, z.B. "BMW 3er G20 (2020)".
+
+    Bevorzugt die erkannte Baureihe (sauber normalisiert), sonst die Angaben aus dem
+    Inserat. Ist beides leer, bleibt das Feld None statt einer Platzhalterzeile.
+    """
+    if baureihe:
+        teile = [baureihe.get("marke"), baureihe.get("modell"), baureihe.get("generation")]
+    else:
+        teile = [getattr(req, "marke", None), getattr(req, "modell", None)]
+    name = " ".join(str(t).strip() for t in teile if t and str(t).strip())
+    baujahr = getattr(req, "baujahr", None)
+    if name and baujahr:
+        return f"{name} ({baujahr})"
+    return name or None
+
+
+def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
+                 fahrzeug: str | None) -> list[Kaufaktion]:
+    """Baut die Basis-Checkliste eines Bereichs aus dem Katalog.
+
+    Dedup über die Ebenen hinweg (§18): Ein Basis-Punkt entfällt, wenn ein
+    fahrzeugspezifischer Punkt DESSELBEN Bereichs bereits einen der in `deckt`
+    genannten Schlüssel belegt — dann steht die konkretere Formulierung ohnehin
+    weiter oben. Ein `deckt`-Eintrag mit Sternchen wirkt als Präfix ("rueckruf-*"
+    trifft "rueckruf-009695"). `deckt` ist im Katalog bewusst sparsam gesetzt:
+    inhaltlich VERSCHIEDENE Prüfungen sollen nie gegenseitig verschwinden.
+
+    Reihenfolge: exakt die fachliche Katalogreihenfolge (Ablauf vor Ort bzw. während
+    der Fahrt), abgebildet über einen absteigenden Rang — deterministisch und ohne
+    Umsortierung nach Priorität, denn alle Basis-Punkte sind gleichrangig.
+    """
+    out: list[Kaufaktion] = []
+    for n, (schluessel, gruppe, titel, aktion, hinweis, deckt) in enumerate(katalog):
+        if _wird_abgedeckt(deckt, belegte_schluessel):
+            continue
+        rang = _R_BASIS - n
+        out.append(Kaufaktion(
+            id=f"{_ID_PREFIX[bereich]}-basis-{schluessel}",
+            bereich=bereich, typ=TYP_BASIS, titel=titel, aktion=aktion,
+            prioritaet=PRIO_BASIS, rang=rang, evidence_ids=[],
+            kategorie="basis", gruppe=gruppe, hinweis=hinweis,
+        ))
+    return out
+
+
+def _wird_abgedeckt(deckt: tuple[str, ...], belegte_schluessel: set[str]) -> bool:
+    for eintrag in deckt or ():
+        if eintrag.endswith("*"):
+            praefix = eintrag[:-1]
+            if any(k.startswith(praefix) for k in belegte_schluessel):
+                return True
+        elif eintrag in belegte_schluessel:
+            return True
+    return False
+
+
 def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
                        insights: list[Insight]) -> Kaufaktionen:
-    """Baut die vier Aktionslisten aus Insights + Inserat-Angaben.
+    """Baut die vier Prüflisten aus Insights + Inserat-Angaben + Basis-Katalog.
 
-    Bewusst OHNE Marktanalyse-/Preisparameter (§15): dieses Modul kann strukturell
+    Bewusst OHNE Marktanalyse-/Preisparameter (§20): dieses Modul kann strukturell
     keine Preisaussage erzeugen. `research_status="completed_no_market"` liefert
-    damit exakt dieselben technischen Aktionen wie ein Check mit Marktpreis.
+    damit exakt dieselben Checklisten wie ein Check mit Marktpreis.
 
-    Es werden KEINE neuen DB-Abfragen ausgeführt (§18) — `baureihe`, `motor_match`
-    und `insights` sind die bereits aufbereiteten Daten des laufenden Checks.
+    Es werden KEINE neuen DB-Abfragen ausgeführt — `baureihe`, `motor_match` und
+    `insights` sind die bereits aufbereiteten Daten des laufenden Checks.
     """
     s = _Sammler()
     baujahr = getattr(req, "baujahr", None)
@@ -579,14 +703,31 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     _aus_schwachstellen(s, insights)
     _aus_motorproblemen(s, insights, motor_match, baujahr)
     _aus_rueckrufen(s, insights)
-    _aus_wartung(s, motor_match)
+    _aus_wartung(s, insights)
     _aus_inserat(s, req)
 
+    fahrzeug = _fahrzeug_kurzbezeichnung(req, baureihe)
+    kataloge = {
+        BESICHTIGUNG:     BASIS_BESICHTIGUNG,
+        PROBEFAHRT:       BASIS_PROBEFAHRT,
+        VERKAEUFERFRAGEN: BASIS_VERKAEUFERFRAGEN,
+        DOKUMENTE:        BASIS_DOKUMENTE,
+    }
+    listen = {}
+    for bereich, katalog in kataloge.items():
+        spezifisch = s.liste(bereich)
+        listen[bereich] = Pruefliste(
+            bereich=bereich,
+            export_title=EXPORT_TITEL[bereich],
+            fahrzeug=fahrzeug,
+            fahrzeugspezifisch=spezifisch,
+            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug),
+        )
     return Kaufaktionen(
-        besichtigung=s.liste(BESICHTIGUNG),
-        probefahrt=s.liste(PROBEFAHRT),
-        verkaeuferfragen=s.liste(VERKAEUFERFRAGEN),
-        dokumente=s.liste(DOKUMENTE),
+        besichtigung=listen[BESICHTIGUNG],
+        probefahrt=listen[PROBEFAHRT],
+        verkaeuferfragen=listen[VERKAEUFERFRAGEN],
+        dokumente=listen[DOKUMENTE],
     )
 
 
@@ -627,19 +768,22 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
             f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
         )
         s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
-              evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad)
+              evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
+              gruppe="Bekannte Schwachstelle")
 
         # Probefahrt NUR über eines der beiden Tore (§6).
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
-                  evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad)
+                  evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
+              gruppe="Bekannte Schwachstelle")
 
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
               "Bekannte Schwachstelle dieser Baureihe — nach durchgeführten Reparaturen fragen "
               "und Rechnungen bzw. Werkstattbelege zeigen lassen.",
-              rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad)
+              rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
+              gruppe="Bekannte Schwachstelle")
 
         # Dokumentenebene nur bei wirklich teuren/schweren Punkten — sonst würde die
         # Dokumentenliste mit jeder Kleinigkeit volllaufen.
@@ -647,7 +791,8 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
             s.add(DOKUMENTE, schluessel, f"Reparaturnachweis {bauteil}",
                   f"Falls am Bauteil „{bauteil}“ gearbeitet wurde: Rechnung oder Werkstattbeleg "
                   f"mit Datum und Kilometerstand vorlegen lassen.",
-                  rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad)
+                  rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
+              gruppe="Bekannte Schwachstelle")
 
 
 # ── 2) Motorprobleme ─────────────────────────────────────────────────────────
@@ -672,24 +817,28 @@ def _aus_motorproblemen(s: _Sammler, insights: list[Insight], motor_match: dict 
             f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
         )
         s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
-              evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten)
+              evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
+              gruppe="Bekanntes Motorproblem")
 
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
-                  evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten)
+                  evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
+              gruppe="Bekanntes Motorproblem")
 
         kosten_satz = f" Bekannte Reparaturkosten laut Datenlage: {kosten}." if kosten else ""
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"Wurde „{bauteil}“ bei diesem Motor bereits repariert oder ersetzt?",
               f"Bekanntes Problem dieser Motorisierung — nach Reparatur, Datum, Kilometerstand "
               f"und Rechnung fragen.{kosten_satz}",
-              rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten)
+              rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
+              gruppe="Bekanntes Motorproblem")
 
         s.add(DOKUMENTE, schluessel, f"Reparaturnachweis {bauteil}",
               f"Falls „{bauteil}“ bereits bearbeitet wurde: Rechnung oder Werkstattbeleg mit "
               f"Datum und Kilometerstand vorlegen lassen.",
-              rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten)
+              rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
+              gruppe="Bekanntes Motorproblem")
 
 
 # ── 3) Rückrufe (§10 — konservativ, nie "dein Auto ist betroffen") ───────────
@@ -728,48 +877,69 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
                             "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
                             "Hersteller oder KBA klären.")
         s.add(VERKAEUFERFRAGEN, schluessel, frage, frage_aktion, rang,
-              evidence_ids=[i.id], kategorie="rueckruf")
+              evidence_ids=[i.id], kategorie="rueckruf",
+              gruppe="Rückrufaktion")
 
         s.add(DOKUMENTE, schluessel, f"Rückrufaktion: {mangel}",
               f"FIN beim Hersteller oder KBA auf offene Rückrufaktionen prüfen{kba_zusatz} und "
               f"— falls bereits erledigt — den Durchführungsnachweis der Werkstatt vorlegen lassen.",
-              rang, evidence_ids=[i.id], kategorie="rueckruf")
+              rang, evidence_ids=[i.id], kategorie="rueckruf",
+              gruppe="Rückrufaktion")
 
 
 # ── 4) Kritische Wartung (DB, ohne Insight-ID — siehe Modulkopf) ─────────────
 
-def _aus_wartung(s: _Sammler, motor_match: dict | None) -> None:
+# Aus dem Insight-Titel "<Bauteil> — kritischer Wartungspunkt (<Motor>)" das Bauteil
+# zurückgewinnen (build_insights baut ihn genau so auf).
+_WARTUNG_TITEL = re.compile(r"^(?P<bauteil>.+?)\s+—\s+kritischer Wartungspunkt")
+
+
+def _bauteil_aus_wartung(i: Insight) -> str:
+    """Bauteil eines Wartungs-Insights. `quellen[0].ref` trägt es direkt (von
+    build_insights gesetzt); der Titel ist nur die Rückfallebene."""
+    for q in i.quellen:
+        if q.typ == "motorvarianten" and q.ref:
+            return q.ref.strip()
+    m = _WARTUNG_TITEL.match(i.titel)
+    return (m.group("bauteil").strip() if m else i.titel.strip()) or "Wartungspunkt"
+
+
+def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
     """Kritische Wartungspunkte der erkannten Motorvariante -> Frage + Dokument.
 
-    Nur bei EINDEUTIG erkannter Motorvariante, weil `kritische_wartung` pro Variante
-    hinterlegt ist. `evidence_ids` bleibt leer: die Daten sind echt und
-    fahrzeugspezifisch, `build_insights` gibt sie aber (noch) nicht als Insight aus
-    — es wird deshalb bewusst KEINE ID erfunden (Modulkopf, "Bekannte Grenze").
+    Evidence-Integrity (behoben): Diese Aktionen lesen jetzt die Insight-Kategorie
+    "wartung" statt der Rohdaten und tragen damit eine VALIDE Evidence-ID. Zuvor
+    blieb `evidence_ids` hier leer, weil `build_insights` diese DB-Tabelle nicht
+    ausgab — genau der offene Punkt aus der ersten P1-3-Fassung.
 
-    Es entsteht bewusst KEINE Besichtigungsaktion: ein Wartungsintervall ist vor Ort
-    nicht prüfbar, sondern nur über Nachweise.
+    Die Applicability kommt weiterhin ausschließlich über die Motorvariante:
+    `build_insights` erzeugt diese Insights nur bei EINDEUTIG erkanntem Motor
+    (`kritische_wartung` hängt an `variante_id` und hat keine Baujahres-Spalte). Es
+    gibt hier also nach wie vor keine eigene Baujahreslogik.
+
+    Bewusst KEINE Besichtigungsaktion: ein Wartungsintervall ist vor Ort nicht
+    prüfbar, sondern nur über Nachweise.
     """
-    if not motor_match:
-        return
-    for w in motor_match.get("kritische_wartung") or []:
-        bauteil = (w.get("bauteil") or "").strip()
-        if not bauteil:
+    for i in insights:
+        if i.kategorie != "wartung":
             continue
+        bauteil = _bauteil_aus_wartung(i)
         komp = _komponente(bauteil)
         schluessel = f"wartung-{komp['schluessel'] if komp else _slug(bauteil)}"
-        intervall = (w.get("intervall") or "").strip()
-        intervall_satz = f" Vorgesehenes Intervall laut Datenlage: {intervall}." if intervall else ""
+        intervall_satz = f" {i.beschreibung}" if i.beschreibung else ""
 
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"Wann wurde „{bauteil}“ zuletzt gemacht — bei welchem Kilometerstand?",
               f"Wartungspunkt mit erhöhter Bedeutung für diese Motorisierung.{intervall_satz} "
               f"Nach Datum, Kilometerstand und Beleg fragen.",
-              _R_WARTUNG, kategorie="wartung")
+              _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
+              gruppe="Wartung und Technik")
 
         s.add(DOKUMENTE, schluessel, f"Wartungsnachweis {bauteil}",
-              f"Beleg über die letzte Durchführung von „{bauteil}“ zeigen lassen "
-              f"(Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand).",
-              _R_WARTUNG, kategorie="wartung")
+              f"Beleg über die letzte Durchführung von „{bauteil}“ zeigen lassen — "
+              f"Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand.",
+              _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
+              gruppe="Prüfungen und Wartung")
 
 
 # ── 5) Inserat-Angaben (§8 — nur was der Nutzer tatsächlich angegeben hat) ───
@@ -788,58 +958,58 @@ def _aus_inserat(s: _Sammler, req) -> None:
               "Das Inserat gibt das Fahrzeug als scheckheftgepflegt an — Serviceheft bzw. "
               "digitale Servicehistorie durchsehen und auf durchgehende Einträge mit Stempel, "
               "Datum und Kilometerstand achten.",
-              _R_DOKUMENT_STANDARD, kategorie="inserat")
+              _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     elif scheckheft is False:
         s.add(DOKUMENTE, "scheckheft", "Einzelnachweise zur Wartung verlangen",
               "Das Inserat gibt das Fahrzeug als nicht scheckheftgepflegt an — nach einzelnen "
               "Werkstattrechnungen fragen, um die Wartungshistorie trotzdem nachvollziehen zu können.",
-              _R_DOKUMENT_STANDARD + 20, kategorie="inserat")
+              _R_DOKUMENT_STANDARD + 20, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(VERKAEUFERFRAGEN, "scheckheft",
               "Gibt es ein durchgehend geführtes Scheckheft oder eine digitale Servicehistorie?",
               "Die Wartungshistorie geht aus dem Inserat nicht hervor — vor der Besichtigung "
               "klären und die Nachweise vor Ort zeigen lassen.",
-              _R_ANGABE_FEHLT, kategorie="inserat")
+              _R_ANGABE_FEHLT, kategorie="inserat", gruppe="Angaben aus dem Inserat")
 
     tuev = (getattr(req, "tuev_bis", None) or "").strip()
     if tuev:
         s.add(DOKUMENTE, "hu-bericht", f"HU-Bericht zum angegebenen Termin ({tuev}) ansehen",
               "Den letzten Prüfbericht der Hauptuntersuchung zeigen lassen — die dort vermerkten "
               "Mängel und der Kilometerstand zeigen, was zuletzt beanstandet wurde.",
-              _R_DOKUMENT_KERN, kategorie="inserat")
+              _R_DOKUMENT_KERN, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(VERKAEUFERFRAGEN, "hu-bericht",
               "Bis wann läuft die HU, und liegt der letzte Prüfbericht vor?",
               "Das Inserat nennt kein HU-Datum — Termin und Prüfbericht erfragen, denn eine "
               "fällige Hauptuntersuchung kann kurzfristig Kosten verursachen.",
-              _R_ANGABE_FEHLT + 20, kategorie="inserat")
+              _R_ANGABE_FEHLT + 20, kategorie="inserat", gruppe="Angaben aus dem Inserat")
 
     unfall = (getattr(req, "unfallfrei", None) or "").strip().lower()
     if unfall in ("nein", "false", "unfallschaden", "unfall"):
         s.add(DOKUMENTE, "unfall", "Unfallreparatur dokumentieren lassen",
               "Das Inserat weist das Fahrzeug als nicht unfallfrei aus — Reparaturrechnungen, "
               "Schadensumfang und, falls vorhanden, ein Gutachten zeigen lassen.",
-              _R_DOKUMENT_KERN + 40, kategorie="inserat")
+              _R_DOKUMENT_KERN + 40, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     elif unfall in ("ja", "true"):
         s.add(DOKUMENTE, "unfall", "Unfallfreiheit schriftlich festhalten",
               "Das Inserat gibt das Fahrzeug als unfallfrei an — diese Zusicherung in den "
               "Kaufvertrag aufnehmen statt sie nur mündlich zu vereinbaren.",
-              _R_DOKUMENT_STANDARD, kategorie="inserat")
+              _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(VERKAEUFERFRAGEN, "unfall",
               "Ist das Fahrzeug unfallfrei, und gab es lackierte oder ersetzte Teile?",
               "Das Inserat macht dazu keine eindeutige Angabe — vor der Besichtigung klären "
               "und die Antwort später im Kaufvertrag festhalten.",
-              _R_ANGABE_FEHLT + 10, kategorie="inserat")
+              _R_ANGABE_FEHLT + 10, kategorie="inserat", gruppe="Angaben aus dem Inserat")
 
     if getattr(req, "vorbesitzer", None) is None:
         s.add(VERKAEUFERFRAGEN, "vorbesitzer",
               "Wie viele Vorbesitzer hat das Fahrzeug, und wer ist im Fahrzeugbrief eingetragen?",
               "Die Zahl der Vorbesitzer fehlt im Inserat — vor Ort mit Teil II der "
               "Zulassungsbescheinigung (Fahrzeugbrief) abgleichen.",
-              _R_ANGABE_FEHLT, kategorie="inserat")
+              _R_ANGABE_FEHLT, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(DOKUMENTE, "vorbesitzer", "Zulassungsbescheinigung mit der Inseratangabe abgleichen",
               f"Das Inserat nennt {req.vorbesitzer} Vorbesitzer — mit Teil II der "
               f"Zulassungsbescheinigung abgleichen und prüfen, ob der Verkäufer dort eingetragen ist.",
-              _R_DOKUMENT_STANDARD, kategorie="inserat")
+              _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
