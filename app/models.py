@@ -365,6 +365,52 @@ class KeyFinding(BaseModel):
     prioritaet: int = 0                # Sortierwert (höher = wichtiger); Cap 5 nach Sortierung
 
 
+class Kaufaktion(BaseModel):
+    """P1-3 — EINE konkrete, deterministisch abgeleitete Handlung vor dem Kauf.
+
+    Eine Kaufaktion erzeugt KEINE neue Wahrheit. Sie übersetzt bereits vorhandene,
+    geprüfte Evidence (Baureihen-Schwachstelle, Motorproblem, KBA-Rückruf) bzw. eine
+    Angabe aus dem Inserat in einen Prüfschritt. KEIN LLM ist beteiligt — weder als
+    Generator noch als Quelle (der Markdown-Bericht wird NICHT ausgewertet).
+
+    Grundsätze:
+    - Fahrzeugspezifisch vor generisch: eine Aktion existiert nur, weil für DIESES
+      Fahrzeug eine passende Evidence/Angabe vorliegt — nie, weil etwas "bei
+      Gebrauchtwagen generell sinnvoll" ist.
+    - `evidence_ids` referenzieren ausschließlich EXISTIERENDE Insight-IDs. Leer ist
+      erlaubt und ehrlich (Inserat-/Wartungsangaben haben keine Insight-ID) —
+      erfundene IDs gibt es nicht.
+    - Vollständig marktpreis-unabhängig: keine Preisaktion, keine Nachverhandlungs-
+      Aktion, keine "günstig/teuer"-Aussage (§15 P1-3).
+    """
+    id: str                            # stabil & inhaltsbasiert, z.B. "besichtigung-bremse"
+    bereich: str                       # "besichtigung" | "probefahrt" | "verkaeuferfragen" | "dokumente"
+    # Kurze Überschrift; bei bereich="verkaeuferfragen" die KONKRETE Frage.
+    titel: str
+    aktion: str                        # konkrete, ausführbare Beschreibung
+    prioritaet: str                    # "kritisch" | "hoch" | "mittel"
+    # Nur EXISTIERENDE Insight-IDs (siehe `insights`).
+    evidence_ids: list[str] = Field(default_factory=list)
+    # Herkunft: "schwachstelle" | "motorproblem" | "rueckruf" | "wartung" | "inserat"
+    kategorie: str | None = None
+    schweregrad: str | None = None     # nur wo aus der DB vorhanden (Baureihen-Schwachstelle)
+    kostenhinweis: str | None = None   # nur wo `kosten_ca` einen echten Betrag enthält
+    rang: int = 0                      # deterministischer Sortierwert (höher = wichtiger)
+
+
+class Kaufaktionen(BaseModel):
+    """P1-3 — die vier Handlungsbereiche des Kaufchecks.
+
+    Additiv: alte gespeicherte Checks ohne dieses Feld bleiben gültig (alle vier
+    Listen sind dann leer). Leere Listen sind ein zulässiges, ehrliches Ergebnis —
+    ohne belastbare Evidence wird NICHTS erfunden.
+    """
+    besichtigung: list[Kaufaktion] = Field(default_factory=list)
+    probefahrt: list[Kaufaktion] = Field(default_factory=list)
+    verkaeuferfragen: list[Kaufaktion] = Field(default_factory=list)
+    dokumente: list[Kaufaktion] = Field(default_factory=list)
+
+
 # ---------- Kauf-Check ----------
 
 class KaufCheckResponse(BaseModel):
@@ -404,6 +450,10 @@ class KaufCheckResponse(BaseModel):
     #                            "unbekannt", price_assessment.verdict =
     #                            "unbekannt". Das ist KEIN Fehler und löst KEINE
     #                            Kontingent-Rückerstattung aus.
+    # P1-3: deterministische Kaufaktionen (Besichtigung/Probefahrt/Verkäuferfragen/
+    # Dokumente), abgeleitet aus denselben Insights/Inserat-Daten wie key_findings.
+    # Additiv -> alte Checks ohne dieses Feld laden weiter (Default: vier leere Listen).
+    kaufaktionen: Kaufaktionen = Field(default_factory=Kaufaktionen)
     # "research_failed" wird vom Kaufcheck NICHT mehr ausgeliefert (der
     # Verkaufscheck nutzt es weiterhin — dort IST der Marktpreis das Produkt).
     # Default für Alt-Checks: completed_high.

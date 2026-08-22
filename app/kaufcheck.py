@@ -47,6 +47,7 @@ from app.preisurteil import (
     bewerte_preis, preis_bewertung_aus_verdict, no_market_prompt_block,
     prompt_block as preis_prompt_block,
 )
+from app.kaufaktionen import build_kaufaktionen
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
@@ -440,6 +441,18 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Inserat-Widersprüche) — kein weiteres LLM, referenziert nur echte Insight-IDs.
     key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights, price_assessment)
 
+    # P1-3: deterministische Kaufaktionen (Besichtigung / Probefahrt / Verkaeufer-
+    # fragen / Dokumente) aus DENSELBEN bereits aufbereiteten Daten — keine neuen
+    # DB-Lookups, kein zweiter Gemini-Call, der Berichtstext ist ausdruecklich KEINE
+    # Quelle (§18/§4).
+    #
+    # Bewusst OHNE Markt-/Preisparameter (§15): `build_kaufaktionen` bekommt weder
+    # `marktanalyse` noch `price_assessment` noch `req.preis_eur` als Preissignal —
+    # eine Preis- oder Nachverhandlungsaktion ist damit strukturell nicht
+    # konstruierbar. PFAD B (`completed_no_market`) liefert deshalb exakt dieselben
+    # technischen Aktionen wie PFAD A.
+    kaufaktionen = build_kaufaktionen(req, baureihe, motor_match, insights)
+
     return {
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
@@ -458,4 +471,5 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "preis_evidence_ids":      preis_evidence_ids,
         "risiko_evidence_ids":     risiko_evidence_ids,
         "key_findings":            key_findings,
+        "kaufaktionen":            kaufaktionen,
     }
