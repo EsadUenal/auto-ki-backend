@@ -281,7 +281,8 @@ def find_motor(baureihe: dict, hint: str | None) -> dict | None:
 
 # ---------- DB-Kontext ----------
 
-def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: int | None = None) -> str:
+def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: int | None = None,
+                     fahrzeugkontext=None) -> str:
     """Baut den strukturierten DB-Kontext-String (Specs, Schwachstellen, Rückrufe).
 
     §Phase 7 (Reliability-Sprint 4): Rückrufe laufen NICHT mehr ungefiltert aus der
@@ -305,7 +306,18 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
     wie evidence.py: nur ein eindeutiges `False` (nachweislich nicht zutreffend)
     schließt aus. `True` (eindeutig zutreffend), "Alle Baujahre" UND eine
     unklare/fehlende Angabe (beides `None`) bleiben — bewusst konservativ, keine
-    strengere oder lockerere Regel als die bestehende."""
+    strengere oder lockerere Regel als die bestehende.
+
+    KaufCheck-P1-4 — `fahrzeugkontext` (optional, Vorgabe None): ein
+    `Fahrzeugkontext`-Objekt (app/fahrzeugkontext.py) mit Segment, Generations-/
+    Facelift-Merkmalen, Vorgänger und Wartungsintervallen. Der Audit hat gezeigt,
+    dass diese seit jeher gepflegten DB-Felder den LLM-Kontext bislang GAR NICHT
+    erreichten.
+
+    Der Parameter ist bewusst OPT-IN und nicht automatisch aus `baureihe`
+    abgeleitet: diese Funktion wird von Kauf- UND Verkaufscheck geteilt. Nur der
+    Kaufcheck übergibt den Kontext; der Verkaufscheck-Prompt bleibt dadurch
+    unverändert (dort ist der Marktwert das Produkt, nicht die Fahrzeugkunde)."""
     if baureihe is None:
         return "Kein geprüftes DB-Profil für dieses Fahrzeug vorhanden."
 
@@ -317,6 +329,15 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
         f"ADAC-Pannenkennziffer: {baureihe.get('adac_pannenkennziffer') or 'nicht erfasst'}",
         "",
     ]
+
+    # P1-4: ergänzender Fahrzeugkontext, klar als NICHT-Evidence gekennzeichnet.
+    # `prompt_block` liefert einen Leerstring, wenn nichts vorliegt — es entstehen
+    # also keine leeren Abschnitte und keine "nicht erfasst"-Zeilen.
+    if fahrzeugkontext is not None:
+        from app.fahrzeugkontext import prompt_block as _fk_block
+        _block = _fk_block(fahrzeugkontext)
+        if _block:
+            lines += [_block, ""]
 
     if baureihe.get("ausstattungslinien"):
         lines.append("Ausstattungslinien:")

@@ -35,6 +35,7 @@ import logging
 from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
+from app.fahrzeugkontext import build_fahrzeugkontext
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
@@ -232,7 +233,23 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     motor_match = find_motor(baureihe, req.motor) if baureihe else None
 
     # 2. DB-Kontext
-    db_ctx = build_db_context(baureihe, motor_match, req.baujahr)
+    #
+    # P1-4: Der Fahrzeugkontext (Segment, Generations-/Facelift-Merkmale, Vorgänger,
+    # Wartungsintervalle) stammt aus Feldern, die der Kaufcheck bislang gar nicht
+    # gelesen hat. Er wird aus dem BEREITS geladenen `baureihe`-Dict gebaut — kein
+    # zusätzlicher DB-Zugriff — und dem LLM als ausdrücklich ERGÄNZENDER Kontext
+    # mitgegeben, nicht als Evidence.
+    #
+    # Ausdrücklich NICHT enthalten: `kaufberatung`. Das Feld ist nur bei 22 % der
+    # Baureihen befüllt und werblich formuliert ("exzellente Kombination aus
+    # sportlicher Fahrdynamik") — genau die Marketingsprache, die `_SYSTEM` oben
+    # verbietet. Es würde den Bericht zuverlässig verschlechtern.
+    #
+    # Der Kontext hängt an KEINER Marktinformation: bei `completed_no_market`
+    # entsteht exakt derselbe Block wie bei vorhandenem Marktpreis.
+    fahrzeugkontext = build_fahrzeugkontext(baureihe)
+    db_ctx = build_db_context(baureihe, motor_match, req.baujahr,
+                              fahrzeugkontext=fahrzeugkontext)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
@@ -472,4 +489,5 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "risiko_evidence_ids":     risiko_evidence_ids,
         "key_findings":            key_findings,
         "kaufaktionen":            kaufaktionen,
+        "fahrzeugkontext":         fahrzeugkontext,
     }

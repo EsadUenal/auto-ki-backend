@@ -468,6 +468,57 @@ class Kaufaktionen(BaseModel):
                                            export_title="Dokumenten-Checkliste"))
 
 
+class Fahrzeugkontext(BaseModel):
+    """P1-4 — ergänzender Fahrzeugkontext aus der VIRA-Fahrzeugdatenbank.
+
+    Zweck: Felder nutzbar machen, die im Datenbestand seit jeher gepflegt werden,
+    den Kaufcheck aber bislang gar nicht erreicht haben.
+
+    ABGRENZUNG ZU EVIDENCE (der wichtigste Punkt): Dies ist ausdrücklich KEINE
+    Evidence. Ein Insight (siehe `insights`) ist eine geprüfte Aussage ÜBER DIESES
+    FAHRZEUG mit Herkunft und Confidence — eine Schwachstelle, ein KBA-Rückruf, ein
+    Wartungspunkt. Der Fahrzeugkontext hier beschreibt dagegen die BAUREIHE
+    allgemein: wie man die Generation erkennt, in welchem Segment sie liegt, welches
+    Ölwechsel-Intervall der Hersteller vorsieht. Er begründet keine Aussage über den
+    Zustand des Fahrzeugs und taucht deshalb bewusst nicht in `insights` auf und wird
+    von keiner Kaufaktion referenziert.
+
+    Vertrauensstufen der Felder (siehe app/fahrzeugkontext.py):
+      strukturiert  — `segment`, `wartung_oel_km`
+      Freitext      — `erkennung_generation`, `facelift_merkmale`,
+                      `wartung_hu_intervall`, `vorgaenger`
+
+    BEWUSST NICHT ENTHALTEN: `kaufberatung`. Das Feld ist nur bei 22 % der Baureihen
+    befüllt und werblich formuliert — es wird weder hier ausgegeben noch in den
+    Prompt kopiert.
+
+    Alle Felder sind optional und werden nur gesetzt, wenn ein echter Wert vorliegt.
+    Es gibt keine Platzhalter und keine "nicht erfasst"-Werte.
+
+    Enthält KEINE berechnete Wartungsfälligkeit (P2-5): `wartung_oel_km` ist das
+    Herstellerintervall, nicht die Aussage, dass ein Service ansteht.
+    """
+    baureihe_id: str | None = None
+    generation: str | None = None            # z.B. "G20/G21"
+    segment: str | None = None               # z.B. "Mittelklasse" (strukturiert)
+    vorgaenger: str | None = None            # aufgelöster Klarname, z.B. "Opel Insignia A"
+    erkennung_generation: str | None = None  # Freitext, gekürzt
+    facelift_merkmale: str | None = None     # Freitext, gekürzt
+    wartung_oel_km: int | None = None        # Herstellerintervall in km (strukturiert)
+    wartung_hu_intervall: str | None = None  # Freitext, zeitbezogen — NIE gegen km rechnen
+
+    def hat_inhalt(self) -> bool:
+        """True, sobald mindestens ein inhaltliches Feld belegt ist.
+
+        `baureihe_id` und `generation` zählen bewusst NICHT mit: beide stehen bereits
+        an anderer Stelle in der Antwort (`baureihe_erkannt`) und wären allein kein
+        Grund, dem Frontend einen ansonsten leeren Kontextblock zu schicken.
+        """
+        return any((self.segment, self.vorgaenger, self.erkennung_generation,
+                    self.facelift_merkmale, self.wartung_oel_km,
+                    self.wartung_hu_intervall))
+
+
 # ---------- Kauf-Check ----------
 
 class KaufCheckResponse(BaseModel):
@@ -507,6 +558,11 @@ class KaufCheckResponse(BaseModel):
     #                            "unbekannt", price_assessment.verdict =
     #                            "unbekannt". Das ist KEIN Fehler und löst KEINE
     #                            Kontingent-Rückerstattung aus.
+    # P1-4: ergänzender Fahrzeugkontext aus der Fahrzeugdatenbank (Segment,
+    # Generations-/Facelift-Merkmale, Vorgänger, Wartungsintervalle). Additiv und
+    # optional -> alte Checks ohne dieses Feld laden weiter (Default: None).
+    # Ausdrücklich KEINE Evidence und keine Wartungsfälligkeit — siehe Fahrzeugkontext.
+    fahrzeugkontext: Fahrzeugkontext | None = None
     # P1-3: deterministische Kaufaktionen (Besichtigung/Probefahrt/Verkäuferfragen/
     # Dokumente), abgeleitet aus denselben Insights/Inserat-Daten wie key_findings.
     # Additiv -> alte Checks ohne dieses Feld laden weiter (Default: vier leere Listen).
