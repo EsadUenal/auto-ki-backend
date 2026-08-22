@@ -392,10 +392,21 @@ class KaufCheckResponse(BaseModel):
     # Reliability-Sprint: kanonisches, deterministisches Preisurteil (§6/§7/§13).
     # Alle Preis-Ausgaben leiten sich hieraus ab. None nur bei Alt-Checks.
     price_assessment: PriceAssessment | None = None
-    # Reliability-Sprint: Ergebnis der Quality-Gate-Pipeline (§1/§14).
-    # "completed_high" (Normalfall) | "completed_medium" (selten) — ein
-    # "research_failed" wird NICHT als fertiger Check ausgeliefert (Kontingent
-    # erstattet). Default für Alt-Checks: completed_high.
+    # Ergebnis des KAUFCHECKS (nicht der Marktrecherche — die bewertet
+    # app/marktrecherche.research_status separat und unverändert weiter):
+    #   "completed_high"       — Normalfall, belastbarer Marktvergleich
+    #   "completed_medium"     — belastbar, aber eingeschränkte Marktabdeckung
+    #   "completed_no_market"  — P0-1: Check fachlich VOLLSTÄNDIG abgeschlossen
+    #                            (Fahrzeug, Schwachstellen, Rückrufe, Insights,
+    #                            Empfehlung), aber KEIN belastbarer Marktpreis.
+    #                            Preisfelder sind dann zwingend leer:
+    #                            marktpreis_min/max = None, preis_bewertung =
+    #                            "unbekannt", price_assessment.verdict =
+    #                            "unbekannt". Das ist KEIN Fehler und löst KEINE
+    #                            Kontingent-Rückerstattung aus.
+    # "research_failed" wird vom Kaufcheck NICHT mehr ausgeliefert (der
+    # Verkaufscheck nutzt es weiterhin — dort IST der Marktpreis das Produkt).
+    # Default für Alt-Checks: completed_high.
     research_status: str = "completed_high"
 
 

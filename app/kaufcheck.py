@@ -6,8 +6,27 @@ Kauf-Check: Inserat-Analyse mit DB-Abgleich und Marktpreisbewertung.
 Ablauf:
   1. Baureihe + Motorvariante in SQLite erkennen
   2. DB-Kontext aufbauen (Schwachstellen, Rückrufe, Motorspecs)
-  3. Marktpreis per Tavily ermitteln
+  3. Marktpreis per Tavily ermitteln — OPTIONALES ZUSATZMODUL (siehe unten)
   4. Gemini (JSON-Modus) liefert strukturierten Bericht
+
+Marktpreis-Entkopplung (P0-1): Der Kaufcheck hat zwei gleichwertige Pfade.
+
+  PFAD A — belastbare Marktdaten vorhanden
+      research_status = completed_high | completed_medium
+      Median, kanonisches Preisurteil, Preis-Finding, verbindlicher Preis-Block
+      im Prompt. Verhalten unverändert.
+
+  PFAD B — kein belastbarer Marktvergleich
+      research_status = completed_no_market
+      Die technische Kaufanalyse läuft VOLLSTÄNDIG durch (Baureihe, Motor,
+      Schwachstellen, Rückrufe, Insights, Key-Findings, Empfehlung, Bericht) —
+      es entsteht nur KEINE Preisaussage. `completed_no_market` bedeutet
+      ausdrücklich "Check erfolgreich, Marktpreis nicht verfügbar", NICHT
+      "Analysefehler": es gibt keine Kontingent-Rückerstattung.
+
+Die Marktanalyse selbst (marktvergleich/marktrecherche/preisurteil, Provider,
+Source-Policy) ist davon unberührt und bleibt vollständig erhalten. Wird später
+ein produktiver Provider freigeschaltet, greift PFAD A ohne weiteren Umbau.
 """
 
 import asyncio
@@ -23,9 +42,11 @@ from app.evidence import (
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
     vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
-    RechercheUnzureichend, nachricht_unzureichend,
 )
-from app.preisurteil import bewerte_preis, preis_bewertung_aus_verdict, prompt_block as preis_prompt_block
+from app.preisurteil import (
+    bewerte_preis, preis_bewertung_aus_verdict, no_market_prompt_block,
+    prompt_block as preis_prompt_block,
+)
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
@@ -241,17 +262,42 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
         diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
 
-    # ── Quality-Gate (§0/§17/§21) ────────────────────────────────────────────────
-    # Reicht die Datenbasis nach voller Vertiefung nicht für einen belastbaren
-    # Marktwert (kein Median / Qualität bliebe "niedrig"), wird KEIN fertiger Bericht
-    # erzeugt und der teure LLM-Call gespart: research_failed -> Router erstattet das
-    # Kontingent zurück. Eine niedrige Datenqualität ist kein auslieferbares Ergebnis.
-    status = research_status(marktanalyse)
-    if status == "research_failed":
-        grund = diag.get("research_failure_grund", "data_exhausted")
-        raise RechercheUnzureichend(marktanalyse, nachricht_unzureichend(identity, grund), grund)
+    # ── Quality-Gate (§0/§17/§21) + Marktpreis-Entkopplung (KaufCheck-P0-1) ──────
+    # `markt_status` bewertet AUSSCHLIESSLICH die Marktrecherche (unveraendert:
+    # app/marktrecherche.research_status). "research_failed" heisst dort weiterhin
+    # "kein belastbarer Median" — diese Regel wurde NICHT gelockert.
+    #
+    # Was sich geaendert hat, ist die REAKTION darauf. Frueher brach der gesamte
+    # Kaufcheck ab (`raise RechercheUnzureichend`) und verwarf damit alles, was
+    # bereits deterministisch feststand: erkannte Baureihe, erkannte Motorvariante,
+    # baujahrgefilterte Schwachstellen, geprüfte Rückrufe, Insights, Widerspruchs-
+    # Findings. Der Nutzer bekam fuer ein Fahrzeug ohne Marktdaten GAR NICHTS —
+    # obwohl der technische Teil der Kaufberatung vollstaendig vorlag.
+    #
+    # Jetzt gilt: der Marktvergleich ist ein OPTIONALES ZUSATZMODUL des Kaufchecks.
+    #   PFAD A (markt_verfuegbar): unveraendert — Median, kanonisches Preisurteil,
+    #           Preis-Finding, verbindlicher Preis-Block im Prompt.
+    #   PFAD B (kein belastbarer Markt): technische Analyse laeuft vollstaendig
+    #           weiter, aber es entsteht KEINE Preisaussage. Statt des Preis-Blocks
+    #           bekommt das Modell einen expliziten No-Market-Block.
+    #
+    # Der Check-Status ist deshalb NICHT identisch mit dem Markt-Status:
+    # "completed_no_market" heisst "Kaufcheck fachlich erfolgreich abgeschlossen,
+    # Marktpreis nicht verfuegbar" — es ist ausdruecklich KEIN Analysefehler und
+    # loest keine Kontingent-Rueckerstattung aus (der Nutzer erhaelt ein
+    # vollstaendiges technisches Ergebnis).
+    markt_status = research_status(marktanalyse)
+    markt_verfuegbar = markt_status != "research_failed"
+    status = markt_status if markt_verfuegbar else "completed_no_market"
+    if not markt_verfuegbar:
+        log.info("Kaufcheck ohne Marktdaten (grund=%s) — technische Analyse laeuft weiter",
+                 diag.get("research_failure_grund", "data_exhausted"))
 
     # Kanonisches, deterministisches Preisurteil (§6/§7/§13) — EINE Quelle der Wahrheit.
+    # Ohne belastbaren Median liefert `bewerte_preis` von sich aus verdict="unbekannt"
+    # ohne Median/Spanne/Differenz — kein Dummy-Preis, kein Angebotspreis als
+    # Marktwert, kein DB-Neupreis. Das Objekt existiert trotzdem, damit die
+    # Response-Struktur fuer das Frontend unveraendert bleibt.
     price_assessment = bewerte_preis(marktanalyse, req.preis_eur, check_typ="kauf")
 
     # Quellenqualität für LLM-Kontext/Belege: fachfremde Modell-Seiten aussortieren
@@ -274,8 +320,18 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
                               marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
-    markt_block = markt_prompt_block(marktanalyse)
-    preis_block = preis_prompt_block(price_assessment)
+    # PFAD A: verbindliche Markt-/Preisbloecke wie bisher.
+    # PFAD B: EIN expliziter No-Market-Block statt beider. Ohne ihn wuerde das
+    # Modell die Preisanweisungen aus `_SYSTEM` ("leite eine grobe marktpreis_min/
+    # max-Spanne ab") weiter befolgen und aus den Web-Snippets eine Spanne
+    # konstruieren — beide Blockfunktionen liefern bei fehlendem Median lediglich
+    # einen Leerstring, schweigen allein reicht hier also nicht.
+    if markt_verfuegbar:
+        markt_block = markt_prompt_block(marktanalyse)
+        preis_block = preis_prompt_block(price_assessment)
+    else:
+        markt_block = no_market_prompt_block()
+        preis_block = ""
     user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx,
                                          markt_block, preis_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
@@ -313,12 +369,20 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         nachtrag = _notfall_extraktion(bericht_text)
         if result.get("empfehlung") in (None, "", "unbekannt"):
             result["empfehlung"] = nachtrag.get("empfehlung", result.get("empfehlung", "unbekannt"))
-        if result.get("preis_bewertung") in (None, "", "unbekannt"):
-            result["preis_bewertung"] = nachtrag.get("preis_bewertung", result.get("preis_bewertung", "unbekannt"))
-        if result.get("marktpreis_min") is None:
-            result["marktpreis_min"] = nachtrag.get("marktpreis_min")
-        if result.get("marktpreis_max") is None:
-            result["marktpreis_max"] = nachtrag.get("marktpreis_max")
+        # P0-1: Die Preis-Rekonstruktion liest per Regex Kategorie UND Spanne aus dem
+        # BERICHTSTEXT zurueck. Im No-Market-Pfad waere genau das ein Einfallstor:
+        # haelt sich das Modell nicht an den No-Market-Block und schreibt doch eine
+        # Spanne in den Fliesstext, wuerde sie hier in die strukturierten Felder
+        # gehoben und damit zur offiziellen VIRA-Aussage. Ohne belastbaren Markt
+        # bleiben diese Felder deshalb unantastbar leer — die Empfehlungs-
+        # Rekonstruktion oben (rein technisch) bleibt davon unberuehrt.
+        if markt_verfuegbar:
+            if result.get("preis_bewertung") in (None, "", "unbekannt"):
+                result["preis_bewertung"] = nachtrag.get("preis_bewertung", result.get("preis_bewertung", "unbekannt"))
+            if result.get("marktpreis_min") is None:
+                result["marktpreis_min"] = nachtrag.get("marktpreis_min")
+            if result.get("marktpreis_max") is None:
+                result["marktpreis_max"] = nachtrag.get("marktpreis_max")
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
@@ -333,13 +397,33 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
 
     # Marktpreis-Spanne: liegt eine belastbare deterministische Marktanalyse vor,
     # ist SIE die Wahrheit (robuster Median/Quartilsbereich) — die LLM-Spanne wird
-    # dann durch die berechnete ersetzt. Ohne belastbare Analyse bleibt die LLM-
-    # Spanne und wird nur im Insight nachgetragen.
+    # dann durch die berechnete ersetzt.
     if marktanalyse and marktanalyse.median_eur:
         result["marktpreis_min"] = marktanalyse.spanne_min_eur
         result["marktpreis_max"] = marktanalyse.spanne_max_eur
-    else:
+    elif markt_verfuegbar:
+        # Markt gilt als verfuegbar, aber ohne eigenen Median (kann nach dem
+        # Quality-Gate praktisch nicht mehr vorkommen) — bisheriges Verhalten:
+        # LLM-Spanne stehen lassen und nur im Insight nachtragen.
         enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
+    else:
+        # PFAD B: kein belastbarer Markt -> die Preisfelder bleiben leer, egal was
+        # das Modell geliefert hat. Letzte Verteidigungslinie gegen eine erfundene
+        # Spanne: der No-Market-Block verbietet sie im Prompt, `_notfall_extraktion`
+        # darf sie oben nicht rekonstruieren, und hier werden sie endgueltig
+        # genullt. Kein Dummy-Wert, kein Angebotspreis, kein DB-Neupreis.
+        result["marktpreis_min"] = None
+        result["marktpreis_max"] = None
+        # "preis_nachverhandeln" ist laut System-Prompt definiert als "Fahrzeug
+        # technisch unauffaellig, aber Preis teuer/extrem teuer" — die Preishaelfte
+        # dieser Aussage ist ohne Marktdaten nicht belegbar. Statt die Empfehlung
+        # ganz zu verwerfen (das wuerde auch die belegte technische Haelfte
+        # wegwerfen) bleibt genau der technische Teil stehen: technisch unauffaellig,
+        # vor dem Kauf besichtigen.
+        if result.get("empfehlung") == "preis_nachverhandeln":
+            log.info("Kaufcheck ohne Marktdaten: Empfehlung 'preis_nachverhandeln' auf "
+                     "'kaufen_nach_besichtigung' reduziert (Preisteil nicht belegbar)")
+            result["empfehlung"] = "kaufen_nach_besichtigung"
 
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).

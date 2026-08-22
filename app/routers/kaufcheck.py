@@ -46,11 +46,18 @@ async def kaufcheck_endpunkt(
         # statt derselben ggf. dünnen gecachten Antwort (?retry=true).
         result = await run_kaufcheck(body, retry=retry)
     except RechercheUnzureichend as exc:
-        # §0/§4: keine belastbare Marktdatenbasis -> KEIN fertiger Bericht, Kontingent
-        # zurückerstatten (idempotent). Der Nutzer erhält eine freundliche Meldung mit
-        # Retry-Option; research_status="research_failed" signalisiert dem Frontend,
-        # den Check NICHT als abgeschlossen zu behandeln (nicht speichern).
-        log.info("Kaufcheck: research_failed, erstatte Kontingent zurück (user_id=%s)", user_id)
+        # P0-1: Fehlende Marktdaten brechen den Kaufcheck NICHT mehr ab —
+        # `run_kaufcheck` liefert dafür jetzt research_status="completed_no_market"
+        # und einen vollständigen technischen Bericht (siehe app/kaufcheck.py).
+        # Dieser Zweig ist damit für den Kaufcheck praktisch unerreichbar geworden.
+        #
+        # Er bleibt bewusst als Sicherheitsnetz stehen: `RechercheUnzureichend` ist
+        # weiterhin eine gültige Exception der geteilten Marktrecherche (der
+        # Verkaufscheck löst sie regulär aus — dort IST der Marktpreis das Produkt).
+        # Käme sie hier je wieder an, ist ein 500er die falsche Antwort; die
+        # bestehende Rückerstattung ist das richtige Verhalten.
+        log.info("Kaufcheck: RechercheUnzureichend (unerwartet nach P0-1), "
+                 "erstatte Kontingent zurück (user_id=%s)", user_id)
         refund_check_credit(user_id)
         return KaufCheckResponse(
             bericht=exc.nachricht,

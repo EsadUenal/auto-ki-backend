@@ -240,6 +240,59 @@ def verkaufs_prompt_block(strategie: dict | None) -> str:
     ])
 
 
+def no_market_prompt_block() -> str:
+    """VERBINDLICHER Block für den Fall, dass KEINE belastbare Marktdatenbasis
+    vorliegt (KaufCheck-P0-1).
+
+    Gegenstück zu `prompt_block`: dort sagt das Backend dem Modell, welches
+    Preisurteil es zu übernehmen hat — hier sagt es ihm, dass es GAR KEINES gibt.
+    Ohne diesen Block würde das Modell den Preisteil aus dem System-Prompt
+    (`## Preis-Einschätzung`, "leite eine grobe Spanne ab") weiterhin befolgen und
+    aus den Web-Snippets eine Marktspanne konstruieren — genau die Halluzination,
+    die der deterministische Marktvergleich verhindern soll.
+
+    Wichtig zur Formulierung: die Web-Ergebnisse im Prompt können sehr wohl Preise
+    enthalten. Sie wurden geprüft und als nicht belastbar VERWORFEN (zu wenige
+    modelltreue Vergleiche, zu hohe Streuung, oder Quelle nicht freigegeben). Das
+    Modell muss das ausdrücklich wissen, sonst wirkt der Widerspruch
+    ("hier stehen Preise, aber es gibt keine Marktdaten") wie ein Fehler im
+    Kontext und wird "hilfsbereit" überschrieben.
+    """
+    return "\n".join([
+        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft — VERBINDLICH) ===",
+        "Für dieses Fahrzeug liegen KEINE belastbaren aktuellen Marktpreisdaten vor.",
+        "Der deterministische Marktvergleich hat kein verwertbares Ergebnis geliefert.",
+        "",
+        "Falls im Abschnitt WEB-ERGEBNISSE Preisangaben stehen: diese wurden bereits",
+        "geprüft und als NICHT belastbare Vergleichsbasis verworfen (zu wenige",
+        "modelltreue Angebote, zu hohe Streuung oder ungeeignete Quelle). Sie sind",
+        "KEINE Marktpreisgrundlage.",
+        "",
+        "Daraus folgt VERBINDLICH:",
+        "- Nenne KEINEN Marktpreis, KEINEN Median und KEINE Marktspanne.",
+        "- Setze marktpreis_min = null und marktpreis_max = null.",
+        "- Setze preis_bewertung = \"unbekannt\".",
+        "- Stufe den Angebotspreis NICHT ein — weder als günstig, fair, marktgerecht,",
+        "  angemessen, teuer noch überteuert. Auch keine indirekte Andeutung",
+        "  (\"wirkt attraktiv\", \"erscheint hoch\", \"liegt im Rahmen\").",
+        "- Leite KEINE Preisdifferenz, KEINE Prozentangabe zum Markt und KEINE",
+        "  Verkaufsdauer daraus ab.",
+        "- Schreibe im Abschnitt '## Preis-Einschätzung' NUR: dass für dieses Fahrzeug",
+        "  aktuell keine belastbare Marktpreisbasis ermittelt werden konnte und die",
+        "  Preisbewertung deshalb offen bleibt. Ein bis zwei Sätze, sachlich.",
+        "- In der Tabelle '## Inserat im Vergleich' bleibt die Zeile 'Preis' in der",
+        "  Spalte DB-/Markterwartung 'nicht verfügbar'; bewerte die Plausibilität dort",
+        "  NICHT anhand des Preises.",
+        "",
+        "Die TECHNISCHE Kaufberatung führst du davon unberührt VOLLSTÄNDIG durch:",
+        "Fahrzeugidentität, Schwachstellen, Motorprobleme, Rückrufe, Risiken,",
+        "Besichtigungs-Checkliste und Kaufempfehlung. Die Kaufempfehlung stützt sich",
+        "in diesem Fall AUSSCHLIESSLICH auf technische Kriterien und die Plausibilität",
+        "des Inserats — nicht auf den Preis. Die Stufe \"preis_nachverhandeln\" ist",
+        "hier NICHT zulässig, da sie eine Preisbewertung voraussetzt.",
+    ])
+
+
 def prompt_block(pa: PriceAssessment | None) -> str:
     """VERBINDLICHER Preis-Block für den LLM-Prompt: das Modell soll GENAU dieses
     Urteil im Bericht wiedergeben und es NICHT neu bewerten (§13)."""
