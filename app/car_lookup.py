@@ -17,7 +17,7 @@ from google.genai import types as genai_types
 from app.config import GEMINI_API_KEY, LLM_MODEL
 from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen
-from app.recall_filter import gefilterte_rueckrufe
+from app.recall_filter import gefilterte_rueckrufe, _baujahr_passt
 
 log = logging.getLogger(__name__)
 
@@ -291,7 +291,21 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
     korrekt herausfilterte. `gefilterte_rueckrufe` ist die EINE zentrale
     Allowed-List (app/recall_filter.py), die hier wie in evidence.py verwendet
     wird — inkl. der Applicability-Formulierung im Text (das LLM erfährt nicht nur
-    DASS ein Rückruf gilt, sondern WIE sicher)."""
+    DASS ein Rückruf gilt, sondern WIE sicher).
+
+    KaufCheck-P0-2 (derselbe Bug-Musterfall, jetzt für Schwachstellen statt
+    Rückrufe): `app/evidence.py::build_insights` filtert Baureihen- und
+    Motor-Schwachstellen bereits über `_baujahr_passt` — ein Baujahr, das
+    NACHWEISLICH nicht in die angegebene Baujahresspanne fällt, wird für die
+    strukturierten Insights übersprungen. Dieser Prompt-Text tat das bislang
+    NICHT und zeigte dem LLM jede Schwachstelle unabhängig vom angefragten
+    Baujahr — Bericht und Insights konnten dadurch unterschiedliche Probleme
+    nennen. Beide Ebenen (Baureihe UND Motor) nutzen jetzt dieselbe zentrale
+    `_baujahr_passt`-Funktion (app/recall_filter.py) mit exakt derselben Regel
+    wie evidence.py: nur ein eindeutiges `False` (nachweislich nicht zutreffend)
+    schließt aus. `True` (eindeutig zutreffend), "Alle Baujahre" UND eine
+    unklare/fehlende Angabe (beides `None`) bleiben — bewusst konservativ, keine
+    strengere oder lockerere Regel als die bestehende."""
     if baureihe is None:
         return "Kein geprüftes DB-Profil für dieses Fahrzeug vorhanden."
 
@@ -329,9 +343,13 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
         if m.get("felgengroesse_serie"):
             lines.append(f"Felgen (Serie): {m['felgengroesse_serie']}")
         # schwachstelle_motor hat KEIN schweregrad-Feld — nur bauteil/beschreibung/baujahre/kosten_ca
-        if m.get("schwachstellen_motor"):
+        # KaufCheck-P0-2: dieselbe Baujahres-Applicability wie evidence.build_insights
+        # (nur ein eindeutiges False schließt aus — "Alle"/unklar/fehlend bleibt).
+        motorprobleme = [s for s in (m.get("schwachstellen_motor") or [])
+                         if _baujahr_passt(s.get("baujahre"), baujahr) is not False]
+        if motorprobleme:
             lines.append("Motorprobleme:")
-            for s in m["schwachstellen_motor"]:
+            for s in motorprobleme:
                 lines.append(
                     f"  {s.get('bauteil','?')}: {s.get('beschreibung','?')} "
                     f"(Baujahre: {s.get('baujahre','?')}, Kosten ca.: {s.get('kosten_ca','?')})"
@@ -343,9 +361,14 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
         lines.append("")
 
     # schwachstelle_baureihe HAT schweregrad — trotzdem .get() für Robustheit
-    if baureihe.get("schwachstellen_baureihe"):
+    # KaufCheck-P0-2: dieselbe Baujahres-Applicability wie evidence.build_insights.
+    schwachstellen_baureihe = [
+        s for s in (baureihe.get("schwachstellen_baureihe") or [])
+        if _baujahr_passt(s.get("betroffene_baujahre"), baujahr) is not False
+    ]
+    if schwachstellen_baureihe:
         lines.append("### Schwachstellen Baureihe:")
-        for s in baureihe["schwachstellen_baureihe"]:
+        for s in schwachstellen_baureihe:
             schweregrad = s.get("schweregrad")
             prefix = f"[{schweregrad}] " if schweregrad else ""
             lines.append(
