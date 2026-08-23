@@ -39,6 +39,7 @@ from app.car_lookup import (
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.fahrzeugkontext import build_fahrzeugkontext
+from app.technical_research import recherchiere_technisch, technical_coverage
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
@@ -263,6 +264,27 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                  identitaet["match_art"])
         baureihe, motor_match = None, None
 
+    # ── Technischer Web-Fallback ("DB FIRST, aber niemals DB ONLY") ───────────
+    # Laeuft NUR bei einem Trigger: DB-Miss, gegatete Identitaet, fehlender Motor
+    # trotz konkreter Nutzerangabe, oder harter Widerspruch Nutzer<->DB. Ein
+    # sicherer, vollstaendiger DB-Treffer loest KEINE Recherche aus — weder Latenz
+    # noch Tavily-Budget.
+    #
+    # Wichtig: der Fallback erfindet keine Identitaet. `_identitaet_belegt` verlangt
+    # den Modellnamen als GANZES Token auf mindestens zwei unabhaengigen,
+    # hinreichend vertrauenswuerdigen Domains. "BMW iX7" liefert X7-Seiten (Token
+    # "x7", nicht "ix7") und bleibt damit korrekt unbelegt.
+    #
+    # Fehler des Providers werden intern abgefangen (provider_fehler=True) — der
+    # Check laeuft weiter, nur ohne Web-Ergaenzung.
+    web_recherche = await recherchiere_technisch(
+        req, baureihe_markt, identitaet, baureihe, motor_match)
+    if web_recherche is not None:
+        log.info("Kaufcheck: technischer Web-Fallback (grund=%s, belegt=%s, fakten=%d, fehler=%s)",
+                 web_recherche.ausgeloest_durch,
+                 bool(web_recherche.identitaet and web_recherche.identitaet.belegt),
+                 len(web_recherche.fakten), web_recherche.provider_fehler)
+
     # 2. DB-Kontext
     #
     # P1-4: Der Fahrzeugkontext (Segment, Generations-/Facelift-Merkmale, Vorgänger,
@@ -369,7 +391,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Referenzieren mitgeben. Die IDs sind stabil, sodass die vom LLM referenzierten
     # IDs anschließend gegen genau diese Insights validiert werden können.
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
-                              marktanalyse=marktanalyse)
+                              marktanalyse=marktanalyse, web_recherche=web_recherche)
     evidence_block = format_evidence_for_prompt(insights)
     # PFAD A: verbindliche Markt-/Preisbloecke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt beider. Ohne ihn wuerde das
@@ -532,4 +554,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "fahrzeugkontext":         fahrzeugkontext,
         "identitaet_konfidenz":    identitaet["konfidenz"],
         "identitaet_match_art":    identitaet["match_art"],
+        "technical_coverage":      technical_coverage(baureihe, web_recherche),
+        "web_identitaet":          (web_recherche.identitaet
+                                    if web_recherche and web_recherche.identitaet
+                                    and web_recherche.identitaet.belegt else None),
     }

@@ -61,11 +61,18 @@ def build_insights(
     marktpreis_min: int | None = None,
     marktpreis_max: int | None = None,
     marktanalyse: Marktanalyse | None = None,
+    web_recherche=None,
 ) -> list[Insight]:
     """Baut die Liste nachvollziehbarer Insights aus deterministischen Daten.
 
     `web_belege` ist die fertige Belege-Liste (results_to_belege): dicts mit
     typ/titel/url/snippet/qualitaet. `req` ist der Kauf-/Verkaufscheck-Request.
+
+    `web_recherche` (optional, technischer Web-Fallback): eine
+    `TechnischeRecherche` aus app/technical_research.py. Ihre Fakten werden als
+    EIGENE Kategorien (`web_schwachstelle`/`web_rueckruf`/`web_wartung`) mit
+    `typ="web_technik"`-Quellen ausgegeben — nie vermischt mit der geprüften
+    Fahrzeugdatenbank. Nur für den Kaufcheck; der Verkaufscheck bleibt unberührt.
     """
     insights: list[Insight] = []
     baujahr = getattr(req, "baujahr", None)
@@ -250,8 +257,54 @@ def build_insights(
     if mv:
         insights.append(mv)
 
+    # ── 6) Technische Web-Recherche (Fallback bei fehlendem DB-Profil) ─────────
+    # GANZ AM ENDE — aus demselben Grund, aus dem die Wartungssektion vor dem
+    # Marktvergleich steht: der `_id`-Zähler ist global. Hier gilt zusätzlich, dass
+    # Web-Evidence nur in genau den Fällen entsteht, in denen der DB-Pfad nichts
+    # geliefert hat; die vorherigen Kategorien sind dann ohnehin leer und es
+    # verschiebt sich nichts.
+    #
+    # Eigene Kategorien mit `web_`-Präfix (§11): eine Web-Schwachstelle darf im
+    # Frontend NIEMALS wie eine geprüfte DB-Schwachstelle aussehen. Auch die
+    # Quellen tragen `typ="web_technik"` statt `datenbank`/`rueckruf_kba`.
+    if web_recherche is not None and check_typ == "kauf":
+        for fakt in web_recherche.fakten:
+            if not fakt.quellen:
+                continue          # ohne Quelle keine Evidence — nie
+            insights.append(Insight(
+                id=_id(f"web-{fakt.kategorie}"),
+                kategorie=f"web_{fakt.kategorie}",
+                titel=_WEB_TITEL[fakt.kategorie].format(
+                    bauteil=(fakt.bauteil or "Fahrzeug").replace("_", " ")),
+                beschreibung=fakt.aussage,
+                quellen_typen=_typen(fakt.quellen),
+                quellen=list(fakt.quellen),
+                # Confidence kommt aus der QUELLENLAGE (Anzahl unabhängiger Domains
+                # + Tier), nie aus dem Inhalt — dieselbe Trennung wie oben.
+                confidence=fakt.confidence,
+                applicability=fakt.applicability,
+                einfluss=_WEB_EINFLUSS[fakt.kategorie],
+            ))
 
     return insights
+
+
+# Titel-/Einfluss-Vorlagen für Web-Evidence. Die Formulierung macht die Herkunft
+# im Klartext sichtbar ("laut Webrecherche") — der Nutzer soll den Unterschied zur
+# geprüften Fahrzeugdatenbank ohne Badge erkennen können.
+_WEB_TITEL = {
+    "schwachstelle": "{bauteil} — Hinweis aus der Webrecherche",
+    "rueckruf": "Rückruf-Hinweis aus der Webrecherche ({bauteil})",
+    "wartung": "{bauteil} — Wartungsangabe aus der Webrecherche",
+}
+_WEB_EINFLUSS = {
+    "schwachstelle": "Aus Webquellen belegt, nicht aus der geprüften "
+                     "Fahrzeugdatenbank — vor dem Kauf gezielt prüfen.",
+    "rueckruf": "Aus Webquellen belegt — Betroffenheit ausschließlich anhand der "
+                "FIN beim Hersteller/KBA klären.",
+    "wartung": "Aus Webquellen belegte Intervallangabe — Nachweis der Durchführung "
+               "verlangen.",
+}
 
 
 def _verwendete_quellen(web_quellen, marktanalyse):

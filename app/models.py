@@ -468,6 +468,76 @@ class Kaufaktionen(BaseModel):
                                            export_title="Dokumenten-Checkliste"))
 
 
+class WebVehicleIdentity(BaseModel):
+    """Technischer Web-Fallback — die per Webrecherche BELEGTE Fahrzeugidentität.
+
+    Entsteht nur, wenn der DB-Pfad kein belastbares Profil liefert (echter Miss oder
+    Identity-Trust-Gate schlägt an) UND die Recherche das Fahrzeug als reales
+    Serienfahrzeug bestätigt.
+
+    Abgrenzung zur DB-Baureihe: Hier gibt es KEINE `baureihe_id`. Ein reales
+    Fahrzeug, das VIRA nicht kennt, bekommt auch keine erfundene lokale ID — es
+    wird für DIESEN Check temporär beschrieben, nicht in den Bestand aufgenommen.
+    `belegt=False` heißt ausdrücklich: die Eingabe ließ sich NICHT als reales
+    Fahrzeug bestätigen (Fantasiebezeichnung) — dann bleiben alle Detailfelder leer
+    und es entsteht keine fahrzeugspezifische Aussage.
+    """
+    belegt: bool = False
+    marke: str | None = None
+    modell: str | None = None
+    generation: str | None = None
+    bauzeitraum_von: int | None = None
+    bauzeitraum_bis: int | None = None
+    motor: str | None = None
+    kraftstoff: str | None = None
+    leistung_ps: int | None = None
+    confidence: str = "niedrig"          # "hoch" | "mittel" | "niedrig"
+    # Wie viele UNABHÄNGIGE Domains die Identität gestützt haben — die Grundlage
+    # der `confidence` und zugleich der Schutz gegen eine einzelne SEO-Seite.
+    belegende_domains: int = 0
+    quellen: list[EvidenceQuelle] = Field(default_factory=list)
+
+
+class WebFakt(BaseModel):
+    """Ein EINZELNER, quellengebundener technischer Fakt aus der Webrecherche.
+
+    Kein Fakt ohne Quelle: `quellen` ist für jeden hier entstehenden Eintrag
+    verpflichtend befüllt (der Provider verwirft Kandidaten ohne belastbare URL).
+    Das unterscheidet diese Schicht von einer bloßen LLM-Erinnerung.
+
+    `kategorie` bleibt bewusst getrennt von den DB-Kategorien (siehe
+    app/technical_research.py): eine Web-Schwachstelle wird nie als
+    DB-Schwachstelle ausgegeben.
+    """
+    kategorie: str                       # "schwachstelle" | "rueckruf" | "wartung"
+    bauteil: str | None = None           # normalisiertes Bauteil, wenn erkennbar
+    aussage: str                         # der konkrete Fakt in einem Satz
+    confidence: str = "niedrig"          # "hoch" | "mittel" | "niedrig"
+    # Nur bei Rückrufen: dieselbe konservative Semantik wie app/recall_filter.py —
+    # ohne FIN-Prüfung nie "betrifft dieses Fahrzeug".
+    applicability: str | None = None
+    quellen: list[EvidenceQuelle] = Field(default_factory=list)
+
+
+class TechnischeRecherche(BaseModel):
+    """Ergebnis EINES technischen Web-Fallback-Laufs — rein request-bezogen.
+
+    Wird NICHT persistiert und ändert nichts an der Datenbank (kein Baureihen-
+    Import, kein Überschreiben, kein `verification`-Upgrade). Der Kontext gilt
+    ausschließlich für den laufenden Check.
+    """
+    # Warum der Fallback lief — einer der TRIGGER_*-Werte aus
+    # app/technical_research.py ("db_miss", "identitaet_unsicher", "motor_fehlt",
+    # "konflikt"). Leer, wenn kein Fallback stattfand.
+    ausgeloest_durch: str | None = None
+    identitaet: WebVehicleIdentity | None = None
+    fakten: list[WebFakt] = Field(default_factory=list)
+    # True, wenn der Provider technisch ausgefallen ist (Netzwerk/API). Dann gilt
+    # das Ergebnis als unvollständig — es wird aber NIE eine Exception nach oben
+    # gereicht, die den Kaufcheck abbrechen würde.
+    provider_fehler: bool = False
+
+
 class Fahrzeugkontext(BaseModel):
     """P1-4 — ergänzender Fahrzeugkontext aus der VIRA-Fahrzeugdatenbank.
 
@@ -574,6 +644,20 @@ class KaufCheckResponse(BaseModel):
     # app/car_lookup.py ("exact", "motor_alias", "generation_match", "strong",
     # "ambiguous", "substring_only", "token_inner", "marke_only", "no_match").
     identitaet_match_art: str | None = None
+    # Technischer Web-Fallback: woher die TECHNISCHEN Fahrzeugdaten dieses Checks
+    # stammen. Bewusst getrennt von `quelle` (das bewertet die Gesamtlage inkl.
+    # Marktdaten) und von `vertrauen`:
+    #   "db"          — belastbares DB-Profil, kein technischer Fallback nötig
+    #   "db_plus_web" — DB-Profil vorhanden UND gezielt per Web ergänzt
+    #   "web"         — kein DB-Profil, Fahrzeug per Webrecherche belegt
+    #   "partial"     — weder belastbares DB-Profil noch belegte Web-Identität;
+    #                   der Check läuft mit Nutzerangaben + Basis-Prüfplänen weiter
+    # Das Frontend kann daraus später "Daten aus der VIRA-Datenbank" vs. "durch
+    # aktuelle Webrecherche ergänzt" transparent machen.
+    technical_coverage: str = "db"
+    # Die per Webrecherche belegte Identität, falls ein Fallback lief. None, wenn
+    # kein Fallback nötig war oder nichts belegt werden konnte.
+    web_identitaet: WebVehicleIdentity | None = None
     # P1-4: ergänzender Fahrzeugkontext aus der Fahrzeugdatenbank (Segment,
     # Generations-/Facelift-Merkmale, Vorgänger, Wartungsintervalle). Additiv und
     # optional -> alte Checks ohne dieses Feld laden weiter (Default: None).

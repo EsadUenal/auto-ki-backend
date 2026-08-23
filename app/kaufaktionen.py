@@ -130,6 +130,14 @@ _R_WARTUNG           = 520   # kritische Wartung laut DB (ohne Insight-ID)
 _R_SCHWACH_GERING    = 400   # Schwachstelle mit schweregrad gering
 _R_DOKUMENT_STANDARD = 340   # Scheckheft/Vorbesitzer: wichtig, aber selten K.-o.
 _R_ANGABE_FEHLT      = 300   # gezielte Nachfrage zu einer fehlenden Inseratangabe
+# Technischer Web-Fallback: belegte Web-Fakten stehen bewusst UNTER den geprüften
+# DB-Fakten derselben Art, aber deutlich ÜBER dem allgemeinen Basis-Standard. Sie
+# sind quellengebunden und fahrzeugspezifisch, aber nicht redaktionell geprüft.
+# Ein Web-Rückruf liegt trotzdem oben: die FIN-Prüfung ist unabhängig von der
+# Beleglage sinnvoll und kostet den Nutzer nichts.
+_R_WEB_RUECKRUF      = 780
+_R_WEB_SCHWACH       = 560
+_R_WEB_WARTUNG       = 500
 # Basis-Punkte liegen als Band UNTERHALB jeder fahrzeugspezifischen Aktion und
 # behalten innerhalb ihres Katalogs die dort definierte fachliche Reihenfolge
 # (rang = _R_BASIS - Position). Würde man beide Ebenen je zusammenführen, stünde
@@ -704,6 +712,11 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     _aus_motorproblemen(s, insights, motor_match, baujahr)
     _aus_rueckrufen(s, insights)
     _aus_wartung(s, insights)
+    # Technischer Web-Fallback: NACH den DB-Quellen. Der `_Sammler` führt
+    # gleichnamige Schlüssel zusammen und behält Text und Rang des zuerst
+    # eingetragenen — ein geprüfter DB-Fakt zum Turbolader gewinnt damit
+    # automatisch gegen einen Web-Fakt zum selben Bauteil, ohne Sonderfall.
+    _aus_web_evidence(s, insights)
     _aus_inserat(s, req)
 
     fahrzeug = _fahrzeug_kurzbezeichnung(req, baureihe)
@@ -940,6 +953,108 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
               f"Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand.",
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
               gruppe="Prüfungen und Wartung")
+
+
+# ── 4b) Technischer Web-Fallback ─────────────────────────────────────────────
+
+def _web_bauteil(i: Insight) -> str:
+    """Bauteil-Label eines Web-Insights aus dem Titel ("Turbolader — Hinweis …")."""
+    return i.titel.split("—")[0].split("(")[0].strip() or "Fahrzeug"
+
+
+def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
+    """Belegte Web-Fakten -> dieselben vier Bereiche wie DB-Evidence.
+
+    Es gelten EXAKT dieselben P1-3-Regeln wie für DB-Fakten — die Herkunft ändert
+    die Sorgfalt nicht:
+
+      * Probefahrt nur über die beiden bestehenden Tore (Bauteil mit fachlich
+        beobachtbarem Fahrsymptom ODER ein im Evidence-TEXT ausdrücklich genanntes
+        Symptom). Es wird kein Symptom erfunden, nur weil eine Webquelle ein Bauteil
+        nennt.
+      * Jede Aktion trägt die Evidence-ID des Web-Insights — quellengebunden bis in
+        die Checkliste.
+      * Dedup über denselben Bauteilschlüssel wie die DB-Fakten. Läuft der
+        Web-Fallback neben vorhandenen DB-Daten (Trigger "motor_fehlt"/"konflikt"),
+        gewinnt der bereits eingetragene DB-Punkt.
+      * Rückrufe erzeugen weiterhin KEINE Besichtigungs- oder Probefahrtaktion —
+        vor Ort nicht prüfbar, nur FIN und Nachweis.
+
+    Der Text macht die Herkunft sichtbar ("laut Webrecherche"), damit ein
+    ausgedruckter Prüfplan ohne die VIRA-Oberfläche nicht so wirkt, als käme der
+    Punkt aus der geprüften Fahrzeugdatenbank.
+    """
+    for i in insights:
+        if not i.kategorie.startswith("web_"):
+            continue
+        art = i.kategorie.removeprefix("web_")
+        bauteil = _web_bauteil(i)
+        komp = _komponente(bauteil)
+        schluessel = komp["schluessel"] if komp else _slug(bauteil)
+
+        if art == "rueckruf":
+            s.add(VERKAEUFERFRAGEN, f"rueckruf-web-{schluessel}",
+                  f"Ist bekannt, ob für dieses Fahrzeug eine Rückrufaktion offen ist?",
+                  "Eine Webrecherche nennt für dieses Modell eine Rückrufaktion. Ob genau "
+                  "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
+                  "Hersteller oder KBA klären — nach einem Werkstattnachweis fragen.",
+                  _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
+                  gruppe="Rückrufaktion")
+            s.add(DOKUMENTE, f"rueckruf-web-{schluessel}",
+                  "Rückrufstatus über die FIN prüfen lassen",
+                  "Laut Webrecherche existiert für dieses Modell eine Rückrufaktion. FIN beim "
+                  "Hersteller oder KBA auf offene Rückrufaktionen prüfen und — falls bereits "
+                  "erledigt — den Durchführungsnachweis der Werkstatt vorlegen lassen.",
+                  _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
+                  gruppe="Prüfungen und Wartung")
+            continue
+
+        if art == "wartung":
+            s.add(VERKAEUFERFRAGEN, f"wartung-web-{schluessel}",
+                  f"Wann wurde „{bauteil}“ zuletzt gemacht — bei welchem Kilometerstand?",
+                  f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
+                  f"Nach Datum, Kilometerstand und Beleg fragen.",
+                  _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
+                  gruppe="Wartung und Technik")
+            s.add(DOKUMENTE, f"wartung-web-{schluessel}", f"Wartungsnachweis {bauteil}",
+                  f"Beleg über die letzte Durchführung von „{bauteil}“ zeigen lassen — "
+                  f"Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand.",
+                  _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
+                  gruppe="Prüfungen und Wartung")
+            continue
+
+        # art == "schwachstelle"
+        besichtigung = (komp or {}).get("besichtigung") or (
+            f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
+            f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
+        )
+        s.add(BESICHTIGUNG, schluessel, bauteil,
+              f"{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
+              f"geprüften Fahrzeugdatenbank.)",
+              _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
+              evidence_ids=[i.id], kategorie="web_schwachstelle",
+              gruppe="Hinweis aus der Webrecherche")
+
+        symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
+        if symptom:
+            # Auch hier die Herkunft im TEXT, nicht nur in der Gruppe: die vier
+            # Prueflisten werden einzeln ausgedruckt (§13 P1-3) und stehen dann ohne
+            # jede Oberflaeche da. Ein Punkt ohne Herkunftshinweis waere auf Papier
+            # nicht mehr von einem geprueften DB-Punkt zu unterscheiden.
+            s.add(PROBEFAHRT, schluessel, bauteil,
+                  f"{symptom} (Hinweis stammt aus der Webrecherche, nicht aus der "
+                  f"geprüften Fahrzeugdatenbank.)",
+                  _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
+                  evidence_ids=[i.id], kategorie="web_schwachstelle",
+                  gruppe="Hinweis aus der Webrecherche")
+
+        s.add(VERKAEUFERFRAGEN, schluessel,
+              f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
+              f"Eine Webrecherche nennt „{bauteil}“ als bekannten Schwachpunkt dieses "
+              f"Modells — nach durchgeführten Reparaturen fragen und Rechnungen bzw. "
+              f"Werkstattbelege zeigen lassen.",
+              _R_WEB_SCHWACH, evidence_ids=[i.id], kategorie="web_schwachstelle",
+              gruppe="Hinweis aus der Webrecherche")
 
 
 # ── 5) Inserat-Angaben (§8 — nur was der Nutzer tatsächlich angegeben hat) ───
