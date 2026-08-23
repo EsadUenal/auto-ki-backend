@@ -558,6 +558,22 @@ class KaufCheckResponse(BaseModel):
     #                            "unbekannt", price_assessment.verdict =
     #                            "unbekannt". Das ist KEIN Fehler und löst KEINE
     #                            Kontingent-Rückerstattung aus.
+    # Identity-Trust-Gate: wie verlässlich die erkannte Baureihe ist.
+    #   "hoch"    — exakter Modelltreffer, exakter Motor-/Verkaufsbezeichnungs-
+    #               treffer, genannte Generation, oder Substring mit ausschließlich
+    #               bekannten Aufbauwörtern ("3er Touring"). Voller Funktionsumfang.
+    #   "niedrig" — nur ein Teiltreffer, mehrdeutig, oder das Baujahr widerspricht
+    #               dem Bauzeitraum. Dann entstehen KEINE fahrzeugspezifischen
+    #               Aussagen: `baureihe_erkannt` bleibt leer, `insights`,
+    #               `key_findings` und die fahrzeugspezifischen Kaufaktionen sind
+    #               ohne DB-Befund. Die Basis-Checklisten bleiben vollständig.
+    # Unterscheidet sich von `vertrauen`: das bewertet die Quellenlage
+    # (DB/Web/gemischt), dies die Fahrzeug-Zuordnung selbst.
+    identitaet_konfidenz: str = "hoch"
+    # Warum die Zuordnung so bewertet wurde — eine der MATCH_*-Konstanten aus
+    # app/car_lookup.py ("exact", "motor_alias", "generation_match", "strong",
+    # "ambiguous", "substring_only", "token_inner", "marke_only", "no_match").
+    identitaet_match_art: str | None = None
     # P1-4: ergänzender Fahrzeugkontext aus der Fahrzeugdatenbank (Segment,
     # Generations-/Facelift-Merkmale, Vorgänger, Wartungsintervalle). Additiv und
     # optional -> alte Checks ohne dieses Feld laden weiter (Default: None).

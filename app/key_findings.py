@@ -39,6 +39,7 @@ MAX_FINDINGS = 5
 # HINWEIS: Ein niedriger Preis ALLEIN ist KEIN Betrugssignal (kein "kritisch",
 # kein Wort "Betrug"). Ein echter Betrugsverdacht bräuchte MEHRERE unabhängige
 # Warnzeichen — das bauen wir hier bewusst NICHT.
+_P_IDENTITAET    = 990   # unsichere Fahrzeugzuordnung schlaegt alles andere
 _P_WIDERSPRUCH   = 950
 _P_PREIS_UNGEWOEHNLICH = 850   # ungewöhnlich günstig -> starke, aber neutrale Warnung
 _P_PREIS_UEBER   = 830   # zu teuer = Risiko -> etwas höher als "günstig"
@@ -256,10 +257,38 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
 
 # ══ KAUFCHECK ════════════════════════════════════════════════════════════════
 
+def _identitaets_finding(fehlende_angabe: str | None) -> KeyFinding:
+    """Unsichere Fahrzeugzuordnung sichtbar machen (Identity-Trust-Gate).
+
+    Nennt bewusst KEINE vermutete Baureihe: Die Zuordnung war ja gerade nicht
+    belastbar — eine konkrete Nennung ("vermutlich BMW X7") wäre exakt der Fehler,
+    den das Gate verhindern soll. Stattdessen steht dort, welche Angabe die
+    Erkennung eindeutig machen würde.
+    """
+    fehlt = fehlende_angabe or "die genaue Modell- und Generationsbezeichnung"
+    return KeyFinding(
+        id="", kategorie="identitaet", stufe=STUFE_WARNUNG, icon="❓",
+        titel="Baureihe nicht sicher erkannt",
+        beschreibung="Die Angaben lassen sich keiner Baureihe eindeutig zuordnen. "
+                     "Es werden deshalb keine fahrzeugspezifischen Schwachstellen, "
+                     "Motorprobleme oder Rückrufe ausgegeben — die allgemeinen "
+                     "Prüflisten gelten unverändert.",
+        aktion=f"Für eine gezielte Analyse bitte {fehlt} nachtragen.",
+        prioritaet=_P_IDENTITAET)
+
+
 def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None,
                             insights: list[Insight],
-                            price_assessment: PriceAssessment | None = None) -> list[KeyFinding]:
+                            price_assessment: PriceAssessment | None = None,
+                            identitaet: dict | None = None) -> list[KeyFinding]:
+    """`identitaet` (optional, Identity-Trust-Gate): Info-dict aus
+    `car_lookup.find_baureihe_mit_vertrauen`. Ist die Zuordnung nicht belastbar,
+    entsteht ein erklärendes Finding statt einer stillen Leerausgabe. Der Parameter
+    ist additiv — ohne ihn verhält sich die Funktion exakt wie bisher."""
     findings: list[KeyFinding] = []
+
+    if identitaet is not None and not identitaet.get("belastbar", True):
+        findings.append(_identitaets_finding(identitaet.get("fehlende_angabe")))
 
     # ── A) Preis-Finding aus dem KANONISCHEN Preisurteil (§6) — genau EINE Bewertung ──
     mv = _marktvergleich_insight(insights)

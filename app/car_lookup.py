@@ -99,10 +99,168 @@ def _modell_trifft_motor(ml_in: str, ml_norm: str,
     return False
 
 
+def _motor_exakt(ml_norm: str, ml_kenn, bez: str, code: str) -> bool:
+    """Ob die Modelleingabe eine Motorvariante EXAKT trifft (nicht nur teilweise).
+
+    `_modell_trifft_motor` akzeptiert bewusst auch Teilstrings, damit unvollstaendige
+    Eingaben noch greifen. Genau dort entstehen aber falsche Fahrzeuge: die Eingabe
+    "Golf GTI" (normalisiert "golfgti") enthaelt die Bezeichnung "GTI" der Baureihe
+    `volkswagen-up-up` — der Kaufcheck landete damit beim VW up!. Ebenso trifft
+    "e-tron" die Bezeichnung "RS e-tron GT".
+
+    Diese Funktion unterscheidet deshalb den belastbaren Exakttreffer vom
+    Teilstring; sie AENDERT das Matching nicht, sie bewertet es nur.
+    """
+    code_norm = _norm_bezeichnung(code)
+    if code_norm and len(code_norm) >= 3 and ml_norm == code_norm:
+        return True
+    bez_norm = _norm_bezeichnung(bez)
+    if not bez_norm:
+        return False
+    if ml_kenn is not None:
+        # Verkaufsbezeichnung: praefix- UND klassengenau ist bereits exakt genug
+        # ("C 200" -> "C200", "GLC 200" -> "GLC 200").
+        bez_kenn = _parse_kennung(bez)
+        return bez_kenn is not None and ml_kenn[0] == bez_kenn[0] and ml_kenn[1] == bez_kenn[1]
+    return ml_norm == bez_norm
+
+
+# ---------- Identitaets-Vertrauen (Identity-Trust-Gate) ----------
+#
+# Der Trust-Audit hat einen False-Positive-Pfad belegt: von acht erfundenen
+# Modellnamen loesten sieben auf eine reale Baureihe auf ("BMW iX7" -> bmw-x7-g07,
+# "Audi A4711" -> audi-a4-b9). Ursache ist die Substring-Regel im Scoring
+# (`ml in rl or rl in ml`, +4 Punkte) in Verbindung damit, dass der Score zwar
+# geloggt, danach aber verworfen wurde — der Aufrufer bekam ein blankes dict und
+# konnte einen exakten Treffer nicht von einem zufaelligen Teilstring unterscheiden.
+#
+# Die Substring-Logik wird NICHT entfernt (sie traegt legitime Eingaben wie
+# "3er Touring" oder "A4 Avant"). Stattdessen wird die MATCH-ART festgehalten und
+# dem Aufrufer zurueckgegeben, der daraus selbst entscheidet.
+#
+# Gemessene Trennschaerfe ueber legitime und erfundene Eingaben:
+#   token_inner ("x7" steckt IN "ix7", "a4" IN "a4711") trifft ausschliesslich
+#   FALSCHE Zuordnungen — kein einziger legitimer Fall im Bestand nutzt diesen
+#   Pfad. Er kann deshalb bedenkenlos als unsicher gelten.
+
+MATCH_EXACT = "exact"                 # normalisiertes Modell == DB-Modell
+MATCH_MOTOR_ALIAS = "motor_alias"     # Motorbezeichnung/-code EXAKT getroffen
+MATCH_GENERATION = "generation_match" # Nutzer nennt die Generation, sie trifft
+MATCH_STRONG = "strong"               # Substring auf Tokengrenze, Rest erklaerbar
+MATCH_AMBIGUOUS = "ambiguous"         # mehrere gleichwertige Kandidaten
+MATCH_SUBSTRING = "substring_only"    # Substring mit unerklaertem Restwort
+MATCH_TOKEN_INNER = "token_inner"     # Treffer steckt INNERHALB eines Tokens
+MATCH_MARKE_ONLY = "marke_only"       # kein Modell angegeben — reiner Marken-Rateweg
+MATCH_NONE = "no_match"
+
+# Nur diese Arten duerfen eine fahrzeugspezifische Aussage tragen.
+MATCH_VERTRAUENSWUERDIG = frozenset({MATCH_EXACT, MATCH_MOTOR_ALIAS,
+                                     MATCH_GENERATION, MATCH_STRONG})
+
+# Guete der Match-Arten (hoeher = belastbarer). Wird nur fuer die
+# Mehrdeutigkeits-Pruefung gebraucht: ein exakter Treffer wird nicht dadurch
+# unsicher, dass eine schwaecher passende Zeile zufaellig denselben Score erreicht
+# ("Audi Q8" steht punktgleich neben "Q8 e-tron" und "RS Q8").
+_MATCH_RANG = {
+    MATCH_EXACT: 4,
+    MATCH_MOTOR_ALIAS: 3,
+    MATCH_GENERATION: 3,
+    MATCH_STRONG: 2,
+    MATCH_SUBSTRING: 1,
+    MATCH_MARKE_ONLY: 1,
+    MATCH_TOKEN_INNER: 0,
+    MATCH_AMBIGUOUS: 0,
+    MATCH_NONE: 0,
+}
+
+KONFIDENZ_HOCH = "hoch"
+KONFIDENZ_NIEDRIG = "niedrig"
+
+_TOKEN = re.compile(r"[^a-z0-9]+")
+
+
+def _tokens(s: str | None) -> list[str]:
+    return [t for t in _TOKEN.split((s or "").lower()) if t]
+
+
+_karosserie_vokabular_cache: frozenset[str] | None = None
+
+
+def _karosserie_vokabular() -> frozenset[str]:
+    """Alle Aufbau-/Karosseriewoerter, die IRGENDWO in der DB vorkommen.
+
+    Dient als Erklaerung fuer Restwoerter: "3er Touring" -> Rest {"touring"} ist
+    ein bekannter Aufbau, die Eingabe bleibt damit vertrauenswuerdig. "Golf XV" ->
+    Rest {"xv"} ist es nicht.
+
+    Bewusst DATENGETRIEBEN statt als hartkodierte Wortliste — das Vokabular waechst
+    mit der DB mit und behauptet nichts, was nicht im Bestand steht. Bewusst GLOBAL
+    statt pro Baureihe: ein Kombi heisst je nach Hersteller Touring, Avant, Variant
+    oder Kombi, und die einzelne Zeile fuehrt meist nur ihre eigene Schreibweise.
+    """
+    global _karosserie_vokabular_cache
+    if _karosserie_vokabular_cache is not None:
+        return _karosserie_vokabular_cache
+    woerter: set[str] = set()
+    for r in get_alle_baureihen_kurz():
+        roh = r.get("karosserie")
+        werte = roh if isinstance(roh, list) else None
+        if werte is None and isinstance(roh, str) and roh.strip():
+            try:
+                geladen = json.loads(roh)
+                werte = geladen if isinstance(geladen, list) else [roh]
+            except (ValueError, TypeError):
+                werte = [roh]
+        for v in werte or []:
+            woerter.update(_tokens(str(v)))
+    _karosserie_vokabular_cache = frozenset(w for w in woerter if len(w) >= 1)
+    return _karosserie_vokabular_cache
+
+
+def _substring_art(modell: str, r_modell: str) -> str | None:
+    """Klassifiziert einen Substring-Treffer — oder None, wenn keiner vorliegt.
+
+    Drei Faelle:
+      MATCH_EXACT        exakt gleich
+      MATCH_TOKEN_INNER  das DB-Modell steckt INNERHALB eines Nutzer-Tokens
+                         (bzw. umgekehrt) — "x7" in "ix7", "a4" in "a4711".
+                         Gemessen: ausschliesslich falsche Zuordnungen.
+      MATCH_STRONG       Tokengrenze eingehalten und jedes ueberzaehlige Wort ist
+                         ein bekanntes Aufbauwort -> "3er Touring", "A4 Avant"
+      MATCH_SUBSTRING    Tokengrenze eingehalten, aber ein Restwort bleibt
+                         unerklaert -> "Golf XV", "Corolla Hyperdrive"
+    """
+    ml, rl = (modell or "").strip().lower(), (r_modell or "").strip().lower()
+    if not ml or not rl:
+        return None
+    if ml == rl:
+        return MATCH_EXACT
+    if not (ml in rl or rl in ml):
+        return None
+    ml_t, rl_t = _tokens(ml), _tokens(rl)
+    # Tokengrenze: die Tokenfolge der kuerzeren Seite muss vollstaendig in der
+    # laengeren als GANZE Tokens vorkommen. Sonst klebt der Treffer im Wortinneren.
+    kurz, lang = (rl_t, ml_t) if len(rl_t) <= len(ml_t) else (ml_t, rl_t)
+    if not set(kurz) <= set(lang):
+        return MATCH_TOKEN_INNER
+    rest = [t for t in lang if t not in kurz]
+    if not rest:
+        return MATCH_EXACT          # gleiche Tokens, andere Schreibweise
+    vokabular = _karosserie_vokabular()
+    if all(t in vokabular for t in rest):
+        return MATCH_STRONG
+    return MATCH_SUBSTRING
+
+
 # ---------- Fahrzeug-Erkennung ----------
 
-def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) -> dict | None:
-    """Findet die Baureihe mit dem höchsten Treffer-Score."""
+def _find_baureihe_scored(marke: str | None, modell: str | None,
+                          baujahr: int | None) -> tuple[dict | None, str]:
+    """Kern der Baureihen-Erkennung: liefert Treffer UND Match-Art.
+
+    Das Scoring selbst ist gegenueber der Vorfassung UNVERAENDERT — es wird nur
+    zusaetzlich festgehalten, warum ein Kandidat gewonnen hat. Damit liefert
+    `find_baureihe` weiterhin exakt dieselbe Baureihe wie bisher."""
     # Gecacht (60s TTL, siehe database.py) statt bei jedem Kauf-/Verkaufscheck die
     # komplette Tabelle neu zu lesen.
     rows = get_alle_baureihen_kurz()
@@ -116,6 +274,9 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     # Erkennung fällt auf einen reinen Marke+Baujahr-Treffer zurück (der eigentliche Bug:
     # "320d" -> BMW M4, weil M4 dieselbe Marke hat und das Baujahr im Bauzeitraum liegt).
     motor_baureihe_ids: set[str] = set()
+    # Zusaetzlich (Identity-Trust-Gate): welche Baureihen wurden EXAKT ueber
+    # Bezeichnung/Motorcode getroffen — im Unterschied zu einem blossen Teilstring.
+    motor_exakt_ids: set[str] = set()
     if modell:
         ml_in   = modell.strip().lower()
         ml_norm = _norm_bezeichnung(ml_in)     # 'C 200' -> 'c200'
@@ -125,6 +286,8 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
             code = (m.get("motorcode") or "").strip().lower()
             if _modell_trifft_motor(ml_in, ml_norm, ml_kenn, bez, code):
                 motor_baureihe_ids.add(m["baureihe_id"])
+                if _motor_exakt(ml_norm, ml_kenn, bez, code):
+                    motor_exakt_ids.add(m["baureihe_id"])
 
     # §4: Nennt der Nutzer die Generation selbst ("Golf VII", "330i G20", "A3 8V"),
     # ist das direkte Evidenz und muss die Baureihenwahl mittragen. Bisher wurde
@@ -134,11 +297,15 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
     # bevorzugen.
     gen_tokens_user = {t for t in re.split(r"[^a-z0-9]+", (modell or "").lower()) if t}
 
+    # Match-Art je Kandidat (Identity-Trust-Gate): das Scoring bleibt UNVERAENDERT,
+    # es wird nur zusaetzlich festgehalten, WARUM ein Kandidat getroffen hat.
     scored: list[tuple[int, bool, bool, dict]] = []
+    arten: dict[str, str] = {}
     for r in rows:
         score = 0
         marke_ok = marke is None
         modell_getroffen = False
+        art = MATCH_NONE
         if marke:
             if r["marke"].lower() == marke.lower():
                 score += 4
@@ -151,18 +318,34 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
             if ml == rl or ml in rl or rl in ml:
                 score += 4
                 modell_getroffen = True
+                art = _substring_art(modell, r["modell"]) or MATCH_SUBSTRING
         # Motorvarianten-Treffer nur werten, wenn die Marke passt (kein Cross-Brand-Match,
         # z.B. ein VW-"2.0 TDI" darf keine BMW-Baureihe matchen).
         if marke_ok and r["id"] in motor_baureihe_ids:
             if not modell_getroffen:
                 score += 4
             modell_getroffen = True
+            # Ein EXAKT normalisierter Treffer auf Bezeichnung/Motorcode ist ein
+            # starkes Signal ("320d", "C 200" -> "C200", "TT RS" -> "TTRS").
+            # Ein blosser Teilstring ist es NICHT: "Golf GTI" trifft ueber
+            # bez "GTI" die Baureihe `volkswagen-up-up`, "e-tron" trifft
+            # "RS e-tron GT". Beides sind falsche Fahrzeuge — deshalb wird nur
+            # der Exakttreffer hochgestuft.
+            if r["id"] in motor_exakt_ids:
+                art = MATCH_MOTOR_ALIAS
+            elif art in (MATCH_NONE, MATCH_SUBSTRING, MATCH_TOKEN_INNER):
+                art = MATCH_SUBSTRING
         # §4: explizite Generationsangabe des Nutzers (nur bei passender Marke).
         if marke_ok and gen_tokens_user:
             r_gen_tokens = {t for t in re.split(r"[^a-z0-9]+",
                                                 (r.get("generation") or "").lower()) if t}
             if r_gen_tokens & gen_tokens_user:
                 score += 3
+                # Die Generation ist die spezifischste Angabe, die ein Nutzer
+                # machen kann ("Golf VII", "3er G20") — sie hebt einen sonst nur
+                # substring-artigen Treffer auf eine belastbare Stufe.
+                if art != MATCH_EXACT:
+                    art = MATCH_GENERATION
         # §2/§3: Ein FEHLENDER Bauzeitraum bedeutet UNBEKANNT, nicht "passt zu
         # jedem Baujahr". Frueher wurde `None` per `or 0` / `or 9999` zu einem
         # universellen Zeitraum aufgeblasen — eine undatierte Zeile bekam damit
@@ -175,6 +358,7 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
         # unterscheidet einen ECHTEN Datumstreffer von einem geschenkten und
         # entscheidet den Gleichstand.
         jahr_belegt = False
+        jahr_ausserhalb = False
         if baujahr and score > 0:
             bvon_roh, bbis_roh = r["bauzeitraum_von"], r["bauzeitraum_bis"]
             datiert = bvon_roh is not None or bbis_roh is not None
@@ -185,7 +369,27 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
                 jahr_belegt = datiert
             elif abs(bvon - baujahr) <= 2 or (bbis < 9999 and abs(bbis - baujahr) <= 2):
                 score += 1
+                jahr_ausserhalb = datiert
+            else:
+                # Weder im Zeitraum noch im Toleranzband: bei DATIERTER Zeile ein
+                # klarer Widerspruch zur Identitaet (nur festgehalten, der Score
+                # bleibt wie bisher unveraendert).
+                jahr_ausserhalb = datiert
         if score > 0:
+            if not modell:
+                # Ohne Modellangabe bleibt nur Marke + Baujahr. Das ist ein
+                # Rateweg, kein Treffer — er darf keine fahrzeugspezifische
+                # Aussage tragen (bisher lieferte er dieselbe Sicherheit wie ein
+                # exakter Modelltreffer).
+                art = MATCH_MARKE_ONLY
+            # §11: Ein Baujahr, das klar ausserhalb eines DATIERTEN Bauzeitraums
+            # liegt, widerlegt die Identitaet — unabhaengig davon, wie gut der
+            # Modellname passt (Audit-Fall "G20 mit Baujahr 1995"). Es wird KEINE
+            # zweite Baujahresengine gebaut: es sind exakt die Werte aus dem
+            # Scoring oben, nur nicht mehr verworfen.
+            if baujahr and jahr_ausserhalb:
+                art = MATCH_SUBSTRING if art in MATCH_VERTRAUENSWUERDIG else art
+            arten[r["id"]] = art
             scored.append((score, modell_getroffen, jahr_belegt, dict(r)))
 
     # Ist ein Modell angegeben, NUR Baureihen mit echtem Modell- ODER Motor-Treffer zulassen.
@@ -195,15 +399,99 @@ def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) ->
         scored = [s for s in scored if s[1]]
 
     if not scored:
-        return None
+        return None, MATCH_NONE
 
     # Gleichstand: eine Zeile mit ECHT belegtem Bauzeitraum schlaegt eine
     # undatierte. Ohne diesen Schluessel entschied die DB-Zeilenreihenfolge.
     scored.sort(key=lambda x: (x[0], x[2]), reverse=True)
     best = scored[0][3]
-    log.info("Baureihe erkannt: %s (score=%d, jahr_belegt=%s)",
-             best["id"], scored[0][0], scored[0][2])
-    return get_baureihe(best["marke"], best["modell"], best["generation"])
+    art = arten.get(best["id"], MATCH_NONE)
+
+    # Mehrdeutigkeit: teilen sich mehrere Kandidaten die Spitze (gleicher Score UND
+    # gleiche Baujahres-Belegung), entschied bisher allein die Zeilenreihenfolge der
+    # DB — ein stiller Muenzwurf zwischen verschiedenen Fahrzeugen.
+    #
+    # Zwei Einschraenkungen halten die Pruefung praezise:
+    #   * Nur VERSCHIEDENE Modelle zaehlen. Zwei Generationen desselben Modells
+    #     (X1 F48/U11 im Wechseljahr) sind keine unklare Identitaet — dafuer gibt es
+    #     die Baujahres-Applicability aus P0-2.
+    #   * Ein Kandidat, der die Eingabe BESSER trifft als alle anderen der Spitze,
+    #     gewinnt eindeutig. Sonst wuerde "Audi Q8" mehrdeutig, nur weil
+    #     "Q8 e-tron" und "RS Q8" punktgleich danebenstehen.
+    spitze = [x for x in scored if (x[0], x[2]) == (scored[0][0], scored[0][2])]
+    # `token_inner` bleibt erhalten: die Diagnose "die Eingabe passt zu keinem
+    # bekannten Modell" ist fuer den Nutzer konkreter als "mehrdeutig", und sie
+    # wuerde sonst immer verdeckt (bei schlechtestem Rang gilt jeder Kandidat als
+    # gleichwertig). Beide Arten gaten ohnehin identisch.
+    if len(spitze) > 1 and art != MATCH_TOKEN_INNER:
+        rang_best = _MATCH_RANG.get(art, 0)
+        gleichwertig = [x for x in spitze
+                        if _MATCH_RANG.get(arten.get(x[3]["id"], MATCH_NONE), 0) >= rang_best]
+        modelle = {(x[3]["marke"].lower(), x[3]["modell"].lower()) for x in gleichwertig}
+        if len(modelle) > 1:
+            art = MATCH_AMBIGUOUS
+
+    log.info("Baureihe erkannt: %s (score=%d, jahr_belegt=%s, match=%s)",
+             best["id"], scored[0][0], scored[0][2], art)
+    treffer = get_baureihe(best["marke"], best["modell"], best["generation"])
+    return treffer, art
+
+
+def find_baureihe(marke: str | None, modell: str | None, baujahr: int | None) -> dict | None:
+    """Findet die Baureihe mit dem hoechsten Treffer-Score.
+
+    Signatur und Rueckgabewert bewusst UNVERAENDERT: diese Funktion wird vom
+    Verkaufscheck, von drei Diagnoseskripten und von zwei Testdateien genutzt.
+    Wer die Verlaesslichkeit der Zuordnung braucht (Kaufcheck), nimmt
+    `find_baureihe_mit_vertrauen`.
+    """
+    return _find_baureihe_scored(marke, modell, baujahr)[0]
+
+
+def identitaet_konfidenz(match_art: str) -> str:
+    """Darf diese Match-Art eine fahrzeugspezifische Aussage tragen?"""
+    return KONFIDENZ_HOCH if match_art in MATCH_VERTRAUENSWUERDIG else KONFIDENZ_NIEDRIG
+
+
+# Was dem Nutzer bei unsicherer Zuordnung am ehesten weiterhilft — je Match-Art
+# genau EIN konkreter Hinweis, keine Aufzaehlung aller denkbaren Angaben.
+FEHLENDE_ANGABE = {
+    MATCH_TOKEN_INNER: "die exakte Modellbezeichnung (die Eingabe passt zu keinem "
+                       "bekannten Modell dieser Marke)",
+    MATCH_SUBSTRING:   "die genaue Modell- und Generationsbezeichnung "
+                       "(z.B. \u201eGolf VII\u201c oder \u201e3er G20\u201c)",
+    MATCH_AMBIGUOUS:   "die Generation bzw. den Baureihencode — mehrere Modelle "
+                       "passen gleich gut",
+    MATCH_MARKE_ONLY:  "das Modell (bisher liegt nur die Marke vor)",
+    MATCH_NONE:        "Marke, Modell und Erstzulassung",
+}
+
+
+def find_baureihe_mit_vertrauen(marke: str | None, modell: str | None,
+                                baujahr: int | None) -> tuple[dict | None, dict]:
+    """Wie `find_baureihe`, liefert zusaetzlich die Verlaesslichkeit der Zuordnung.
+
+    Rueckgabe: (baureihe|None, info) mit info = {
+        "match_art":  eine der MATCH_*-Konstanten,
+        "konfidenz":  "hoch" | "niedrig",
+        "belastbar":  bool — darf eine fahrzeugspezifische Aussage tragen,
+        "fehlende_angabe": str|None — was dem Nutzer zur Klaerung fehlt,
+    }
+
+    Die Baureihe wird auch bei niedriger Konfidenz MITGELIEFERT: der Aufrufer
+    entscheidet, wofuer er sie noch verwendet (der Kaufcheck nutzt sie weiterhin
+    fuer die Marktrecherche, aber nicht mehr fuer fahrzeugspezifische Aussagen).
+    """
+    treffer, art = _find_baureihe_scored(marke, modell, baujahr)
+    if treffer is None:
+        art = MATCH_NONE
+    belastbar = art in MATCH_VERTRAUENSWUERDIG
+    return treffer, {
+        "match_art": art,
+        "konfidenz": identitaet_konfidenz(art),
+        "belastbar": belastbar,
+        "fehlende_angabe": None if belastbar else FEHLENDE_ANGABE.get(art),
+    }
 
 
 # Kraftstoff aus einem freien Motor-Hint ableiten ("2.0 Diesel, 190 PS" -> diesel).

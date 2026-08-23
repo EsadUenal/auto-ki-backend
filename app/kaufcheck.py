@@ -32,7 +32,10 @@ ein produktiver Provider freigeschaltet, greift PFAD A ohne weiteren Umbau.
 import asyncio
 import logging
 
-from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json, _notfall_extraktion
+from app.car_lookup import (
+    find_baureihe_mit_vertrauen, find_motor, build_db_context, call_gemini_json,
+    _notfall_extraktion,
+)
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.fahrzeugkontext import build_fahrzeugkontext
@@ -202,7 +205,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # 1. Baureihe erkennen (DB, blockierend) UND Marktpreis per Tavily (Netzwerk) laufen
     #    PARALLEL — die Tavily-Queries hängen nur an den Inserat-Rohdaten (req.*), nicht
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
-    baureihe_task = asyncio.to_thread(find_baureihe, req.marke, req.modell, req.baujahr)
+    baureihe_task = asyncio.to_thread(find_baureihe_mit_vertrauen, req.marke, req.modell, req.baujahr)
 
     web_results_task: asyncio.Task[list[dict]] | None = None
     if TAVILY_API_KEY and req.marke and req.modell:
@@ -229,8 +232,36 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
             )
         )
 
-    baureihe    = await baureihe_task
-    motor_match = find_motor(baureihe, req.motor) if baureihe else None
+    # ── Identity-Trust-Gate ───────────────────────────────────────────────────
+    # Der Trust-Audit hat belegt, dass ein reiner Teilstring-Treffer bisher dieselbe
+    # Wirkung hatte wie ein exakter: "BMW iX7" (existiert nicht) wurde zu
+    # `bmw-x7-g07` und erzeugte acht fahrzeugspezifische Schwachstellen-Aktionen.
+    # `find_baureihe_mit_vertrauen` liefert jetzt zusaetzlich, WIE der Treffer
+    # zustande kam.
+    #
+    # Zwei Sichten auf dasselbe Ergebnis:
+    #   `baureihe_markt` — der Rohtreffer, unveraendert wie bisher. Er geht
+    #       ausschliesslich in die Marktrecherche (`baue_ziel`, `VehicleIdentity`).
+    #       Dort existiert bereits eine eigene Trust-Schicht (app/verification.py:
+    #       ungeprueft = nur weich), und die Etappe-1-Marktanalyse soll durch dieses
+    #       Ticket nicht regressieren.
+    #   `baureihe` — die GEGATETE Sicht. Ist die Zuordnung nicht belastbar, ist sie
+    #       None und wird damit behandelt wie "kein DB-Profil vorhanden": keine
+    #       Schwachstellen, keine Motorprobleme, keine kritische Wartung, keine
+    #       Rueckruf-Betroffenheit, keine fahrzeugspezifischen Kaufaktionen, kein
+    #       Fahrzeugkontext, kein DB-Profil im Prompt.
+    #
+    # Der Check bricht dabei NICHT ab: Inserat-Daten, Marktrecherche, LLM-Bericht
+    # und die allgemeinen Basis-Pruefplaene laufen vollstaendig weiter.
+    baureihe_markt, identitaet = await baureihe_task
+    motor_markt = find_motor(baureihe_markt, req.motor) if baureihe_markt else None
+    if identitaet["belastbar"]:
+        baureihe, motor_match = baureihe_markt, motor_markt
+    else:
+        log.info("Kaufcheck: Baureihe nicht belastbar zugeordnet (match=%s) — "
+                 "fahrzeugspezifische DB-Aussagen werden unterdrueckt",
+                 identitaet["match_art"])
+        baureihe, motor_match = None, None
 
     # 2. DB-Kontext
     #
@@ -256,13 +287,15 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Marktvergleich 2.0 + adaptive Recherche: Ziel-Profil (harte Modelltreue) bauen,
     # dann die Recherche adaptiv VERTIEFEN, bis genug akzeptierte, modelltreue
     # Vergleiche vorliegen (nicht anhand roher Trefferzahl aufhören — #4/#7).
-    ziel = baue_ziel(baureihe, motor_match, req,
-                     get_alle_baureihen_kurz() if baureihe else [],
-                     get_alle_motorvarianten_kurz() if baureihe else [])
+    # Marktpfad bewusst mit dem ROHTREFFER (siehe Identity-Trust-Gate oben):
+    # unveraendertes Verhalten der Etappe-1-Marktanalyse.
+    ziel = baue_ziel(baureihe_markt, motor_markt, req,
+                     get_alle_baureihen_kurz() if baureihe_markt else [],
+                     get_alle_motorvarianten_kurz() if baureihe_markt else [])
     # Adaptive, qualitäts-gesteuerte Recherche auch OHNE erkannte Baureihe, sofern
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
-    identity = VehicleIdentity.from_market_context(baureihe, motor_match, req)
+    identity = VehicleIdentity.from_market_context(baureihe_markt, motor_markt, req)
     if TAVILY_API_KEY and req.marke and req.modell:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
@@ -456,7 +489,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Phase 2: Kern-Erkenntnisse deterministisch aus den bereits vorhandenen Daten
     # verdichten (Marktanalyse in insights, Rückruf-Applicability, Schwachstellen,
     # Inserat-Widersprüche) — kein weiteres LLM, referenziert nur echte Insight-IDs.
-    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights, price_assessment)
+    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights,
+                                           price_assessment, identitaet=identitaet)
 
     # P1-3: deterministische Kaufaktionen (Besichtigung / Probefahrt / Verkaeufer-
     # fragen / Dokumente) aus DENSELBEN bereits aufbereiteten Daten — keine neuen
@@ -490,4 +524,6 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "key_findings":            key_findings,
         "kaufaktionen":            kaufaktionen,
         "fahrzeugkontext":         fahrzeugkontext,
+        "identitaet_konfidenz":    identitaet["konfidenz"],
+        "identitaet_match_art":    identitaet["match_art"],
     }
