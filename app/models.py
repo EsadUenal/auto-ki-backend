@@ -589,6 +589,81 @@ class Fahrzeugkontext(BaseModel):
                     self.wartung_hu_intervall))
 
 
+class Wartungshinweis(BaseModel):
+    """P2-5 — EIN Wartungspunkt, dessen hinterlegtes Intervall in der Nähe der
+    tatsächlichen Laufleistung dieses Fahrzeugs liegt.
+
+    DER ZENTRALE PUNKT: Dies ist ausdrücklich KEINE Fälligkeitsaussage. VIRA weiß
+    NICHT, wann die Arbeit zuletzt durchgeführt wurde — es gibt im gesamten System
+    kein Feld dafür (weder im Inserat-Request noch in der Fahrzeugdatenbank; siehe
+    app/laufleistung.py, Abschnitt "Was NICHT bekannt ist"). Ein Hinweis sagt
+    deshalb immer nur: an dieser Stelle des Fahrzeuglebens ist dieser Wartungspunkt
+    RELEVANT, lass dir den Nachweis zeigen. Er sagt nie "fällig", "überfällig" oder
+    "nicht gemacht".
+
+    Entsteht ausschließlich aus einer EXISTIERENDEN Evidence (kritischer
+    Wartungspunkt der erkannten Motorvariante oder quellengebundener Web-Fakt) mit
+    einem konkret auswertbaren Kilometer-Intervall. `wartung_oel_km` aus dem
+    Fahrzeugkontext (P1-4) erzeugt NIEMALS einen Wartungshinweis — das Feld ist
+    unverified, liegt auf Baureihen- statt Motorebene und trägt keine Quelle.
+    """
+    bauteil: str
+    # "naehert_sich" | "im_bereich" | "darueber" — "entfernt" erzeugt bewusst
+    # GAR KEINEN Hinweis (keine Warnung ohne Anlass).
+    status: str
+    punkt_km: int                      # unterer/erster Wert des hinterlegten Intervalls
+    punkt_bis_km: int | None = None    # oberer Wert, nur bei einer Spanne ("150.000 - 250.000 km")
+    # Kilometerstand minus `punkt_km`. Negativ = der Punkt liegt noch voraus.
+    differenz_km: int
+    intervall_text: str                # der unveränderte Originaltext der Evidence
+    hinweis: str                       # ausformulierter Satz — nie eine Fälligkeitsbehauptung
+    herkunft: str                      # "db_wartung" | "web_wartung"
+    evidence_id: str                   # IMMER eine existierende Insight-ID (§12)
+    quellen: list[EvidenceQuelle] = Field(default_factory=list)
+
+
+class Laufleistungskontext(BaseModel):
+    """P2-5 — Kilometerstand und Fahrzeugalter eingeordnet, plus die daraus
+    relevanten Wartungspunkte.
+
+    ABGRENZUNGEN, die dieses Modell trägt:
+
+    * KEINE Preisaussage (§13). Das Modul bekommt weder Marktanalyse noch Preis;
+      eine "deswegen günstig/teuer"-Aussage ist strukturell nicht konstruierbar.
+      Der Kontext ist bei `completed_no_market` identisch (§14).
+    * KEINE Modulo-Fälligkeit (§2). Es wird nie `kilometerstand % intervall`
+      gerechnet. Berechnet wird ausschließlich der Abstand zum ERSTEN hinterlegten
+      Wartungspunkt.
+    * KEINE Scheinpräzision (§4/§5). `fahrzeugalter_jahre` ist ein ganzzahliger
+      Näherungswert aus dem Baujahr (kein Erstzulassungsmonat im System),
+      `km_pro_jahr` ein auf 100 km gerundeter DURCHSCHNITT seit dem Baujahr — nicht
+      die tatsächliche Fahrleistung eines Vorbesitzers in einem einzelnen Jahr.
+
+    Alle Felder sind optional, weil jede Zutat einzeln fehlen kann: ohne Baujahr
+    kein Alter, ohne Alter keine km/Jahr, ohne km/Jahr keine Einordnung, ohne
+    Kilometerstand keine Wartungshinweise.
+    """
+    kilometerstand: int | None = None
+    fahrzeugalter_jahre: int | None = None
+    km_pro_jahr: int | None = None
+    # "niedrig" | "durchschnittlich" | "erhoeht" — NEUTRALE Einordnung, KEIN
+    # Qualitätsurteil (§6). None, wenn die Grundlage dafür nicht reicht (kein
+    # Baujahr, Fahrzeug jünger als zwei Jahre) — dann steht nur die Zahl.
+    laufleistungs_einordnung: str | None = None
+    wartungshinweise: list[Wartungshinweis] = Field(default_factory=list)
+    # Ehrlichkeits-Marker und zugleich die wichtigste Einzelaussage dieses Modells:
+    # Der letzte tatsächliche Service ist VIRA nicht bekannt. Das Feld ist
+    # aktuell IMMER False — es existiert keine Datenquelle, die es True machen
+    # könnte (siehe Wartungshinweis). Es steht trotzdem explizit da, damit
+    # Frontend und Prompt die Unwissenheit ausdrücken können, statt sie zu
+    # verschweigen.
+    letzter_service_bekannt: bool = False
+
+    def hat_inhalt(self) -> bool:
+        return any((self.kilometerstand, self.fahrzeugalter_jahre,
+                    self.km_pro_jahr, self.wartungshinweise))
+
+
 # ---------- Kauf-Check ----------
 
 class KaufCheckResponse(BaseModel):
@@ -663,6 +738,11 @@ class KaufCheckResponse(BaseModel):
     # optional -> alte Checks ohne dieses Feld laden weiter (Default: None).
     # Ausdrücklich KEINE Evidence und keine Wartungsfälligkeit — siehe Fahrzeugkontext.
     fahrzeugkontext: Fahrzeugkontext | None = None
+    # P2-5: Laufleistungs- und Wartungskontext (Alter, km/Jahr, relevante
+    # Wartungspunkte). Additiv und optional -> alte Checks ohne dieses Feld laden
+    # weiter (Default: None). Enthält KEINE Fälligkeitsaussage und KEINE
+    # Preisaussage — siehe Laufleistungskontext.
+    laufleistungskontext: Laufleistungskontext | None = None
     # P1-3: deterministische Kaufaktionen (Besichtigung/Probefahrt/Verkäuferfragen/
     # Dokumente), abgeleitet aus denselben Insights/Inserat-Daten wie key_findings.
     # Additiv -> alte Checks ohne dieses Feld laden weiter (Default: vier leere Listen).

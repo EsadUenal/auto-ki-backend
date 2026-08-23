@@ -39,6 +39,9 @@ from app.car_lookup import (
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.fahrzeugkontext import build_fahrzeugkontext
+from app.laufleistung import (
+    build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
+)
 from app.technical_research import recherchiere_technisch, technical_coverage
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
@@ -393,6 +396,17 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
                               marktanalyse=marktanalyse, web_recherche=web_recherche)
     evidence_block = format_evidence_for_prompt(insights)
+    # P2-5: Laufleistungs- und Wartungskontext. Bekommt NUR Request und Insights —
+    # weder Marktanalyse noch Preis (§13), damit eine Preisaussage aus der
+    # Laufleistung strukturell unmoeglich bleibt und PFAD B (`completed_no_market`)
+    # exakt denselben Kontext liefert wie PFAD A (§14).
+    #
+    # Der Prompt-Block traegt seine Verbote selbst mit: ohne ein ausdrueckliches
+    # "der letzte Service ist NICHT bekannt" formuliert ein Modell aus
+    # "Wartungspunkt 120.000 km" + "Fahrzeug 160.000 km" zuverlaessig eine
+    # Faelligkeit, die durch keine Datenquelle gedeckt ist.
+    laufleistungskontext = build_laufleistungskontext(req, insights)
+    laufleistung_block = laufleistung_prompt_block(laufleistungskontext)
     # PFAD A: verbindliche Markt-/Preisbloecke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt beider. Ohne ihn wuerde das
     # Modell die Preisanweisungen aus `_SYSTEM` ("leite eine grobe marktpreis_min/
@@ -406,7 +420,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         markt_block = no_market_prompt_block()
         preis_block = ""
     user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx,
-                                         markt_block, preis_block, evidence_block]))
+                                         laufleistung_block, markt_block,
+                                         preis_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
     # GeminiVoruebergehendNichtErreichbar) — die propagieren bis zum Router
     # (routers/kaufcheck.py), der einheitlich das Check-Kontingent zurückerstattet
@@ -530,7 +545,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # eine Preis- oder Nachverhandlungsaktion ist damit strukturell nicht
     # konstruierbar. PFAD B (`completed_no_market`) liefert deshalb exakt dieselben
     # technischen Aktionen wie PFAD A.
-    kaufaktionen = build_kaufaktionen(req, baureihe, motor_match, insights)
+    kaufaktionen = build_kaufaktionen(req, baureihe, motor_match, insights,
+                                     laufleistungskontext=laufleistungskontext)
 
     return {
         "bericht":          result.get("bericht", ""),
@@ -552,6 +568,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "key_findings":            key_findings,
         "kaufaktionen":            kaufaktionen,
         "fahrzeugkontext":         fahrzeugkontext,
+        "laufleistungskontext":    laufleistungskontext,
         "identitaet_konfidenz":    identitaet["konfidenz"],
         "identitaet_match_art":    identitaet["match_art"],
         "technical_coverage":      technical_coverage(baureihe, web_recherche),

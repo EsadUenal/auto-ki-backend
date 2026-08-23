@@ -20,6 +20,11 @@ import logging
 import re
 from datetime import date
 
+# P2-5: die beiden Laufleistungs-Schwellen stehen zentral in app/laufleistung.py.
+# Sie waren hier zuerst als Literale entstanden; seit der Laufleistungskontext
+# dieselben Werte braucht, gibt es dafür EINE Quelle statt zweier, die
+# auseinanderlaufen können. Das Verhalten dieses Findings ändert sich nicht.
+from app.laufleistung import REFERENZ_DURCHSCHNITT, SCHWELLE_NIEDRIG
 from app.models import Insight, KeyFinding, PriceAssessment
 from app.preisurteil import bewerte_preis
 
@@ -410,12 +415,13 @@ def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding
         alter = max(1, date.today().year - bj)
         if alter >= 2:
             pro_jahr = km / alter
-            if pro_jahr <= 10_000:
+            if pro_jahr <= SCHWELLE_NIEDRIG:
                 out.append(KeyFinding(
                     id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
                     titel="Unterdurchschnittliche Laufleistung",
                     beschreibung=f"Rund {_eur(pro_jahr).replace(' €', '')} km/Jahr — unter dem "
-                                 f"Durchschnitt von ca. 15.000 km/Jahr.",
+                                 f"Durchschnitt von ca. {REFERENZ_DURCHSCHNITT:,} km/Jahr."
+                                 .replace(",", "."),
                     wert=f"≈ {round(pro_jahr / 100) * 100:,} km/Jahr".replace(",", "."),
                     prioritaet=_P_VORTEIL - 20))
     return out

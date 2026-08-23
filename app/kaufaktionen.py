@@ -127,6 +127,21 @@ _R_MOTORPROBLEM      = 700   # motorspezifisches Problem (Motor eindeutig erkann
 _R_SCHWACH_MITTEL    = 600   # Schwachstelle mit schweregrad mittel
 _R_DOKUMENT_KERN     = 560   # Unfall-/HU-Nachweis: harte Kaufentscheidungsgrundlage
 _R_WARTUNG           = 520   # kritische Wartung laut DB (ohne Insight-ID)
+# P2-5: derselbe Wartungspunkt, aber die Laufleistung dieses Fahrzeugs hat ihn
+# bereits erreicht oder überschritten.
+#
+# Der Wert ist gemessen entstanden, nicht geschätzt: mit 545 fiel die Aktion im
+# Sanity-Lauf (Audi A3 8P, 160.000 km, Zahnriemen bei 120.000 km) durch
+# MAX_SPEZIFISCH_PRO_BEREICH hinter drei Rückruf- und zwei Motorproblem-Aktionen
+# heraus und erreichte den Nutzer nie — ausgerechnet bei den Fahrzeugen mit der
+# besten Wartungsdatenlage.
+#
+# 750 ordnet ihn dort ein, wo er fachlich hingehört: ÜBER einem Motorproblem
+# (700), das eine Beobachtungsempfehlung ist, aber UNTER jedem Rückruf (800/900)
+# und unter jeder schweren Schwachstelle (850). Ein erreichter Wartungspunkt ist
+# ein konkret einlösbarer Nachweis-Wunsch — kein festgestellter Mangel und erst
+# recht kein Sicherheitsbefund. Deshalb erreicht er auch nie "kritisch".
+_R_WARTUNG_RELEVANT  = 750
 _R_SCHWACH_GERING    = 400   # Schwachstelle mit schweregrad gering
 _R_DOKUMENT_STANDARD = 340   # Scheckheft/Vorbesitzer: wichtig, aber selten K.-o.
 _R_ANGABE_FEHLT      = 300   # gezielte Nachfrage zu einer fehlenden Inseratangabe
@@ -695,7 +710,8 @@ def _wird_abgedeckt(deckt: tuple[str, ...], belegte_schluessel: set[str]) -> boo
 
 
 def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
-                       insights: list[Insight]) -> Kaufaktionen:
+                       insights: list[Insight],
+                       laufleistungskontext=None) -> Kaufaktionen:
     """Baut die vier Prüflisten aus Insights + Inserat-Angaben + Basis-Katalog.
 
     Bewusst OHNE Marktanalyse-/Preisparameter (§20): dieses Modul kann strukturell
@@ -704,10 +720,22 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
 
     Es werden KEINE neuen DB-Abfragen ausgeführt — `baureihe`, `motor_match` und
     `insights` sind die bereits aufbereiteten Daten des laufenden Checks.
+
+    `laufleistungskontext` (P2-5, optional) schärft vorhandene Wartungspunkte, für
+    die die Laufleistung dieses Fahrzeugs relevant geworden ist. Er erzeugt KEINE
+    zusätzlichen Aktionen und keinen neuen Bereich: derselbe Dedup-Schlüssel wie
+    `_aus_wartung` sorgt dafür, dass aus einer allgemeinen Wartungsfrage eine
+    konkrete wird — und dass es bei EINER Aktion bleibt. Fehlt der Kontext (Alt-
+    Aufrufe, Tests), verhält sich die Funktion exakt wie zuvor.
     """
     s = _Sammler()
     baujahr = getattr(req, "baujahr", None)
 
+    # P2-5 ZUERST: der `_Sammler` behält bei gleichem Schlüssel den zuerst
+    # eingetragenen TEXT und hebt nur den Rang an. Der laufleistungsbezogene,
+    # konkretere Text soll gewinnen — deshalb steht dieser Aufruf vor
+    # `_aus_wartung`/`_aus_web_evidence`, die denselben Schlüssel belegen.
+    _aus_laufleistung(s, laufleistungskontext)
     _aus_schwachstellen(s, insights)
     _aus_motorproblemen(s, insights, motor_match, baujahr)
     _aus_rueckrufen(s, insights)
@@ -1055,6 +1083,52 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
               f"Werkstattbelege zeigen lassen.",
               _R_WEB_SCHWACH, evidence_ids=[i.id], kategorie="web_schwachstelle",
               gruppe="Hinweis aus der Webrecherche")
+
+
+# ── 4c) Laufleistungsbezogene Wartungspunkte (P2-5) ──────────────────────────
+
+# Der Schlüssel MUSS exakt dem entsprechen, den `_aus_wartung` bzw.
+# `_aus_web_evidence` für dasselbe Bauteil bilden — sonst entstünde ein zweiter,
+# fast gleichlautender Punkt statt eines geschärften.
+_LAUF_SCHLUESSEL_PRAEFIX = {"db_wartung": "wartung-", "web_wartung": "wartung-web-"}
+
+
+def _aus_laufleistung(s: _Sammler, kontext) -> None:
+    """Wartungspunkte, die bei DIESER Laufleistung relevant sind -> Frage + Nachweis.
+
+    Der Kontext liefert ausschließlich Hinweise, die aus einer EXISTIERENDEN
+    Evidence stammen und einen konkret auswertbaren Kilometerpunkt tragen — ein
+    unverified `wartung_oel_km` kommt dort nie an (app/laufleistung.py, Stufe C).
+    `evidence_id` ist deshalb immer gesetzt und immer echt.
+
+    Ein Punkt, der noch weit entfernt liegt, erreicht diese Funktion gar nicht
+    (Status "entfernt" erzeugt keinen Hinweis) — es entsteht also keine Aktion
+    ohne Anlass, und die Basislisten wachsen nicht.
+
+    Wie überall in P1-3 gilt: KEINE Besichtigungs- und KEINE Probefahrtaktion.
+    Ob eine Wartung durchgeführt wurde, ist weder im Stand noch während der Fahrt
+    feststellbar, sondern ausschließlich über Belege.
+    """
+    if kontext is None:
+        return
+    for w in getattr(kontext, "wartungshinweise", None) or []:
+        komp = _komponente(w.bauteil)
+        basis = komp["schluessel"] if komp else _slug(w.bauteil)
+        schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
+        rang = (_R_WARTUNG_RELEVANT if w.status in ("im_bereich", "darueber")
+                else _R_WARTUNG)
+
+        s.add(VERKAEUFERFRAGEN, schluessel,
+              f"Wurde „{w.bauteil}“ bereits gemacht — wann und bei welchem Kilometerstand?",
+              f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
+              rang, evidence_ids=[w.evidence_id], kategorie="wartung",
+              gruppe="Wartung und Technik")
+
+        s.add(DOKUMENTE, schluessel, f"Wartungsnachweis {w.bauteil}",
+              f"{w.hinweis} Rechnung oder Eintrag im Serviceheft mit Datum und "
+              f"Kilometerstand zeigen lassen.",
+              rang, evidence_ids=[w.evidence_id], kategorie="wartung",
+              gruppe="Prüfungen und Wartung")
 
 
 # ── 5) Inserat-Angaben (§8 — nur was der Nutzer tatsächlich angegeben hat) ───
