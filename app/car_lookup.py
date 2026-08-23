@@ -524,12 +524,55 @@ def find_motor(baureihe: dict, hint: str | None) -> dict | None:
     "190 kW" (330i = 258 PS, Benzin): stand der 330i in der Motorliste vorn,
     gewann er über leistung_kw==190 und der Kaufcheck bekam Benzin-Specs für einen
     Diesel — widersprüchlicher Kontext, der die Analyse verfälscht.
+
+    NORMALISIERUNG (Befund aus dem Technical-Web-Fallback-Test): Die
+    Baureihenerkennung normalisiert Bezeichnungen seit jeher über
+    `_norm_bezeichnung` ("C 200" -> "c200"), `find_motor` verglich dagegen rohe
+    Strings. Für "Mercedes-Benz C 200" wurde die Baureihe deshalb gefunden, die
+    real vorhandene Variante "C200" aber NICHT ("c 200" ist weder Teilstring von
+    "c200" noch umgekehrt) — der Motor galt als unbekannt und löste unnötig den
+    technischen Web-Fallback aus.
+
+    Gemessen über alle 3.248 Motorvarianten und drei realistische Schreibweisen
+    (Original, klein, ohne Leerzeichen): 1.515 der 9.624 Kombinationen fanden
+    ihren eigenen Motor nicht, weitere 875 trafen den FALSCHEN — letzteres, weil
+    die Teilstring-Suche vor jeder Exaktprüfung lief und z.B. "1.8 T quattro
+    (150 PS)" an der Zeile "1.8 T (150 PS)" hängenblieb.
+
+    Der Fix ist bewusst minimal: VOR der bestehenden Teilstring-Suche laufen zwei
+    neue Durchgänge, die ausschließlich auf NORMALISIERTE GLEICHHEIT prüfen. Die
+    bisherige Logik bleibt als Rückfallebene unverändert erhalten.
+
+    Bewusst KEIN normalisierter Teilstring-Vergleich: die DB führt "C200" (Benzin,
+    184 PS) und "C200 d" (Diesel, 136 PS) als getrennte Varianten. Normalisiert
+    steckt "c200" in "c200d" — ein Teilstring-Vergleich auf der normalisierten Form
+    würde je nach Zeilenreihenfolge den Diesel für einen Benziner ausgeben. Nur
+    Gleichheit ist hier sicher.
     """
     if not hint or not baureihe["motoren"]:
         return None
     h = hint.lower()
+    # Dieselbe Normalisierung wie in der Baureihenerkennung (§2: kein zweiter,
+    # fast identischer Helper) — Leerzeichen und Bindestriche raus, klein.
+    # Die Originalwerte bleiben unangetastet; normalisiert wird nur die
+    # VERGLEICHSFORM.
+    h_norm = _norm_bezeichnung(hint)
 
-    # (1) Direkter Bezeichnungs-/Motorcode-Treffer — stärkstes Signal.
+    if h_norm:
+        # (1a) Normalisierte GLEICHHEIT der Bezeichnung — das präziseste Signal.
+        #      "C 200" == "C200", "C 220 d" == "C220 d", "E 300 de" == "E300de".
+        for m in baureihe["motoren"]:
+            if _norm_bezeichnung(m["bezeichnung"]) == h_norm:
+                return m
+        # (1b) Normalisierte Gleichheit des Motorcodes. Mindestlänge 3 wie in
+        #      `_modell_trifft_motor` — kürzere Codes wären zu unspezifisch.
+        for m in baureihe["motoren"]:
+            code_norm = _norm_bezeichnung(m.get("motorcode"))
+            if code_norm and len(code_norm) >= 3 and code_norm == h_norm:
+                return m
+
+    # (1c) Bisheriger direkter Bezeichnungs-/Motorcode-Treffer — unverändert als
+    #      Rückfallebene für Teileingaben ("320d" -> "320d xDrive").
     for m in baureihe["motoren"]:
         bez  = m["bezeichnung"].lower()
         code = (m["motorcode"] or "").lower()

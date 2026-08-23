@@ -388,21 +388,18 @@ check("M3 das Modul importiert keinen DB-Writer",
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n=== N) Bekannte Fahrzeuge unverändert ===")
 
-# Hinweis zu "Mercedes-Benz C 200": Dieser Fall loest den Trigger `motor_fehlt`
-# aus — und das ist KORREKT, nicht ein Fehler des Fallbacks. Ursache ist eine
-# VORBESTEHENDE Luecke im Matcher: `find_baureihe` normalisiert die Eingabe
-# ("c 200" -> "c200", `_norm_bezeichnung`) und findet die Baureihe ueber die
-# Motorbezeichnung; `find_motor` vergleicht dagegen roh per Teilstring und findet
-# die DB-Variante "C200" fuer die Eingabe "C 200" NICHT ("c 200" ist weder
-# Teilstring von "c200" noch umgekehrt). Der Motor bleibt also tatsaechlich
-# unerkannt, obwohl der Nutzer ihn konkret genannt hat — genau die Luecke, die der
-# Fallback schliessen soll. Der Matcher wird hier NICHT geaendert (ausserhalb des
-# Auftrags, und `find_motor` haengt am Identity-Gate aus 26b8707).
+# "Mercedes-Benz C 200" stand hier zunaechst als Sonderfall: `find_baureihe`
+# normalisierte die Eingabe ("c 200" -> "c200") und fand die Baureihe, `find_motor`
+# verglich dagegen rohe Strings und fand die DB-Variante "C200" NICHT — der Motor
+# galt als unbekannt und loeste unnoetig `motor_fehlt` aus. Diese Luecke ist mit
+# der Motor-Normalisierung geschlossen (`find_motor` prueft jetzt zuerst auf
+# normalisierte GLEICHHEIT), weshalb der Fall hier in die regulaere Liste gehoert.
 OHNE_FALLBACK = (
     ("BMW", "320d", 2020, "320d", "bmw-3er-g20-g21"),
     ("Opel", "Insignia", 2020, "2.0 Diesel 174 PS", "opel-insignia-b"),
     ("Volkswagen", "Golf", 2015, "1.4 TSI", "volkswagen-golf-vii"),
     ("Audi", "A4", 2018, "2.0 TDI", "audi-a4-b9"),
+    ("Mercedes-Benz", "C 200", 2019, "C 200", "mercedes-benz-c-klasse-w205"),
 )
 for marke, modell, bj, mot, erwartet in OHNE_FALLBACK:
     _n = lauf(marke, modell, bj, motor=mot, fixtures=fixtures_dacia_duster())
@@ -414,21 +411,18 @@ for marke, modell, bj, mot, erwartet in OHNE_FALLBACK:
     check(f"N5 {marke} {modell}: keine Web-Aktionen",
           not [a for a in spez(_n["ka"]) if a.kategorie.startswith("web_")])
 
-# Mercedes W205: Baureihe unveraendert, Motor vorbestehend unerkannt -> Fallback
-# laeuft und ERGAENZT, ohne die DB-Daten zu verdraengen.
+# Mercedes W205 im Detail: der Motor wird jetzt erkannt, deshalb entfaellt der
+# Fallback vollstaendig — und die DB-Daten stehen unveraendert zur Verfuegung.
 _n_mb = lauf("Mercedes-Benz", "C 200", 2019, motor="C 200", fixtures=fixtures_dacia_duster())
-check("N1b Mercedes W205: Baureihe unverändert",
-      (_n_mb["br"] or {}).get("id") == "mercedes-benz-c-klasse-w205")
-check("N2b Mercedes W205: Fallback wegen vorbestehender find_motor-Lücke",
-      _n_mb["web"] is not None and _n_mb["web"].ausgeloest_durch == TRIGGER_MOTOR_FEHLT)
+check("N1b Mercedes W205: Motor jetzt erkannt",
+      _n_mb["mo"] is not None and _n_mb["mo"]["bezeichnung"] == "C200")
+check("N2b Mercedes W205: KEIN Fallback mehr (Normalisierungsluecke geschlossen)",
+      _n_mb["web"] is None)
 check("N3b Mercedes W205: DB-Schwachstellen bleiben erhalten",
       len([i for i in _n_mb["ins"] if i.kategorie == "schwachstelle"]) > 0)
-check("N4b Mercedes W205: Dacia-Fixtures belegen die Identität NICHT",
-      _n_mb["web"].identitaet is not None and _n_mb["web"].identitaet.belegt is False)
-check("N5b Mercedes W205: keine fremden Web-Insights",
+check("N4b Mercedes W205: keine fremden Web-Insights",
       not [i for i in _n_mb["ins"] if i.kategorie.startswith("web_")])
-check("N6b Mercedes W205: coverage bleibt 'db' (kein Web-Beitrag)",
-      _n_mb["coverage"] == "db")
+check("N5b Mercedes W205: coverage 'db'", _n_mb["coverage"] == "db")
 
 # Vergleich gegen den Lauf OHNE Fallback-Parameter: identisches Ergebnis
 _n_ref = lauf("BMW", "320d", 2020, motor="320d")
