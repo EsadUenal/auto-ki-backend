@@ -103,27 +103,15 @@ from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshi
 log = logging.getLogger(__name__)
 
 
-# ── Referenzwerte für die Fahrleistung ────────────────────────────────────────
-#
-# NUR zur Kompatibilität mit app/key_findings.py::_positive_findings_kauf, das
-# diese beiden Werte bereits vor P2-5 kannte (Phase 2, Commit 0f0df31): die
-# Schwelle 10.000 km/Jahr, unter der eine "unterdurchschnittliche Laufleistung"
-# als positiver Fund gemeldet wird, und der dort im Text genannte Referenzwert
-# von ca. 15.000 km/Jahr. Sie stehen jetzt hier und werden von dort importiert
-# — EINE Quelle der Wahrheit statt zweier Literale, die auseinanderlaufen
-# können. Der von `_positive_findings_kauf` erzeugte Text ist dadurch
-# unverändert.
-#
-# WICHTIG (Nachtrag): Auch diese beiden Werte tragen an keiner Stelle im
-# Projekt eine zitierte fachliche Quelle (kein ADAC-/DAT-/KBA-Verweis) — es
-# sind interne Heuristiken aus Phase 2. Deshalb erzeugt DIESES Modul daraus
-# KEINE Einordnung ("niedrig"/"durchschnittlich"/"erhöht"): eine solche
-# Klassifikation existierte vor P2-5 nicht, P2-5 hätte mit `SCHWELLE_ERHOEHT`
-# zusätzlich eine dritte, frei gespiegelte Grenze ohne jede Grundlage
-# eingeführt. Ausgegeben wird nur die berechnete Zahl km/Jahr — siehe
-# `Laufleistungskontext` und `prompt_block`.
-SCHWELLE_NIEDRIG = 10_000
-REFERENZ_DURCHSCHNITT = 15_000
+# Audit-Nachtrag (P2-5-Folgeaudit): Dieses Modul enthielt hier zuvor
+# `SCHWELLE_NIEDRIG`/`REFERENZ_DURCHSCHNITT` — zwei unbelegte Phase-2-Literale
+# (10.000 / 15.000 km/Jahr, kein ADAC-/DAT-/KBA-Verweis), die ausschließlich
+# app/key_findings.py::_positive_findings_kauf für ein "Unterdurchschnittliche
+# Laufleistung"-Finding nutzte. Dieses Finding wurde entfernt (eine unbelegte
+# Schwelle darf keine objektiv klingende Fahrzeugbewertung erzeugen) — womit
+# beide Konstanten nirgends mehr gebraucht wurden und mit entfernt sind.
+# km/Jahr bleibt reiner Zahlenkontext, siehe `Laufleistungskontext.km_pro_jahr`
+# und `prompt_block` unten; es gibt keine Ersatzschwelle.
 
 # Obergrenzen gegen Tippfehler/Unsinn (1.500.000 km, Baujahr 1600). Verworfen
 # wird still — ein unplausibler Wert erzeugt keinen Kontext, aber auch keinen

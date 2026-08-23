@@ -32,7 +32,6 @@ import re
 import app.laufleistung as _L
 from app.kaufaktionen import build_kaufaktionen
 from app.laufleistung import (
-    REFERENZ_DURCHSCHNITT, SCHWELLE_NIEDRIG,
     STATUS_DARUEBER, STATUS_ENTFERNT, STATUS_IM_BEREICH, STATUS_NAEHERT_SICH,
     build_laufleistungskontext, fahrzeugalter, km_pro_jahr,
     norm_bauteil, parse_wartungspunkt, prompt_block, status_zu_punkt,
@@ -209,25 +208,28 @@ check("B8 der Prompt behauptet NICHT die Fahrweise eines Vorbesitzers",
 check("B9 der Prompt kennzeichnet den Wert als Mittelwert über die Lebensdauer",
       "Mittelwert über die gesamte" in prompt_block(_ctxA))
 
-check("B10 Schwelle 'niedrig' stammt aus dem Bestand (key_findings)",
-      SCHWELLE_NIEDRIG == 10_000 and REFERENZ_DURCHSCHNITT == 15_000)
-
-# Nachtrag zur ursprünglichen Fassung: das Modul erzeugte aus SCHWELLE_NIEDRIG/
-# REFERENZ_DURCHSCHNITT eine dreistufige Einordnung ("niedrig"/"durchschnittlich"
-# /"erhoeht") inkl. einer frei gespiegelten dritten Grenze (SCHWELLE_ERHOEHT).
-# Für keinen der drei Werte existiert im Projekt eine zitierte fachliche
-# Quelle — es sind interne Phase-2-Heuristiken, die vor P2-5 nur EINEN
-# einseitigen Vergleich trugen ("<= 10.000 -> Vorteil"), keine Klassifikation.
-# Diese Prüfungen stellen sicher, dass die Klassifikation vollständig entfernt
-# bleibt und nur noch die nackte Zahl ausgegeben wird.
+# Nachtrag (zwei Audits): das Modul erzeugte aus zwei unbelegten Phase-2-
+# Literalen (10.000 / 15.000 km/Jahr, keine zitierte fachliche Quelle) zuerst
+# eine dreistufige Einordnung ("niedrig"/"durchschnittlich"/"erhoeht") inkl.
+# einer frei gespiegelten dritten Grenze — entfernt im vorigen Fix. Danach
+# stellte sich heraus, dass dieselben zwei Literale in app/key_findings.py
+# weiterhin ein "Unterdurchschnittliche Laufleistung"-Finding erzeugten: eine
+# unbelegte Schwelle, die eine objektiv klingende positive Fahrzeugbewertung
+# auslöste. Auch dieses Finding ist jetzt entfernt, womit BEIDE Konstanten
+# nirgends mehr gebraucht werden und vollständig aus dem Modul verschwunden
+# sind — keine Ersatzschwelle, keine Zweitverwendung.
+check("B10 keine Laufleistungs-Schwellenkonstanten mehr im Modul",
+      not any(hasattr(_L, n) for n in
+              ("SCHWELLE_NIEDRIG", "REFERENZ_DURCHSCHNITT", "SCHWELLE_ERHOEHT")))
 check("B11 keine Einordnungs-Konstanten mehr im Modul",
       not any(hasattr(_L, n) for n in
               ("EINORDNUNG_NIEDRIG", "EINORDNUNG_DURCHSCHNITTLICH",
-               "EINORDNUNG_ERHOEHT", "SCHWELLE_ERHOEHT", "MIN_ALTER_EINORDNUNG")))
+               "EINORDNUNG_ERHOEHT", "MIN_ALTER_EINORDNUNG")))
 check("B12 keine Einordnungsfunktion mehr im Modul",
       not hasattr(_L, "einordnung"))
-check("B13 key_findings nutzt weiterhin dieselbe Konstante",
-      __import__("app.key_findings", fromlist=["x"]).SCHWELLE_NIEDRIG is SCHWELLE_NIEDRIG)
+check("B13 key_findings importiert nichts mehr aus diesem Modul",
+      "app.laufleistung" not in inspect.getsource(
+          __import__("app.key_findings", fromlist=["x"])))
 check("B14 das Modell trägt kein Einordnungsfeld mehr",
       "laufleistungs_einordnung" not in Laufleistungskontext.model_fields)
 _ctxB = build_laufleistungskontext(Req(baujahr=2025, kilometerstand=30_000), [], heute_jahr=HEUTE)

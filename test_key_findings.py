@@ -196,6 +196,43 @@ check("8: neutraler Fall -> keine kritischen/warnenden Findings erzwungen",
       all(f.stufe in ("info", "chance") for f in f8))
 check("8: kein künstlicher Inhalt -> überschaubar wenige Findings", len(f8) <= 3)
 
+# ── 8b) Audit-Nachtrag: keine unbelegte Jahresfahrleistungs-Bewertung ────────
+# Frühere Fassung: km/Jahr <= 10.000 (2+ Jahre altes Fahrzeug) erzeugte ein
+# "Unterdurchschnittliche Laufleistung"-Finding mit kategorie="vorteil",
+# stufe="chance" — ohne zitierte fachliche Quelle für die Schwelle. Entfernt.
+# A) niedrige km/Jahr -> kein positives/unterdurchschnittliches Finding.
+REQ_WENIG_KM = SimpleNamespace(marke="BMW", modell="320d", baujahr=2016, kilometerstand=30000,
+                               motor="320d", kraftstoff="Diesel", preis_eur=18000,
+                               beschreibung=None, freitext=None, scheckheftgepflegt=None,
+                               ausstattung=[])
+f8b_a = build_key_findings_kauf(REQ_WENIG_KM, BAUREIHE_BMW, MOTOR_BMW, [])
+check("8b-A: 3.000 km/Jahr -> keine 'Laufleistung'-Finding mehr",
+      not any("laufleistung" in f.titel.lower() for f in f8b_a))
+check("8b-A: kein 'vorteil'/'chance'-Finding allein aus dem Kilometerstand",
+      not any(f.kategorie == "vorteil" and "km" in (f.beschreibung or "") for f in f8b_a))
+
+# B) hohe km/Jahr -> kein negatives Finding allein deshalb (es gab nie eines,
+# bleibt aber so — Symmetrie zur Anforderung).
+REQ_VIEL_KM = SimpleNamespace(marke="BMW", modell="320d", baujahr=2020, kilometerstand=180000,
+                              motor="320d", kraftstoff="Diesel", preis_eur=18000,
+                              beschreibung=None, freitext=None, scheckheftgepflegt=None,
+                              ausstattung=[])
+f8b_b = build_key_findings_kauf(REQ_VIEL_KM, BAUREIHE_BMW, MOTOR_BMW, [])
+check("8b-B: 30.000 km/Jahr -> keine 'Laufleistung'-Finding",
+      not any("laufleistung" in f.titel.lower() for f in f8b_b))
+check("8b-B: kein negatives Finding allein aus dem Kilometerstand",
+      not any("laufleistung" in (f.beschreibung or "").lower() for f in f8b_b))
+
+# C) andere Findings bleiben unverändert -> Scheckheft-Finding entsteht weiter.
+REQ_SCHECKHEFT = SimpleNamespace(marke="BMW", modell="320d", baujahr=2016, kilometerstand=30000,
+                                 motor="320d", kraftstoff="Diesel", preis_eur=18000,
+                                 beschreibung=None, freitext=None, scheckheftgepflegt=True,
+                                 ausstattung=[])
+f8b_c = build_key_findings_kauf(REQ_SCHECKHEFT, BAUREIHE_BMW, MOTOR_BMW, [])
+check("8b-C: Scheckheft-Finding bleibt unverändert erhalten",
+      any(f.titel == "Scheckheftgepflegt" for f in f8b_c))
+
+
 # ── 9/10) Cap 5 + deterministische Sortierung (Betrug > Widerspruch > Preis) ─
 viele = [mv_insight(26000, 17000, -9000, -34.6, "hoch")] + \
         [rueckruf(f"rueckruf-{i}", f"KBA-Rückruf: Mangel {i}", "exakt") for i in range(3)] + \

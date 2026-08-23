@@ -20,11 +20,6 @@ import logging
 import re
 from datetime import date
 
-# P2-5: die beiden Laufleistungs-Schwellen stehen zentral in app/laufleistung.py.
-# Sie waren hier zuerst als Literale entstanden; seit der Laufleistungskontext
-# dieselben Werte braucht, gibt es dafür EINE Quelle statt zweier, die
-# auseinanderlaufen können. Das Verhalten dieses Findings ändert sich nicht.
-from app.laufleistung import REFERENZ_DURCHSCHNITT, SCHWELLE_NIEDRIG
 from app.models import Insight, KeyFinding, PriceAssessment
 from app.preisurteil import bewerte_preis
 
@@ -400,6 +395,16 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
 
 
 def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding]:
+    """Positive Key Findings — nur was tatsächlich belegt ist.
+
+    Audit-Nachtrag (P2-5-Folgeaudit): Eine frühere Fassung erzeugte hier aus
+    km/Jahr <= 10.000 (Phase 2, ohne zitierte fachliche Quelle) ein
+    "Unterdurchschnittliche Laufleistung"-Finding mit den Stufen "vorteil" /
+    STUFE_CHANCE — also eine objektiv klingende positive Bewertung allein aus
+    einer unbelegten internen Schwelle. Entfernt, ohne Ersatz: km/Jahr bleibt
+    als reiner Zahlenkontext im Laufleistungskontext (P2-5, app/laufleistung.py)
+    verfügbar, erzeugt hier aber KEINE Wertung mehr.
+    """
     out: list[KeyFinding] = []
 
     if getattr(req, "scheckheftgepflegt", None) is True:
@@ -409,21 +414,6 @@ def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding
             beschreibung="Laut Inserat lückenlose Wartungshistorie — spricht für gute Pflege.",
             prioritaet=_P_VORTEIL))
 
-    bj = getattr(req, "baujahr", None)
-    km = getattr(req, "kilometerstand", None)
-    if bj and km:
-        alter = max(1, date.today().year - bj)
-        if alter >= 2:
-            pro_jahr = km / alter
-            if pro_jahr <= SCHWELLE_NIEDRIG:
-                out.append(KeyFinding(
-                    id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
-                    titel="Unterdurchschnittliche Laufleistung",
-                    beschreibung=f"Rund {_eur(pro_jahr).replace(' €', '')} km/Jahr — unter dem "
-                                 f"Durchschnitt von ca. {REFERENZ_DURCHSCHNITT:,} km/Jahr."
-                                 .replace(",", "."),
-                    wert=f"≈ {round(pro_jahr / 100) * 100:,} km/Jahr".replace(",", "."),
-                    prioritaet=_P_VORTEIL - 20))
     return out
 
 
