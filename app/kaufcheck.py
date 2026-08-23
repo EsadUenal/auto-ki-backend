@@ -402,9 +402,15 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # die eindeutig einem für dieses Fahrzeug ausgeschlossenen Rückruf zuordenbar
         # sind (z.B. Hochvolt-Rückruf bei erkanntem Diesel).
         if baureihe and baureihe.get("rueckrufe"):
-            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+            # KBA-Trust-Gate: `marke` mitgeben, damit dieselbe Applicability-
+            # Formulierung entsteht wie im Prompt oben (build_db_context) — sonst
+            # könnte der Bericht-Validator gegen eine andere Wortwahl prüfen als das
+            # LLM tatsächlich gesehen hat.
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match,
+                                                        req.baujahr, marke=baureihe.get("marke"))
             if _ausgeschlossen:
-                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr,
+                                                marke=baureihe.get("marke"))
                 result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen

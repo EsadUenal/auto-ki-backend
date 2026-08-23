@@ -41,7 +41,12 @@ BAUREIHE = {
     ],
     "rueckrufe": [
         {"datum": "2020-05", "betroffene_baujahre": "2020", "mangel": "Bremskraftverstärker",
-         "abhilfe": "Software-Update", "kba_referenz": "KBA-011234"},
+         # Reales KBA-Referenzformat (rein numerisch) statt eines erfundenen
+         # "KBA-..."-Präfixes — der DATA-TRUST-AUDIT hat kein einziges reales
+         # Vorkommen eines Buchstaben-Präfixes mit mehr als einem Buchstaben
+         # gefunden; das KBA-Trust-Gate (app/recall_filter.py) akzeptiert deshalb
+         # nur Formate, die im Bestand tatsächlich vorkommen.
+         "abhilfe": "Software-Update", "kba_referenz": "011234"},
     ],
 }
 MOTOR = {
@@ -82,7 +87,7 @@ check("1: nicht passende Schwachstelle (2012-2015) ausgelassen",
 rk = [i for i in ins if i.kategorie == "rueckruf"]
 check("2: Rückruf-Insight vorhanden", len(rk) == 1)
 check("2: quellen_typ 'rueckruf_kba'", bool(rk) and "rueckruf_kba" in rk[0].quellen_typen)
-check("2: KBA-Referenz als ref hinterlegt", bool(rk) and any(q.ref == "KBA-011234" for q in rk[0].quellen))
+check("2: KBA-Referenz als ref hinterlegt", bool(rk) and any(q.ref == "011234" for q in rk[0].quellen))
 check("2: confidence hoch (KBA + Baujahr)", bool(rk) and rk[0].confidence == "hoch")
 
 # ── 2b) Severity und Confidence sind STRIKT unabhängig ──────────────────────

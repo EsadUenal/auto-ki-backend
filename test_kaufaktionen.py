@@ -31,6 +31,16 @@ weder wachsen noch schrumpfen.
 
     python test_kaufaktionen.py
 """
+import app.recall_filter as _rf
+
+# KBA-Trust-Gate (recall_filter.py): die Kollisionsprüfung liest normalerweise die
+# gecachte DB-Liste `get_rueckruf_referenzen_kurz`. Diese Datei ist bewusst rein
+# fixture-basiert ("KEIN Netzwerk, KEIN LLM-Call") und darf nicht zufällig von der
+# LIVE-Produktions-DB abhängen — ein Test-Fixture-Wert wie "009695" könnte dort
+# real existieren und mit einer echten Marke kollidieren. Isoliert per Monkeypatch,
+# analog zum bestehenden Muster in test_car_lookup.py.
+_rf.get_rueckruf_referenzen_kurz = lambda: []
+
 from app.evidence import build_insights, valid_evidence_ids
 from app.kaufaktionen import (
     build_kaufaktionen, MAX_SPEZIFISCH_PRO_BEREICH, _komponente, _fahrsymptom_aus_text,

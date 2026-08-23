@@ -626,6 +626,20 @@ def get_alle_motorvarianten_kurz() -> list[dict]:
     )
 
 
+def get_rueckruf_referenzen_kurz() -> list[dict]:
+    """kba_referenz + marke für ALLE Rückrufe mit befüllter Referenz — gecacht
+    (siehe oben). Grundlage der KBA-Referenz-Plausibilitätsprüfung
+    (app/recall_filter.py): prüft, ob dieselbe Referenznummer bei UNTERSCHIEDLICHEN
+    Herstellern auftaucht — eine amtliche KBA-Aktionsnummer ist je Aktion eindeutig
+    und sollte markenübergreifend nicht kollidieren. Bewusst eine eigene, schlanke
+    Abfrage statt die volle `rueckruf`-Tabelle zu laden."""
+    return _cached_alle(
+        "rueckruf_referenzen",
+        "SELECT r.kba_referenz, b.marke FROM rueckruf r JOIN baureihe b ON b.id = r.baureihe_id "
+        "WHERE r.kba_referenz IS NOT NULL AND TRIM(r.kba_referenz) <> ''",
+    )
+
+
 def invalidate_referenzdaten_cache() -> None:
     """Nach Admin-Schreibvorgängen (neue/geänderte Baureihe) aufrufen, damit die
     Fahrzeugerkennung sofort den aktuellen Stand sieht statt bis zu 60s zu warten."""

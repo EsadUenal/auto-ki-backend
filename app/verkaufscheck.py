@@ -325,9 +325,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         # §Phase 8: letztes Sicherheitsnetz gegen ausgeschlossene Rückrufe im
         # Freitext-Bericht (dieselbe Absicherung wie im Kaufcheck, siehe kaufcheck.py).
         if baureihe and baureihe.get("rueckrufe"):
-            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+            # KBA-Trust-Gate: `marke` mitgeben, damit dieselbe Applicability-
+            # Formulierung entsteht wie im Prompt (build_db_context).
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match,
+                                                        req.baujahr, marke=baureihe.get("marke"))
             if _ausgeschlossen:
-                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr)
+                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr,
+                                                marke=baureihe.get("marke"))
                 result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
         # Preis-Konsistenz: liegt empfohlener/maximaler Preis spürbar über der
         # Markt-Obergrenze ohne transparente Begründung, den Aufschlag deterministisch

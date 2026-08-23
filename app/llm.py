@@ -240,11 +240,15 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
                 )
 
         # §Phase 7: zentrale Allowed-List statt rohem DB-Dump (s.o.).
-        erlaubte_rueckrufe = gefilterte_rueckrufe(data["rueckrufe"], fuel_motor_match, None)
+        # KBA-Trust-Gate: `kba_referenz_anzeige` ist None bei unplausibler/
+        # kollidierender Referenz — dann kein "(Ref: …)" statt einer Falschangabe.
+        erlaubte_rueckrufe = gefilterte_rueckrufe(data["rueckrufe"], fuel_motor_match, None,
+                                                  marke=data["marke"])
         if erlaubte_rueckrufe:
             lines.append("\n### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
             for r in erlaubte_rueckrufe:
-                lines.append(f"  {r['datum']}: {r['text']} (Ref: {r['kba_referenz']})")
+                ref = r.get("kba_referenz_anzeige")
+                lines.append(f"  {r['datum']}: {r['text']}" + (f" (Ref: {ref})" if ref else ""))
 
         parts.append("\n".join(lines))
 

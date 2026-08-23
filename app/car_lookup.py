@@ -688,11 +688,17 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
 
     # §Phase 7: NUR die zentral gefilterte Allowed-List (kein Antriebs-Widerspruch,
     # kein Baujahr-Ausschluss) — mit Applicability-Wortlaut statt nacktem Text.
-    erlaubte_rueckrufe = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, baujahr)
+    # KBA-Trust-Gate: `marke` aktiviert die markenübergreifende Kollisionsprüfung;
+    # `kba_referenz_anzeige` (statt der rohen `kba_referenz`) ist None, wenn die
+    # Referenz das Plausibilitätsgate nicht besteht — dann wird gar kein "(Ref: …)"
+    # angehängt, statt eine unplausible Nummer anzuzeigen.
+    erlaubte_rueckrufe = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, baujahr,
+                                              marke=baureihe.get("marke"))
     if erlaubte_rueckrufe:
         lines.append("### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
         for r in erlaubte_rueckrufe:
-            lines.append(f"  {r.get('datum','?')}: {r['text']} (Ref: {r.get('kba_referenz','?')})")
+            ref = r.get("kba_referenz_anzeige")
+            lines.append(f"  {r.get('datum','?')}: {r['text']}" + (f" (Ref: {ref})" if ref else ""))
 
     return "\n".join(lines)
 

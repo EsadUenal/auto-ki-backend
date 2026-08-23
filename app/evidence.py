@@ -24,6 +24,7 @@ from app.models import EvidenceQuelle, Insight, Marktanalyse
 from app.recall_filter import (
     _baujahr_passt, _jahre,
     rueckruf_applicability as _rueckruf_applicability,
+    kba_referenz_anzeige,
     RUECKRUF_APPLICABILITY_TEXT,
 )
 
@@ -107,17 +108,25 @@ def build_insights(
         if passt is False:
             continue
         kba = (r.get("kba_referenz") or "").strip()
-        # kba_referenz ist die KONKRETE, pro-Rückruf gültige Quelle -> bleibt am Insight.
+        marke = (baureihe or {}).get("marke")
+        # KBA-Trust-Gate (DATA-TRUST-AUDIT): eine unplausible oder markenübergreifend
+        # kollidierende Referenz wird NICHT als Quelle gezeigt — `kba_anzeige` ist
+        # dann None, exakt wie eine fehlende Referenz. Der Rohwert `kba` bleibt nur
+        # zur Weitergabe an `_rueckruf_applicability` erhalten (die dieselbe Prüfung
+        # intern noch einmal anwendet, um die Stufe zu bestimmen).
+        kba_anzeige = kba_referenz_anzeige(kba, marke)
+        # kba_referenz ist die KONKRETE, pro-Rückruf gültige Quelle -> bleibt am Insight
+        # (nur wenn plausibel — siehe oben).
         quellen = [EvidenceQuelle(
             typ="rueckruf_kba",
-            ref=kba or None,
-            titel="KBA-Rückrufdatenbank" if kba else "KBA-Rückruf (Referenz nicht hinterlegt)",
+            ref=kba_anzeige,
+            titel="KBA-Rückrufdatenbank" if kba_anzeige else "KBA-Rückruf (Referenz nicht hinterlegt)",
         )]
         # Phase 1B: Varianten-/Antriebs-Zuordnung -> applicability (getrennt von
         # confidence & severity). Ein Hochvolt-/PHEV-Rückruf wird NICHT als direkt
         # zutreffend für einen reinen Diesel markiert.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
-            r, passt, kba, motor_match)
+            r, passt, kba, motor_match, marke=marke)
         # §8/§27: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
         # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
         # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
