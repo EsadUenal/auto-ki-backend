@@ -640,16 +640,21 @@ class Laufleistungskontext(BaseModel):
       die tatsächliche Fahrleistung eines Vorbesitzers in einem einzelnen Jahr.
 
     Alle Felder sind optional, weil jede Zutat einzeln fehlen kann: ohne Baujahr
-    kein Alter, ohne Alter keine km/Jahr, ohne km/Jahr keine Einordnung, ohne
-    Kilometerstand keine Wartungshinweise.
+    kein Alter, ohne Alter keine km/Jahr, ohne Kilometerstand keine
+    Wartungshinweise.
+
+    BEWUSST KEINE qualitative Einordnung von `km_pro_jahr` (z.B. "niedrig" /
+    "durchschnittlich" / "erhöht"): im Projekt existiert dafür keine belastbare
+    fachliche Schwellenbasis (kein ADAC-/DAT-/KBA-Referenzwert, keine zitierte
+    Quelle) — nur zwei interne Heuristik-Literale aus Phase 2
+    (app/key_findings.py, für eine einzelne "unterdurchschnittlich"-Meldung).
+    Eine dritte, daraus gespiegelte Grenze für "erhöht" wäre eine frei
+    erfundene Universalgrenze gewesen. Ausgegeben wird nur die berechnete
+    Zahl — siehe app/laufleistung.py.
     """
     kilometerstand: int | None = None
     fahrzeugalter_jahre: int | None = None
     km_pro_jahr: int | None = None
-    # "niedrig" | "durchschnittlich" | "erhoeht" — NEUTRALE Einordnung, KEIN
-    # Qualitätsurteil (§6). None, wenn die Grundlage dafür nicht reicht (kein
-    # Baujahr, Fahrzeug jünger als zwei Jahre) — dann steht nur die Zahl.
-    laufleistungs_einordnung: str | None = None
     wartungshinweise: list[Wartungshinweis] = Field(default_factory=list)
     # Ehrlichkeits-Marker und zugleich die wichtigste Einzelaussage dieses Modells:
     # Der letzte tatsächliche Service ist VIRA nicht bekannt. Das Feld ist

@@ -103,31 +103,27 @@ from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshi
 log = logging.getLogger(__name__)
 
 
-# ── Laufleistungs-Einordnung (§6) ─────────────────────────────────────────────
+# ── Referenzwerte für die Fahrleistung ────────────────────────────────────────
 #
-# KEINE neu erfundenen Schwellen. Der Bestand kannte bereits zwei Werte, beide in
-# app/key_findings.py::_positive_findings_kauf: die Schwelle 10.000 km/Jahr für
-# "unterdurchschnittlich" und den dort genannten Referenzwert von ca. 15.000
-# km/Jahr. Sie stehen jetzt hier und werden von dort importiert — EINE Quelle der
-# Wahrheit statt zweier Literale, die auseinanderlaufen können.
+# NUR zur Kompatibilität mit app/key_findings.py::_positive_findings_kauf, das
+# diese beiden Werte bereits vor P2-5 kannte (Phase 2, Commit 0f0df31): die
+# Schwelle 10.000 km/Jahr, unter der eine "unterdurchschnittliche Laufleistung"
+# als positiver Fund gemeldet wird, und der dort im Text genannte Referenzwert
+# von ca. 15.000 km/Jahr. Sie stehen jetzt hier und werden von dort importiert
+# — EINE Quelle der Wahrheit statt zweier Literale, die auseinanderlaufen
+# können. Der von `_positive_findings_kauf` erzeugte Text ist dadurch
+# unverändert.
 #
-# `SCHWELLE_ERHOEHT` ist der einzige neue Wert und bewusst NICHT frei gewählt: er
-# spiegelt den vorhandenen Abstand am Referenzwert (15.000 − 10.000 = 5.000)
-# nach oben. Eine eigene, "wissenschaftlich" klingende Grenze wäre eine
-# Behauptung ohne Grundlage.
+# WICHTIG (Nachtrag): Auch diese beiden Werte tragen an keiner Stelle im
+# Projekt eine zitierte fachliche Quelle (kein ADAC-/DAT-/KBA-Verweis) — es
+# sind interne Heuristiken aus Phase 2. Deshalb erzeugt DIESES Modul daraus
+# KEINE Einordnung ("niedrig"/"durchschnittlich"/"erhöht"): eine solche
+# Klassifikation existierte vor P2-5 nicht, P2-5 hätte mit `SCHWELLE_ERHOEHT`
+# zusätzlich eine dritte, frei gespiegelte Grenze ohne jede Grundlage
+# eingeführt. Ausgegeben wird nur die berechnete Zahl km/Jahr — siehe
+# `Laufleistungskontext` und `prompt_block`.
 SCHWELLE_NIEDRIG = 10_000
 REFERENZ_DURCHSCHNITT = 15_000
-SCHWELLE_ERHOEHT = REFERENZ_DURCHSCHNITT + (REFERENZ_DURCHSCHNITT - SCHWELLE_NIEDRIG)
-
-EINORDNUNG_NIEDRIG = "niedrig"
-EINORDNUNG_DURCHSCHNITTLICH = "durchschnittlich"
-EINORDNUNG_ERHOEHT = "erhoeht"
-
-# Unter zwei Jahren wird NICHT eingeordnet — dieselbe Grenze, die key_findings
-# schon zog. Bei einem sehr jungen Fahrzeug schlägt der fehlende
-# Erstzulassungsmonat voll durch: ein im Dezember zugelassener "Einjähriger"
-# hätte rechnerisch die doppelte Jahresfahrleistung.
-MIN_ALTER_EINORDNUNG = 2
 
 # Obergrenzen gegen Tippfehler/Unsinn (1.500.000 km, Baujahr 1600). Verworfen
 # wird still — ein unplausibler Wert erzeugt keinen Kontext, aber auch keinen
@@ -272,25 +268,6 @@ def km_pro_jahr(kilometerstand: int | None, alter_jahre: int | None) -> int | No
     if kilometerstand < 0 or kilometerstand > MAX_PLAUSIBEL_KM:
         return None
     return int(round(kilometerstand / alter_jahre / 100.0)) * 100
-
-
-def einordnung(pro_jahr: int | None, alter_jahre: int | None) -> str | None:
-    """Neutrale Einordnung der Jahresfahrleistung — oder None (§6).
-
-    Drei Werte, KEIN Qualitätsurteil: "niedrig" ist nicht gut (Kurzstrecken- und
-    Standschäden sind real), "erhoeht" ist nicht schlecht (Autobahnkilometer sind
-    schonend). Der Kontext gehört in die Hand des Käufers, die Bewertung nicht in
-    die des Systems.
-
-    None bei zu junger Datenbasis — dann steht in der Antwort nur die Zahl.
-    """
-    if pro_jahr is None or alter_jahre is None or alter_jahre < MIN_ALTER_EINORDNUNG:
-        return None
-    if pro_jahr <= SCHWELLE_NIEDRIG:
-        return EINORDNUNG_NIEDRIG
-    if pro_jahr >= SCHWELLE_ERHOEHT:
-        return EINORDNUNG_ERHOEHT
-    return EINORDNUNG_DURCHSCHNITTLICH
 
 
 # ── Wartungspunkt-Status + Formulierung ───────────────────────────────────────
@@ -515,20 +492,12 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
         kilometerstand=km,
         fahrzeugalter_jahre=alter,
         km_pro_jahr=pro_jahr,
-        laufleistungs_einordnung=einordnung(pro_jahr, alter),
         wartungshinweise=hinweise,
         # Unveränderlich False, solange es keine Datenquelle für den letzten
         # Service gibt — siehe Modulkopf. Kein Platzhalter, sondern ein Befund.
         letzter_service_bekannt=False,
     )
     return ctx if ctx.hat_inhalt() else None
-
-
-_EINORDNUNG_TEXT = {
-    EINORDNUNG_NIEDRIG: "unterdurchschnittlich",
-    EINORDNUNG_DURCHSCHNITTLICH: "im üblichen Rahmen",
-    EINORDNUNG_ERHOEHT: "überdurchschnittlich",
-}
 
 
 def prompt_block(ctx: Laufleistungskontext | None) -> str:
@@ -549,11 +518,14 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
         zeilen.append(f"Fahrzeugalter: ungefähr {ctx.fahrzeugalter_jahre} Jahre "
                       f"(aus dem Baujahr; der Monat der Erstzulassung ist nicht bekannt)")
     if ctx.km_pro_jahr is not None:
-        satz = (f"Durchschnittliche Fahrleistung seit dem Baujahr: rund "
-                f"{_km(ctx.km_pro_jahr)} pro Jahr")
-        if ctx.laufleistungs_einordnung:
-            satz += f" — {_EINORDNUNG_TEXT[ctx.laufleistungs_einordnung]}"
-        zeilen.append(satz + ".")
+        # Bewusst OHNE Einordnung ("niedrig"/"durchschnittlich"/"erhöht"): dafür
+        # existiert im Projekt keine belastbare fachliche Schwellenbasis — siehe
+        # den Kommentar bei SCHWELLE_NIEDRIG/REFERENZ_DURCHSCHNITT oben. Die
+        # Zeile bleibt eine reine Zahl mit Einordnung als Durchschnittswert,
+        # kein Urteil.
+        zeilen.append(f"Durchschnittliche Fahrleistung seit dem Baujahr: rund "
+                      f"{_km(ctx.km_pro_jahr)} pro Jahr (grober Durchschnitt seit "
+                      f"dem Baujahr).")
     for w in ctx.wartungshinweise:
         zeilen.append(f"Wartungspunkt „{w.bauteil}“ (Beleg {w.evidence_id}): {w.hinweis}")
     if not zeilen:
@@ -567,8 +539,9 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
         "Wartungspunkt heißt ausschließlich: an dieser Stelle den NACHWEIS "
         "verlangen.",
         "Die durchschnittliche Fahrleistung ist ein Mittelwert über die gesamte "
-        "Fahrzeuglebensdauer, keine gemessene Jahresleistung eines Vorbesitzers — "
-        "und sie ist eine Einordnung, kein Qualitätsurteil.",
+        "Fahrzeuglebensdauer, keine gemessene Jahresleistung eines Vorbesitzers. "
+        "Bewerte sie NICHT als gut oder schlecht — nenne nur die Zahl, es gibt "
+        "dafür keine belastbare Vergleichsschwelle.",
         "Leite aus der Laufleistung KEINE Preisaussage ab (nicht „deswegen "
         "günstig/teuer“, kein Abschlag, kein Marktwert). Der Preis wird "
         "ausschließlich im Marktvergleich behandelt.",

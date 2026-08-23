@@ -29,12 +29,12 @@ kein einziger Pfad darf so tun, als kenne er ihn.
 import inspect
 import re
 
+import app.laufleistung as _L
 from app.kaufaktionen import build_kaufaktionen
 from app.laufleistung import (
-    EINORDNUNG_DURCHSCHNITTLICH, EINORDNUNG_ERHOEHT, EINORDNUNG_NIEDRIG,
-    MIN_ALTER_EINORDNUNG, REFERENZ_DURCHSCHNITT, SCHWELLE_ERHOEHT, SCHWELLE_NIEDRIG,
+    REFERENZ_DURCHSCHNITT, SCHWELLE_NIEDRIG,
     STATUS_DARUEBER, STATUS_ENTFERNT, STATUS_IM_BEREICH, STATUS_NAEHERT_SICH,
-    build_laufleistungskontext, einordnung, fahrzeugalter, km_pro_jahr,
+    build_laufleistungskontext, fahrzeugalter, km_pro_jahr,
     norm_bauteil, parse_wartungspunkt, prompt_block, status_zu_punkt,
 )
 from app.models import (
@@ -122,7 +122,8 @@ VERBOTEN_HISTORIE = (r"servicehistorie fehlt", r"wartungshistorie fehlt",
 # ("schreibe niemals, ein Service sei fällig", "Leite ... KEINE Preisaussage
 # ab") — sie als Verstoß zu werten wäre die Umkehrung des Gemeinten.
 _ANWEISUNG = ("niemals", "schreibe", "behaupte nie", "leite aus der laufleistung",
-              "zeitpunkt des letzten service ist nicht bekannt")
+              "zeitpunkt des letzten service ist nicht bekannt",
+              "bewerte sie nicht als gut oder schlecht")
 
 
 def _treffer(text: str, muster) -> list[str]:
@@ -210,22 +211,41 @@ check("B9 der Prompt kennzeichnet den Wert als Mittelwert über die Lebensdauer"
 
 check("B10 Schwelle 'niedrig' stammt aus dem Bestand (key_findings)",
       SCHWELLE_NIEDRIG == 10_000 and REFERENZ_DURCHSCHNITT == 15_000)
-check("B11 'erhoeht' spiegelt den vorhandenen Abstand statt einer neuen Zahl",
-      SCHWELLE_ERHOEHT == REFERENZ_DURCHSCHNITT + (REFERENZ_DURCHSCHNITT - SCHWELLE_NIEDRIG))
-check("B12 key_findings nutzt jetzt dieselbe Konstante",
+
+# Nachtrag zur ursprünglichen Fassung: das Modul erzeugte aus SCHWELLE_NIEDRIG/
+# REFERENZ_DURCHSCHNITT eine dreistufige Einordnung ("niedrig"/"durchschnittlich"
+# /"erhoeht") inkl. einer frei gespiegelten dritten Grenze (SCHWELLE_ERHOEHT).
+# Für keinen der drei Werte existiert im Projekt eine zitierte fachliche
+# Quelle — es sind interne Phase-2-Heuristiken, die vor P2-5 nur EINEN
+# einseitigen Vergleich trugen ("<= 10.000 -> Vorteil"), keine Klassifikation.
+# Diese Prüfungen stellen sicher, dass die Klassifikation vollständig entfernt
+# bleibt und nur noch die nackte Zahl ausgegeben wird.
+check("B11 keine Einordnungs-Konstanten mehr im Modul",
+      not any(hasattr(_L, n) for n in
+              ("EINORDNUNG_NIEDRIG", "EINORDNUNG_DURCHSCHNITTLICH",
+               "EINORDNUNG_ERHOEHT", "SCHWELLE_ERHOEHT", "MIN_ALTER_EINORDNUNG")))
+check("B12 keine Einordnungsfunktion mehr im Modul",
+      not hasattr(_L, "einordnung"))
+check("B13 key_findings nutzt weiterhin dieselbe Konstante",
       __import__("app.key_findings", fromlist=["x"]).SCHWELLE_NIEDRIG is SCHWELLE_NIEDRIG)
-check("B13 8.000 km/Jahr -> niedrig", einordnung(8_000, 6) == EINORDNUNG_NIEDRIG)
-check("B14 15.000 km/Jahr -> durchschnittlich",
-      einordnung(15_000, 6) == EINORDNUNG_DURCHSCHNITTLICH)
-check("B15 24.000 km/Jahr -> erhoeht", einordnung(24_000, 6) == EINORDNUNG_ERHOEHT)
-check("B16 Fahrzeug jünger als die Mindestbasis -> KEINE Einordnung, nur die Zahl",
-      einordnung(30_000, MIN_ALTER_EINORDNUNG - 1) is None)
+check("B14 das Modell trägt kein Einordnungsfeld mehr",
+      "laufleistungs_einordnung" not in Laufleistungskontext.model_fields)
 _ctxB = build_laufleistungskontext(Req(baujahr=2025, kilometerstand=30_000), [], heute_jahr=HEUTE)
-check("B17 einjähriges Fahrzeug: km/Jahr vorhanden, Einordnung leer",
-      _ctxB.km_pro_jahr == 30_000 and _ctxB.laufleistungs_einordnung is None)
-check("B18 Einordnung ist neutral formuliert, kein Qualitätsurteil",
-      not any(w in prompt_block(_ctxA).lower()
-              for w in ("gut", "schlecht", "bedenklich", "ideal", "problematisch")))
+check("B15 einjähriges Fahrzeug: km/Jahr vorhanden, keine Klassifikation möglich",
+      _ctxB.km_pro_jahr == 30_000)
+# "durchschnittlich"/"gut"/"schlecht" dürfen im Prompt-Block vorkommen — als
+# Wort "durchschnittliche Fahrleistung" (eine Berechnungsgröße, kein Label) und
+# in der ausdrücklichen Anweisung "NICHT als gut oder schlecht" bewerten. Genau
+# darum geht es: KEIN eigenständiges Klassifikations-LABEL wie "niedrig" oder
+# "erhöht" als Attribut der Fahrleistung, keine der drei ehemaligen Stufen.
+check("B16 keine Einordnungs-LABELS ('niedrig'/'erhöht') im Prompt-Block",
+      not any(w in prompt_block(_ctxA).lower() for w in ("niedrig", "erhöht", "erhoeht")))
+check("B16b 'gut'/'schlecht' kommen NUR im Bewertungsverbot vor, nicht als Urteil",
+      _treffer(prompt_block(_ctxA), (r"\bgut\b", r"\bschlecht\b")) == [])
+check("B17 der Prompt zeigt km/Jahr als reinen Durchschnittswert",
+      "grober Durchschnitt seit dem Baujahr" in prompt_block(_ctxA))
+check("B18 der Prompt verbietet ausdrücklich eine Gut/Schlecht-Bewertung",
+      "NICHT als gut oder schlecht" in prompt_block(_ctxA))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
