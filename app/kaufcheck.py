@@ -38,6 +38,7 @@ from app.car_lookup import (
 )
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
+from app.empfehlungs_floor import wende_floor_an
 from app.fahrzeugkontext import build_fahrzeugkontext
 from app.laufleistung import (
     build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
@@ -519,6 +520,21 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                      "'kaufen_nach_besichtigung' reduziert (Preisteil nicht belegbar)")
             result["empfehlung"] = "kaufen_nach_besichtigung"
 
+    # ── Deterministischer Empfehlungs-Floor ─────────────────────────────────────
+    # BEWUSST als LETZTER Eingriff auf `empfehlung`: danach senkt nichts mehr ab.
+    # Der Bake-off (2.5 vs. 3.7) hat gezeigt, dass ein Modell die im Systemprompt
+    # definierte Bedeutung von "nur_mit_werkstattpruefung" korrekt kennen, die
+    # passenden Risiken im Bericht auflisten — und trotzdem das strukturierte Feld
+    # milder setzen kann. Die sicherheitsrelevante Mindeststufe haengt deshalb
+    # nicht mehr am Modell, sondern an den bereits geprueften Insights.
+    #
+    # Der Floor kann ausschliesslich ANHEBEN, nie senken, und ist strukturell
+    # unabhaengig vom Marktpreis: er sieht nur `insights` — weder `marktanalyse`
+    # noch `price_assessment` noch `req.preis_eur`. PFAD B (completed_no_market)
+    # verhaelt sich damit identisch zu PFAD A.
+    empfehlung_final, floor_befund = wende_floor_an(result.get("empfehlung"), insights)
+    result["empfehlung"] = empfehlung_final
+
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
     gueltige = valid_evidence_ids(insights)
@@ -528,6 +544,14 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Der Marktvergleich ist die Grundlage der Preisbewertung -> immer unter
     # "Warum diese Preisbewertung?" zeigen, auch wenn das LLM ihn nicht referenziert.
     preis_evidence_ids = ergaenze_id(preis_evidence_ids, marktvergleich_id(insights))
+    # Erklaerbarkeit des Floors (§8): hat er angehoben, sind SEINE Belege die
+    # Begruendung der finalen Empfehlung — also gehoeren sie unter "Warum diese
+    # Empfehlung?". Es sind ausschliesslich echte, bereits validierte Insight-IDs
+    # aus genau diesem Check; kein neues Nutzerfeld noetig, kein unsichtbarer
+    # Override.
+    if floor_befund is not None:
+        for _fid in floor_befund.evidence_ids:
+            empfehlung_evidence_ids = ergaenze_id(empfehlung_evidence_ids, _fid)
 
     # Phase 2: Kern-Erkenntnisse deterministisch aus den bereits vorhandenen Daten
     # verdichten (Marktanalyse in insights, Rückruf-Applicability, Schwachstellen,
