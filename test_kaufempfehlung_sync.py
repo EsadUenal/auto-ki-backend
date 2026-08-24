@@ -3,9 +3,11 @@ Test: Bericht/Feld-Synchronisation (app/kaufempfehlung_sync) und
 Wartungs-Faelligkeits-Guard (app/postprocess.neutralisiere_wartungs_faelligkeit)
 -- kein LLM, keine Netzwerkaufrufe, kein Tavily.
 
-Deckt die geforderten Faelle A-H ab:
+Deckt die geforderten Faelle A-H ab (plus B1: KaufCheck-Backend-Freeze/P1-a —
+der Sync laeuft PRODUKTIV IMMER, nicht mehr nur bei Floor-Anhebung):
   A  Floor hebt an -> Bericht zeigt ebenfalls die neue Stufe
-  B  Floor greift nicht -> Bericht unveraendert
+  B  Floor greift nicht, Bericht war bereits konsistent -> unveraendert
+  B1 LLM widerspricht sich OHNE Floor-Beteiligung -> jetzt trotzdem synchronisiert
   C  "Zahnriemen ... ist ueberfaellig" ohne harte Evidence -> neutralisiert
   D  "faelliger Zahnriemenwechsel" -> neutralisiert
   E  legitime Nicht-Wartungs-Verwendung von "faellig" -> unveraendert
@@ -25,7 +27,7 @@ sys.path.insert(0, ".")
 from app.kaufempfehlung_sync import synchronisiere_kaufempfehlung, _ANZEIGE_TEXT  # noqa: E402
 from app.postprocess import neutralisiere_wartungs_faelligkeit  # noqa: E402
 from app.empfehlungs_floor import (  # noqa: E402
-    wende_floor_an, KAUFEN_NACH_BESICHTIGUNG, NUR_MIT_WERKSTATTPRUEFUNG,
+    wende_floor_an, KAUFEN, KAUFEN_NACH_BESICHTIGUNG, NUR_MIT_WERKSTATTPRUEFUNG,
 )
 from app.models import Insight  # noqa: E402
 
@@ -79,17 +81,30 @@ for enum_wert, anzeige in _ANZEIGE_TEXT.items():
     check(f"A5: Enum {enum_wert} -> Anzeige {anzeige!r} korrekt gesetzt",
           f"**{anzeige}**" in ergebnis)
 
-# -- B) Floor greift nicht -> Bericht unveraendert --
-print("\n-- B) Floor greift nicht -> Bericht unveraendert --")
+# -- B) Floor greift nicht, Bericht war bereits konsistent -> unveraendert --
+print("\n-- B) Floor greift nicht, Bericht war bereits konsistent -> unveraendert --")
 emp2, bef2 = wende_floor_an(KAUFEN_NACH_BESICHTIGUNG, [schwachstelle("schwachstelle-1", "gering")])
 check("B0: Floor greift NICHT (Testvoraussetzung)", emp2 == KAUFEN_NACH_BESICHTIGUNG and bef2 is None)
-# Simuliert exakt die Verdrahtung in app/kaufcheck.py: der Sync-Call wird nur
-# ausgefuehrt, wenn floor_befund is not None.
-bericht_unveraendert = BERICHT_VORLAGE
-if bef2 is not None:
-    bericht_unveraendert = synchronisiere_kaufempfehlung(bericht_unveraendert, emp2)
-check("B: Bericht byte-identisch, wenn der Floor nicht griff",
+# KaufCheck-Backend-Freeze (P1-a): der Sync wird PRODUKTIV IMMER aufgerufen, nicht
+# mehr nur bei Floor-Anhebung — hier direkt ungegated getestet. BERICHT_VORLAGE
+# zeigt bereits "KAUFEN NACH BESICHTIGUNG" (== emp2) -> die Funktion ist idempotent,
+# das Ergebnis bleibt byte-identisch, obwohl sie unconditional aufgerufen wird.
+bericht_unveraendert = synchronisiere_kaufempfehlung(BERICHT_VORLAGE, emp2)
+check("B: Bericht byte-identisch, wenn er bereits zur (unveraenderten) Empfehlung passt",
       bericht_unveraendert == BERICHT_VORLAGE)
+
+# -- B1 (P1-a Regression) — LLM widerspricht sich OHNE Floor-Beteiligung --
+print("\n-- B1) LLM-Selbstwiderspruch OHNE Floor -> jetzt trotzdem synchronisiert --")
+# Insights loesen den Floor NICHT aus (nur eine geringe Schwachstelle), aber das
+# LLM liefert selbst ein Feld, das seinem eigenen Bericht widerspricht — genau
+# der im Auftrag beschriebene Bug: Feld "kaufen", Bericht "KAUFEN NACH
+# BESICHTIGUNG". Vor P1-a haette KEIN Mechanismus das korrigiert (der Floor
+# greift hier nicht, also lief der alte bedingte Sync nicht).
+emp_b1, bef_b1 = wende_floor_an(KAUFEN, [schwachstelle("schwachstelle-2", "gering")])
+check("B1a: Floor greift auch hier NICHT (Testvoraussetzung)", bef_b1 is None and emp_b1 == KAUFEN)
+sync_b1 = synchronisiere_kaufempfehlung(BERICHT_VORLAGE, emp_b1)
+check("B1: Bericht wird trotz fehlender Floor-Beteiligung auf 'KAUFEN' synchronisiert",
+      "**KAUFEN**" in sync_b1 and "**KAUFEN NACH BESICHTIGUNG**" not in sync_b1)
 
 # Randfaelle der Sync-Funktion selbst
 check("B2: kein Bericht -> None bleibt None", synchronisiere_kaufempfehlung(None, "nur_mit_werkstattpruefung") is None)

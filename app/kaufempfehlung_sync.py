@@ -18,9 +18,12 @@ Abschnitts (die technische Begründung, die weiterhin auf denselben Risiken
 beruht) bleibt unverändert; ihn neu zu generieren wäre keine "kleinste Lösung"
 mehr und würde Fakten riskieren, die das LLM nicht neu bewertet hat.
 
-Wird NUR aufgerufen, wenn der Floor tatsächlich angehoben hat (siehe
-`app/kaufcheck.py`) — hat er nicht gegriffen, bleibt der Bericht komplett
-unangetastet.
+Wird IMMER aufgerufen (siehe `app/kaufcheck.py`), unabhängig davon, ob der
+Empfehlungs-Floor angehoben hat — der Floor deckt nur EINEN Weg ab, wie
+Bericht und Feld auseinanderlaufen können. Ein LLM kann auch ganz ohne
+Floor-Beteiligung ein Feld liefern, das seinem eigenen Bericht widerspricht
+(z.B. Feld "kaufen", Bericht "KAUFEN NACH BESICHTIGUNG"). Die Funktion ist
+idempotent: stimmt die Überschrift bereits, ändert sich nichts.
 """
 
 import logging

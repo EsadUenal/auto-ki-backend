@@ -63,6 +63,7 @@ from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
 from app.postprocess import (
     postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_wartungs_faelligkeit,
+    neutralisiere_no_market_preisurteil,
 )
 from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
@@ -442,6 +443,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # letzten Service, ein "faellig"/"ueberfaellig"/"versaeumt" ist deshalb IMMER
         # unbelegt, egal welches Modell den Bericht geschrieben hat.
         result["bericht"] = neutralisiere_wartungs_faelligkeit(result["bericht"])
+        # P1-b (KaufCheck-Backend-Freeze): PFAD B (kein belastbarer Markt) verbietet
+        # dem Modell im Prompt bereits jedes Preisurteil (no_market_prompt_block) —
+        # dieser Guard ist das Sicherheitsnetz NACH dem Call. NUR im No-Market-Pfad
+        # aufgerufen: bei belastbarer Markt-Evidence (PFAD A) bleibt das echte,
+        # kanonische Preisurteil unberuehrt.
+        if not markt_verfuegbar:
+            result["bericht"] = neutralisiere_no_market_preisurteil(result["bericht"])
         # §Phase 8: letztes Sicherheitsnetz — auch wenn db_ctx/evidence_block bereits
         # gefiltert waren (§Phase 7), kann das LLM Begriffe frei kombinieren
         # (z.B. aus dem Schwachstellen-/DB-Profil-Text). Entfernt NUR Sätze/Zeilen,
@@ -542,12 +550,18 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # verhaelt sich damit identisch zu PFAD A.
     empfehlung_final, floor_befund = wende_floor_an(result.get("empfehlung"), insights)
     result["empfehlung"] = empfehlung_final
-    # Bericht/Feld-Konsistenz: NUR wenn der Floor tatsaechlich angehoben hat, kann
-    # die vom LLM geschriebene "## Kaufempfehlung"-Ueberschrift noch die ROHE,
-    # ungehobene Empfehlung zeigen — die strukturierten Daten sind die Wahrheit
-    # (§3), der Bericht darf ihnen nicht widersprechen. Greift der Floor nicht,
-    # bleibt der Bericht unangetastet.
-    if floor_befund is not None and result.get("bericht"):
+    # Bericht/Feld-Konsistenz: IMMER, nicht nur wenn der Floor angehoben hat.
+    # `wende_floor_an` deckt nur EINEN Weg ab, wie Bericht und Feld auseinander-
+    # laufen koennen (Floor hebt an, Bericht zeigt noch die alte Stufe) — das LLM
+    # kann aber auch ganz ohne Floor-Beteiligung ein Feld liefern, das zu seinem
+    # EIGENEN Bericht widerspricht (z.B. Feld "kaufen", Bericht "KAUFEN NACH
+    # BESICHTIGUNG"). Das finale, bereits vollstaendig deterministisch bereinigte
+    # `empfehlung_final` ist in JEDEM Fall die Wahrheit — die Ueberschrift muss
+    # dazu passen, unabhaengig davon, WARUM sie zuvor abwich. `synchronisiere_
+    # kaufempfehlung` ist idempotent (stimmt die Ueberschrift schon, aendert sich
+    # nichts) und greift nur die fettgedruckte Zeile an — der Rest des Berichts
+    # bleibt unangetastet.
+    if result.get("bericht"):
         result["bericht"] = synchronisiere_kaufempfehlung(result["bericht"], empfehlung_final)
 
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs

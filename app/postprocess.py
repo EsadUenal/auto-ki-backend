@@ -310,6 +310,109 @@ def neutralisiere_wartungs_faelligkeit(text: str) -> str:
     return "".join(zusammengesetzt)
 
 
+# ---------- No-Market-Preisurteil-Guard (P1-b, KaufCheck-Backend-Freeze) ----------
+# app/preisurteil.no_market_prompt_block verbietet dem Modell im Prompt bereits
+# JEDES Preisurteil (auch indirekt: "wirkt attraktiv", "erscheint hoch") und JEDE
+# konkrete Marktspanne, wenn `bewerte_preis` keinen belastbaren Median liefert.
+# Dieser Guard ist das Sicherheitsnetz NACH dem Call, exakt derselbe satzweise
+# Aufbau wie `neutralisiere_wartungs_faelligkeit` oben. NUR aufgerufen, wenn der
+# Aufrufer (app/kaufcheck.py) bereits weiss, dass kein belastbarer Markt vorliegt
+# (`markt_verfuegbar is False`) — bei vorhandener Markt-Evidence (PFAD A) wird
+# diese Funktion gar nicht erst gerufen, das echte Preisurteil bleibt unberührt.
+#
+# Zwei Auslöser, bewusst unterschiedlich streng:
+#   1. Qualitative Marktpreis-Urteilswörter (günstig/teuer/marktgerecht/...) —
+#      IMMER ein Marktpreisurteil, unabhängig vom übrigen Satzkontext. Diese
+#      Wörter sind praktisch nie neutral gemeint und decken sich wörtlich mit
+#      dem im Prompt verbotenen Vokabular.
+#   2. Eine konkrete Euro-Zahl/-Spanne NUR dann als Marktpreisbehauptung werten,
+#      wenn der Satz ZUSÄTZLICH einen Marktkontext-Begriff enthält — sonst wäre
+#      jede grundierte Reparaturkosten- oder Inseratspreis-Nennung betroffen
+#      (§3 der Aufgabenstellung: "nicht global jedes Euro-Zeichen entfernen").
+_MARKTPREIS_KONTEXT_WORTE = (
+    "marktpreis", "marktwert", "marktvergleich", "marktspanne", "vergleichspreis",
+    "median", "preiseinschätzung", "preiseinschaetzung", "preisbewertung",
+    "marktniveau", "markttrend", "marktlage",
+)
+_RE_MARKTURTEIL_WORT = re.compile(
+    r"\b(?:extrem\s+)?g[üu]nstig(?:e|er|es|en)?\b|\b(?:extrem\s+)?teuer(?:e|er|es|en)?\b"
+    r"|\bmarktgerecht(?:e|er|es|en)?\b|\bangemessen(?:e|er|es|en)?\b"
+    r"|\b[üu]berteuert(?:e|er|es|en)?\b|\bfair(?:e|er|es|en)?\b|\bschn[äa]ppchen\b",
+    re.IGNORECASE)
+_RE_MARKT_RICHTUNG = re.compile(
+    r"\b[üu]ber\s+(?:dem\s+)?markt(?:preis|wert)?\b|\bunter\s+(?:dem\s+)?markt(?:preis|wert)?\b",
+    re.IGNORECASE)
+_RE_EURO_ZAHL = re.compile(
+    r"\d[\d.,]*\s*(?:[-–—]\s*\d[\d.,]*\s*)?(?:€|EUR)\b", re.IGNORECASE)
+
+_NO_MARKET_NEUTRALSATZ = (
+    "Eine belastbare Marktpreisbewertung ist für diesen Check nicht verfügbar."
+)
+
+
+def _hat_marktkontext(text: str) -> bool:
+    low = text.lower()
+    return any(w in low for w in _MARKTPREIS_KONTEXT_WORTE)
+
+
+def _ist_marktpreisurteil(satz: str, *, zeile_hat_marktkontext: bool = False) -> bool:
+    """`zeile_hat_marktkontext`: Marktkontext-Treffer ueber die GESAMTE Zeile, nicht
+    nur diesen einzelnen Satz. `_RE_SATZGRENZE` trennt bei "ca." mitten im Satz
+    (z.B. "Der Marktwert betraegt ca." | "14.000 EUR.") — ohne den Zeilenkontext
+    wuerde das Marktkontext-Wort und die Euro-Zahl dann in zwei verschiedenen
+    "Saetzen" landen und keiner der beiden triggert allein."""
+    if _RE_MARKTURTEIL_WORT.search(satz) or _RE_MARKT_RICHTUNG.search(satz):
+        return True
+    if _RE_EURO_ZAHL.search(satz) and (zeile_hat_marktkontext or _hat_marktkontext(satz)):
+        return True
+    return False
+
+
+def neutralisiere_no_market_preisurteil(text: str) -> str:
+    """Entfernt konkrete Marktpreisbehauptungen und -urteile aus dem Freitext —
+    NUR aufzurufen, wenn für diesen Check KEINE belastbare Markt-Evidence vorliegt
+    (research_status == "completed_no_market"). Andere Kostenangaben (z.B.
+    Reparaturkosten aus der Fahrzeugdatenbank) bleiben unberührt, ebenso
+    Markdown-Tabellenzeilen (der Inserats-Preis in der Vergleichstabelle ist
+    KEIN Marktpreisurteil)."""
+    if not text:
+        return text
+
+    teile = _CODE_FENCE.split(text)
+    fences = _CODE_FENCE.findall(text)
+
+    def _bereinige_teil(teil: str) -> str:
+        zeilen = teil.split("\n")
+        neue_zeilen = []
+        for zeile in zeilen:
+            if _IST_TABELLENZEILE.match(zeile):
+                neue_zeilen.append(zeile)
+                continue
+            saetze = _RE_SATZGRENZE.split(zeile) if zeile.strip() else [zeile]
+            zeile_hat_marktkontext = _hat_marktkontext(zeile)
+            neue_saetze = []
+            ersetzt_in_zeile = False
+            for satz in saetze:
+                if satz.strip() and _ist_marktpreisurteil(
+                        satz, zeile_hat_marktkontext=zeile_hat_marktkontext):
+                    if not ersetzt_in_zeile:
+                        neue_saetze.append(_NO_MARKET_NEUTRALSATZ)
+                        ersetzt_in_zeile = True
+                    log.info("No-Market-Preisurteil-Guard: Satz im Bericht neutralisiert.")
+                else:
+                    neue_saetze.append(satz)
+            neue_zeilen.append(" ".join(neue_saetze))
+        return "\n".join(neue_zeilen)
+
+    bereinigt = [_bereinige_teil(t) for t in teile]
+    zusammengesetzt: list[str] = []
+    for i, teil in enumerate(bereinigt):
+        zusammengesetzt.append(teil)
+        if i < len(fences):
+            zusammengesetzt.append(fences[i])
+    return "".join(zusammengesetzt)
+
+
 def postprocess_answer(text: str) -> str:
     """
     Zentrale Postprocessing-Funktion für ALLE KI-Antworten (Chat, Diagnose,
