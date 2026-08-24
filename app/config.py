@@ -101,7 +101,13 @@ STRIPE_PRICE_EINZELKAUF = os.environ.get("STRIPE_PRICE_EINZELKAUF", "")  # price
 FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
-LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-2.5-flash")
+# Migration Gemini 2.5 Flash -> 3.7 Flash (Consumer-Bake-off + Retest bestanden:
+# Empfehlungs-Floor, Report-Sync, Wartungs-Guard — siehe Commits 7cc9b95/dbbb660
+# auf kaufcheck-planb). EIN zentraler Wert für alle Consumer-Aufrufer
+# (Kauf-/Verkaufscheck, Ersatzteil, Chat — geteilt über app/car_lookup.py und
+# app/llm.py) und für app/admin_llm.py (interne Tooling-Nutzung derselben
+# Konstante — bewusst keine zweite parallele Modellkonfiguration).
+LLM_MODEL           = os.environ.get("AUTO_KI_LLM_MODEL",       "gemini-3.7-flash")
 # "gemini-2.5-flash-lite" liefert für diesen API-Key inzwischen 404 ("no longer
 # available to new users") — Google hat das Modell für neue Nutzer gesperrt.
 # "gemini-flash-lite-latest" ist der von Google gepflegte Alias auf das jeweils

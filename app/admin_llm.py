@@ -369,7 +369,7 @@ def _call_motoren(client, prompt: str) -> str:
     Motoren-Call mit automatischem Fallback auf FAST_LLM_MODEL.
 
     Strategie:
-      1. Primär: LLM_MODEL (gemini-2.5-flash) via Streaming + with_retry_sync (5×15s)
+      1. Primär: LLM_MODEL (gemini-3.7-flash) via Streaming + with_retry_sync (5×15s)
          Streaming übersteht 503-Überlast besser als non-streaming.
       2. Fallback bei 503 ODER leerem/ungültigem JSON:
          FAST_LLM_MODEL (gemini-2.5-flash-lite) non-streaming, thinking_budget=0.
