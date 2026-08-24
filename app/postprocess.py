@@ -217,6 +217,99 @@ def entferne_erfundene_verkaufsdauer(text: str) -> str:
     return "".join(zusammengesetzt)
 
 
+# ---------- Wartungs-Fälligkeits-Guard (P2-5, Bake-off-Nachbesserung) ----------
+# P2-5 (app/laufleistung.py): kein Feld im System kennt den Zeitpunkt des letzten
+# Service, weder im Inserat noch in der Fahrzeugdatenbank. `laufleistung.prompt_block`
+# verbietet dem Modell deshalb im Prompt bereits, einen Wartungspunkt als "fällig",
+# "überfällig", "versäumt" oder "nicht durchgeführt" darzustellen — ein Wartungspunkt
+# bedeutet ausschließlich "Nachweis verlangen". Der Bake-off (Gemini 3.7) hat gezeigt,
+# dass ein Modell dieses Verbot trotzdem gelegentlich verletzt ("der fällige
+# Zahnriemenwechsel"). Dieser Guard ist das Sicherheitsnetz NACH dem Call — exakt
+# derselbe satzweise Aufbau wie `entferne_erfundene_verkaufsdauer` oben.
+#
+# Bewusst NUR innerhalb erkennbarem Wartungskontext (§ Aufgabenstellung: "NICHT
+# global jedes Wort 'fällig' überall blind ersetzen"): eine völlig unabhängige
+# Verwendung — z.B. eine fällige Zahlung — bleibt unangetastet.
+_WARTUNG_KONTEXT_WORTE = (
+    "wartung", "service", "intervall", "inspektion", "scheckheft", "nachweis",
+    "zahnriemen", "steuerkette", "kettentrieb", "ölwechsel", "oelwechsel",
+    "motoröl", "motoroel", "getriebeöl", "getriebeoel", "kühlmittel", "kuehlmittel",
+    "bremsflüssigkeit", "bremsfluessigkeit", "zündkerzen", "zuendkerzen",
+    "glühkerzen", "gluehkerzen", "kupplung", "luftfilter", "kraftstofffilter",
+    "partikelfilter", "dpf", "vanos", "nockenwellenversteller", "keilriemen",
+    "keilrippenriemen", "ventilspiel", "adblue", "haldex",
+)
+
+# Endungs-erhaltende Ersetzung: die Übereinstimmung der Endung macht die Ersetzung
+# grammatisch korrekt in BEIDEN Stellungen — prädikativ ("... ist überfällig" ->
+# "... ist zu prüfen") und attributiv ("überfälliger Zahnriemenwechsel" ->
+# "zu prüfender Zahnriemenwechsel", exakt das im Auftrag genannte Beispiel).
+_RE_FAELLIG = re.compile(r"\b(?:über)?f[äa]llig(e|er|es|en)?\b", re.IGNORECASE)
+_FAELLIG_ERSATZ = {
+    None: "zu prüfen", "": "zu prüfen", "e": "zu prüfende", "er": "zu prüfender",
+    "es": "zu prüfendes", "en": "zu prüfenden",
+}
+_RE_VERSAEUMT = re.compile(r"\bvers[äa]umt(e|er|es|en)?\b", re.IGNORECASE)
+_VERSAEUMT_ERSATZ = {
+    None: "nicht nachgewiesen", "": "nicht nachgewiesen", "e": "nicht nachgewiesene",
+    "er": "nicht nachgewiesener", "es": "nicht nachgewiesenes", "en": "nicht nachgewiesenen",
+}
+_RE_NICHT_DURCHGEFUEHRT = re.compile(
+    r"\bnicht\s+durchgef[üu]hrt(\s+worden)?\b", re.IGNORECASE)
+
+
+def _ersetze_faellig(match: re.Match) -> str:
+    return _FAELLIG_ERSATZ.get(match.group(1), "zu prüfen")
+
+
+def _ersetze_versaeumt(match: re.Match) -> str:
+    return _VERSAEUMT_ERSATZ.get(match.group(1), "nicht nachgewiesen")
+
+
+def neutralisiere_wartungs_faelligkeit(text: str) -> str:
+    """Neutralisiert Fälligkeits-Behauptungen zu Wartungspunkten im Freitext —
+    NUR in Sätzen mit erkennbarem Wartungskontext (siehe `_WARTUNG_KONTEXT_WORTE`).
+    Sätze ohne diesen Kontext (z.B. eine fällige Zahlung) bleiben unverändert."""
+    if not text:
+        return text
+
+    teile = _CODE_FENCE.split(text)
+    fences = _CODE_FENCE.findall(text)
+
+    def _hat_wartungskontext(satz: str) -> bool:
+        low = satz.lower()
+        return any(w in low for w in _WARTUNG_KONTEXT_WORTE)
+
+    def _bereinige_teil(teil: str) -> str:
+        zeilen = teil.split("\n")
+        neue_zeilen = []
+        for zeile in zeilen:
+            if _IST_TABELLENZEILE.match(zeile):
+                neue_zeilen.append(zeile)
+                continue
+            saetze = _RE_SATZGRENZE.split(zeile)
+            neue_saetze = []
+            for satz in saetze:
+                if _hat_wartungskontext(satz):
+                    neu = _RE_FAELLIG.sub(_ersetze_faellig, satz)
+                    neu = _RE_VERSAEUMT.sub(_ersetze_versaeumt, neu)
+                    neu = _RE_NICHT_DURCHGEFUEHRT.sub("nicht nachweisbar", neu)
+                    if neu != satz:
+                        log.info("Wartungs-Fälligkeits-Guard: Wortlaut im Bericht neutralisiert.")
+                    satz = neu
+                neue_saetze.append(satz)
+            neue_zeilen.append(" ".join(neue_saetze))
+        return "\n".join(neue_zeilen)
+
+    bereinigt = [_bereinige_teil(t) for t in teile]
+    zusammengesetzt: list[str] = []
+    for i, teil in enumerate(bereinigt):
+        zusammengesetzt.append(teil)
+        if i < len(fences):
+            zusammengesetzt.append(fences[i])
+    return "".join(zusammengesetzt)
+
+
 def postprocess_answer(text: str) -> str:
     """
     Zentrale Postprocessing-Funktion für ALLE KI-Antworten (Chat, Diagnose,

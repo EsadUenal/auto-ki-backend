@@ -39,6 +39,7 @@ from app.car_lookup import (
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.empfehlungs_floor import wende_floor_an
+from app.kaufempfehlung_sync import synchronisiere_kaufempfehlung
 from app.fahrzeugkontext import build_fahrzeugkontext
 from app.laufleistung import (
     build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
@@ -60,7 +61,9 @@ from app.kaufaktionen import build_kaufaktionen
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
-from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
+from app.postprocess import (
+    postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_wartungs_faelligkeit,
+)
 from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
 from app.web_search import (
@@ -434,6 +437,11 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # §26 defensiv: auch der Kaufcheck-Bericht kann einen Wiederverkaufs-Ausblick
         # enthalten — dieselbe Absicherung wie im Verkaufscheck.
         result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
+        # P2-5-Nachbesserung (Bake-off Gemini 3.7): unabhaengig vom Empfehlungs-Floor
+        # geltendes Sicherheitsnetz — kein Feld im System kennt den Zeitpunkt des
+        # letzten Service, ein "faellig"/"ueberfaellig"/"versaeumt" ist deshalb IMMER
+        # unbelegt, egal welches Modell den Bericht geschrieben hat.
+        result["bericht"] = neutralisiere_wartungs_faelligkeit(result["bericht"])
         # §Phase 8: letztes Sicherheitsnetz — auch wenn db_ctx/evidence_block bereits
         # gefiltert waren (§Phase 7), kann das LLM Begriffe frei kombinieren
         # (z.B. aus dem Schwachstellen-/DB-Profil-Text). Entfernt NUR Sätze/Zeilen,
@@ -534,6 +542,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # verhaelt sich damit identisch zu PFAD A.
     empfehlung_final, floor_befund = wende_floor_an(result.get("empfehlung"), insights)
     result["empfehlung"] = empfehlung_final
+    # Bericht/Feld-Konsistenz: NUR wenn der Floor tatsaechlich angehoben hat, kann
+    # die vom LLM geschriebene "## Kaufempfehlung"-Ueberschrift noch die ROHE,
+    # ungehobene Empfehlung zeigen — die strukturierten Daten sind die Wahrheit
+    # (§3), der Bericht darf ihnen nicht widersprechen. Greift der Floor nicht,
+    # bleibt der Bericht unangetastet.
+    if floor_befund is not None and result.get("bericht"):
+        result["bericht"] = synchronisiere_kaufempfehlung(result["bericht"], empfehlung_final)
 
     # Schicht B: vom LLM gelieferte Evidence-IDs gegen die ECHTEN Insight-IDs
     # validieren — Halluzinationen verwerfen (Backend bleibt Source of Truth).
