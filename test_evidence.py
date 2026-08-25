@@ -30,8 +30,15 @@ def req(baujahr=2020):
     return SimpleNamespace(baujahr=baujahr)
 
 
+# DATA-SAFETY-RUNTIME-GATE: diese Fixture ist ausdruecklich VERIFIED, damit die
+# hier geprueften Aussagen (KBA-Referenz am Insight, Quellentitel) ueberhaupt
+# beobachtbar bleiben. Das unverifizierte Verhalten pruefen
+# test_data_trust_runtime.py und test_kaufcheck_motor_applicability.py.
 BAUREIHE = {
     "id": "bmw-3er-g20",
+    "verification": {f: {"status": "verified", "source": "https://example.test/nachweis",
+                         "date": "2026-08-24"}
+                     for f in ("schwachstellen", "motorprobleme", "rueckrufe", "wartung")},
     "quellen": [{"quelle": "BMW-Servicedoku", "url": "https://example.com/bmw", "abrufdatum": "2026-01-01"}],
     "schwachstellen_baureihe": [
         {"bauteil": "AGR-Kühler", "beschreibung": "AGR-System kann verrußen.",
@@ -112,6 +119,9 @@ check("2b: confidence bleibt provenance-basiert (hoch), nicht vom schweregrad ab
 # severity / confidence / applicability sind DREI getrennte Konzepte.
 BAUREIHE_HV = {
     "id": "bmw-3er-g20-g21", "quellen": [], "schwachstellen_baureihe": [],
+    "verification": {f: {"status": "verified", "source": "https://example.test/nachweis",
+                         "date": "2026-08-24"}
+                     for f in ("schwachstellen", "motorprobleme", "rueckrufe", "wartung")},
     "rueckrufe": [
         {"datum": "2020-03", "betroffene_baujahre": "2019-2020",
          "mangel": "Möglicher Ausfall des Bremskraftverstärkers",

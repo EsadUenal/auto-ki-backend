@@ -1010,7 +1010,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 
     Der Text macht die Herkunft sichtbar ("laut Webrecherche"), damit ein
     ausgedruckter Prüfplan ohne die VIRA-Oberfläche nicht so wirkt, als käme der
-    Punkt aus der geprüften Fahrzeugdatenbank.
+    Punkt aus der VIRA-Fahrzeugdatenbank.
     """
     for i in insights:
         if not i.kategorie.startswith("web_"):
@@ -1058,7 +1058,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         )
         s.add(BESICHTIGUNG, schluessel, bauteil,
               f"{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
-              f"geprüften Fahrzeugdatenbank.)",
+              f"VIRA-Fahrzeugdatenbank.)",
               _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
               evidence_ids=[i.id], kategorie="web_schwachstelle",
               gruppe="Hinweis aus der Webrecherche")
@@ -1071,7 +1071,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             # nicht mehr von einem geprueften DB-Punkt zu unterscheiden.
             s.add(PROBEFAHRT, schluessel, bauteil,
                   f"{symptom} (Hinweis stammt aus der Webrecherche, nicht aus der "
-                  f"geprüften Fahrzeugdatenbank.)",
+                  f"VIRA-Fahrzeugdatenbank.)",
                   _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
                   gruppe="Hinweis aus der Webrecherche")

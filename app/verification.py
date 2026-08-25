@@ -52,7 +52,23 @@ _ERLAUBT = {UNVERIFIED, REVIEWED, VERIFIED, REJECTED}
 # Getriebe und Antrieb hängen alle an derselben `motorvariante`-Zeile und werden
 # deshalb gemeinsam unter "motorvarianten" geführt — sie stammen aus einer Quelle
 # und wurden nie getrennt geprüft; eine feinere Aufteilung wäre Scheingenauigkeit.
-FAKTEN = ("generation", "chassis_codes", "karosserie", "motorvarianten", "facelift")
+#
+# DATA-SAFETY-RUNTIME-GATE: additiv um die drei Faktenarten erweitert, aus denen
+# der Kaufcheck seine fahrzeugspezifischen Aussagen bildet. Sie stehen HIER und
+# nicht in einer zweiten Trust-Registry, damit es genau EINE Stelle gibt, an der
+# "darf dieser Fakt hart wirken?" beantwortet wird. Der Kaufcheck liest sie über
+# `app/evidence.py::_trust_der_baureihe`.
+#
+#   schwachstellen   -> schwachstelle_baureihe
+#   motorprobleme    -> schwachstelle_motor   (hängt an motorvariante)
+#   rueckrufe        -> rueckruf
+#   wartung          -> kritische_wartung     (hängt an motorvariante)
+#
+# Stand heute trägt KEINE der 421 Baureihen einen `verification`-Eintrag; alle vier
+# stehen damit faktisch auf `unverified`. Das ist Absicht: die Stufe wird nicht
+# behauptet, sondern muss eingetragen werden.
+FAKTEN = ("generation", "chassis_codes", "karosserie", "motorvarianten", "facelift",
+          "schwachstellen", "motorprobleme", "rueckrufe", "wartung")
 
 
 def _als_dict(baureihe) -> dict:

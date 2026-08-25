@@ -18,6 +18,7 @@ from app.config import GEMINI_API_KEY, LLM_MODEL
 from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen
 from app.recall_filter import gefilterte_rueckrufe, _baujahr_passt
+from app.motor_applicability import gefilterte_schwachstellen
 
 log = logging.getLogger(__name__)
 
@@ -650,7 +651,7 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
     Kaufcheck übergibt den Kontext; der Verkaufscheck-Prompt bleibt dadurch
     unverändert (dort ist der Marktwert das Produkt, nicht die Fahrzeugkunde)."""
     if baureihe is None:
-        return "Kein geprüftes DB-Profil für dieses Fahrzeug vorhanden."
+        return "Kein DB-Profil für dieses Fahrzeug vorhanden."
 
     lines = [
         f"## DB-Profil: {baureihe.get('marke','')} {baureihe.get('modell','')} {baureihe.get('generation','')}",
@@ -714,8 +715,16 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
 
     # schwachstelle_baureihe HAT schweregrad — trotzdem .get() für Robustheit
     # KaufCheck-P0-2: dieselbe Baujahres-Applicability wie evidence.build_insights.
+    #
+    # DATA-SAFETY-RUNTIME-GATE: zusätzlich dieselbe Motor-Allowed-List wie
+    # evidence.build_insights (app/motor_applicability.py). Ohne diesen Aufruf
+    # entstünde exakt der Fehler, den Reliability-Sprint 4 bei den Rückrufen
+    # beheben musste: die strukturierten Insights wären sauber gefiltert, während
+    # der LLM-Prompt die motorfremde Schwachstelle weiterhin roh zu sehen bekäme
+    # und sie in Bericht und Checkliste schreiben würde.
     schwachstellen_baureihe = [
-        s for s in (baureihe.get("schwachstellen_baureihe") or [])
+        s for s in gefilterte_schwachstellen(
+            baureihe.get("schwachstellen_baureihe"), motor_match, baureihe)
         if _baujahr_passt(s.get("betroffene_baujahre"), baujahr) is not False
     ]
     if schwachstellen_baureihe:

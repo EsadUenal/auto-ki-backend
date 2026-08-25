@@ -209,17 +209,24 @@ erg_pn = lauf_kaufcheck(ma_leer, LLM_PREIS_NACHVERHANDELN)
 # Zwei Schritte greifen hier NACHEINANDER, beide bewusst:
 #   1. Ohne Marktdaten ist die PREIS-Haelfte von "preis_nachverhandeln" nicht
 #      belegbar -> Reduktion auf den technischen Teil (kaufen_nach_besichtigung).
-#   2. Danach zieht der deterministische Empfehlungs-Floor
-#      (app/empfehlungs_floor): das Fixture-Fahrzeug (VW Passat B6 2.0 TDI) hat
-#      in der Fahrzeugdatenbank ZWEI Schwachstellen mit Schweregrad "hoch" —
-#      genau die Systemprompt-Definition von "nur_mit_werkstattpruefung".
+#   2. Der deterministische Empfehlungs-Floor (app/empfehlungs_floor) hob frueher
+#      zusaetzlich auf "nur_mit_werkstattpruefung", weil das Fixture-Fahrzeug
+#      (VW Passat B6 2.0 TDI) ZWEI Schwachstellen mit Schweregrad "hoch" traegt.
+#
+#      DATA-SAFETY-RUNTIME-GATE (P0): das tut er nicht mehr. Beide Schwachstellen
+#      stammen aus der Fahrzeugdatenbank, fuer die keinerlei Provenance gespeichert
+#      ist (0 von 421 Baureihen mit `verification`, Tabelle `quelle` leer). Ein
+#      unbelegter DB-Schweregrad darf die Kaufempfehlung nicht mehr allein
+#      verschaerfen. Die Schwachstellen selbst bleiben vollstaendig sichtbar und
+#      erzeugen unveraendert ihre Pruefpunkte — nur die harte Eskalation entfaellt.
+#
 # Die eigentliche Zusicherung dieses Falls ist unveraendert: die unbelegbare
 # Preisaussage wird NICHT weitergetragen.
 check("I6a: 'preis_nachverhandeln' ohne Marktdaten wird nicht weitergetragen",
       erg_pn.get("empfehlung") != "preis_nachverhandeln")
-check("I6b: technischer Floor hebt danach auf 'nur_mit_werkstattpruefung' "
-      "(2x Schwachstelle Schweregrad hoch)",
-      erg_pn.get("empfehlung") == "nur_mit_werkstattpruefung")
+check("I6b: ohne Provenance keine Floor-Eskalation — es bleibt beim technischen "
+      "Rest 'kaufen_nach_besichtigung'",
+      erg_pn.get("empfehlung") == "kaufen_nach_besichtigung")
 
 print()
 print("=== J. Status eindeutig No-Market ===")

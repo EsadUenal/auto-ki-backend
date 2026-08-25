@@ -30,6 +30,7 @@ from app.empfehlungs_floor import (  # noqa: E402
     KAUFEN, KAUFEN_NACH_BESICHTIGUNG, NUR_MIT_WERKSTATTPRUEFUNG,
     PREIS_NACHVERHANDELN, HOHES_RISIKO, FINGER_WEG, UNBEKANNT,
     GRUND_MOTORPROBLEM, GRUND_SCHWACHSTELLE_HOCH, GRUND_RUECKRUF_VARIANTENTREFFER,
+    darf_floor_tragen,
 )
 from app.models import Insight  # noqa: E402
 
@@ -44,24 +45,29 @@ def check(name, cond):
 
 # ── Insight-Fabriken (minimal, nur die vom Floor gelesenen Felder) ───────────
 
-def schwachstelle(iid, schweregrad, confidence="hoch"):
+# DATA-SAFETY-RUNTIME-GATE: alle Fabriken erzeugen standardmaessig `trust="verified"`.
+# Nur so bleiben die Abschnitte A-L das, was sie pruefen sollen: die RANGFOLGE- und
+# BEGRUENDUNGS-Logik des Floors. Die neue Trust-Vorbedingung selbst hat einen eigenen
+# Abschnitt M -- dort wird genau der Produktionsfall geprueft (unverifizierte
+# DB-Fakten loesen KEINEN Floor mehr aus).
+def schwachstelle(iid, schweregrad, confidence="hoch", trust="verified"):
     return Insight(id=iid, kategorie="schwachstelle", titel="Bauteil — bekannte Schwachstelle",
-                   beschreibung="", confidence=confidence, schweregrad=schweregrad)
+                   beschreibung="", confidence=confidence, schweregrad=schweregrad, trust=trust)
 
 
-def rueckruf(iid, applicability, confidence="mittel"):
+def rueckruf(iid, applicability, confidence="mittel", trust="verified"):
     return Insight(id=iid, kategorie="rueckruf", titel="KBA-Rückruf: Beispiel",
-                   beschreibung="", confidence=confidence, applicability=applicability)
+                   beschreibung="", confidence=confidence, applicability=applicability, trust=trust)
 
 
-def motorproblem(iid, confidence="hoch"):
+def motorproblem(iid, confidence="hoch", trust="verified"):
     return Insight(id=iid, kategorie="motorproblem", titel="Steuerkette (2.0 TFSI)",
-                   beschreibung="", confidence=confidence)
+                   beschreibung="", confidence=confidence, trust=trust)
 
 
-def wartung(iid):
+def wartung(iid, trust="verified"):
     return Insight(id=iid, kategorie="wartung", titel="Zahnriemen — kritischer Wartungspunkt",
-                   beschreibung="Intervall 120.000 km", confidence="hoch")
+                   beschreibung="Intervall 120.000 km", confidence="hoch", trust=trust)
 
 
 def marktvergleich(iid="marktvergleich-9"):
@@ -265,6 +271,64 @@ print("\n-- Idempotenz --")
 e1, _ = wende_floor_an(KAUFEN_NACH_BESICHTIGUNG, audi)
 e2, b2_ = wende_floor_an(e1, audi)
 check("Idempotent: zweiter Durchlauf aendert nichts mehr", e1 == e2 and b2_ is None)
+
+# ── M) DATA-SAFETY-RUNTIME-GATE: Trust-Vorbedingung ───────────────────────
+# Der Produktionsfall: 0 von 421 Baureihen tragen einen `verification`-Eintrag,
+# `quelle` ist leer. Damit steht JEDER heutige DB-Fakt auf "unverified_db" -- und
+# darf die Kaufempfehlung nicht mehr allein verschaerfen.
+print("\n-- M) Trust-Gate: unverifizierte DB-Fakten tragen keinen Floor --")
+
+check("M0: darf_floor_tragen akzeptiert nur verified",
+      darf_floor_tragen(schwachstelle("s", "hoch", trust="verified"))
+      and not darf_floor_tragen(schwachstelle("s", "hoch", trust="unverified_db"))
+      and not darf_floor_tragen(schwachstelle("s", "hoch", trust="web")))
+
+m1 = [schwachstelle("schwachstelle-1", "hoch", trust="unverified_db")]
+check("M1: hohe Schwachstelle ohne Provenance -> KEIN Floor", ermittle_floor(m1) is None)
+emp_m1, bef_m1 = wende_floor_an(KAUFEN_NACH_BESICHTIGUNG, m1)
+check("M1b: Empfehlung bleibt unveraendert",
+      emp_m1 == KAUFEN_NACH_BESICHTIGUNG and bef_m1 is None)
+
+check("M2: Motorproblem ohne Provenance -> KEIN Floor",
+      ermittle_floor([motorproblem("motorproblem-2", trust="unverified_db")]) is None)
+
+check("M3: variant_match-Rueckruf ohne Provenance -> KEIN Floor",
+      ermittle_floor([rueckruf("rueckruf-3", "variant_match", trust="unverified_db")]) is None)
+
+m4 = [schwachstelle("schwachstelle-1", "kritisch", trust="unverified_db"),
+      motorproblem("motorproblem-2", trust="unverified_db"),
+      rueckruf("rueckruf-3", "variant_match", trust="unverified_db"),
+      wartung("wartung-4", trust="unverified_db")]
+check("M4: auch alle drei Ausloeser zusammen heben nichts an, solange unverifiziert",
+      ermittle_floor(m4) is None)
+
+# §11: Web-Evidence traegt eine echte Quellenlage, aber keinen Schweregrad ->
+# ausdruecklich NICHT floor-faehig.
+web = Insight(id="web-schwachstelle-5", kategorie="web_schwachstelle",
+              titel="Turbolader — Hinweis aus der Webrecherche", beschreibung="",
+              confidence="hoch", trust="web")
+check("M5: gut belegte Web-Schwachstelle loest KEINEN Floor aus",
+      ermittle_floor([web]) is None)
+check("M5b: auch zusammen mit unverifizierten DB-Fakten nicht",
+      ermittle_floor(m4 + [web]) is None)
+
+# Der Default von Insight.trust ist "unverified_db" -- eine Evidence, die ihre
+# Herkunft vergisst, darf nicht versehentlich hart wirken.
+ohne_trust = Insight(id="schwachstelle-6", kategorie="schwachstelle", titel="Bauteil",
+                     beschreibung="", confidence="hoch", schweregrad="hoch")
+check("M6: Insight ohne gesetzten trust ist per Default nicht floor-faehig",
+      ermittle_floor([ohne_trust]) is None)
+
+# Mischbetrieb: sobald EIN Fakt verifiziert ist, greift der Floor wieder --
+# begruendet aber ausschliesslich ueber die verifizierte ID.
+m7 = [schwachstelle("schwachstelle-1", "hoch", trust="verified"),
+      motorproblem("motorproblem-2", trust="unverified_db")]
+bef_m7 = ermittle_floor(m7)
+check("M7: verifizierte Schwachstelle stellt den Floor wieder her",
+      bef_m7 is not None and bef_m7.stufe == NUR_MIT_WERKSTATTPRUEFUNG)
+check("M7b: Begruendung nennt NUR die verifizierte Evidence",
+      bef_m7 is not None and bef_m7.evidence_ids == ["schwachstelle-1"]
+      and bef_m7.gruende == [GRUND_SCHWACHSTELLE_HOCH])
 
 print()
 if FEHLER:

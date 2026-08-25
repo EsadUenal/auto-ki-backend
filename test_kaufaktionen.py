@@ -90,8 +90,12 @@ class Req:
         self.scheckheftgepflegt = kw.get("scheckheftgepflegt")
 
 
-def baureihe(schwachstellen=None, rueckrufe=None):
-    return {
+def baureihe(schwachstellen=None, rueckrufe=None, verified=True):
+    """DATA-SAFETY-RUNTIME-GATE: `verified=True` als Default, damit die
+    bestehenden Aussagen dieses Moduls (KBA-Referenz in der Dokumentaktion,
+    Prioritaeten) weiterhin beobachtbar sind. Das unverifizierte Verhalten hat
+    eine eigene Suite (test_data_trust_runtime.py)."""
+    br = {
         "id": "test-baureihe", "marke": "TestMarke", "modell": "TestModell",
         "generation": "G1", "bauzeitraum_von": 2015, "bauzeitraum_bis": 2023,
         "karosserie": [], "tuev_maengelquote": None, "adac_pannenkennziffer": None,
@@ -99,6 +103,13 @@ def baureihe(schwachstellen=None, rueckrufe=None):
         "schwachstellen_baureihe": schwachstellen or [],
         "rueckrufe": rueckrufe or [],
     }
+    if verified:
+        br["verification"] = {
+            f: {"status": "verified", "source": "https://example.test/nachweis",
+                "date": "2026-08-24"}
+            for f in ("schwachstellen", "motorprobleme", "rueckrufe", "wartung")
+        }
+    return br
 
 
 def motor(schwachstellen_motor=None, kritische_wartung=None, kraftstoff="Diesel"):
@@ -414,8 +425,14 @@ check("J6 Kostenhinweis der beitragenden Evidence bleibt erhalten",
 # Umlaut-Fix ZWEI fast identische Probefahrt-Aktionen.
 br_j2 = baureihe([{"bauteil": "Zündspulen (Benziner)", "beschreibung": "Zündaussetzer.",
                    "betroffene_baujahre": "Alle", "schweregrad": "mittel"}])
+# DATA-SAFETY-RUNTIME-GATE: der Motor MUSS hier ein Benziner sein. Die Fixture
+# paarte bisher die auf "(Benziner)" eingegrenzte Baureihen-Schwachstelle mit dem
+# Default-Dieselmotor des Helpers — das Motor-Applicability-Gate entfernt diese
+# Kombination jetzt zu Recht, und der Dedup-Fall waere gar nicht mehr entstanden.
+# Die Absicht des Tests (EIN Bauteil, ZWEI Evidenzen, EINE Aktion) bleibt damit
+# unveraendert pruefbar.
 mo_j2 = motor([{"bauteil": "Zündspulen", "beschreibung": "Defekte Zündspulen führen zu Aussetzern.",
-                "baujahre": None, "kosten_ca": None}])
+                "baujahre": None, "kosten_ca": None}], kraftstoff="Benzin")
 ka_j2b, _ = aktionen(Req(baujahr=2020), br_j2, mo_j2)
 check("J7 'Zündspulen' + 'Zündspulen (Benziner)' ergeben EINE Probefahrt-Aktion",
       len(ka_j2b.probefahrt.fahrzeugspezifisch) == 1)

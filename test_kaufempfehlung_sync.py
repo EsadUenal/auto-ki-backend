@@ -40,9 +40,13 @@ def check(name, cond):
         FEHLER.append(name)
 
 
-def schwachstelle(iid, schweregrad):
+def schwachstelle(iid, schweregrad, trust="verified"):
+    # DATA-SAFETY-RUNTIME-GATE: `trust="verified"`, weil diese Suite den
+    # BERICHT-SYNC prueft und dafuer einen Floor braucht, der tatsaechlich greift.
+    # Dass unverifizierte DB-Fakten keinen Floor mehr ausloesen, ist Gegenstand von
+    # test_empfehlungs_floor.py (Abschnitt M).
     return Insight(id=iid, kategorie="schwachstelle", titel="Bauteil — bekannte Schwachstelle",
-                   beschreibung="", confidence="hoch", schweregrad=schweregrad)
+                   beschreibung="", confidence="hoch", schweregrad=schweregrad, trust=trust)
 
 
 BERICHT_VORLAGE = (

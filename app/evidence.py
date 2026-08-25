@@ -27,8 +27,42 @@ from app.recall_filter import (
     kba_referenz_anzeige,
     RUECKRUF_APPLICABILITY_TEXT,
 )
+# DATA-SAFETY-RUNTIME-GATE: zentrale Allowed-List für Baureihen-Schwachstellen,
+# geteilt mit build_db_context (car_lookup.py) — analog zu recall_filter.
+from app.motor_applicability import gefilterte_schwachstellen
+from app.verification import is_verified
 
 log = logging.getLogger(__name__)
+
+# ── Trust-Stufen (siehe models.Insight.trust) ────────────────────────────────
+TRUST_VERIFIED = "verified"
+TRUST_UNVERIFIED_DB = "unverified_db"
+TRUST_WEB = "web"
+TRUST_USER = "user"
+TRUST_ABGELEITET = "abgeleitet"
+
+
+def _trust_der_baureihe(baureihe: dict | None, fakt: str) -> str:
+    """Trust-Stufe einer DB-Faktenart für DIESE Baureihe.
+
+    Einziger Übersetzer zwischen der bestehenden Verifikations-Architektur
+    (app/verification.py, Stufen unverified/reviewed/verified/rejected) und der
+    Trust-Achse der Evidence. `reviewed` zählt hier bewusst NICHT als verified —
+    dieselbe Regel wie im Marktvergleich: ohne gespeicherten Nachweis keine harte
+    Wirkung.
+    """
+    return TRUST_VERIFIED if is_verified(baureihe, fakt) else TRUST_UNVERIFIED_DB
+
+
+def _db_quellentitel(basis: str, trust: str) -> str:
+    """Quellentitel für einen DB-Fakt.
+
+    Das Wort "(geprüft)" wird NUR angehängt, wenn für diese Faktenart tatsächlich
+    eine Verifikation mit Quelle hinterlegt ist. Vorher stand es unbedingt an
+    allen DB-Quellen, obwohl 0 von 421 Baureihen einen `verification`-Eintrag
+    tragen und die Tabelle `quelle` leer ist — eine Behauptung ohne Grundlage.
+    """
+    return f"{basis} (geprüft)" if trust == TRUST_VERIFIED else basis
 
 
 def _typen(quellen: list[EvidenceQuelle]) -> list[str]:
@@ -88,13 +122,21 @@ def build_insights(
         zaehler["n"] += 1
         return f"{prefix}-{zaehler['n']}"
 
-    # ── 1) Schwachstellen der Baureihe (VIRA-DB, redaktionell geprüft) ──────────
-    for s in (baureihe or {}).get("schwachstellen_baureihe") or []:
+    # ── 1) Schwachstellen der Baureihe (VIRA-DB) ───────────────────────────────
+    # DATA-SAFETY-RUNTIME-GATE: `gefilterte_schwachstellen` entfernt vorher alle
+    # Sätze, deren Freitext sie auf eine nachweislich ANDERE Motorisierung
+    # eingrenzt (z.B. "Steuerkette (N47 Dieselmotoren)" an einem Benziner). Diese
+    # Sätze erzeugen damit weder Evidence noch Kaufaktion noch Floor — exakt wie
+    # ein "incompatible"-Rückruf.
+    trust_schwachstelle = _trust_der_baureihe(baureihe, "schwachstellen")
+    for s in gefilterte_schwachstellen(
+            (baureihe or {}).get("schwachstellen_baureihe"), motor_match, baureihe):
         passt = _baujahr_passt(s.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue  # gilt nachweislich nicht für dieses Baujahr -> nicht ausgeben
         quellen = [EvidenceQuelle(typ="datenbank", ref=s.get("bauteil"),
-                                  titel="VIRA-Fahrzeugdatenbank (geprüft)")]
+                                  titel=_db_quellentitel("VIRA-Fahrzeugdatenbank",
+                                                         trust_schwachstelle))]
         insights.append(Insight(
             id=_id("schwachstelle"),
             kategorie="schwachstelle",
@@ -106,6 +148,7 @@ def build_insights(
             # NIE aus schweregrad.
             confidence="hoch" if passt is True else "mittel",
             schweregrad=(s.get("schweregrad") or None),
+            trust=trust_schwachstelle,
             einfluss=_einfluss_schwachstelle(s.get("schweregrad"), check_typ),
         ))
 
@@ -124,11 +167,23 @@ def build_insights(
         kba_anzeige = kba_referenz_anzeige(kba, marke)
         # kba_referenz ist die KONKRETE, pro-Rückruf gültige Quelle -> bleibt am Insight
         # (nur wenn plausibel — siehe oben).
-        quellen = [EvidenceQuelle(
-            typ="rueckruf_kba",
-            ref=kba_anzeige,
-            titel="KBA-Rückrufdatenbank" if kba_anzeige else "KBA-Rückruf (Referenz nicht hinterlegt)",
-        )]
+        #
+        # §6 DATA-SAFETY-RUNTIME-GATE — die Trennung, die im Code sichtbar bleiben
+        # muss: das KBA-Trust-Gate prüft FORMAT und Kollisionsfreiheit der Nummer.
+        # Das ist eine Plausibilitätsaussage, KEINE inhaltliche Verifikation. Der
+        # Audit konnte keinen einzigen DB-Rückruf gegen eine amtliche Quelle
+        # bestätigen; solange die Baureihe für "rueckrufe" nicht ausdrücklich
+        # verified ist, heißt die Quelle deshalb "Rückrufhinweis" und nicht
+        # "KBA-Rückrufdatenbank" — und trägt keinen Floor.
+        trust_rueckruf = _trust_der_baureihe(baureihe, "rueckrufe")
+        if trust_rueckruf == TRUST_VERIFIED:
+            quellen_titel = ("KBA-Rückrufdatenbank" if kba_anzeige
+                             else "KBA-Rückruf (Referenz nicht hinterlegt)")
+        else:
+            quellen_titel = ("Rückrufhinweis aus der VIRA-Fahrzeugdatenbank — "
+                             "nicht amtlich bestätigt")
+            kba_anzeige = None      # keine scheinbar amtliche Nummer anzeigen
+        quellen = [EvidenceQuelle(typ="rueckruf_kba", ref=kba_anzeige, titel=quellen_titel)]
         # Phase 1B: Varianten-/Antriebs-Zuordnung -> applicability (getrennt von
         # confidence & severity). Ein Hochvolt-/PHEV-Rückruf wird NICHT als direkt
         # zutreffend für einen reinen Diesel markiert.
@@ -150,10 +205,16 @@ def build_insights(
         # Rückruf; sonst als Baureihen-Hinweis kennzeichnen. NIE "betrifft dein
         # Fahrzeug" ohne VIN-Prüfung (§27) — das steht nur im Frontend-Label, hier
         # geht es nur um die Titel-Formulierung "Rückruf" vs. "Rückruf (Baureihe)".
+        #
+        # §6: Das Präfix "KBA-Rückruf" behauptet eine amtliche Meldung. Solange die
+        # Rückrufdaten dieser Baureihe nicht verified sind, heißt es "Rückrufhinweis"
+        # — die Aussage bleibt inhaltlich vollständig erhalten, sie gibt sich nur
+        # nicht mehr als amtlich bestätigt aus.
+        praefix = "KBA-Rückruf" if trust_rueckruf == TRUST_VERIFIED else "Rückrufhinweis"
         if applicability in ("confirmed_by_vin", "variant_match"):
-            titel = f"KBA-Rückruf: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
+            titel = f"{praefix}: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
         else:
-            titel = f"KBA-Rückruf (Baureihe): {(r.get('mangel') or 'Rückrufaktion')[:70]}".rstrip(": ").strip()
+            titel = f"{praefix} (Baureihe): {(r.get('mangel') or 'Rückrufaktion')[:70]}".rstrip(": ").strip()
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
@@ -163,17 +224,20 @@ def build_insights(
             quellen=quellen,
             confidence=r_conf,
             applicability=applicability,
+            trust=trust_rueckruf,
             einfluss=r_einfluss,
         ))
 
     # ── 3) Motorspezifische Probleme (nur bei ERKANNTEM Motor) ─────────────────
+    trust_motorproblem = _trust_der_baureihe(baureihe, "motorprobleme")
     if motor_match:
         for s in motor_match.get("schwachstellen_motor") or []:
             passt = _baujahr_passt(s.get("baujahre"), baujahr)
             if passt is False:
                 continue
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=motor_match.get("bezeichnung"),
-                                      titel="VIRA-Motorvariantendaten (geprüft)")]
+                                      titel=_db_quellentitel("VIRA-Motorvariantendaten",
+                                                             trust_motorproblem))]
             kosten = s.get("kosten_ca")
             if check_typ == "verkauf":
                 einfluss = "Wertrelevant — Zustand des Bauteils belegen."
@@ -188,6 +252,7 @@ def build_insights(
                 quellen_typen=_typen(quellen),
                 quellen=quellen,
                 confidence="hoch" if passt is True else "mittel",
+                trust=trust_motorproblem,
                 einfluss=einfluss,
             ))
 
@@ -220,16 +285,28 @@ def build_insights(
     # ein Baujahr, das zu einer anderen Generation gehört, führt bereits in
     # `find_baureihe`/`find_motor` zu einer anderen (oder keiner) Variante. Es wird
     # hier bewusst KEINE eigene Baujahreslogik erfunden.
+    trust_wartung = _trust_der_baureihe(baureihe, "wartung")
     if check_typ == "kauf" and motor_match:
         for w in motor_match.get("kritische_wartung") or []:
             bauteil = (w.get("bauteil") or "").strip()
             if not bauteil:
                 continue
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=bauteil,
-                                      titel="VIRA-Wartungsdaten (geprüft)")]
+                                      titel=_db_quellentitel("VIRA-Wartungsdaten",
+                                                             trust_wartung))]
             teile = [(w.get("hinweis") or "").strip()]
             if w.get("intervall"):
-                teile.append(f"Vorgesehenes Intervall: {str(w['intervall']).strip()}.")
+                # §8 DATA-SAFETY-RUNTIME-GATE: "Vorgesehenes Intervall" behauptet eine
+                # Herstellervorgabe. Der Audit hat gemessen, dass 284 von 1.497
+                # Einträgen (19,0 %) gar kein Intervall enthalten, sondern einen
+                # Erfahrungs-/Prüfhinweis ("Sichtprüfung ab 100.000 km", "Kein fester
+                # Intervall", "~50-80 tkm", "Zustand prüfen"). Der neutrale Wortlaut
+                # deckt beide Fälle ehrlich ab; die präzise Formulierung kommt zurück,
+                # sobald der Eintrag als Herstellerintervall verifiziert ist.
+                # P2-5 bleibt unberührt: keine Fälligkeits-Behauptung.
+                wortlaut = ("Vorgesehenes Intervall" if trust_wartung == TRUST_VERIFIED
+                            else "Hinterlegter Wartungshinweis")
+                teile.append(f"{wortlaut}: {str(w['intervall']).strip()}.")
             insights.append(Insight(
                 id=_id("wartung"),
                 kategorie="wartung",
@@ -241,6 +318,7 @@ def build_insights(
                 # Motorvariante -> "hoch". Kein Bezug zum Schweregrad (den gibt es
                 # für Wartungspunkte gar nicht).
                 confidence="hoch",
+                trust=trust_wartung,
                 einfluss="Vor dem Kauf Durchführung und Nachweis klären.",
             ))
 
@@ -283,6 +361,12 @@ def build_insights(
                 # + Tier), nie aus dem Inhalt — dieselbe Trennung wie oben.
                 confidence=fakt.confidence,
                 applicability=fakt.applicability,
+                # §11: Web-Evidence trägt eine echte Quellenlage (URL + Domain-
+                # Qualität + Anzahl unabhängiger Domains) und bekommt deshalb eine
+                # EIGENE Trust-Stufe — sie ist weder ein ungeprüfter DB-Satz noch
+                # eine verifizierte Herstellerangabe. Floor-fähig ist sie NICHT,
+                # siehe Begründung in app/empfehlungs_floor.py.
+                trust=TRUST_WEB,
                 einfluss=_WEB_EINFLUSS[fakt.kategorie],
             ))
 
@@ -298,7 +382,7 @@ _WEB_TITEL = {
     "wartung": "{bauteil} — Wartungsangabe aus der Webrecherche",
 }
 _WEB_EINFLUSS = {
-    "schwachstelle": "Aus Webquellen belegt, nicht aus der geprüften "
+    "schwachstelle": "Aus Webquellen belegt, nicht aus der "
                      "Fahrzeugdatenbank — vor dem Kauf gezielt prüfen.",
     "rueckruf": "Aus Webquellen belegt — Betroffenheit ausschließlich anhand der "
                 "FIN beim Hersteller/KBA klären.",
@@ -400,6 +484,7 @@ def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, mark
         return Insight(
             id=_id("marktvergleich"),
             kategorie="marktvergleich",
+            trust=TRUST_ABGELEITET,
             titel="Marktvergleich (aktuelle Websuche)",
             beschreibung=" ".join(teile),
             quellen_typen=_typen(web_quellen) + ["marktvergleich"] if web_quellen else ["marktvergleich"],
@@ -428,6 +513,7 @@ def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, mark
     return Insight(
         id=_id("marktvergleich"),
         kategorie="marktvergleich",
+        trust=TRUST_ABGELEITET,
         titel="Marktvergleich (begrenzte Web-Datenbasis)",
         beschreibung=beschr,
         quellen_typen=_typen(web_quellen) + ["marktvergleich"],

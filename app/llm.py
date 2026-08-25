@@ -28,7 +28,8 @@ from google.genai import types as genai_types
 from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
-from app.recall_filter import gefilterte_rueckrufe, _norm_kraftstoff
+from app.recall_filter import gefilterte_rueckrufe
+from app.motor_applicability import gefilterte_schwachstellen, _norm_kraftstoff
 from app.web_search import (
     tavily_search, results_to_context, results_to_belege, curate_results,
     US_QUELLEN_AUSSCHLUSS as _US_QUELLEN_AUSSCHLUSS,
@@ -231,9 +232,16 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
                     motor_lines.append(f"      - {w['bauteil']}: {w['intervall']} — {w['hinweis']}")
             lines.extend(motor_lines)
 
-        if data["schwachstellen_baureihe"]:
+        # DATA-SAFETY-RUNTIME-GATE: dieselbe Motor-Allowed-List wie im Kaufcheck
+        # (app/motor_applicability.py). Ohne sie bliebe hier exakt das Leck offen,
+        # das Reliability-Sprint 4 bei den Rueckrufen schliessen musste: die
+        # strukturierten Insights waeren gefiltert, der Chat-Prompt bekaeme die
+        # motorfremde Schwachstelle weiterhin roh zu sehen.
+        _schwachstellen_baureihe = gefilterte_schwachstellen(
+            data["schwachstellen_baureihe"], fuel_motor_match, data)
+        if _schwachstellen_baureihe:
             lines.append("\n### Schwachstellen Baureihe:")
-            for s in data["schwachstellen_baureihe"]:
+            for s in _schwachstellen_baureihe:
                 lines.append(
                     f"  [{s['schweregrad']}] {s['bauteil']}: {s['beschreibung']} "
                     f"(Baujahre: {s['betroffene_baujahre']})"

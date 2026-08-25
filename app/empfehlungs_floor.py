@@ -55,6 +55,59 @@ WAS BEWUSST NICHT AUSLÖST:
     Hintertür wieder einführen.
   * Preis-/Marktsignale jeder Art. Der Floor ist vom Marktvergleich strukturell
     unabhängig und verhält sich bei `completed_no_market` identisch.
+
+DATA-SAFETY-RUNTIME-GATE (P0) — die Trust-Vorbedingung
+------------------------------------------------------
+Alle drei Auslöser oben setzen voraus, dass der zugrunde liegende Fakt überhaupt
+belastbar ist. Der DATA-TRUTH-AUDIT hat belegt, dass er das heute nicht ist:
+
+  * `baureihe.verification` ist bei 421 von 421 Baureihen NULL, die Tabelle
+    `quelle` enthält 0 Zeilen. Für KEINEN der rund 6.500 Faktensätze existiert
+    eine gespeicherte Provenance.
+  * `schwachstelle_motor` hat kein Schweregradfeld. Deshalb löste bisher JEDE
+    der 2.766 Zeilen den Floor aus — eine defekte Zündspule (468 Zeilen sind
+    leichte Verschleiß-/Sensorteile) genauso wie ein Kolbenringschaden. Betroffen
+    waren 1.585 von 3.248 Motorvarianten (48,8 %).
+  * 78,8 % der Motorproblem-Zeilen tragen keine Baujahresangabe; sie wirkten
+    trotzdem floor-auslösend, weil der Floor die Confidence nie gelesen hat.
+  * Kein einziger DB-Rückruf ließ sich gegen eine amtliche Quelle bestätigen.
+    Das KBA-Trust-Gate prüft Format und Kollisionsfreiheit einer Nummer — das ist
+    Plausibilität, NICHT inhaltliche Verifikation.
+  * Motorfremde Schwachstellen hoben die Empfehlung nachweislich an (BMW 320i mit
+    "Steuerkette (N47 Dieselmotoren)", BMW 525i mit "V10-Motor (M5)", Audi A3
+    1.6 MPI mit "Turbolader (TFSI-Motoren)").
+
+Der letzte Punkt ist inzwischen an der Wurzel behoben (app/motor_applicability.py
+entfernt solche Sätze vollständig). Die übrigen betreffen die BELEGLAGE, nicht die
+Zuordnung — und die lässt sich zur Laufzeit nicht heilen. Deshalb gilt ab jetzt:
+
+    Nur ein Insight mit `trust == "verified"` kann den Floor auslösen.
+
+`trust` kommt aus der BESTEHENDEN Verifikations-Architektur
+(app/verification.py -> app/evidence.py::_trust_der_baureihe) und wird nicht neu
+erfunden. Solange keine Baureihe einen `verification`-Eintrag trägt, greift der
+Floor faktisch nicht mehr — das ist die gewollte, ehrliche Konsequenz und KEIN
+Funktionsverlust an anderer Stelle: Findings, Key Findings und alle vier
+Prüflisten entstehen unverändert weiter. Es entfällt ausschließlich die
+automatische Verschärfung der Kaufempfehlung auf Basis unbelegter Daten.
+
+Sobald für eine Baureihe `verification` gepflegt ist (Status "verified" MIT
+gespeicherter `source`), wirkt der Floor für deren Fakten sofort wieder — ohne
+Codeänderung. Genau dafür ist die Architektur erhalten geblieben.
+
+WARUM WEB-EVIDENCE DEN FLOOR NICHT TRÄGT (§11, bewusste Entscheidung)
+---------------------------------------------------------------------
+Die technische Webrecherche liefert eine echte Quellenlage: `confidence == "hoch"`
+bedeutet dort ≥3 unabhängige Domains bei einem Domain-Score ≥40
+(app/technical_research.py::_confidence_aus_domains). Das ist belastbarer als ein
+unbelegter DB-Satz — aber es ist eine Aussage über die BELEGLAGE, nicht über die
+SCHWERE. Ein `web_schwachstelle`-Fakt hat keinen Schweregrad, und `applicability`
+wird dort nur für Rückrufe gesetzt (und zwar auf "series_only", das schon bisher
+nicht auslöst). Die Systemprompt-Definition von `nur_mit_werkstattpruefung`
+verlangt aber ausdrücklich "potenziell teure Schwachstellen …, die eine Fachprüfung
+erfordern" — also eine Schwereaussage. Sie ließe sich aus den vorhandenen Feldern
+nur durch eine neu erfundene Schwelle herstellen. Deshalb: nein. Web-Evidence
+erzeugt weiterhin Findings und Prüfpunkte, aber keine Mindestempfehlung.
 """
 
 import logging
@@ -109,6 +162,21 @@ GRUND_MOTORPROBLEM = "motorproblem"
 GRUND_SCHWACHSTELLE_HOCH = "schwachstelle_hoher_schweregrad"
 GRUND_RUECKRUF_VARIANTENTREFFER = "rueckruf_variantentreffer"
 
+# Die EINZIGE Trust-Stufe, die eine harte Mindestempfehlung tragen darf.
+# Absichtlich als Tupel: kämen später weitere belastbare Herkünfte hinzu, wird
+# hier EIN Wert ergänzt statt an drei Stellen eine Bedingung geändert.
+TRUST_FLOOR_FAEHIG = ("verified",)
+
+
+def darf_floor_tragen(insight: Insight) -> bool:
+    """Darf dieser Fakt allein die Kaufempfehlung verschärfen?
+
+    Genau eine Frage, genau eine Stelle. Der Default von `Insight.trust` ist
+    "unverified_db" — eine Evidence, die ihre Herkunft nicht ausdrücklich setzt,
+    kann den Floor also nicht versehentlich auslösen.
+    """
+    return (getattr(insight, "trust", None) or "") in TRUST_FLOOR_FAEHIG
+
 
 @dataclass
 class FloorBefund:
@@ -149,13 +217,18 @@ def ermittle_floor(insights: list[Insight] | None) -> FloorBefund | None:
     gruende: list[str] = []
     ids: list[str] = []
 
-    motorprobleme = [i for i in insights if i.kategorie == "motorproblem"]
+    # DATA-SAFETY-RUNTIME-GATE: `darf_floor_tragen` steht in JEDER der drei
+    # Bedingungen. Ein unbelegter DB-Fakt bleibt vollständig sichtbar (Findings,
+    # Prüflisten, LLM-Kontext) — er verschärft nur die Empfehlung nicht mehr.
+    floor_faehig = [i for i in insights if darf_floor_tragen(i)]
+
+    motorprobleme = [i for i in floor_faehig if i.kategorie == "motorproblem"]
     if motorprobleme:
         gruende.append(GRUND_MOTORPROBLEM)
         ids += [i.id for i in motorprobleme]
 
     schwach_hoch = [
-        i for i in insights
+        i for i in floor_faehig
         if i.kategorie == "schwachstelle"
         and (i.schweregrad or "").strip().lower() in SCHWEREGRAD_WERKSTATT
     ]
@@ -164,7 +237,7 @@ def ermittle_floor(insights: list[Insight] | None) -> FloorBefund | None:
         ids += [i.id for i in schwach_hoch]
 
     rueckrufe = [
-        i for i in insights
+        i for i in floor_faehig
         if i.kategorie == "rueckruf"
         and (i.applicability or "") in RUECKRUF_WERKSTATT_APPLICABILITY
     ]

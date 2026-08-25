@@ -62,14 +62,30 @@ class Req:
         self.scheckheftgepflegt = kw.get("scheckheftgepflegt")
 
 
-def baureihe(rueckrufe=None, marke="TestMarke"):
-    return {
+def baureihe(rueckrufe=None, marke="TestMarke", verified=True):
+    """Testbaureihe.
+
+    DATA-SAFETY-RUNTIME-GATE: `verified=True` ist hier der DEFAULT, weil dieses
+    Modul das KBA-Referenz-Gate prüft — also die Frage "welche Nummer darf
+    angezeigt werden", nicht die Frage "ist der Rückrufinhalt belegt". Ohne
+    hinterlegte Verifikation blendet die Evidence die Nummer generell aus (§6),
+    und das KBA-Gate wäre nicht mehr beobachtbar. Der unverifizierte Normalfall
+    der Produktion wird in Abschnitt K eigens geprüft.
+    """
+    br = {
         "id": "test-baureihe", "marke": marke, "modell": "TestModell",
         "generation": "G1", "bauzeitraum_von": 2015, "bauzeitraum_bis": 2023,
         "karosserie": [], "tuev_maengelquote": None, "adac_pannenkennziffer": None,
         "ausstattungslinien": [], "motoren": [],
         "schwachstellen_baureihe": [], "rueckrufe": rueckrufe or [],
     }
+    if verified:
+        br["verification"] = {
+            fakt: {"status": "verified", "source": "https://example.test/nachweis",
+                   "date": "2026-08-24"}
+            for fakt in ("schwachstellen", "motorprobleme", "rueckrufe", "wartung")
+        }
+    return br
 
 
 def motor():

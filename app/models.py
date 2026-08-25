@@ -337,6 +337,27 @@ class Insight(BaseModel):
     # Variante betreffen, per FIN prüfen", NICHT "betrifft dein Fahrzeug garantiert".
     # "incompatible" (Antriebs-/Variantenwiderspruch) wird vollständig ausgeblendet.
     applicability: str | None = None
+    # trust = WOHER die Aussage stammt und ob sie eine HARTE Wirkung tragen darf
+    # (DATA-SAFETY-RUNTIME-GATE). Vierte, strikt getrennte Achse neben confidence
+    # (Beleglage), schweregrad (wie schlimm) und applicability (betrifft dieses
+    # Fahrzeug). Sie beantwortet genau eine Frage: darf dieser Fakt allein die
+    # Kaufempfehlung verschärfen?
+    #
+    #   "verified"       — DB-Fakt, dessen Baureihe für diese Faktenart in
+    #                      `verification` ausdrücklich als verified+source
+    #                      hinterlegt ist (app/verification.py). NUR diese Stufe
+    #                      ist floor-fähig.
+    #   "unverified_db"  — DB-Fakt ohne gespeicherte Provenance. Darf als Hinweis
+    #                      erscheinen und Prüfpunkte erzeugen, aber NIE allein die
+    #                      Empfehlung verschärfen.
+    #   "web"            — aus der technischen Webrecherche, mit URL + Qualitäts-
+    #                      stufe. Trägt eigene Confidence, aber keinen Schweregrad.
+    #   "user"           — Angabe aus dem Inserat/vom Nutzer.
+    #   "abgeleitet"     — deterministisch berechnet (Marktvergleich).
+    #
+    # Der Default ist bewusst "unverified_db": eine Evidence, die ihre Herkunft
+    # nicht ausdrücklich setzt, darf nicht versehentlich hart wirken.
+    trust: str = "unverified_db"
     einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
     # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch
     # berechnete Marktvergleich (Median, robuste Spanne, verwendete Datenpunkte).

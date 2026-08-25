@@ -182,8 +182,13 @@ check("C4 Quellen tragen typ 'web_technik'",
       all(q.typ == "web_technik" for i in _web_schwach for q in i.quellen))
 check("C5 Titel macht die Herkunft sichtbar",
       all("webrecherche" in i.titel.lower() for i in _web_schwach))
-check("C6 Einfluss grenzt gegen die geprüfte DB ab",
-      all("nicht aus der geprüften" in (i.einfluss or "") for i in _web_schwach))
+# §7 DATA-SAFETY-RUNTIME-GATE: die Abgrenzung Web vs. Datenbank bleibt, das
+# Attribut "geprüft" entfällt — es gibt für keine der 421 Baureihen eine
+# gespeicherte Verifikation, die diese Behauptung tragen würde.
+check("C6 Einfluss grenzt gegen die Fahrzeugdatenbank ab",
+      all("nicht aus der Fahrzeugdatenbank" in (i.einfluss or "") for i in _web_schwach))
+check("C6b Einfluss behauptet NICHT, die Datenbank sei geprüft",
+      all("geprüft" not in (i.einfluss or "").lower() for i in _web_schwach))
 check("C7 keine DB-Insights aus einem fremden Fahrzeug",
       not [i for i in _b["ins"] if i.kategorie in ("schwachstelle", "motorproblem", "rueckruf")])
 
