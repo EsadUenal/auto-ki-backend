@@ -431,6 +431,29 @@ def ensure_tables() -> None:
     finally:
         conn2.close()
 
+    # Schritt 3: versionierte DATENmigrationen (app/data_migrations.py).
+    #
+    # Getrennt von den Schema-/Seed-Schritten oben und in EIGENER Connection, weil
+    # sie eine eigene Transaktion mit eigener Integritaetspruefung fuehren und im
+    # Fehlerfall vollstaendig zurueckrollen muessen, ohne die Schema-Arbeit
+    # anzufassen. `foreign_keys=ON` ist Voraussetzung: der Cleanup verlaesst sich
+    # auf CASCADE beim Loeschen ganzer Baureihen.
+    #
+    # Laeuft genau einmal pro Datenbank (Marker in `schema_migrations`) — nicht pro
+    # Request. Auf einer frischen, leeren DB sind alle Schritte wirkungslos.
+    # Ein Abbruch wird geloggt und laesst die App trotzdem starten (siehe Modulkopf
+    # von app/data_migrations.py).
+    conn3 = sqlite3.connect(db_path)
+    try:
+        conn3.execute("PRAGMA foreign_keys=ON")
+        from app.data_migrations import run_data_migrations
+        run_data_migrations(conn3)
+    except Exception:
+        log.exception("Datenmigrationen konnten nicht ausgefuehrt werden — App startet "
+                      "trotzdem, Daten bleiben unveraendert.")
+    finally:
+        conn3.close()
+
 
 @contextmanager
 def get_conn():

@@ -3,7 +3,8 @@
 P0-DATEN-CLEANUP — Regression gegen die Fahrzeugdatenbank.
 KEIN Netzwerk, KEIN LLM-Call, KEIN Tavily.
 
-Prueft die sieben Zusicherungen A-G des Cleanups (p0_cleanup_2026_08_25.py).
+Prueft die Zusicherungen A-H der ersten Cleanup-Runde und I-P der zweiten
+(Migration app/data_migrations.py, CLI p0_cleanup_2026_08_25.py).
 Ohne erreichbare Fahrzeugdatenbank wird sauber uebersprungen.
 
     python test_p0_datencleanup.py
@@ -206,6 +207,203 @@ for name, sql in {
     n = c.execute(sql).fetchone()[0]
     check(f"H {name}: 0", n == 0, f"n={n}")
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Zweite Cleanup-Runde (P0-Abschluss): E23, Golf VIII, Niro, AMG GT, C300e,
+# Insignia-Hubraum sowie Idempotenz und Fresh-Install-Reproduzierbarkeit.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── I) BMW E23 "749" ────────────────────────────────────────────────────────
+print("\n=== I) BMW E23 '749' ===")
+check("I1 kein Modell '749' mehr in der Datenbank",
+      not q("select 1 from motorvariante where bezeichnung='749'"))
+_735 = q("select bezeichnung,hubraum_ccm,leistung_ps,leistung_kw,zylinder from motorvariante "
+         "where variante_id='bmw-7er-e23-735i'")
+check("I2 stattdessen existiert der reale E23 735i", len(_735) == 1)
+check("I3 735i traegt die verifizierten Werte (3430 ccm, 218 PS/160 kW, 6 Zylinder)",
+      bool(_735) and (_735[0]["hubraum_ccm"], _735[0]["leistung_ps"],
+                      _735[0]["leistung_kw"], _735[0]["zylinder"]) == (3430, 218, 160, 6),
+      str(_735[0]) if _735 else "")
+check("I4 der Anhang ist mitgewandert, nichts verwaist",
+      q("select count(*) n from schwachstelle_motor where variante_id='bmw-7er-e23-735i'")[0]["n"] > 0)
+_br749, _i749 = find_baureihe_mit_vertrauen("BMW", "7er", 1984)
+_m749 = find_motor(_br749, "749") if _br749 else None
+check("I5 '749' laesst sich nicht mehr als echter Motor aufloesen",
+      _m749 is None or _m749.get("bezeichnung") != "749",
+      f"-> {_m749 and _m749.get('bezeichnung')}")
+
+# ── J) BMW E23 745i / 745iA ─────────────────────────────────────────────────
+print("\n=== J) BMW E23 745i / 745iA ===")
+_745 = q("select variante_id,zylinder,hubraum_ccm,leistung_ps from motorvariante "
+         "where baureihe_id='bmw-7er-e23' and bezeichnung like '745%'")
+check("J1 genau EINE 745i-Zeile (Getriebedublette aufgeloest)", len(_745) == 1,
+      f"n={len(_745)}")
+check("J2 745i ist ein Sechszylinder, kein V8",
+      bool(_745) and _745[0]["zylinder"] == 6, str(_745[0]) if _745 else "")
+check("J3 Hubraum und Leistung unveraendert (M102: 3210 ccm, 252 PS)",
+      bool(_745) and (_745[0]["hubraum_ccm"], _745[0]["leistung_ps"]) == (3210, 252))
+check("J4 keine '745iA'-Bezeichnung mehr",
+      not q("select 1 from motorvariante where bezeichnung='745iA'"))
+check("J5 kein E23-Achtzylinder mehr uebrig",
+      not q("select 1 from motorvariante where baureihe_id='bmw-7er-e23' and zylinder=8"))
+check("J6 die reale E23-Palette ist vollstaendig",
+      [r["bezeichnung"] for r in q("select bezeichnung from motorvariante "
+                                   "where baureihe_id='bmw-7er-e23' order by bezeichnung")]
+      == ["728i", "730", "732i", "733i", "735i", "745i"])
+
+# ── K) VW Golf VIII ─────────────────────────────────────────────────────────
+print("\n=== K) VW Golf VIII ===")
+check("K1 Stub-Baureihe 'vw-golf-8' entfernt",
+      not q("select 1 from baureihe where id='vw-golf-8'"))
+check("K2 kanonische Baureihe vollstaendig erhalten",
+      q("select count(*) n from motorvariante where baureihe_id='volkswagen-golf-viii'")[0]["n"] >= 19)
+_golf = q("select count(*) n from baureihe where marke='Volkswagen' and modell='Golf' "
+          "and bauzeitraum_von>=2019")
+check("K3 nur EINE Golf-Datenwelt ab 2019", _golf[0]["n"] == 1, f"n={_golf[0]['n']}")
+_brg, _ig = find_baureihe_mit_vertrauen("Volkswagen", "Golf", 2021)
+check("K4 'Golf 2021' loest eindeutig auf die kanonische Baureihe auf",
+      (_brg or {}).get("id") == "volkswagen-golf-viii" and _ig["belastbar"],
+      f"{_brg and _brg['id']} {_ig['match_art']}/{_ig['konfidenz']}")
+
+# ── L) Kia Niro — KEINE Dublette, bleibt unveraendert ───────────────────────
+print("\n=== L) Kia Niro (zwei reale Generationen) ===")
+_niro = {r["id"]: r for r in q("select id,generation,bauzeitraum_von from baureihe "
+                               "where marke='Kia' and modell='Niro'")}
+check("L1 beide Generationen existieren weiterhin",
+      set(_niro) == {"kia-niro-de", "kia-niro-sg2"}, str(sorted(_niro)))
+check("L2 DE und SG2 sind getrennte Generationen (kein Merge)",
+      _niro.get("kia-niro-de", {}).get("generation") == "DE"
+      and _niro.get("kia-niro-sg2", {}).get("generation") == "SG2")
+check("L3 die Motorlisten wurden NICHT zusammengeworfen",
+      q("select count(*) n from motorvariante where baureihe_id='kia-niro-de'")[0]["n"] == 4
+      and q("select count(*) n from motorvariante where baureihe_id='kia-niro-sg2'")[0]["n"] == 4)
+
+# ── M) Mercedes-AMG GT ──────────────────────────────────────────────────────
+print("\n=== M) Mercedes-AMG GT ===")
+check("M1 fehlbenannte Parallelwelt 'r192' entfernt",
+      not q("select 1 from baureihe where id='mercedes-amg-gt-r192'"))
+check("M2 kanonische C190 erhalten",
+      len(q("select 1 from baureihe where id='mercedes-amg-gt-c190'")) == 1)
+_amg_m = q("select count(*) n from motorvariante where baureihe_id='mercedes-amg-gt-c190'")
+check("M3 keine Motor-Dubletten entstanden (weiterhin 6 Varianten)",
+      _amg_m[0]["n"] == 6, f"n={_amg_m[0]['n']}")
+_amg_a = q("select count(*) n from ausstattungslinie where baureihe_id='mercedes-amg-gt-c190'")
+check("M4 keine Ausstattungs-Dubletten entstanden (weiterhin 6 Linien)",
+      _amg_a[0]["n"] == 6, f"n={_amg_a[0]['n']}")
+check("M5 kein doppelter 'GT R' unter zwei Namen",
+      len(q("select 1 from motorvariante where baureihe_id='mercedes-amg-gt-c190' "
+            "and lower(bezeichnung) in ('gt r','amg gt r')")) == 1)
+check("M6 die eigene Schwachstelle der aufgeloesten Zeile wurde uebernommen",
+      any("COMAND" in r["bauteil"] for r in
+          q("select bauteil from schwachstelle_baureihe where baureihe_id='mercedes-amg-gt-c190'")))
+
+# ── N) W205 C300e und Insignia-Hubraum ──────────────────────────────────────
+print("\n=== N) W205 C300e / Insignia ===")
+_c300 = q("select leistung_ps,leistung_kw,kraftstoff from motorvariante "
+          "where variante_id='mercedes-benz-c-klasse-w205-c300-plug-in-hybrid'")
+check("N1 C300e traegt die Systemleistung 320 PS / 235 kW",
+      bool(_c300) and (_c300[0]["leistung_ps"], _c300[0]["leistung_kw"]) == (320, 235),
+      str(_c300[0]) if _c300 else "")
+check("N2 C350e bleibt unveraendert bei 279 PS",
+      q("select leistung_ps from motorvariante "
+        "where variante_id='mercedes-benz-c-klasse-w205-c350-plug-in-hybrid'")[0]["leistung_ps"] == 279)
+_ins = [r["hubraum_ccm"] for r in q("select hubraum_ccm from motorvariante "
+                                    "where baureihe_id='opel-insignia-b' and leistung_ps=174")]
+check("N3 F20DVH-Hubraum auf 1995 ccm korrigiert", _ins == [1995, 1995], str(_ins))
+check("N4 der Vorgaengermotor B20DTH behaelt seine 1956 ccm",
+      all(r["hubraum_ccm"] == 1956 for r in
+          q("select hubraum_ccm from motorvariante where baureihe_id='opel-insignia-b' "
+            "and motorcode='B20DTH'")))
+
+# ── O) Migration: idempotent + reproduzierbar ───────────────────────────────
+print("\n=== O) Migration idempotent und reproduzierbar ===")
+import shutil                                                        # noqa: E402
+import tempfile                                                      # noqa: E402
+from app.data_migrations import (                                    # noqa: E402
+    MARKER_P0_V1, SCHRITTE_P0_V1, fuehre_migration_aus, zaehle,
+)
+
+check("O1 Migrationsmarker ist in dieser Datenbank gesetzt",
+      bool(q("select 1 from schema_migrations where name=?", MARKER_P0_V1)))
+
+_tmp = tempfile.mkdtemp(prefix="vira_p0_")
+_kopie = os.path.join(_tmp, "kopie.db")
+shutil.copy(DB, _kopie)
+_c2 = sqlite3.connect(_kopie)
+_c2.execute("PRAGMA foreign_keys=ON")
+_vor = zaehle(_c2)
+_erneut = fuehre_migration_aus(_c2, MARKER_P0_V1, SCHRITTE_P0_V1)
+check("O2 zweiter Lauf auf derselben DB tut nichts (Marker greift)", _erneut is False)
+check("O3 keine Zeile veraendert", zaehle(_c2) == _vor)
+
+# Marker entfernen -> die Schritte selbst muessen ebenfalls idempotent sein,
+# nicht nur der Marker. Das ist die schaerfere Pruefung.
+_c2.execute("delete from schema_migrations where name=?", (MARKER_P0_V1,))
+_c2.commit()
+_erneut2 = fuehre_migration_aus(_c2, MARKER_P0_V1, SCHRITTE_P0_V1)
+check("O4 ohne Marker laeuft die Migration erneut durch", _erneut2 is True)
+check("O5 und aendert trotzdem keine einzige Zeile (Schritte sind selbst idempotent)",
+      zaehle(_c2) == _vor, str({k: v for k, v in zaehle(_c2).items() if _vor[k] != v}))
+_c2.close()
+shutil.rmtree(_tmp, ignore_errors=True)
+
+# ── P) Fresh-Install-/Bootstrap-Simulation ──────────────────────────────────
+# Die Bootstrap-Kette hat ZWEI Stufen, und der Test bildet beide ab:
+#
+#   P1-P3  `ensure_tables()` allein. Es legt ausschliesslich die APP-Tabellen an
+#          (users, checks, ...) — die FAHRZEUGtabellen stehen nicht in
+#          `app/database.py::_SCHEMA_SQL`, sondern nur in `db/schema.sql`, das
+#          per `db/init_db.py` manuell ausgefuehrt wird. In diesem Zustand darf
+#          die Datenmigration NICHT den Marker setzen: sonst gaelte sie als
+#          erledigt, bevor es ueberhaupt Fahrzeugdaten gab, und wuerde auf einer
+#          spaeter befuellten DB nie mehr laufen.
+#
+#   P4-P6  Fahrzeugtabellen vorhanden, aber leer (Zustand nach `db/init_db.py`).
+#          Jetzt muss die Migration sauber durchlaufen und den Marker setzen,
+#          ohne irgendetwas zu erfinden.
+print("\n=== P) Fresh-Install-Simulation ===")
+_tmp2 = tempfile.mkdtemp(prefix="vira_fresh_")
+_frisch = os.path.join(_tmp2, "frisch.db")
+_alt_env = os.environ.get("AUTO_KI_DB_PATH")
+os.environ["AUTO_KI_DB_PATH"] = _frisch
+import importlib                                                     # noqa: E402
+import app.config as _cfg                                            # noqa: E402
+import app.database as _db                                           # noqa: E402
+try:
+    importlib.reload(_cfg)
+    importlib.reload(_db)
+    _db.ensure_tables()
+    _c3 = sqlite3.connect(_frisch)
+    _tabellen = {r[0] for r in _c3.execute("select name from sqlite_master where type='table'")}
+    check("P1 App-Schema vollstaendig angelegt",
+          {"users", "checks", "schema_migrations"} <= _tabellen)
+    check("P2 Fahrzeugtabellen fehlen nach ensure_tables() (sie stehen in db/schema.sql)",
+          "baureihe" not in _tabellen)
+    check("P3 Migration setzt in diesem Zustand KEINEN Marker — sie muss spaeter noch laufen",
+          not _c3.execute("select 1 from schema_migrations where name=?",
+                          (MARKER_P0_V1,)).fetchone())
+    # Stufe 2: Fahrzeugschema nachziehen (das tut db/init_db.py) und erneut starten.
+    _c3.executescript(open(os.path.join("db", "schema.sql"), encoding="utf-8").read())
+    _c3.commit()
+    _c3.close()
+    _db.ensure_tables()
+    _c3 = sqlite3.connect(_frisch)
+    check("P4 nach db/schema.sql laeuft die Migration und setzt den Marker",
+          bool(_c3.execute("select 1 from schema_migrations where name=?",
+                           (MARKER_P0_V1,)).fetchone()))
+    check("P5 keine Fahrzeugdaten erfunden (leere DB bleibt leer)",
+          _c3.execute("select count(*) from baureihe").fetchone()[0] == 0)
+    check("P6 Integritaet der frischen DB in Ordnung",
+          _c3.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
+    _c3.close()
+finally:
+    if _alt_env is None:
+        os.environ.pop("AUTO_KI_DB_PATH", None)
+    else:
+        os.environ["AUTO_KI_DB_PATH"] = _alt_env
+    importlib.reload(_cfg)
+    importlib.reload(_db)
+    shutil.rmtree(_tmp2, ignore_errors=True)
 print()
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER: " + ", ".join(FEHLER))
