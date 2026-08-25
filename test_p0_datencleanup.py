@@ -348,24 +348,23 @@ _c2.close()
 shutil.rmtree(_tmp, ignore_errors=True)
 
 # ── P) Fresh-Install-/Bootstrap-Simulation ──────────────────────────────────
-# Die Bootstrap-Kette hat ZWEI Stufen, und der Test bildet beide ab:
+# ACHTUNG, das hat sich geaendert: Bis zum Bootstrap-Umbau legte `ensure_tables()`
+# nur die APP-Tabellen an; die Fahrzeugtabellen kamen ausschliesslich ueber den
+# manuellen Aufruf `python db/init_db.py`. Dieser Abschnitt hat damals genau
+# diesen Zustand festgeschrieben (Fahrzeugtabellen fehlen, Migration wartet).
 #
-#   P1-P3  `ensure_tables()` allein. Es legt ausschliesslich die APP-Tabellen an
-#          (users, checks, ...) — die FAHRZEUGtabellen stehen nicht in
-#          `app/database.py::_SCHEMA_SQL`, sondern nur in `db/schema.sql`, das
-#          per `db/init_db.py` manuell ausgefuehrt wird. In diesem Zustand darf
-#          die Datenmigration NICHT den Marker setzen: sonst gaelte sie als
-#          erledigt, bevor es ueberhaupt Fahrzeugdaten gab, und wuerde auf einer
-#          spaeter befuellten DB nie mehr laufen.
-#
-#   P4-P6  Fahrzeugtabellen vorhanden, aber leer (Zustand nach `db/init_db.py`).
-#          Jetzt muss die Migration sauber durchlaufen und den Marker setzen,
-#          ohne irgendetwas zu erfinden.
+# Inzwischen laedt `ensure_tables()` `db/schema.sql` und — bei leerem Bestand —
+# den kanonischen Seed `db/seed_fahrzeugdaten.sql`. Ein frischer Install bekommt
+# also automatisch Tabellen UND Daten. Die alten Zusicherungen beschrieben die
+# Luecke und nicht das gewuenschte Verhalten; sie sind hier durch ihr Gegenteil
+# ersetzt. Der Bootstrap selbst hat eine eigene Suite: test_fahrzeug_bootstrap.py.
 print("\n=== P) Fresh-Install-Simulation ===")
 _tmp2 = tempfile.mkdtemp(prefix="vira_fresh_")
 _frisch = os.path.join(_tmp2, "frisch.db")
 _alt_env = os.environ.get("AUTO_KI_DB_PATH")
+_alt_chroma = os.environ.get("AUTO_KI_CHROMA_PATH")
 os.environ["AUTO_KI_DB_PATH"] = _frisch
+os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp2, "chroma")
 import importlib                                                     # noqa: E402
 import app.config as _cfg                                            # noqa: E402
 import app.database as _db                                           # noqa: E402
@@ -377,30 +376,28 @@ try:
     _tabellen = {r[0] for r in _c3.execute("select name from sqlite_master where type='table'")}
     check("P1 App-Schema vollstaendig angelegt",
           {"users", "checks", "schema_migrations"} <= _tabellen)
-    check("P2 Fahrzeugtabellen fehlen nach ensure_tables() (sie stehen in db/schema.sql)",
-          "baureihe" not in _tabellen)
-    check("P3 Migration setzt in diesem Zustand KEINEN Marker — sie muss spaeter noch laufen",
-          not _c3.execute("select 1 from schema_migrations where name=?",
-                          (MARKER_P0_V1,)).fetchone())
-    # Stufe 2: Fahrzeugschema nachziehen (das tut db/init_db.py) und erneut starten.
-    _c3.executescript(open(os.path.join("db", "schema.sql"), encoding="utf-8").read())
-    _c3.commit()
-    _c3.close()
-    _db.ensure_tables()
-    _c3 = sqlite3.connect(_frisch)
-    check("P4 nach db/schema.sql laeuft die Migration und setzt den Marker",
+    check("P2 Fahrzeugtabellen werden jetzt automatisch angelegt",
+          {"baureihe", "motorvariante", "rueckruf"} <= _tabellen)
+    check("P3 P0-Datenmigration hat auf der frischen DB abgeschlossen",
           bool(_c3.execute("select 1 from schema_migrations where name=?",
                            (MARKER_P0_V1,)).fetchone()))
-    check("P5 keine Fahrzeugdaten erfunden (leere DB bleibt leer)",
-          _c3.execute("select count(*) from baureihe").fetchone()[0] == 0)
+    check("P4 Fahrzeugbestand automatisch geladen",
+          _c3.execute("select count(*) from baureihe").fetchone()[0] > 400,
+          f"n={_c3.execute('select count(*) from baureihe').fetchone()[0]}")
+    check("P5 der frische Bestand traegt die P0-Korrekturen",
+          _c3.execute("select count(*) from baureihe where id in "
+                      "('bmw-8er-e63-e64','bmw-3er-g20','bmw-1er-f2x','vw-golf-8',"
+                      "'mercedes-amg-gt-r192')").fetchone()[0] == 0)
     check("P6 Integritaet der frischen DB in Ordnung",
-          _c3.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
+          _c3.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+          and not _c3.execute("PRAGMA foreign_key_check").fetchall())
     _c3.close()
 finally:
-    if _alt_env is None:
-        os.environ.pop("AUTO_KI_DB_PATH", None)
-    else:
-        os.environ["AUTO_KI_DB_PATH"] = _alt_env
+    for _k, _v in (("AUTO_KI_DB_PATH", _alt_env), ("AUTO_KI_CHROMA_PATH", _alt_chroma)):
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
     importlib.reload(_cfg)
     importlib.reload(_db)
     shutil.rmtree(_tmp2, ignore_errors=True)

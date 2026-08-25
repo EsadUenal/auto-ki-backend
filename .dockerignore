@@ -4,10 +4,15 @@
 !.env.example
 
 # ── Lokale Daten (gehören ins persistente Volume, nicht ins Image) ──────────
-db/
+# Nur die tatsaechlichen Datenbank-DATEIEN ausschliessen, NICHT das ganze db/.
+# Bis zum Bootstrap-Umbau stand hier "db/" — damit fehlten dem Image
+# db/schema.sql und der kanonische Fahrzeug-Seed, und ein frisch deployter
+# Container hatte weder Fahrzeugtabellen noch Fahrzeugdaten.
 *.db
 *.db-wal
 *.db-shm
+db/backups
+db/chroma
 
 # ── Git / IDE ──────────────────────────────────────────────────────────────
 .git/

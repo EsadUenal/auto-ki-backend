@@ -414,6 +414,26 @@ def ensure_tables() -> None:
     finally:
         conn.close()
 
+    # Schritt 1b: FAHRZEUG-Schema (db/schema.sql).
+    #
+    # Es steht bewusst in einer eigenen Datei und wurde bisher nur vom manuellen
+    # `python db/init_db.py` angewendet — ein frisch deployter Server hatte damit
+    # ueberhaupt keine Fahrzeugtabellen. Die Datei benutzt durchgehend
+    # CREATE TABLE/INDEX IF NOT EXISTS und ist auf einer bestehenden Datenbank
+    # ein No-Op.
+    #
+    # Die Position ist wichtig: VOR `_migrate_schema`, weil das gleich darauf
+    # `baureihe.verification` per ALTER TABLE ergaenzt und die Tabelle dafuer
+    # existieren muss.
+    conn1b = sqlite3.connect(db_path)
+    try:
+        from app.fahrzeug_seed import ensure_fahrzeug_schema
+        ensure_fahrzeug_schema(conn1b)
+    except Exception:
+        log.exception("Fahrzeug-Schema konnte nicht angelegt werden — App startet trotzdem.")
+    finally:
+        conn1b.close()
+
     # Schritt 2: Spalten-Migration + Seed in FRISCHER Connection (vermeidet sqlite3-Modul-Bug
     # nach executescript, bei dem DDL-Statements in derselben Connection ignoriert werden)
     conn2 = sqlite3.connect(db_path)
@@ -446,6 +466,14 @@ def ensure_tables() -> None:
     conn3 = sqlite3.connect(db_path)
     try:
         conn3.execute("PRAGMA foreign_keys=ON")
+        # Schritt 2b: kanonischer FAHRZEUG-SEED — nur wenn der Bestand leer ist.
+        # Auf einer bestehenden Datenbank passiert hier garantiert nichts
+        # (siehe app/fahrzeug_seed.py). Er laeuft NACH `_migrate_schema`, weil
+        # der Seed die dort ergaenzte Spalte `baureihe.verification` mitliefert,
+        # und VOR den Datenmigrationen, damit deren Korrekturen auf einem
+        # vorhandenen Bestand greifen koennen.
+        from app.fahrzeug_seed import seed_fahrzeugdaten
+        seed_fahrzeugdaten(conn3)
         from app.data_migrations import run_data_migrations
         run_data_migrations(conn3)
     except Exception:
