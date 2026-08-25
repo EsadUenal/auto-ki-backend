@@ -10,16 +10,15 @@ Auf Autos spezialisiertes KI-Backend. Antwortet primär aus einer geprüften Dat
 ## Einrichten
 
 ```powershell
-# 1. Abhängigkeiten installieren
+# Abhängigkeiten installieren
 python -m pip install -r requirements.txt
-
-# 2. Datenbank initialisieren
-cd db
-python init_db.py
-python seed_data.py
-python seed_vectors.py
-cd ..
 ```
+
+Die Datenbank braucht **keinen** manuellen Init-Schritt mehr: `app.main` legt
+beim ersten Start automatisch Schema, vollen Fahrzeugbestand (416 Baureihen,
+korrigiert) und Datenmigrationen an — siehe `db/README_bootstrap.md`.
+`db/init_db.py`/`db/seed_data.py` sind Legacy/Dev-Skripte aus der Frühphase
+(nur 2 Demo-Baureihen) und kein zweiter Produktionspfad.
 
 ## Server starten
 

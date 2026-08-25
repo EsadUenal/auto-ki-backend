@@ -48,7 +48,11 @@ PowerShell (nur aktuelle Session):
 """)
         sys.exit(1)
 
-    print(f"  API-Key: {TAVILY_API_KEY[:8]}...{TAVILY_API_KEY[-4:]}")
+    # Niemals einen Teil des Secrets ausgeben — auch nicht gekuerzt/maskiert.
+    # Ein Praefix+Suffix-Fragment (frueher: TAVILY_API_KEY[:8]+"..."+[-4:]) reicht
+    # bei kurzen Keys zur Rekonstruktion und gehoert grundsaetzlich nicht in
+    # Test-Output. Nur ein reiner Vorhanden-Check.
+    print(f"  API-Key: gesetzt ({len(TAVILY_API_KEY)} Zeichen)")
     print()
 
     # ── Test 1: Direkte Tavily-Suche ─────────────────────────────────────────

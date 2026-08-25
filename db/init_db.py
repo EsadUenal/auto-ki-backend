@@ -1,4 +1,16 @@
 """
+LEGACY/DEV — nicht der Produktionspfad.
+
+Aus der Frühphase des Projekts, als es nur die Demo-Baureihen aus
+`seed_data.py` gab. Seit dem Fahrzeugdaten-Bootstrap (app/fahrzeug_seed.py,
+app/data_migrations.py) macht `app/database.py::ensure_tables()` das hier
+automatisch beim App-Start — inklusive vollem, korrigiertem Fahrzeugbestand aus
+`db/seed_fahrzeugdaten.sql` statt nur zwei Demo-Baureihen. Details:
+db/README_bootstrap.md.
+
+Bleibt für schnelle lokale Handarbeit nützlich (z.B. eine isolierte Test-DB ohne
+Umweg über die App), ist aber kein zweiter Produktions-Bootstrap-Pfad.
+
 Initialisiert SQLite-Datenbank und ChromaDB-Collections.
 Ausführen: python db/init_db.py
 """

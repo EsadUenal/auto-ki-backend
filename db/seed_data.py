@@ -1,4 +1,13 @@
 """
+LEGACY/DEV — nicht der Produktionspfad.
+
+Traegt nur zwei Demo-Baureihen (BMW M4 F82/G82) ein und wird von keinem
+aktuellen Tool oder Test mehr aufgerufen. Der produktive Fahrzeugbestand
+(416 Baureihen, korrigiert) kommt seit dem Fahrzeugdaten-Bootstrap automatisch
+aus `db/seed_fahrzeugdaten.sql` (app/fahrzeug_seed.py) — siehe
+db/README_bootstrap.md. Dieses Skript ueberschreibt dabei nichts und wird von
+diesem Pfad nicht mehr angesteuert.
+
 Seed-Daten: BMW M4 F82 (2014-2020) und G82 (2021-heute).
 Exakt nach Abschnitt 8 der Spezifikation.
 Ausführen: python db/seed_data.py
