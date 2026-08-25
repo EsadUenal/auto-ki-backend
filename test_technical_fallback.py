@@ -309,16 +309,26 @@ check("H5 keine Golf-Aktion aus falscher DB-Zuordnung",
 print("\n=== I) Motor fehlt + Web bestätigt Motor ===")
 
 # Baureihe sicher (BMW 3er G20), Nutzer nennt einen Motor, den die DB nicht kennt.
+#
+# HINWEIS (P0-Datencleanup): hier stand urspruenglich der 318d. Der Cleanup hat die
+# Duplikat-Baureihe bmw-3er-g20 in die kanonische bmw-3er-g20-g21 zusammengefuehrt;
+# deren Motorliste ist dabei von 5 auf 16 Varianten gewachsen und enthaelt den 318d
+# jetzt. Die Vorbedingung des Falls ("Motor NICHT in der DB") war damit hinfaellig
+# — nicht der Fallback war kaputt, sondern die Datenlage ist besser geworden.
+# Der 316d ist im Bestand weiterhin nicht gefuehrt und traegt den Fall unveraendert.
+# Auch die Leistung musste mitwandern: `find_motor` greift ersatzweise ueber die
+# PS-Zahl, und 150 PS gehoeren im G20 jetzt zum 318d. 122 PS (die reale Leistung
+# des 316d) kommt in der Motorliste der Baureihe nicht vor.
 _fx_i = {
     "identitaet": [
         treffer("https://www.adac.de/bmw-3er-g20", "BMW 3er G20 technische Daten",
-                "Der BMW 3er ist als 318d mit 150 PS erhältlich."),
+                "Der BMW 3er ist als 316d mit 122 PS erhältlich."),
         treffer("https://www.autobild.de/bmw-3er", "BMW 3er",
-                "BMW 3er: der 318d leistet 150 PS als Diesel."),
+                "BMW 3er: der 316d leistet 122 PS als Diesel."),
     ],
     "schwachstelle": [], "rueckruf": [], "wartung": [],
 }
-_i = lauf("BMW", "3er", 2020, motor="318d 150 PS Nutzfahrzeugvariante", fixtures=_fx_i)
+_i = lauf("BMW", "3er", 2020, motor="316d 122 PS Nutzfahrzeugvariante", fixtures=_fx_i)
 check("I1 DB-Baureihe sicher erkannt", _i["br"] is not None)
 check("I2 DB-Motor NICHT erkannt", _i["mo"] is None)
 check("I3 Fallback-Grund = motor_fehlt", _i["web"].ausgeloest_durch == TRIGGER_MOTOR_FEHLT)
@@ -326,7 +336,7 @@ check("I4 Web-Identität belegt", _i["web"].identitaet.belegt is True)
 check("I5 Motorangabe des Nutzers als temporärer Kontext übernommen",
       _i["web"].identitaet.motor is not None)
 check("I6 Leistung nur übernommen, weil sie in der Nutzerangabe steht",
-      _i["web"].identitaet.leistung_ps == 150)
+      _i["web"].identitaet.leistung_ps == 122)
 check("I7 coverage = 'db_plus_web'", _i["coverage"] == "db_plus_web")
 check("I8 DB-Schwachstellen der Baureihe bleiben erhalten",
       len([x for x in _i["ins"] if x.kategorie == "schwachstelle"]) > 0)
@@ -335,7 +345,10 @@ check("I8 DB-Schwachstellen der Baureihe bleiben erhalten",
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n=== J/K) Providerfehler ===")
 
-_j = lauf("BMW", "3er", 2020, motor="318d 150 PS Nutzfahrzeugvariante", fehler=True)
+# Gleiche Anpassung wie in Abschnitt I: der 318d/150 PS ist nach dem
+# P0-Datencleanup Teil der zusammengefuehrten G20-Motorliste und wuerde den
+# Fallback gar nicht mehr ausloesen. Der 316d/122 PS ist weiterhin unbekannt.
+_j = lauf("BMW", "3er", 2020, motor="316d 122 PS Nutzfahrzeugvariante", fehler=True)
 check("J1 Providerfehler gemeldet, keine Exception", _j["web"].provider_fehler is True)
 check("J2 DB-Pfad funktioniert weiter", _j["br"] is not None)
 check("J3 DB-Insights vorhanden", len([i for i in _j["ins"] if i.kategorie == "schwachstelle"]) > 0)
