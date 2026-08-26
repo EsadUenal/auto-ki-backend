@@ -222,6 +222,13 @@ def ermittle_floor(insights: list[Insight] | None) -> FloorBefund | None:
     # Prüflisten, LLM-Kontext) — er verschärft nur die Empfehlung nicht mehr.
     floor_faehig = [i for i in insights if darf_floor_tragen(i)]
 
+    # VERIFICATION-PILOT (§8) — OFFENER PUNKT, hier bewusst NICHT geaendert:
+    # `schwachstelle_motor` hat kein Schweregradfeld, deshalb behandelt diese Regel
+    # eine defekte Zuendspule wie einen Kolbenringschaden (der DATA-TRUTH-AUDIT hat
+    # 468 von 2.766 Zeilen = 16,9 % als leichte Verschleiss-/Sensorteile gemessen).
+    # Verifikation behebt die BELEGLAGE, nicht die fehlende SCHWERE. Im Pilot ist
+    # das folgenlos, weil kein Motorproblem den Status `verified` erreicht hat —
+    # die Frage ist damit gestellt, aber nicht eigenmaechtig entschieden.
     motorprobleme = [i for i in floor_faehig if i.kategorie == "motorproblem"]
     if motorprobleme:
         gruende.append(GRUND_MOTORPROBLEM)

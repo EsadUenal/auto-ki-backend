@@ -58,12 +58,19 @@ FK_REIHENFOLGE = [
     "schwachstelle_baureihe",
     "schwachstelle_motor",
     "kritische_wartung",
+    # Zuletzt: verweist per (fakt_art, fakt_id) auf die Faktentabellen oben. Kein
+    # echter Fremdschluessel, aber fachlich abhaengig — deshalb ans Ende.
+    "fakt_verifikation",
 ]
 
 # Stabile Sortierung je Tabelle -> reproduzierbare Datei, minimale Diffs.
 SORTIERUNG = {
     "baureihe": "id",
     "motorvariante": "variante_id",
+    # Stabile fachliche Ordnung statt der AUTOINCREMENT-Reihenfolge: so bleibt der
+    # Seed-Diff auch dann klein, wenn Verifikationen in anderer Reihenfolge
+    # eingetragen wurden.
+    "fakt_verifikation": "fakt_art, fakt_id",
 }
 
 # Tabellen, die niemals in einen Seed duerfen. Wird gegen die ERMITTELTE
@@ -81,6 +88,8 @@ ERWARTET = {
     "schwachstelle_motor": 2750, "kritische_wartung": 1476, "rueckruf": 748,
     "ausstattungslinie": 1677, "quelle": 0,
 }
+# Die Verifikationstabelle waechst mit jeder Pruefrunde und hat noch keine
+# stabile Groessenordnung — sie steht bewusst nicht in ERWARTET.
 TOLERANZ = 0.25
 
 

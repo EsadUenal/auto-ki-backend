@@ -70,6 +70,10 @@ MARKER_SEED_V1 = "fahrzeug_seed_v1"
 FAHRZEUGTABELLEN = (
     "baureihe", "motorvariante", "ausstattungslinie", "quelle",
     "rueckruf", "schwachstelle_baureihe", "schwachstelle_motor", "kritische_wartung",
+    # Die kuratierten Einzelfakt-Verifikationen sind ebenfalls produktneutrale
+    # Fahrzeugdaten und muessen einen frischen Server mit erreichen — sonst haette
+    # der dort dieselben Fakten, aber keine Vertrauensstufen.
+    "fakt_verifikation",
 )
 
 

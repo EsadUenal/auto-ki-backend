@@ -6,6 +6,10 @@ import json
 import time
 from contextlib import contextmanager
 from app.config import DB_PATH
+# VERIFICATION-PILOT: haengt jedem Fahrzeugfakt seine EINZELfakt-Verifikation an.
+# Import unter Alias, damit im Lesepfad sofort erkennbar bleibt, dass hier eine
+# Anreicherung und keine Filterung passiert.
+from app.fakt_verifikation import annotiere as annotiere_fakten
 
 log = logging.getLogger(__name__)
 
@@ -551,21 +555,26 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
             ).fetchall()
         ]
 
-        result["schwachstellen_baureihe"] = [
+        # VERIFICATION-PILOT: `id` und `baureihe_id` kommen additiv mit, weil beide
+        # in den Fingerprint der Einzelfakt-Verifikation eingehen
+        # (app/fakt_verifikation.py). `annotiere` haengt danach `_verifikation`
+        # und `_trust` an jeden Fakt — `app/evidence.py` entscheidet damit PRO
+        # FAKT statt pro Kategorie.
+        result["schwachstellen_baureihe"] = annotiere_fakten(conn, "schwachstelle_baureihe", [
             dict(r) for r in conn.execute(
-                "SELECT bauteil,beschreibung,betroffene_baujahre,schweregrad "
+                "SELECT id,baureihe_id,bauteil,beschreibung,betroffene_baujahre,schweregrad "
                 "FROM schwachstelle_baureihe WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
-        ]
+        ])
 
-        result["rueckrufe"] = [
+        result["rueckrufe"] = annotiere_fakten(conn, "rueckruf", [
             dict(r) for r in conn.execute(
-                "SELECT datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
+                "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
                 "FROM rueckruf WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
-        ]
+        ])
 
         result["quellen"] = [
             dict(r) for r in conn.execute(
@@ -587,22 +596,27 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         wartung_by_variante: dict[str, list[dict]] = {}
         if variante_ids:
             platzhalter = ",".join("?" * len(variante_ids))
+            # VERIFICATION-PILOT: `id` kommt additiv mit, und `variante_id` bleibt
+            # im Dict stehen (frueher: `pop`) — beide gehen in den Fingerprint der
+            # Einzelfakt-Verifikation ein. Die Gruppierung nutzt den Wert weiterhin,
+            # entfernt ihn aber nicht mehr aus dem Fakt.
+            motorprobleme_roh, wartung_roh = [], []
             for r in conn.execute(
-                f"SELECT variante_id,bauteil,beschreibung,baujahre,kosten_ca "
+                f"SELECT id,variante_id,bauteil,beschreibung,baujahre,kosten_ca "
                 f"FROM schwachstelle_motor WHERE variante_id IN ({platzhalter})",
                 variante_ids,
             ).fetchall():
-                d = dict(r)
-                vid = d.pop("variante_id")
-                schwachstellen_by_variante.setdefault(vid, []).append(d)
+                motorprobleme_roh.append(dict(r))
             for r in conn.execute(
-                f"SELECT variante_id,bauteil,intervall,hinweis "
+                f"SELECT id,variante_id,bauteil,intervall,hinweis "
                 f"FROM kritische_wartung WHERE variante_id IN ({platzhalter})",
                 variante_ids,
             ).fetchall():
-                d = dict(r)
-                vid = d.pop("variante_id")
-                wartung_by_variante.setdefault(vid, []).append(d)
+                wartung_roh.append(dict(r))
+            for d in annotiere_fakten(conn, "schwachstelle_motor", motorprobleme_roh):
+                schwachstellen_by_variante.setdefault(d["variante_id"], []).append(d)
+            for d in annotiere_fakten(conn, "kritische_wartung", wartung_roh):
+                wartung_by_variante.setdefault(d["variante_id"], []).append(d)
 
         motoren = []
         for m in motoren_rows:

@@ -151,3 +151,43 @@ CREATE INDEX IF NOT EXISTS idx_baureihe_marke_modell ON baureihe(marke, modell);
 CREATE INDEX IF NOT EXISTS idx_baureihe_generation ON baureihe(generation);
 CREATE INDEX IF NOT EXISTS idx_motorvariante_baureihe ON motorvariante(baureihe_id);
 CREATE INDEX IF NOT EXISTS idx_motorvariante_motorcode ON motorvariante(motorcode);
+
+-- ============================================================
+-- Verifikation EINZELNER Fakten (Verification-Pilot)
+-- ============================================================
+-- `baureihe.verification` arbeitet auf Baureihen-/Kategorieebene: setzt man dort
+-- z.B. schwachstellen=verified, gelten ALLE Schwachstellen dieser Baureihe als
+-- geprueft. Fuer eine ehrliche Verifikation reicht das nicht — es gibt keine
+-- Baureihe, deren Fakten alle gleichzeitig geprueft wurden.
+--
+-- Diese Tabelle verifiziert deshalb den EINZELNEN Fakt. Sie ersetzt
+-- `baureihe.verification` nicht (das bleibt fuer den Marktvergleich zustaendig),
+-- sondern ergaenzt es fuer Schwachstellen, Motorprobleme, Rueckrufe und Wartung.
+--
+-- `fingerprint` ist der Kern der Sicherung: ein SHA-256 ueber die inhalts-
+-- tragenden Felder des Fakts zum Zeitpunkt der Pruefung. Die numerischen IDs
+-- sind AUTOINCREMENT und werden bei einem Admin-Neuschreiben
+-- (app/db_writer.py: DELETE + INSERT) neu vergeben. Ohne Fingerprint wuerde eine
+-- Verifikation dann still an einem ANDEREN Fakt haengen. Stimmt der Fingerprint
+-- nicht mehr, faellt der Fakt automatisch auf `unverified_db` zurueck.
+CREATE TABLE IF NOT EXISTS fakt_verifikation (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 'schwachstelle_baureihe' | 'schwachstelle_motor' | 'rueckruf' | 'kritische_wartung'
+    fakt_art        TEXT NOT NULL,
+    fakt_id         INTEGER NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    -- 'verified' | 'partially_verified' | 'rejected'
+    -- NUR 'verified' darf trust=verified tragen; 'partially_verified' bleibt
+    -- ausdruecklich unverified_db (Thema belegt, Zuschnitt aber nicht).
+    status          TEXT NOT NULL,
+    quelle          TEXT NOT NULL,
+    quelle_stufe    TEXT NOT NULL,          -- 'A' | 'B' | 'C' (Quellenhierarchie)
+    url             TEXT,
+    referenz        TEXT,                   -- z.B. amtliche Rueckruf-/Aktionsnummer
+    geprueft_am     TEXT NOT NULL,
+    notiz           TEXT,
+    UNIQUE(fakt_art, fakt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fakt_verifikation_art
+    ON fakt_verifikation(fakt_art, fakt_id);

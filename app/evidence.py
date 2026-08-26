@@ -54,6 +54,26 @@ def _trust_der_baureihe(baureihe: dict | None, fakt: str) -> str:
     return TRUST_VERIFIED if is_verified(baureihe, fakt) else TRUST_UNVERIFIED_DB
 
 
+def _trust_des_fakts(fakt: dict | None, baureihe: dict | None, fakt_art_fallback: str) -> str:
+    """Trust-Stufe EINES Fahrzeugfakts.
+
+    VERIFICATION-PILOT: `app/database.py::get_baureihe` haengt jedem Fakt bereits
+    `_trust` an (aus app/fakt_verifikation.py, inkl. Fingerprint-Pruefung). Diese
+    Einzelfakt-Entscheidung hat Vorrang.
+
+    Der Rueckfall auf die BAUREIHEN-weite `verification` bleibt erhalten, damit
+    bestehende Verifikationen und alle Aufrufer mit selbst gebauten Fakt-Dicts
+    (Tests, Fixtures) unveraendert funktionieren. Er kann nur ANHEBEN, wenn die
+    Baureihe fuer die ganze Faktenart ausdruecklich verified ist — das ist die
+    alte, grobe Semantik und bleibt bewusst moeglich.
+    """
+    if isinstance(fakt, dict) and fakt.get("_trust"):
+        einzel = fakt["_trust"]
+        if einzel == TRUST_VERIFIED:
+            return TRUST_VERIFIED
+    return _trust_der_baureihe(baureihe, fakt_art_fallback)
+
+
 def _db_quellentitel(basis: str, trust: str) -> str:
     """Quellentitel für einen DB-Fakt.
 
@@ -128,12 +148,14 @@ def build_insights(
     # eingrenzt (z.B. "Steuerkette (N47 Dieselmotoren)" an einem Benziner). Diese
     # Sätze erzeugen damit weder Evidence noch Kaufaktion noch Floor — exakt wie
     # ein "incompatible"-Rückruf.
-    trust_schwachstelle = _trust_der_baureihe(baureihe, "schwachstellen")
     for s in gefilterte_schwachstellen(
             (baureihe or {}).get("schwachstellen_baureihe"), motor_match, baureihe):
         passt = _baujahr_passt(s.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue  # gilt nachweislich nicht für dieses Baujahr -> nicht ausgeben
+        # VERIFICATION-PILOT: PRO FAKT, nicht mehr pro Kategorie. Eine geprüfte
+        # Schwachstelle zieht die ungeprüften derselben Baureihe nicht mehr mit.
+        trust_schwachstelle = _trust_des_fakts(s, baureihe, "schwachstellen")
         quellen = [EvidenceQuelle(typ="datenbank", ref=s.get("bauteil"),
                                   titel=_db_quellentitel("VIRA-Fahrzeugdatenbank",
                                                          trust_schwachstelle))]
@@ -175,7 +197,10 @@ def build_insights(
         # bestätigen; solange die Baureihe für "rueckrufe" nicht ausdrücklich
         # verified ist, heißt die Quelle deshalb "Rückrufhinweis" und nicht
         # "KBA-Rückrufdatenbank" — und trägt keinen Floor.
-        trust_rueckruf = _trust_der_baureihe(baureihe, "rueckrufe")
+        # VERIFICATION-PILOT: PRO RUECKRUF. Ein amtlich belegter Rueckruf macht
+        # die uebrigen, unbelegten Rueckrufe derselben Baureihe nicht mit-
+        # vertrauenswuerdig.
+        trust_rueckruf = _trust_des_fakts(r, baureihe, "rueckrufe")
         if trust_rueckruf == TRUST_VERIFIED:
             quellen_titel = ("KBA-Rückrufdatenbank" if kba_anzeige
                              else "KBA-Rückruf (Referenz nicht hinterlegt)")
@@ -229,12 +254,13 @@ def build_insights(
         ))
 
     # ── 3) Motorspezifische Probleme (nur bei ERKANNTEM Motor) ─────────────────
-    trust_motorproblem = _trust_der_baureihe(baureihe, "motorprobleme")
     if motor_match:
         for s in motor_match.get("schwachstellen_motor") or []:
             passt = _baujahr_passt(s.get("baujahre"), baujahr)
             if passt is False:
                 continue
+            # VERIFICATION-PILOT: PRO MOTORPROBLEM.
+            trust_motorproblem = _trust_des_fakts(s, baureihe, "motorprobleme")
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=motor_match.get("bezeichnung"),
                                       titel=_db_quellentitel("VIRA-Motorvariantendaten",
                                                              trust_motorproblem))]
@@ -285,12 +311,14 @@ def build_insights(
     # ein Baujahr, das zu einer anderen Generation gehört, führt bereits in
     # `find_baureihe`/`find_motor` zu einer anderen (oder keiner) Variante. Es wird
     # hier bewusst KEINE eigene Baujahreslogik erfunden.
-    trust_wartung = _trust_der_baureihe(baureihe, "wartung")
     if check_typ == "kauf" and motor_match:
         for w in motor_match.get("kritische_wartung") or []:
             bauteil = (w.get("bauteil") or "").strip()
             if not bauteil:
                 continue
+            # VERIFICATION-PILOT: PRO WARTUNGSPUNKT. Nur ein als Herstellerintervall
+            # verifizierter Eintrag darf spaeter auch so genannt werden (siehe unten).
+            trust_wartung = _trust_des_fakts(w, baureihe, "wartung")
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=bauteil,
                                       titel=_db_quellentitel("VIRA-Wartungsdaten",
                                                              trust_wartung))]

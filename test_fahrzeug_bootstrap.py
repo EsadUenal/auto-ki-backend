@@ -41,7 +41,8 @@ SEED = os.path.join(BASE, "db", "seed_fahrzeugdaten.sql")
 SCHEMA = os.path.join(BASE, "db", "schema.sql")
 
 FAHRZEUG = ("baureihe", "motorvariante", "schwachstelle_baureihe", "schwachstelle_motor",
-            "kritische_wartung", "rueckruf", "ausstattungslinie", "quelle")
+            "kritische_wartung", "rueckruf", "ausstattungslinie", "quelle",
+            "fakt_verifikation")
 NUTZER = ("users", "checks", "check_frage", "conversations", "messages", "einwilligung",
           "gespeicherte_adresse", "dealer_vehicle", "ebook_bestellung", "poster_bestellung")
 
@@ -234,12 +235,27 @@ try:
           f"{_br and _br['id']} {_i['match_art']}/{_i['konfidenz']}")
     check("H2 Motor 320d erkannt", (_mm or {}).get("bezeichnung") == "320d")
     check("H3 fahrzeugspezifische Pruefpunkte entstehen", len(_akt) > 0, f"n={len(_akt)}")
-    check("G1 alle DB-Insights tragen trust=unverified_db",
-          all(x.trust == "unverified_db" for x in _ins
-              if x.kategorie in ("schwachstelle", "rueckruf", "motorproblem", "wartung")))
+    # VERIFICATION-PILOT: seit dem Pilot ist nicht mehr JEDER DB-Fakt
+    # unverified_db — einzelne sind kuratiert geprueft und wandern ueber den Seed
+    # mit in eine frische Datenbank. Geprueft wird deshalb die schaerfere Aussage:
+    # verified gibt es NUR mit persistierter Verifikation, und das Attribut
+    # "(geprueft)" steht ausschliesslich an genau diesen Quellen.
+    _db_ins = [x for x in _ins
+               if x.kategorie in ("schwachstelle", "rueckruf", "motorproblem", "wartung")]
+    check("G1 jeder DB-Insight traegt entweder verified oder unverified_db",
+          all(x.trust in ("verified", "unverified_db") for x in _db_ins))
+    _c_v = sqlite3.connect(_frisch)
+    _n_verifiziert = _c_v.execute(
+        "select count(*) from fakt_verifikation where status='verified'").fetchone()[0]
+    _c_v.close()
+    check("G1b verifizierte Insights gibt es nur, wenn Verifikationen persistiert sind",
+          (sum(1 for x in _db_ins if x.trust == "verified") == 0) or _n_verifiziert > 0,
+          f"persistierte verified-Eintraege={_n_verifiziert}")
     check("G2 kein Empfehlungs-Floor aus unverifizierten Daten", ermittle_floor(_ins) is None)
-    check("G3 keine Quelle behauptet '(geprueft)'",
-          not any("geprüft" in (qq.titel or "").lower() for x in _ins for qq in x.quellen))
+    check("G3 '(geprueft)' steht ausschliesslich an verifizierten Quellen",
+          all(x.trust == "verified"
+              for x in _db_ins
+              if any("geprüft" in (qq.titel or "").lower() for qq in x.quellen)))
 
     _br, _i, _mm, _ins, _akt, _basis = _lauf("Audi", "A3", 2008, "2.0 FSI 150 PS")
     check("I1 Audi A3 8P wird aufgeloest",
