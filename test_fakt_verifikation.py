@@ -233,6 +233,112 @@ check("D6 dieselbe Schwachstelle OHNE Verifikation loest keinen Floor aus",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# G) REJECTED — vollstaendige Unterdrueckung, ohne die uebrigen Stufen zu stoeren
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== G) Vier Stufen nebeneinander: verified / partially / unverified / rejected ===")
+
+from app.fakt_verifikation import ist_gesperrt, sichtbare_fakten     # noqa: E402
+
+
+def _fakt_mit_status(art, basis, status):
+    """Fakt-Dict wie `get_baureihe` es liefert — inkl. `_trust` und `_gesperrt`."""
+    d = dict(basis)
+    v = None if status is None else verifikation(status, fp=fingerprint(art, basis),
+                                                 fakt_id=basis["id"])
+    d["_verifikation"] = v
+    d["_trust"] = trust_des_fakts(v, d, art)
+    d["_gesperrt"] = ist_gesperrt(v, d, art)
+    return d
+
+
+SW_C = {"id": 103, "baureihe_id": "test-br", "bauteil": "Fensterheber",
+        "beschreibung": "Mechanik kann ausfallen.", "betroffene_baujahre": "Alle",
+        "schweregrad": "gering"}
+SW_D = {"id": 104, "baureihe_id": "test-br", "bauteil": "Bremsen",
+        "beschreibung": "Angeblich ueberdurchschnittlicher Verschleiss.",
+        "betroffene_baujahre": "Alle", "schweregrad": "mittel"}
+
+_vier = [
+    _fakt_mit_status("schwachstelle_baureihe", SW_A, STATUS_VERIFIED),     # A
+    _fakt_mit_status("schwachstelle_baureihe", SW_B, STATUS_PARTIALLY),    # B
+    _fakt_mit_status("schwachstelle_baureihe", SW_C, None),                # C
+    _fakt_mit_status("schwachstelle_baureihe", SW_D, STATUS_REJECTED),     # D
+]
+_sichtbar = sichtbare_fakten(_vier)
+check("G1 der rejected Fakt wird bereits in der Datenschicht entfernt",
+      {f["bauteil"] for f in _sichtbar} == {"Steuerkette", "Wasserpumpe", "Fensterheber"},
+      str(sorted(f["bauteil"] for f in _sichtbar)))
+
+_br4 = baureihe(_sichtbar, [])
+_ins4 = build_insights(_br4, motor([], []), [], _req, check_typ="kauf")
+_t4 = {i.titel.split(" —")[0]: i.trust for i in _ins4 if i.kategorie == "schwachstelle"}
+check("G2 A (verified) ist sichtbar und traegt verified",
+      _t4.get("Steuerkette") == "verified")
+check("G3 B (partially_verified) ist sichtbar, bleibt unverified_db",
+      _t4.get("Wasserpumpe") == "unverified_db")
+check("G4 C (ohne Verifikation) ist sichtbar, bleibt unverified_db",
+      _t4.get("Fensterheber") == "unverified_db")
+check("G5 D (rejected) erscheint in KEINEM Insight", "Bremsen" not in _t4, str(sorted(_t4)))
+
+_ka4 = build_kaufaktionen(_req, _br4, motor([], []), _ins4)
+_akt4 = [a for b in BEREICHE for a in getattr(_ka4, b).fahrzeugspezifisch]
+_titel4 = " | ".join(a.titel for a in _akt4)
+check("G6 D erzeugt KEINE fahrzeugspezifische Kaufaktion", "Bremsen" not in _titel4)
+check("G7 B und C erzeugen weiterhin Kaufaktionen",
+      "Wasserpumpe" in _titel4 and "Fensterheber" in _titel4)
+
+_floor4 = ermittle_floor(_ins4)
+_ids_v4 = {i.id for i in _ins4 if i.trust == "verified"}
+check("G8 Floor stuetzt sich ausschliesslich auf A",
+      _floor4 is not None and set(_floor4.evidence_ids) <= _ids_v4)
+
+# Dieselbe Sperre in den anderen drei Faktenarten.
+_ins_rej = build_insights(
+    baureihe([], sichtbare_fakten([
+        _fakt("rueckruf", RR_A, True),
+        _fakt_mit_status("rueckruf", RR_B, STATUS_REJECTED)])),
+    motor(sichtbare_fakten([
+        _fakt("schwachstelle_motor", MP_A, True),
+        _fakt_mit_status("schwachstelle_motor", MP_B, STATUS_REJECTED)]),
+        sichtbare_fakten([
+            _fakt("kritische_wartung", WA_A, True),
+            _fakt_mit_status("kritische_wartung", WA_B, STATUS_REJECTED)])),
+    [], _req, check_typ="kauf")
+_alle_titel = " | ".join(i.titel for i in _ins_rej)
+check("G9 rejected Motorproblem unterdrueckt", "Zuendspulen" not in _alle_titel)
+check("G10 rejected Wartungspunkt unterdrueckt", "Zuendkerzen" not in _alle_titel)
+check("G11 rejected Rueckruf unterdrueckt", "Airbag" not in _alle_titel)
+check("G12 die verifizierten Gegenstuecke bleiben erhalten",
+      all(x in _alle_titel for x in ("Injektoren", "Zahnriemen", "Bremsleitung")),
+      _alle_titel[:110])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== H) Fingerprint-Sicherheit bei rejected ===")
+# Ein alter Widerlegungs-Vermerk darf einen NEUEN/geaenderten Fakt nicht mitsperren.
+_alt_fp = fingerprint("schwachstelle_baureihe", SW_D)
+_geaendert = {**SW_D, "beschreibung": "Inzwischen korrigierter, anderer Text."}
+_v_rej = verifikation(STATUS_REJECTED, fp=_alt_fp, fakt_id=SW_D["id"])
+check("H1 rejected + passender Fingerprint -> gesperrt",
+      ist_gesperrt(_v_rej, SW_D, "schwachstelle_baureihe") is True)
+check("H2 rejected + geaenderter Inhalt -> NICHT gesperrt",
+      ist_gesperrt(_v_rej, _geaendert, "schwachstelle_baureihe") is False)
+check("H3 der geaenderte Fakt faellt auf unverified_db zurueck, nicht auf verified",
+      trust_des_fakts(_v_rej, _geaendert, "schwachstelle_baureihe") == "unverified_db")
+_d_geaendert = dict(_geaendert)
+_d_geaendert["_verifikation"] = _v_rej
+_d_geaendert["_trust"] = trust_des_fakts(_v_rej, _d_geaendert, "schwachstelle_baureihe")
+_d_geaendert["_gesperrt"] = ist_gesperrt(_v_rej, _d_geaendert, "schwachstelle_baureihe")
+check("H4 der geaenderte Fakt ist wieder sichtbar",
+      len(sichtbare_fakten([_d_geaendert])) == 1)
+check("H5 verified verhaelt sich spiegelbildlich (Mismatch -> kein verified)",
+      trust_des_fakts(verifikation(STATUS_VERIFIED, fp=_alt_fp), _geaendert,
+                      "schwachstelle_baureihe") == "unverified_db")
+check("H6 ohne Verifikation wird nie gesperrt",
+      ist_gesperrt(None, SW_D, "schwachstelle_baureihe") is False)
+
+
 print("\n=== E) Pilotdaten: Struktur und Persistenz ===")
 _arten = {e[0] for e in PILOT_VERIFIKATIONEN}
 check("E1 nur bekannte Faktenarten", _arten <= set(FAKT_ARTEN), str(sorted(_arten)))

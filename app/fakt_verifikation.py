@@ -169,6 +169,56 @@ def trust_des_fakts(verifikation: dict | None, zeile, fakt_art: str,
     return "verified"
 
 
+def ist_gesperrt(verifikation: dict | None, zeile, fakt_art: str) -> bool:
+    """Darf dieser Fakt dem Nutzer ueberhaupt noch als Fahrzeugaussage gezeigt werden?
+
+    True genau dann, wenn der Fakt als `rejected` geprueft wurde UND der
+    Fingerprint noch zum aktuellen Inhalt passt.
+
+    `rejected` heisst: die beste verfuegbare Quelle WIDERSPRICHT der Aussage. Ein
+    widerlegter Fakt ist etwas grundsaetzlich anderes als ein ungeprueffter — er
+    darf nicht als vorsichtiger Hinweis weiterleben, sondern muss aus allen
+    Nutzerpfaden verschwinden. Die DB-Zeile selbst bleibt bestehen; diese Tabelle
+    ist die LAUFZEIT-Sperre, nicht der Loeschbefehl.
+
+    Die Fingerprint-Bedingung ist hier genauso wichtig wie bei `verified`, nur mit
+    umgekehrter Schutzrichtung: aendert sich der Fakt nach der Pruefung, darf ein
+    alter Widerlegungs-Vermerk den NEUEN Inhalt nicht mitsperren. Bei Mismatch
+    faellt der Fakt auf den normalen, sichtbaren `unverified_db`-Pfad zurueck.
+    """
+    if not verifikation:
+        return False
+    if (verifikation.get("status") or "").strip().lower() != STATUS_REJECTED:
+        return False
+    if (verifikation.get("fingerprint") or "") != fingerprint(fakt_art, zeile):
+        log.info("Sperre fuer %s #%s aufgehoben: Inhalt hat sich seit der Widerlegung "
+                 "geaendert (Fingerprint passt nicht mehr) — Fakt gilt wieder als "
+                 "ungeprueft, nicht als widerlegt.",
+                 fakt_art, verifikation.get("fakt_id"))
+        return False
+    return True
+
+
+def sichtbare_fakten(zeilen: list[dict]) -> list[dict]:
+    """Entfernt die als `rejected` gesperrten Fakten.
+
+    Wird EINMAL zentral in `app/database.py::get_baureihe` angewendet und deckt
+    damit alle Konsumenten ab: Kaufcheck-Evidence, Kaufaktionen, Key Findings,
+    LLM-DB-Kontext, Chat-Kontext, Empfehlungs-Floor und den Fahrzeug-Endpunkt.
+    Kein Aufrufer muss die Sperre selbst kennen — genau das war die Lehre aus dem
+    Rueckruf-Leck in Reliability-Sprint 4, wo eine zweite, ungefilterte Leseroute
+    das Gate umgangen hat.
+    """
+    if not zeilen:
+        return zeilen
+    sichtbar = [z for z in zeilen if not z.get("_gesperrt")]
+    entfernt = len(zeilen) - len(sichtbar)
+    if entfernt:
+        log.info("%d widerlegte(r) Fahrzeugfakt(en) aus der Nutzeransicht entfernt "
+                 "(fakt_verifikation.status='rejected').", entfernt)
+    return sichtbar
+
+
 def annotiere(conn: sqlite3.Connection, fakt_art: str, zeilen: list[dict]) -> list[dict]:
     """Haengt jedem Fakt-Dict seine Verifikation an (`_verifikation`, `_trust`).
 
@@ -184,4 +234,5 @@ def annotiere(conn: sqlite3.Connection, fakt_art: str, zeilen: list[dict]) -> li
         v = verifikationen.get(z.get(idspalte))
         z["_verifikation"] = v
         z["_trust"] = trust_des_fakts(v, z, fakt_art)
+        z["_gesperrt"] = ist_gesperrt(v, z, fakt_art)
     return zeilen

@@ -10,6 +10,7 @@ from app.config import DB_PATH
 # Import unter Alias, damit im Lesepfad sofort erkennbar bleibt, dass hier eine
 # Anreicherung und keine Filterung passiert.
 from app.fakt_verifikation import annotiere as annotiere_fakten
+from app.fakt_verifikation import sichtbare_fakten
 
 log = logging.getLogger(__name__)
 
@@ -560,21 +561,27 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         # (app/fakt_verifikation.py). `annotiere` haengt danach `_verifikation`
         # und `_trust` an jeden Fakt — `app/evidence.py` entscheidet damit PRO
         # FAKT statt pro Kategorie.
-        result["schwachstellen_baureihe"] = annotiere_fakten(conn, "schwachstelle_baureihe", [
+        # `sichtbare_fakten` entfernt anschliessend die als `rejected` widerlegten
+        # Fakten. Das passiert HIER und nur hier: alle Konsumenten — Evidence,
+        # Kaufaktionen, Key Findings, LLM-DB-Kontext, Chat-Kontext, Floor und der
+        # Fahrzeug-Endpunkt — lesen ueber `get_baureihe`, es gibt also keine zweite
+        # Leseroute, die die Sperre umgehen koennte.
+        result["schwachstellen_baureihe"] = sichtbare_fakten(
+            annotiere_fakten(conn, "schwachstelle_baureihe", [
             dict(r) for r in conn.execute(
                 "SELECT id,baureihe_id,bauteil,beschreibung,betroffene_baujahre,schweregrad "
                 "FROM schwachstelle_baureihe WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
-        ])
+        ]))
 
-        result["rueckrufe"] = annotiere_fakten(conn, "rueckruf", [
+        result["rueckrufe"] = sichtbare_fakten(annotiere_fakten(conn, "rueckruf", [
             dict(r) for r in conn.execute(
                 "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
                 "FROM rueckruf WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
-        ])
+        ]))
 
         result["quellen"] = [
             dict(r) for r in conn.execute(
@@ -613,9 +620,11 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
                 variante_ids,
             ).fetchall():
                 wartung_roh.append(dict(r))
-            for d in annotiere_fakten(conn, "schwachstelle_motor", motorprobleme_roh):
+            for d in sichtbare_fakten(
+                    annotiere_fakten(conn, "schwachstelle_motor", motorprobleme_roh)):
                 schwachstellen_by_variante.setdefault(d["variante_id"], []).append(d)
-            for d in annotiere_fakten(conn, "kritische_wartung", wartung_roh):
+            for d in sichtbare_fakten(
+                    annotiere_fakten(conn, "kritische_wartung", wartung_roh)):
                 wartung_by_variante.setdefault(d["variante_id"], []).append(d)
 
         motoren = []
