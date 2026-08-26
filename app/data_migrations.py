@@ -902,6 +902,67 @@ def schritt13_insignia_hubraum(conn, apply_):
 # Registry + Runner
 # ─────────────────────────────────────────────────────────────────────────────
 #
+# ─────────────────────────────────────────────────────────────────────────────
+# Verification-Pilot — kuratierte Einzelfakt-Verifikationen
+#
+# Traegt die handgeprueften Zuordnungen aus app/verifikation_pilot_daten.py in die
+# Tabelle `fakt_verifikation` ein. Fuer jeden Eintrag wird der Fingerprint aus dem
+# AKTUELLEN Datenbankinhalt berechnet — passt der Fakt spaeter nicht mehr dazu,
+# verfaellt die Verifikation automatisch (app/fakt_verifikation.py).
+#
+# Der Schritt ist idempotent (UNIQUE(fakt_art, fakt_id) + UPDATE bei Bestand) und
+# ueberspringt sauber, was in dieser Datenbank gar nicht existiert.
+def schritt_verifikation_pilot(conn, apply_):
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.verifikation_pilot_daten import GEPRUEFT_AM, PILOT_VERIFIKATIONEN
+
+    vorhanden = {r[0] for r in conn.execute(
+        "select name from sqlite_master where type='table'")}
+    if "fakt_verifikation" not in vorhanden:
+        log("  [V] fakt_verifikation-Tabelle fehlt — Verifikations-Pilot uebersprungen")
+        return
+
+    neu_ = aktualisiert = uebersprungen = 0
+    for fakt_art, fakt_id, status, quelle, stufe, url, referenz, notiz in PILOT_VERIFIKATIONEN:
+        tabelle, idspalte, _spalten = FAKT_ARTEN[fakt_art]
+        zeile = conn.execute(
+            f'select * from "{tabelle}" where {idspalte}=?', (fakt_id,)).fetchone()
+        if zeile is None:
+            uebersprungen += 1
+            log(f"  [V] {fakt_art} #{fakt_id}: Fakt nicht vorhanden — uebersprungen")
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        fp = fingerprint(fakt_art, dict(zip(spalten, zeile)))
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art=? and fakt_id=?",
+            (fakt_art, fakt_id)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art=? and fakt_id=?",
+                    (fp, status, quelle, stufe, url, referenz, GEPRUEFT_AM, notiz,
+                     fakt_art, fakt_id))
+        else:
+            neu_ += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, status, "
+                    "quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values (?,?,?,?,?,?,?,?,?,?)",
+                    (fakt_art, fakt_id, fp, status, quelle, stufe, url, referenz,
+                     GEPRUEFT_AM, notiz))
+    log(f"  [V] Verifikations-Pilot: {neu_} neu, {aktualisiert} aktualisiert, "
+        f"{uebersprungen} uebersprungen (Fakt nicht in dieser DB)")
+
+
+MARKER_VERIFIKATION_PILOT = "verifikation_pilot_v1"
+SCHRITTE_VERIFIKATION_PILOT = (schritt_verifikation_pilot,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -924,7 +985,10 @@ SCHRITTE_P0_V1 = (
     schritt13_insignia_hubraum,
 )
 
-MIGRATIONEN = ((MARKER_P0_V1, SCHRITTE_P0_V1),)
+MIGRATIONEN = (
+    (MARKER_P0_V1, SCHRITTE_P0_V1),
+    (MARKER_VERIFIKATION_PILOT, SCHRITTE_VERIFIKATION_PILOT),
+)
 
 
 def _marker_gesetzt(conn: sqlite3.Connection, marker: str) -> bool:
