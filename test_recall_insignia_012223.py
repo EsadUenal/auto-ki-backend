@@ -205,7 +205,7 @@ for _t in _KEIN_HV:
     check(f"F1 {_t!r} -> KEIN Hochvolt", not _HV_MUSTER.search(_t))
 
 _ECHT_HV = ("Hochvoltbatterie", "Hochvoltsystem", "Plug-in-Hybrid", "Plugin Hybrid",
-            "PHEV-Variante", "Hybridfahrzeuge", "Elektromotor", "elektrische Servolenkung",
+            "PHEV-Variante", "Hybridfahrzeuge", "Elektromotor", "Elektroantrieb",
             "Hochspannungsleitung")
 for _t in _ECHT_HV:
     check(f"F2 {_t!r} -> weiterhin Hochvolt/Elektro", bool(_HV_MUSTER.search(_t)))
@@ -225,6 +225,64 @@ _appl_hv, _, _, _ = rueckruf_applicability(
     _hv, True, "445566", {"kraftstoff": "Diesel"}, marke="BMW")
 check("F5 echter Hochvolt-Rueckruf bleibt fuer einen Diesel 'incompatible'",
       _appl_hv == "incompatible")
+
+
+# ══ F2) FOLGE-FIX: "elektrisch" ist ebenfalls kein Hochvolt-Signal ══════════
+print("\n--- F2) FOLGE-FIX: 'elektrisch' ist kein Hochvolt-Antrieb ---")
+_NICHT_HV_ELEKTRISCH = (
+    "elektrische Kraftstoffpumpe", "elektrische Servolenkung",
+    "elektrische Feststellbremse", "elektrische Wasserpumpe",
+    "elektrische Zusatzwasserpumpe", "elektrische Sitzheizung",
+    "elektrische Lenkung", "elektrischen Fensterheberschalter",
+    "Softwarefehler im Steuergerät der elektrischen Servolenkung",
+)
+for _t in _NICHT_HV_ELEKTRISCH:
+    check(f"F2a {_t!r} -> KEIN Hochvolt", not _HV_MUSTER.search(_t))
+
+# Die 29 real betroffenen DB-Zeilen: alle muessen jetzt series_only statt
+# incompatible ergeben (Baujahr passt, kein Antriebs-Widerspruch mehr).
+_29_IDS = (49, 50, 62, 74, 88, 100, 106, 130, 144, 153, 155, 201, 204, 215,
+          221, 228, 231, 238, 251, 256, 269, 333, 338, 517, 538, 543, 578,
+          607, 735)
+with get_conn() as conn:
+    _platzh = ",".join("?" * len(_29_IDS))
+    _29_rows = [dict(r) for r in conn.execute(
+        f"SELECT r.*, b.marke FROM rueckruf r JOIN baureihe b ON b.id=r.baureihe_id "
+        f"WHERE r.id IN ({_platzh})", _29_IDS)]
+check("F2b alle 29 real betroffenen Zeilen gefunden", len(_29_rows) == 29)
+_alle_series_only = True
+for _r in _29_rows:
+    _a, _c, _, _ = rueckruf_applicability(
+        {**_r, "_trust": "unverified_db"}, True, _r.get("kba_referenz") or "",
+        {"kraftstoff": "Diesel"}, marke=_r["marke"])
+    if _a != "series_only":
+        _alle_series_only = False
+        print(f"      abweichend: #{_r['id']} {_r['marke']} -> {_a}")
+check("F2c alle 29 Zeilen: series_only statt incompatible (Verbrenner-Testfall)",
+      _alle_series_only)
+
+# Gegenprobe: kein zusaetzlicher Rueckruf wurde durch den zweiten Fix beeinflusst.
+with get_conn() as conn:
+    _alle = [dict(r) for r in conn.execute(
+        "SELECT r.*, b.marke FROM rueckruf r JOIN baureihe b ON b.id=r.baureihe_id")]
+_ALT_MUSTER = re.compile(
+    r"(?<![a-zäöüß])(?:hochvolt|hochspannung|plug-?\s?in|plugin|phev|hybrid|"
+    r"elektro(?!nisch|nik|mechanisch)|elektrisch)", re.IGNORECASE)
+_diff = []
+for _r in _alle:
+    _text = " ".join(filter(None, [_r.get("mangel"), _r.get("abhilfe"),
+                                   _r.get("betroffene_baujahre")]))
+    _alt_treffer = bool(_ALT_MUSTER.search(_text))
+    _neu_treffer = bool(_HV_MUSTER.search(_text))
+    if _alt_treffer != _neu_treffer:
+        _diff.append((_r["id"], _alt_treffer, _neu_treffer))
+check("F2d DB-weit exakt 29 Aenderungen (nicht mehr, nicht weniger)",
+      len(_diff) == 29)
+check("F2e alle Aenderungen gehen von HV-erkannt zu NICHT-HV-erkannt "
+      "(keine Zeile wird durch den Fix neu versteckt)",
+      all(alt and not neu for _id, alt, neu in _diff))
+check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
+      sorted(_id for _id, _, _ in _diff) == sorted(_29_IDS))
 
 
 # ══ G) Bestandsintegritaet ═══════════════════════════════════════════════════

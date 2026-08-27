@@ -281,15 +281,31 @@ def _baujahr_passt(betroffene: str | None, baujahr: int | None) -> bool | None:
 # "elektromechanisch*". Alles andere bleibt unverändert: "Hochvoltbatterie",
 # "Elektromotor", "Plug-in-Hybrid" usw. treffen weiterhin.
 #
-# BEWUSST NICHT MIT BEHOBEN: "elektrisch" ist zusätzlich semantisch zu breit —
-# eine "elektrische Kraftstoffpumpe" oder eine "elektrische Servolenkung" ist
-# 12-Volt-Technik in einem ganz gewöhnlichen Verbrenner, kein Hochvoltsystem.
-# Das betrifft weitere 29 Rückrufe. Diese Änderung wäre eine BEDEUTUNGSfrage,
-# keine Fehlerkorrektur, und gehört in eine eigene Prüfung — siehe Bericht.
+# FOLGE-FIX (Safety-Check vor dem Insignia-012223-Merge): "elektrisch" war
+# zusätzlich semantisch zu breit und wird hier ENTFERNT, nicht nur eingegrenzt.
+# Eine "elektrische Kraftstoffpumpe", "elektrische Servolenkung", "elektrische
+# Feststellbremse" oder "elektrische Zusatzwasserpumpe" ist 12-Volt-Technik in
+# einem ganz gewöhnlichen Verbrenner — das sind serienmäßige Bauteile, keine
+# Hochvoltsysteme. Gemessen an der Datenbank betraf das 29 Rückrufe, darunter
+# sicherheitsrelevante: Ausfall der (elektrischen) Servolenkung an neun
+# Baureihen (Mercedes A/E/S/GLA/GLC/AMG-GT, BMW i4, Opel Insignia/Zafira/Corsa/
+# Astra), Ausfall der elektrischen Feststellbremse (Audi A8, Ford Focus), und
+# fünf Kraftstoffpumpen-Rückrufe bei BMW. Jeder davon galt bislang für JEDEN
+# Verbrenner der jeweiligen Baureihe als "incompatible" und war unsichtbar.
+#
+# NEUE SEMANTIK: statt eines Blacklist-Ausschlusses ("alles außer den drei
+# Endungen") jetzt eine WHITELIST eindeutiger Hochvolt-/Antriebsbegriffe. Ein
+# Rückruf grenzt sich nur dann auf einen bestimmten Antrieb ein, wenn der Text
+# eines dieser Wörter enthält — sonst gilt er (wie jeder Rückruf ohne
+# erkennbaren Antriebsbezug) für die ganze Baureihe unabhängig vom Motor. Kein
+# NLP, keine neue Kategorie: dieselbe zweistufige Logik wie zuvor
+# (Scope erkannt -> Antriebsabgleich; kein Scope -> Baureihen-Rückruf), nur mit
+# einer engeren, eindeutigeren Wortliste.
 _HV_MUSTER = re.compile(
     r"(?<![a-zäöüß])(?:"
-    r"hochvolt|hochspannung|plug-?\s?in|plugin|phev|hybrid|"
-    r"elektro(?!nisch|nik|mechanisch)|elektrisch"
+    r"hochvolt|hochspannung|hv[-\s]?batterie|traktionsbatterie|antriebsbatterie|"
+    r"plug-?\s?in|plugin|phev|hybrid|"
+    r"elektro(?!nisch|nik|mechanisch)"
     r")",
     re.IGNORECASE,
 )
