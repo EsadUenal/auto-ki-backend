@@ -289,8 +289,22 @@ else:
         m = _marke[r["baureihe_id"]]
         _mit.append(rueckruf_applicability(r, True, r.get("kba_referenz"), None, marke=m)[0])
         _ohne.append(rueckruf_applicability(r, False, r.get("kba_referenz"), None, marke=m)[0])
-    check("H3 mit Baujahr-Deckung: nur variant_match oder unclear (Variantenbezug)",
-          set(_mit) <= {"variant_match", "unclear"}, f"{sorted(set(_mit))}")
+    # FLOOR-SAFETY-AUDIT: Batch-A-Zeilen tragen keinen Antriebs-Qualifier (Tor A2,
+    # siehe D9). Damit ist Baujahr-Deckung die EINZIGE Zuordnung, die sie haben —
+    # und die ist keine Variantenaussage. Erwartet wird deshalb series_only;
+    # variant_match/incompatible entstehen nur bei den Zeilen, deren amtlicher
+    # Mangeltext einen Hochvoltbezug hat.
+    check("H3 mit Baujahr-Deckung entsteht KEIN variant_match ohne amtliche "
+          "Variantenbedingung",
+          set(_mit) <= {"series_only", "unclear"}, f"{sorted(set(_mit))}")
+    from app.recall_filter import _HV_MUSTER  # noqa: E402
+    _mit_bedingung = [r for r in _rows
+                      if _HV_MUSTER.search(" ".join(filter(None, [
+                          r.get("mangel"), r.get("abhilfe"),
+                          r.get("betroffene_baujahre")])))]
+    check("H3b die Stichprobe enthaelt ueberwiegend rein baureihenweite Rueckrufe",
+          len(_mit_bedingung) < len(_rows) / 2,
+          f"{len(_mit_bedingung)}/{len(_rows)} mit Antriebsbezug")
     check("H4 OHNE Baujahr-Deckung entsteht NIE variant_match",
           "variant_match" not in _ohne, f"{sorted(set(_ohne))}")
     check("H5 OHNE Baujahr-Deckung bleibt es bei series_only/unclear",

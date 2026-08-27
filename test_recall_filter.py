@@ -86,6 +86,71 @@ try:
 except Exception as exc:
     check(f"5: _sql_context mit fuel_hint_text läuft ohne Fehler durch ({exc})", False)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 6) OVER-ESCALATION: Baujahr-Deckung ist KEINE Variantenaussage
+#
+# FLOOR-SAFETY-AUDIT (Batch A). Ein amtlich verifizierter Rueckruf, der sich nur
+# auf Modell + Produktionszeitraum bezieht, darf allein wegen eines passenden
+# Baujahrs NICHT auf "variant_match" steigen — sonst hebt er ueber
+# `empfehlungs_floor` die Kaufempfehlung an. Vor dem Fix betraf das 260 der 269
+# importierten Zeilen und 39 von 41 realen Kaufchecks.
+from app.recall_filter import rueckruf_applicability   # noqa: E402
+
+_MODELLWEIT = {
+    "id": 9001, "baureihe_id": "test-baureihe", "datum": "2021-05-05",
+    "betroffene_baujahre": "2019-2021",
+    "mangel": "Die Verschraubung des Lenkgetriebes kann sich loesen.",
+    "abhilfe": "Austausch der Schrauben am Lenkgetriebe.",
+    "kba_referenz": "11331", "_trust": "verified",
+}
+_MIT_QUALIFIER = {**_MODELLWEIT, "id": 9002,
+                  "betroffene_baujahre": "2019-2021 (Plug-in-Hybrid)"}
+
+_diesel = {"kraftstoff": "Diesel"}
+_phev = {"kraftstoff": "Plug-in-Hybrid"}
+
+_appl, _conf, _einfluss, _ = rueckruf_applicability(
+    _MODELLWEIT, True, "11331", _diesel, marke="Opel")
+check("6a modellweiter verified Rueckruf + Baujahr-Treffer -> series_only",
+      _appl == "series_only")
+check("6b die BELEGLAGE bleibt trotzdem hoch (verifizierte amtliche Quelle)",
+      _conf == "hoch")
+check("6c der Wortlaut verweist weiterhin auf die FIN-Pruefung",
+      "FIN" in _einfluss)
+
+from app.empfehlungs_floor import RUECKRUF_WERKSTATT_APPLICABILITY   # noqa: E402
+check("6d series_only loest keinen Werkstatt-Floor aus",
+      _appl not in RUECKRUF_WERKSTATT_APPLICABILITY)
+
+_appl_ohne_jahr, _, _, _ = rueckruf_applicability(
+    _MODELLWEIT, False, "11331", _diesel, marke="Opel")
+check("6e ohne Baujahr-Deckung ebenfalls series_only",
+      _appl_ohne_jahr == "series_only")
+
+# Positive Gegenprobe: mit amtlicher Antriebsbedingung bleibt variant_match.
+_appl_var, _conf_var, _, _ = rueckruf_applicability(
+    _MIT_QUALIFIER, True, "11331", _phev, marke="Opel")
+check("6f amtliche Antriebsbedingung + passender Antrieb -> variant_match",
+      _appl_var == "variant_match" and _conf_var == "hoch")
+check("6g variant_match loest den Werkstatt-Floor weiterhin aus",
+      _appl_var in RUECKRUF_WERKSTATT_APPLICABILITY)
+
+_appl_ink, _, _, _ = rueckruf_applicability(
+    _MIT_QUALIFIER, True, "11331", _diesel, marke="Opel")
+check("6h widersprechender Antrieb -> incompatible", _appl_ink == "incompatible")
+
+_appl_unk, _, _, _ = rueckruf_applicability(
+    _MIT_QUALIFIER, True, "11331", None, marke="Opel")
+check("6i Antrieb nicht erkannt -> unclear, niemals variant_match",
+      _appl_unk == "unclear")
+
+# Ohne Verifikation bleibt es bei der schwaecheren Beleglage.
+_appl_unv, _conf_unv, _, _ = rueckruf_applicability(
+    {**_MODELLWEIT, "_trust": "unverified_db"}, True, "11331", _diesel, marke="Opel")
+check("6j unverifiziert: series_only mit mittlerer Beleglage",
+      _appl_unv == "series_only" and _conf_unv == "mittel")
+
+
 print()
 if FEHLER:
     print(f"{len(FEHLER)} Test(s) fehlgeschlagen: {FEHLER}")

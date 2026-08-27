@@ -142,8 +142,20 @@ check("A4 wird angezeigt", kba_referenz_anzeige("9600", "TestMarke") == "9600")
 _ins_a = build_insights(baureihe([rueckruf("9600", baujahre="2019-2021")]), motor(), [],
                         Req(baujahr=2020), check_typ="kauf")
 _rr_a = [i for i in _ins_a if i.kategorie == "rueckruf"][0]
-check("A5 Applicability variant_match (Baujahr eindeutig getroffen, Referenz plausibel)",
-      _rr_a.applicability == "variant_match")
+# FLOOR-SAFETY-AUDIT (Batch A): dieser Fixture-Rueckruf nennt KEINE Antriebs-/
+# Variantenbedingung. Baujahr-Deckung allein hebt seit dem Audit nicht mehr auf
+# "variant_match" — sie ist eine zeitliche Zuordnung, keine Variantenaussage.
+# Was das KBA-Referenz-Gate hier bewirkt, ist die BELEGLAGE (confidence) und die
+# Sichtbarkeit der Nummer; genau das pruefen A6/A7. Die Variantenstufe wird
+# separat in A5b mit echter Bedingung geprueft.
+check("A5 modellweiter Rueckruf bleibt series_only (Baujahr ist keine Variante)",
+      _rr_a.applicability == "series_only")
+_ins_a_var = build_insights(
+    baureihe([rueckruf("9600", baujahre="2019-2021 (Diesel)")]), motor(), [],
+    Req(baujahr=2020), check_typ="kauf")
+_rr_a_var = [i for i in _ins_a_var if i.kategorie == "rueckruf"][0]
+check("A5b mit amtlicher Antriebsbedingung hebt dieselbe Nummer auf variant_match",
+      _rr_a_var.applicability == "variant_match")
 check("A6 confidence hoch", _rr_a.confidence == "hoch")
 check("A7 Evidence-Quelle trägt die Referenz", _rr_a.quellen[0].ref == "9600")
 
@@ -244,8 +256,11 @@ check("E3 wird angezeigt", kba_referenz_anzeige("7600", "BMW") == "7600")
 _ins_e = build_insights(baureihe([rueckruf("7600", baujahre="2019-2021")], marke="BMW"),
                         motor(), [], Req(baujahr=2020), check_typ="kauf")
 _rr_e = [i for i in _ins_e if i.kategorie == "rueckruf"][0]
+# Mehrfachnutzung innerhalb derselben Marke ist keine Kollision: die Nummer
+# bleibt vertrauenswuerdig, die Beleglage hoch. Die Applicability ist hier
+# series_only, weil der Fixture-Rueckruf keine Variantenbedingung nennt.
 check("E4 volle Vertrauensstufe trotz Mehrfachnutzung derselben Marke",
-      _rr_e.applicability == "variant_match" and _rr_e.confidence == "hoch")
+      _rr_e.applicability == "series_only" and _rr_e.confidence == "hoch")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -324,7 +339,8 @@ _br_j = baureihe([rueckruf("9600", "Fehlerhafte Software im Motorsteuergerät",
                            baujahre="2019-2020")], marke="Opel")
 _ins_j = build_insights(_br_j, motor(), [], Req(baujahr=2020), check_typ="kauf")
 _rr_j = [i for i in _ins_j if i.kategorie == "rueckruf"][0]
-check("J1 Applicability weiterhin variant_match", _rr_j.applicability == "variant_match")
+check("J1 Applicability weiterhin series_only mit voller Beleglage",
+      _rr_j.applicability == "series_only")
 check("J2 confidence weiterhin hoch", _rr_j.confidence == "hoch")
 check("J3 Referenz weiterhin sichtbar", _rr_j.quellen[0].ref == "9600")
 _ka_j = build_kaufaktionen(Req(baujahr=2020), _br_j, motor(), _ins_j)
@@ -332,6 +348,10 @@ _alle_j = [a for b in BEREICHE for pl in [getattr(_ka_j, b)]
            for a in [*pl.fahrzeugspezifisch, *pl.basis]]
 check("J4 die Dokumentaktion nennt die Referenz weiterhin",
       any("9600" in a.aktion for a in _alle_j if a.kategorie == "rueckruf"))
+# Der Rang haengt seit dem Floor-Safety-Audit an der BELEGLAGE, nicht an der
+# Applicability: ein amtlich verifizierter Sicherheitsrueckruf fuer genau dieses
+# Modell und Baujahr bleibt oben in der Liste, auch wenn seine Variantenreichweite
+# unbekannt ist — die auszufuehrende Handlung ist dieselbe.
 check("J5 die kritische Priorität bleibt erhalten",
       any(a.prioritaet == "kritisch" for a in _alle_j if a.kategorie == "rueckruf"))
 

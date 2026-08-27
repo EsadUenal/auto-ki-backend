@@ -119,8 +119,15 @@ _n = neuer(_ins)
 check("C1 Motor erkannt", _mm is not None)
 check("C2 der Rueckruf ist sichtbar", len(_n) == 1)
 check("C3 trust=verified", bool(_n) and _n[0].trust == "verified")
-check("C4 applicability=variant_match (Baujahr trifft, amtliche Referenz belegt)",
-      bool(_n) and _n[0].applicability == "variant_match")
+# FLOOR-SAFETY-AUDIT (Batch A), §7 des Auftrags: der amtliche Datensatz zu
+# KBA 12223 nennt ausdruecklich KEINE Eingrenzung ("Moegliche Eingrenzung: N/A")
+# und der Mangeltext hat keinen Antriebsbezug. Der Rueckruf gilt also der ganzen
+# Baureihe im gemeldeten Zeitraum. Das fruehere `variant_match` stammte allein
+# aus der Baujahr-Deckung — eine Variantenbehauptung, die die Quelle nicht
+# hergibt. Semantik vor gewuenschtem Ergebnis: korrekt ist `series_only`, bei
+# voller Beleglage (C5) und voller Sichtbarkeit (C7/C8).
+check("C4 applicability=series_only (amtlich ohne Varianteneingrenzung)",
+      bool(_n) and _n[0].applicability == "series_only")
 check("C5 confidence=hoch", bool(_n) and _n[0].confidence == "hoch")
 check("C6 NIEMALS confirmed_by_vin ohne VIN",
       all(i.applicability != "confirmed_by_vin" for i in rueckrufe(_ins)))
@@ -129,7 +136,7 @@ check("C7 Wortlaut 'KBA-Rueckruf' (amtliche Nummer liegt vor)",
 check("C8 Quelle nennt die amtliche Nummer",
       bool(_n) and any(q.ref == "12223" and q.titel == "KBA-Rückrufdatenbank"
                        for q in _n[0].quellen))
-check("C9 der FIN-Hinweis bleibt trotz variant_match bestehen",
+check("C9 der FIN-Hinweis bleibt bestehen",
       bool(_n) and "FIN" in (_n[0].einfluss or ""))
 
 
@@ -150,13 +157,21 @@ check("D5 keine Besichtigungsaktion (ein Rueckruf ist vor Ort nicht pruefbar)",
       not any(ber == "besichtigung" for ber, _a in _rr_aktionen))
 
 _floor = ermittle_floor(_ins)
-check("D6 Floor greift", _floor is not None
-      and _floor.stufe == "nur_mit_werkstattpruefung")
-check("D7 Floor-Grund ist der Rueckruf-Variantentreffer",
-      _floor is not None and "rueckruf_variantentreffer" in _floor.gruende)
-check("D8 Floor belegt ueber die ECHTE Evidence-ID",
-      _floor is not None and bool(_n) and _n[0].id in _floor.evidence_ids)
-check("D9 Floor hebt an", wende_floor_an("kaufen", _ins)[0] == "nur_mit_werkstattpruefung")
+# FLOOR-SAFETY-AUDIT (§7): KBA 12223 nennt keine Varianteneingrenzung, ist also
+# series_only — und loest damit KEINEN Werkstatt-Floor mehr aus. Der Rueckruf
+# bleibt vollstaendig sichtbar, erzeugt weiterhin beide Kaufaktionen (D1-D5) und
+# nennt weiterhin die amtliche Nummer. Was entfaellt, ist ausschliesslich die
+# automatische Verschaerfung der Kaufempfehlung aus einer Variantenbehauptung,
+# die die amtliche Quelle nicht deckt.
+check("D6 KEIN Rueckruf-Floor (amtlich ohne Varianteneingrenzung)",
+      _floor is None)
+check("D7 folglich auch kein Variantentreffer-Grund",
+      _floor is None or "rueckruf_variantentreffer" not in _floor.gruende)
+check("D8 die Empfehlung bleibt unangetastet",
+      wende_floor_an("kaufen", _ins)[0] == "kaufen")
+check("D9 der Rueckruf ist trotzdem sichtbar, verifiziert und amtlich benannt",
+      bool(_n) and _n[0].trust == "verified" and _n[0].confidence == "hoch"
+      and _n[0].titel.startswith("KBA-Rückruf"))
 check("D10 Floor senkt NICHT", wende_floor_an("finger_weg", _ins)[0] == "finger_weg")
 check("D11 Floor laesst 'unbekannt' unangetastet",
       wende_floor_an("unbekannt", _ins)[0] == "unbekannt")
@@ -254,7 +269,8 @@ _appl, _conf, _einfl, _hinw = rueckruf_applicability(
     _rr_roh, True, "12223", {"kraftstoff": "Diesel"}, marke="Opel")
 check("F3 der amtliche Rueckruf ist fuer einen Diesel NICHT 'incompatible'",
       _appl != "incompatible")
-check("F4 sondern variant_match", _appl == "variant_match")
+check("F4 sondern series_only — er nennt keine Antriebsbedingung",
+      _appl == "series_only")
 
 # Ein echter Hochvolt-Rueckruf muss weiterhin fuer einen Diesel ausgeschlossen werden.
 _hv = {"mangel": "Brandgefahr der Hochvoltbatterie", "abhilfe": "Modultausch",

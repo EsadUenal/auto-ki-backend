@@ -888,6 +888,13 @@ def _aus_motorproblemen(s: _Sammler, insights: list[Insight], motor_match: dict 
 # NICHT "betroffen", sondern "kann betroffen sein — per FIN prüfen".
 _RUECKRUF_PASSEND = ("confirmed_by_vin", "variant_match")
 
+# Wortgleich mit `app.evidence.TRUST_VERIFIED`. Hier als Literal, weil
+# app/evidence.py dieses Modul selbst nicht importieren darf und ein Import in
+# die Gegenrichtung nur wegen einer Zeichenkette keinen neuen Modulzyklus
+# rechtfertigt. Der Wert ist Teil des persistierten Datenmodells
+# (`fakt_verifikation.status`) und aendert sich nicht.
+_TRUST_VERIFIED = "verified"
+
 
 def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
     """Rückruf -> FIN-Prüfung + Durchführungsnachweis. KEINE Besichtigungsaktion.
@@ -904,7 +911,17 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
         mangel = _mangel_kurz(i.titel)
         schluessel = f"rueckruf-{_slug(kba) if kba else _slug(mangel)}"
         passend = i.applicability in _RUECKRUF_PASSEND
-        rang = _R_RUECKRUF_VARIANTE if passend else _R_RUECKRUF_SERIE
+        # FLOOR-SAFETY-AUDIT (Batch A): der Rang haengt nicht mehr allein an der
+        # Applicability. Seit `recall_filter` einen nur baureihenweiten Rueckruf
+        # korrekt bei "series_only" belaesst, waeren sonst amtlich verifizierte
+        # Sicherheitsrueckrufe fuer genau dieses Modell und Baujahr im Rang
+        # gefallen — obwohl die auszufuehrende HANDLUNG identisch ist (FIN
+        # pruefen, Durchfuehrungsnachweis verlangen) und die Beleglage amtlich.
+        # Der WORTLAUT unterscheidet weiterhin sauber zwischen "fuer diese
+        # Variante gemeldet" und "fuer Teile dieser Baureihe gemeldet"; nur die
+        # Reihenfolge behandelt beide gleich.
+        amtlich_belegt = (getattr(i, "trust", None) or "") == _TRUST_VERIFIED
+        rang = _R_RUECKRUF_VARIANTE if (passend or amtlich_belegt) else _R_RUECKRUF_SERIE
         kba_zusatz = f" (KBA-Referenz {kba})" if kba else ""
 
         if passend:

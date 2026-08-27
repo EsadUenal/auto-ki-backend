@@ -271,8 +271,13 @@ check("G7 unverifiziert: die FIN-Pruefung wird weiterhin empfohlen",
 # nur die Vertrauensstufe haengt jetzt am Beleg.
 check("G8 unverifiziert: die formatplausible Nummer hebt die Stufe NICHT mehr",
       rr_u.applicability == "series_only")
-check("G9 verifiziert: dieselbe Nummer hebt sehr wohl auf variant_match",
-      rr_v.applicability == "variant_match")
+# FLOOR-SAFETY-AUDIT (Batch A): die Verifikation hebt die BELEGLAGE, nicht die
+# Variantenreichweite. Der Fixture-Rueckruf nennt keine Antriebsbedingung, also
+# bleibt er series_only — mit dem Unterschied, den G5/G8 pruefen: verifiziert
+# traegt er die amtliche Bezeichnung und die Nummer, unverifiziert nicht.
+check("G9 verifiziert: dieselbe Nummer hebt die Beleglage, nicht die Variantenstufe",
+      rr_v.applicability == "series_only" and rr_v.confidence == "hoch"
+      and rr_u.confidence == "mittel")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

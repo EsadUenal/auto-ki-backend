@@ -202,7 +202,12 @@ check("D4 jede Zeile MIT Referenz waere auch verified (aktuell vakuum wahr: "
 
 # ══ E) §9 — Trust-Gate auf der Referenz ══════════════════════════════════════
 print("\n--- E) §9 formatplausibel != inhaltlich verified ---")
-_roh = {"mangel": "Bremse", "abhilfe": "Tausch", "betroffene_baujahre": "2018"}
+# FLOOR-SAFETY-AUDIT (Batch A): der Klammer-Qualifier ist noetig, damit dieser
+# Abschnitt weiterhin das TRUST-Gate prueft und nicht versehentlich die neue
+# Regel "ohne amtliche Variantenbedingung nie variant_match". Ohne ihn waeren
+# beide Faelle series_only und der Unterschied waere nicht mehr sichtbar.
+_roh = {"mangel": "Bremse", "abhilfe": "Tausch",
+        "betroffene_baujahre": "2018 (Diesel)"}
 _ungeprueft = {**_roh}
 _geprueft = {**_roh, "_trust": "verified"}
 check("E1 referenz_ist_belegt: ohne _trust -> False", not referenz_ist_belegt(_ungeprueft))
@@ -220,6 +225,14 @@ check("E5 formatplausible Referenz OHNE Verifikation -> series_only/mittel",
       _appl_un == "series_only" and _conf_un == "mittel")
 check("E6 dieselbe Referenz MIT Verifikation -> variant_match/hoch",
       _appl_ge == "variant_match" and _conf_ge == "hoch")
+# Gegenprobe zur neuen Semantik: derselbe verifizierte Rueckruf OHNE amtliche
+# Antriebsbedingung bleibt series_only — die Verifikation hebt die Beleglage,
+# nicht die Variantenreichweite.
+_appl_ohne, _conf_ohne, _, _ = rueckruf_applicability(
+    {**_geprueft, "betroffene_baujahre": "2018"}, True, "011999",
+    {"kraftstoff": "Diesel"}, marke="Opel")
+check("E6b verifiziert, aber OHNE Variantenbedingung -> series_only/hoch",
+      _appl_ohne == "series_only" and _conf_ohne == "hoch")
 check("E7 Rueckruf bleibt in beiden Faellen vollstaendig sichtbar "
       "(kein Verwerfen, nur Herabstufung)",
       _appl_un != "incompatible" and _appl_ge != "incompatible")
@@ -270,7 +283,9 @@ print("\n--- G) §12 Empfehlungs-Floor ---")
 # von der Frage bewiesen, ob die vier Pilotfahrzeuge ihn gerade auslösen.
 _syn_rr_verified = {
     "id": 9001, "baureihe_id": "syn-br", "datum": "2022-01",
-    "betroffene_baujahre": "2019-2021",
+    # Mit amtlicher Antriebsbedingung — nur so ist der Floor ueberhaupt
+    # erreichbar (Floor-Safety-Audit). Der Gegenfall steht in G3b/G9c.
+    "betroffene_baujahre": "2019-2021 (Diesel)",
     "mangel": "Synthetischer Testrueckruf fuer den Floor-Nachweis",
     "abhilfe": "Pruefung/Austausch", "kba_referenz": "445566",
     "_trust": "verified",
@@ -302,6 +317,19 @@ check("G7 Floor hebt eine zu milde Empfehlung an",
       wende_floor_an("kaufen", _ins_syn)[0] == "nur_mit_werkstattpruefung")
 check("G8 Floor senkt eine vorsichtigere Empfehlung NICHT",
       wende_floor_an("finger_weg", _ins_syn)[0] == "finger_weg")
+# FLOOR-SAFETY-AUDIT: derselbe verifizierte Rueckruf OHNE Antriebsbedingung
+# bleibt series_only und traegt KEINEN Floor — auch wenn das Baujahr passt.
+_syn_ohne = {**_syn_rr_verified, "id": 9002, "betroffene_baujahre": "2019-2021"}
+_ins_syn_ohne = build_insights(
+    {**_syn_baureihe, "rueckrufe": [_syn_ohne]}, _syn_motor, [], _syn_req,
+    check_typ="kauf")
+_rr_ohne = _rueckrufe(_ins_syn_ohne)
+check("G8b ohne Antriebsbedingung: series_only trotz Baujahr-Treffer",
+      bool(_rr_ohne) and _rr_ohne[0].applicability == "series_only")
+check("G8c und damit KEIN Floor", ermittle_floor(_ins_syn_ohne) is None)
+check("G8d der Rueckruf bleibt trotzdem vollstaendig sichtbar",
+      bool(_rr_ohne) and _rr_ohne[0].trust == "verified"
+      and _rr_ohne[0].confidence == "hoch")
 
 # G3b/G4b: Gegenprobe (§3 des Safety-Checks) — identischer Rueckruf, aber
 # unverifiziert -> series_only, kein Floor.
@@ -338,7 +366,14 @@ check("G9b #546 ist durch den amtlichen Export verifiziert",
 # BATCH A: der Mercedes W205 traegt jetzt ebenfalls einen Floor — ausgeloest von
 # vier amtlich belegten KBA-Rueckrufen aus dem Import. BMW G20 und Audi 8P
 # bleiben ohne Floor: ihre Rueckrufzeilen sind weiterhin unverifiziert.
-_FLOOR_ERWARTET = {("Opel", "2.0 Diesel"): True, ("Mercedes-Benz", "C220d"): True}
+# FLOOR-SAFETY-AUDIT (Batch A): KEIN Pilotfahrzeug traegt mehr einen
+# Rueckruf-Floor. Weder KBA 12223 (Opel) noch die vier Mercedes-Rueckrufe nennen
+# eine Motor-/Antriebsbedingung — sie gelten der ganzen Baureihe im gemeldeten
+# Zeitraum. Der Floor davor stammte allein aus der Baujahr-Deckung und war damit
+# eine Behauptung ueber die Variante, die die amtliche Quelle nicht deckt. Dass
+# der Mechanismus selbst funktioniert, ist im synthetischen Abschnitt G
+# (G4-G8) mit echter Antriebsbedingung nachgewiesen.
+_FLOOR_ERWARTET = {}
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _, _, _, _i = _check(_m, _mo, _g, _h, _bj, _k)
     _rr = _rueckrufe(_i)

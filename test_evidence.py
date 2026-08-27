@@ -146,8 +146,12 @@ check("11: nicht betroffener Rückruf taucht auch nicht in 'Was jetzt?' auf (kei
 # Reliability-Sprint 3 (§27/§28): "exakt"/"unklar" -> "variant_match"/"unclear".
 # variant_match ist die stärkste OHNE VIN-Prüfung erreichbare Stufe (§27: niemals
 # "confirmed_by_vin" ohne echte VIN-Prüfung, die es im System nicht gibt).
-check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> applicability 'variant_match'",
-      brems_d.applicability == "variant_match" and brems_d.confidence == "hoch")
+# FLOOR-SAFETY-AUDIT (Batch A): ein allgemeiner Baureihen-Rückruf ohne
+# Antriebs-Scope bleibt "series_only", auch wenn das Baujahr exakt passt — die
+# Baujahr-Deckung sagt nichts über die betroffene Variante. Die BELEGLAGE bleibt
+# davon unberührt und ist weiterhin "hoch".
+check("13: allgemeiner Bremsen-Rückruf (kein Antriebs-Scope) -> 'series_only', Beleglage hoch",
+      brems_d.applicability == "series_only" and brems_d.confidence == "hoch")
 
 _rk_phev = {i.titel: i for i in build_insights(BAUREIHE_HV, MOTOR_PHEV, [], req(2020)) if i.kategorie == "rueckruf"}
 hv_p = next(i for t, i in _rk_phev.items() if "Hochvolt" in t)

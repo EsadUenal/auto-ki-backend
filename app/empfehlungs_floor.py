@@ -32,9 +32,16 @@ keine neu erfundenen Schwellen):
      Systemprompt-Definition von `nur_mit_werkstattpruefung`.
 
   3. `rueckruf`-Insight mit `applicability` in RUECKRUF_WERKSTATT_APPLICABILITY.
-     `recall_filter.rueckruf_applicability` vergibt "variant_match" NUR bei
-     Baujahr-Deckung UND plausibler, durch das KBA-Trust-Gate gelaufener
-     Referenz und formuliert dafür ausdrücklich "Sicherheitsrelevant".
+     `recall_filter.rueckruf_applicability` vergibt "variant_match" NUR, wenn der
+     amtliche Datensatz den Rückruf ausdrücklich auf einen Antrieb/eine Variante
+     eingrenzt, VIRA diese Bedingung auflösen kann und sie auf das Fahrzeug passt
+     — zusätzlich zu Baujahr-Deckung und belegter KBA-Referenz.
+
+     FLOOR-SAFETY-AUDIT (BATCH A): bis dahin genügte Baujahr-Deckung + belegte
+     Referenz. Damit hob JEDER amtlich verifizierte, nur baureihenweite Rückruf
+     die Empfehlung an, sobald das Baujahr im Produktionsfenster lag — bei 260
+     der 269 importierten Zeilen. Das ist keine Variantenaussage, sondern eine
+     zeitliche Zuordnung; die Verwechslung ist in `recall_filter` behoben.
 
 WAS BEWUSST NICHT AUSLÖST:
 

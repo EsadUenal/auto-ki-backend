@@ -387,7 +387,11 @@ _HAT_HOCHVOLT = {"phev", "elektro"}
 # Vierstufige Semantik (fünfte Stufe reserviert, aktuell unerreichbar):
 #   confirmed_by_vin — NUR nach echter VIN-Prüfung. Wird vom Code aktuell NIE erzeugt
 #                       (keine VIN-Erfassung im System) — bewusst kein Fake-Feature.
-#   variant_match     — Baujahr/Antriebs-Variante passt, KBA-Referenz vorhanden.
+#   variant_match     — der Rückruf grenzt sich AUSDRÜCKLICH auf einen Antrieb/eine
+#                        Variante ein, VIRA kann die Bedingung auflösen, sie passt,
+#                        das Baujahr passt UND die KBA-Referenz ist belegt. Ohne
+#                        eine solche amtliche Bedingung wird diese Stufe NIE
+#                        vergeben (Floor-Safety-Audit, Batch A).
 #   series_only       — Baujahr passt bzw. allgemeiner Baureihen-Rückruf, aber ohne
 #                        die belastbarste Kombination aus Variante+Referenz.
 #   unclear           — Betroffenheit nicht bestimmbar.
@@ -468,12 +472,33 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
                 f"Betrifft laut Datenlage {scope_label} — die erkannte Motorisierung gehört nicht dazu.",
                 f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt eindeutig nicht dazu.")
 
-    # Kein Antriebs-Scope erkennbar -> allgemeiner Baureihen-Rückruf (z.B. Bremse,
-    # Lenkung): gilt unabhängig von der Motorisierung.
-    if passt is True and kba_ok:
-        return ("variant_match", "hoch",
-                f"Sicherheitsrelevant — Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
+    # Kein Antriebs-Scope erkennbar -> allgemeiner BAUREIHEN-Rückruf (z.B. Bremse,
+    # Lenkung). Er gilt für die ganze Baureihe im amtlichen Produktionsfenster.
+    #
+    # FLOOR-SAFETY-AUDIT (BATCH A): hier stand bisher `variant_match`, sobald das
+    # Baujahr traf und die Referenz das Trust-Gate passiert hatte. Das war eine
+    # Verwechslung der beiden Achsen — Baujahr-Deckung ist eine ZEITLICHE
+    # Zuordnung, keine VARIANTEN-Aussage. Der amtliche Datensatz sagt in diesen
+    # Fällen ausdrücklich nur "Modell + Produktionszeitraum" und im Beipacktext
+    # der Rückrufdatenbank sogar wörtlich, dass "in der Regel nicht alle Fahrzeuge
+    # des Typs auch tatsächlich betroffen" sind. Aus "dein Baujahr liegt im
+    # Fenster" ein "deine Variante ist betroffen" zu machen, behauptet mehr als
+    # die Quelle hergibt — und hob über `empfehlungs_floor` zugleich die
+    # Kaufempfehlung an.
+    #
+    # Der Modulkopf beschrieb `series_only` schon immer als "allgemeiner
+    # Baureihen-Rückruf"; der Code widersprach seinem eigenen Kommentar. Gemessen
+    # am Batch-A-Bestand betraf das 260 von 269 neuen Zeilen.
+    #
+    # Die BELEGLAGE geht dabei nicht verloren: eine amtlich verifizierte Referenz
+    # hebt weiterhin die `confidence` auf "hoch" und den Wortlaut auf die
+    # FIN-Prüfung. Nur die Varianten-BEHAUPTUNG entfällt. Was den Rückruf
+    # tatsächlich auf ein Exemplar eingrenzt, ist die FIN — und die hat VIRA nicht.
     if passt is True:
+        if kba_ok:
+            return ("series_only", "hoch",
+                    f"Sicherheitsrelevant — betrifft die Baureihe im gemeldeten "
+                    f"Zeitraum; Durchführung per FIN prüfen. {_HINWEIS_FIN}", "")
         return ("series_only", "mittel",
                 f"Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
     return ("series_only", "mittel",
