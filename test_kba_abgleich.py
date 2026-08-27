@@ -184,13 +184,30 @@ with get_conn() as conn:
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
         "SELECT * FROM fakt_verifikation WHERE fakt_art='rueckruf'")}
 
-check("F1 746 Rueckrufe (749 minus 3 Dubletten)", len(_alle) == 746)
-_mit_ref = [r for r in _alle if (r["kba_referenz"] or "").strip()]
-check("F2 genau 15 Zeilen tragen noch eine KBA-Referenz", len(_mit_ref) == 15)
+# BATCH A hat nach dem Gesamtabgleich weitere amtliche Rueckrufe uebernommen
+# (app/kba_batch_a_daten.py). Dieser Abschnitt prueft das ERGEBNIS DES
+# GESAMTABGLEICHS und blendet die Batch-A-Zeilen deshalb aus — sonst wuerde er
+# eine Aussage ueber einen ganz anderen Datenbestand treffen.
+from app.kba_batch_a_daten import ZEILEN as _BATCH_A_ZEILEN  # noqa: E402
+from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids  # noqa: E402
+
+_BATCH_A = _batch_a_ids()
+_abgleich = [r for r in _alle if r["id"] not in _BATCH_A]
+check("F0 Gesamtbestand = Abgleichsstand + Batch A",
+      len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN))
+check("F1 746 Rueckrufe aus dem Gesamtabgleich (749 minus 3 Dubletten)",
+      len(_abgleich) == 746)
+_mit_ref = [r for r in _abgleich if (r["kba_referenz"] or "").strip()]
+check("F2 genau 15 Abgleichszeilen tragen noch eine KBA-Referenz", len(_mit_ref) == 15)
 check("F3 und das sind exakt die kuratierten",
       {r["id"] for r in _mit_ref} == verifizierte_ids())
-_verified = [f for f, v in _verifs.items() if v["status"] == "verified"]
-check("F4 genau 15 verifizierte Rueckruf-Fakten", len(_verified) == 15)
+_verified = [f for f, v in _verifs.items()
+             if v["status"] == "verified" and f not in _BATCH_A]
+check("F4 genau 15 verifizierte Rueckruf-Fakten aus dem Gesamtabgleich",
+      len(_verified) == 15)
+check("F5 jede Batch-A-Zeile traegt eine eigene amtliche Referenz "
+      "(der Referenz-Kahlschlag des Abgleichs hat sie nicht mitgenommen)",
+      all((r["kba_referenz"] or "").strip() for r in _alle if r["id"] in _BATCH_A))
 check("F5 alle mit Quellenstufe A",
       all(_verifs[f]["quelle_stufe"] == "A" for f in _verified))
 check("F6 alle nennen den amtlichen Export als Quelle",
@@ -277,9 +294,24 @@ check("I1 alle drei Dubletten sind entfernt",
 check("I2 alle drei kanonischen Zeilen sind erhalten",
       {d[1] for d in DUBLETTEN} <= _ids)
 _paare = [(r["baureihe_id"], (r["mangel"] or "").strip(), (r["abhilfe"] or "").strip())
-          for r in _alle]
-check("I3 keine wortgleiche Dublette mehr im gesamten Bestand",
+          for r in _abgleich]
+check("I3 keine wortgleiche Dublette mehr im Abgleichsbestand",
       len(_paare) == len(set(_paare)))
+# BATCH A darf wortgleiche Zeilen enthalten — der amtliche Bestand fuehrt
+# eigenstaendige Aktionen mit identischer Mangelbezeichnung (VW 9777 fuer die
+# Produktion 1997-1999 gegen 11267 fuer 2000; die Takata-Wellen beim Viano).
+# Was NICHT vorkommen darf: zwei Zeilen, die sich in NICHTS unterscheiden — also
+# gleicher Text, gleicher Zeitraum, gleiches Datum auf derselben Baureihe. Genau
+# das schliesst Tor A5 in app/kba_import_batch_a.py aus.
+_a_paare = [(r["baureihe_id"], (r["mangel"] or "").strip(),
+             r["betroffene_baujahre"], r["datum"])
+            for r in _alle if r["id"] in _BATCH_A]
+check("I3b Batch A enthaelt keine ununterscheidbare Zeile",
+      len(_a_paare) == len(set(_a_paare)))
+check("I3c keine Batch-A-Zeile wiederholt eine Abgleichszeile wortgleich",
+      not ({(r["baureihe_id"], (r["mangel"] or "").strip(),
+             (r["abhilfe"] or "").strip())
+            for r in _alle if r["id"] in _BATCH_A} & set(_paare)))
 check("I4 keine verwaiste Verifikation (jeder Fakt existiert noch)",
       all(f in _ids for f in _verifs))
 

@@ -108,10 +108,20 @@ check("A7b #546 ist nach dem Safety-Check partially_verified, nicht verified",
 print("\n--- B) Verifikationen in der Datenbank ---")
 with get_conn() as conn:
     _platzhalter = ",".join("?" * len(PILOT_BAUREIHEN))
-    _pilot_rows = [dict(r) for r in conn.execute(
+    _alle_rows = [dict(r) for r in conn.execute(
         f"SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
         f"FROM rueckruf WHERE baureihe_id IN ({_platzhalter}) ORDER BY id",
         PILOT_BAUREIHEN)]
+    # BATCH A hat den Pilotfahrzeugen 20 weitere, amtlich belegte Rueckrufe
+    # hinzugefuegt (app/kba_batch_a_daten.py). Dieser Abschnitt prueft
+    # ausschliesslich den PILOTBESTAND — die 14 handgeprueften Zeilen plus den
+    # Insignia-Nachtrag. Die Batch-A-Zeilen haben eigene Zusicherungen in
+    # test_kba_batch_a.py; sie hier mitzuzaehlen wuerde die Pilotaussagen
+    # verwaessern statt sie zu pruefen.
+    from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
+    _BATCH_A = _batch_a_ids()
+    _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
+    _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
         "SELECT fakt_id,fingerprint,status,quelle,quelle_stufe,url,referenz,notiz "
         "FROM fakt_verifikation WHERE fakt_art='rueckruf'")}
@@ -325,13 +335,23 @@ check("G9b #546 ist durch den amtlichen Export verifiziert",
 # NACHTRAG: der Insignia-Testwagen traegt jetzt als EINZIGES der vier
 # Pilotfahrzeuge einen Floor — ausgeloest vom amtlich belegten Rueckruf
 # KBA 12223. Die drei anderen bleiben unveraendert ohne Floor.
-_FLOOR_ERWARTET = {("Opel", "2.0 Diesel"): True}
+# BATCH A: der Mercedes W205 traegt jetzt ebenfalls einen Floor — ausgeloest von
+# vier amtlich belegten KBA-Rueckrufen aus dem Import. BMW G20 und Audi 8P
+# bleiben ohne Floor: ihre Rueckrufzeilen sind weiterhin unverifiziert.
+_FLOOR_ERWARTET = {("Opel", "2.0 Diesel"): True, ("Mercedes-Benz", "C220d"): True}
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _, _, _, _i = _check(_m, _mo, _g, _h, _bj, _k)
-    _rr_floor = ermittle_floor(_rueckrufe(_i))
+    _rr = _rueckrufe(_i)
+    _rr_floor = ermittle_floor(_rr)
     _soll = _FLOOR_ERWARTET.get((_m, _h), False)
     check(f"G10 {_m} {_h} {_bj}: Rueckruf-Floor {'greift' if _soll else 'greift NICHT'}",
           (_rr_floor is not None) == _soll)
+    # Die eigentliche Zusicherung, unabhaengig vom Bestand: ein Floor entsteht
+    # ausschliesslich aus VERIFIZIERTEN Rueckrufen.
+    _traeger = [i for i in _rr if i.id in set(_rr_floor.evidence_ids)] if _rr_floor else []
+    check(f"G10b {_m} {_h} {_bj}: ein Floor wird nur von verifizierten Rueckrufen getragen",
+          _rr_floor is None or (bool(_traeger)
+                                and all(i.trust == "verified" for i in _traeger)))
 
 
 # ══ H) §13 — Nutzerwortlaut ══════════════════════════════════════════════════
@@ -384,10 +404,10 @@ check("H10 jeder sichtbare Rueckruf verweist auf die FIN-Pruefung",
 print("\n--- I) §14 die vier Kaufchecks ---")
 _ERWARTET = {
     # (marke, hint): (Anzahl sichtbarer Rueckruf-Insights, Floor erwartet)
-    ("BMW", "320d"):           2,
-    ("Opel", "2.0 Diesel"):    1,   # NACHTRAG: der amtliche Rueckruf KBA 12223
-    ("Audi", "2.0 FSI 150 PS"): 1,
-    ("Mercedes-Benz", "C220d"): 1,
+    ("BMW", "320d"):           2,   # unveraendert: Batch A traf den G20 nicht
+    ("Opel", "2.0 Diesel"):    2,   # 1 Nachtrag (KBA 12223) + 1 aus Batch A
+    ("Audi", "2.0 FSI 150 PS"): 1,  # unveraendert
+    ("Mercedes-Benz", "C220d"): 5,  # 1 Altbestand + 4 aus Batch A
 }
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _b, _mm, _req, _i = _check(_m, _mo, _g, _h, _bj, _k)
@@ -437,12 +457,25 @@ check("J4 keine neue Applicability-Kategorie erfunden",
 print("\n--- K) §8 Bestandsintegritaet ---")
 # KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS) —
 # keine davon an einem Pilotfahrzeug.
-check("K1 Rueckrufbestand 746 Zeilen (749 minus 3 Dubletten)",
-      _gesamt_rueckrufe == 746)
+# BATCH A: +271 amtliche Zeilen, davon 20 an Pilotfahrzeugen.
+check(f"K1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
+      f"(746 + {len(_BATCH_A)} aus Batch A)",
+      _gesamt_rueckrufe == 746 + len(_BATCH_A))
 check("K2 keine Dublette an den Pilotfahrzeugen (15 Zeilen, 15 IDs)",
       len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 15)
 _paare = [(r["baureihe_id"], (r["mangel"] or "").strip()) for r in _pilot_rows]
 check("K3 kein doppelter Mangeltext je Baureihe", len(_paare) == len(set(_paare)))
+# Die Batch-A-Zeilen duerfen den Pilotbestand nicht verdoppeln: keine von ihnen
+# darf denselben Mangeltext auf derselben Baureihe tragen wie eine Pilotzeile.
+_pilot_texte = set(_paare)
+check("K4 keine Batch-A-Zeile wiederholt einen Pilot-Mangeltext",
+      not [r for r in _batch_a_rows
+           if (r["baureihe_id"], (r["mangel"] or "").strip()) in _pilot_texte],
+      )
+check("K5 je Baureihe traegt jede amtliche Referenz hoechstens eine Zeile",
+      len({(r["baureihe_id"], (r["kba_referenz"] or "").strip())
+           for r in _alle_rows if (r["kba_referenz"] or "").strip()})
+      == len([r for r in _alle_rows if (r["kba_referenz"] or "").strip()]))
 check("K4 keine Verifikation ohne zugehoerigen Fakt",
       all(any(r["id"] == fid for r in _pilot_rows)
           for fid in _verifs if fid in {e[1] for e in RECALL_VERIFIKATIONEN}))

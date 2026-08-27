@@ -175,15 +175,22 @@ _verified2 = [i for i in rueckrufe(_ins2) if i.trust == "verified"]
 # Jeder einzeln gegen den amtlichen Export geprueft — kein Mitverifizieren:
 # entscheidend ist, dass NUR Zeilen mit eigenem amtlichem Beleg verified sind.
 _verif_titel = {i.titel for i in _verified2}
+# BATCH A hat dem Insignia B weitere amtlich belegte Rueckrufe hinzugefuegt.
+# Die zu sichernde Aussage ist nicht die Titelliste, sondern das Prinzip: nur
+# eine Zeile mit EIGENEM amtlichem Beleg ist verified — und jede verifizierte
+# Zeile traegt ihre eigene, gespeicherte Referenz.
 check("E1 jeder verifizierte Insignia-Rueckruf hat einen eigenen amtlichen Beleg",
-      all(any(w in t for w in ("Bremskraftausgleich", "Pedalplatte",
-                               "Abschalteinrichtung"))
-          for t in _verif_titel))
+      bool(_verified2) and all(any((q.ref or "").strip() for q in i.quellen)
+                               for i in _verified2))
+# "Pedalplatte" (#544, KBA 10743) betrifft nur Baujahr 2021 und ist fuer dieses
+# Testfahrzeug (2018) korrekt ausgefiltert — sie stand auch vor Batch A nicht in
+# dieser Liste.
+check("E1b die handgeprueften Belege des Testfahrzeugs sind weiterhin verified",
+      all(any(w in t for t in _verif_titel)
+          for w in ("Bremskraftausgleich", "Abschalteinrichtung")))
 check("E2 die unbelegten Zeilen bleiben unverified_db/series_only",
-      all(i.trust == "unverified_db" and i.applicability in ("series_only", "unclear")
-          for i in rueckrufe(_ins2)
-          if not any(w in i.titel for w in ("Bremskraftausgleich", "Pedalplatte",
-                                            "Abschalteinrichtung"))))
+      all(i.applicability in ("series_only", "unclear")
+          for i in rueckrufe(_ins2) if i.trust == "unverified_db"))
 
 for _bj, _soll in ((2016, False), (2017, True), (2019, True), (2020, True),
                    (2021, False), (2022, False)):
@@ -202,15 +209,29 @@ with get_conn() as conn:
     _fremde_12223 = conn.execute(
         "SELECT COUNT(*) FROM rueckruf WHERE kba_referenz='12223' "
         "AND baureihe_id<>'opel-insignia-b'").fetchone()[0]
+    from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
+    _BATCH_A = _batch_a_ids()
+    _platz = ",".join("?" * len(_BATCH_A))
+    # BATCH A traegt ebenfalls Quellenstufe A — jede Zeile mit eigener amtlicher
+    # Referenz aus dem KBA-Gesamtexport. Diese Zusicherung gilt dem Bestand
+    # DAVOR: ausserhalb des Nachtrags und ausserhalb von Batch A duerfen es
+    # genau die 14 uebrigen kuratierten Faelle des Gesamtabgleichs sein.
     _fremde_verif = conn.execute(
-        "SELECT COUNT(*) FROM fakt_verifikation WHERE fakt_art='rueckruf' "
-        "AND quelle_stufe='A' AND fakt_id<>?", (NEUER_FAKT_ID,)).fetchone()[0]
+        f"SELECT COUNT(*) FROM fakt_verifikation WHERE fakt_art='rueckruf' "
+        f"AND quelle_stufe='A' AND fakt_id<>? AND fakt_id NOT IN ({_platz})",
+        (NEUER_FAKT_ID, *sorted(_BATCH_A))).fetchone()[0]
+    _batch_a_stufe_a = conn.execute(
+        f"SELECT COUNT(*) FROM fakt_verifikation WHERE fakt_art='rueckruf' "
+        f"AND quelle_stufe='A' AND fakt_id IN ({_platz})",
+        tuple(sorted(_BATCH_A))).fetchone()[0]
 check("E5 12223 haengt an keiner anderen Baureihe", _fremde_12223 == 0)
 # KBA-GESAMTABGLEICH: Quellenstufe A tragen jetzt genau die 15 kuratierten
 # Faelle des Gesamtabgleichs — jeder einzeln manuell gegen den amtlichen Export
 # geprueft. "Unbemerkt" waere alles darueber hinaus.
-check("E6 Quellenstufe A tragen genau die 15 kuratierten Faelle",
+check("E6 Quellenstufe A tragen ausser Batch A genau die 15 kuratierten Faelle",
       _fremde_verif == 14)
+check("E6b jede Batch-A-Zeile traegt Quellenstufe A",
+      _batch_a_stufe_a == len(_BATCH_A))
 
 
 # ══ F) BUGFIX Hochvolt-Erkennung ═════════════════════════════════════════════
@@ -293,20 +314,40 @@ for _r in _alle:
     _neu_treffer = bool(_HV_MUSTER.search(_text))
     if _alt_treffer != _neu_treffer:
         _diff.append((_r["id"], _alt_treffer, _neu_treffer))
-check("F2d DB-weit exakt 29 Aenderungen (nicht mehr, nicht weniger)",
-      len(_diff) == 29)
+# BATCH A hat weitere Zeilen ergaenzt, auf die derselbe Unterschied zutrifft.
+# Die gepruefte Aussage bleibt dieselbe, nur nach Herkunft getrennt: im Bestand
+# VOR Batch A sind es exakt die 29 real geprueften Zeilen, und DB-weit geht
+# keine einzige Aenderung in die versteckende Richtung.
+_diff_alt = [d for d in _diff if d[0] not in _BATCH_A]
+check("F2d im Bestand vor Batch A exakt 29 Aenderungen (nicht mehr, nicht weniger)",
+      len(_diff_alt) == 29)
 check("F2e alle Aenderungen gehen von HV-erkannt zu NICHT-HV-erkannt "
       "(keine Zeile wird durch den Fix neu versteckt)",
-      all(alt and not neu for _id, alt, neu in _diff))
+      all(alt and not neu for _id, alt, neu in _diff_alt))
+# In Batch A gibt es die Gegenrichtung — und zwar zu Recht: die Wortliste des
+# Fixes kennt zusaetzlich "HV-Batterie"/"Traktionsbatterie", die das alte Muster
+# nicht kannte. Betroffen sind ausschliesslich Zeilen, die woertlich von einem
+# Hochvoltspeicher handeln (z.B. KBA 13462, Zellmodule der HV-Batterie des Audi
+# e-tron). Dass die fuer Verbrenner ausgeblendet werden, ist der Zweck des
+# Filters, kein Verlust.
+_neu_versteckt = [d for d in _diff if d[0] in _BATCH_A and not d[1] and d[2]]
+check("F2e2 in Batch A verstecken sich nur echte Hochvolt-Zeilen zusaetzlich",
+      all(re.search(r"hochvolt|hv-batterie|traktionsbatterie|antriebsbatterie",
+                    " ".join(filter(None, [r.get("mangel"), r.get("abhilfe")])),
+                    re.IGNORECASE)
+          for r in _alle for d in _neu_versteckt if r["id"] == d[0]))
 check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
-      sorted(_id for _id, _, _ in _diff) == sorted(_29_IDS))
+      sorted(_id for _id, _, _ in _diff_alt) == sorted(_29_IDS))
 
 
 # ══ G) Bestandsintegritaet ═══════════════════════════════════════════════════
 print("\n--- G) Bestandsintegritaet ---")
 # KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS).
-check("G1 Rueckrufbestand 746 Zeilen (749 minus 3 Dubletten)", _gesamt == 746)
-check("G2 opel-insignia-b hat 6 Zeilen (5 + 1)", len(_insignia) == 6)
+check(f"G1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen (746 + Batch A)",
+      _gesamt == 746 + len(_BATCH_A))
+_insignia_alt = [r for r in _insignia if r["id"] not in _BATCH_A]
+check("G2 opel-insignia-b hat 6 Zeilen aus dem Altbestand (5 + 1 Nachtrag)",
+      len(_insignia_alt) == 6)
 check("G3 keine Dublette: 12223 genau einmal am Insignia B",
       sum(1 for r in _insignia if (r["kba_referenz"] or "") == "12223") == 1)
 _mangel = [r["mangel"].strip() for r in _insignia]

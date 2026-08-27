@@ -193,7 +193,10 @@ check("K2 Baureihe unverändert", _ins_b["br"]["id"] == "opel-insignia-b")
 # ausdrücklich festgehalten, dass der Wegfall genau diesen Rückruf betrifft.
 # NACHTRAG (recall_insignia_012223_v1): wieder 5 — der amtlich belegte Rückruf
 # KBA 12223 (Bauzeitraum 2017-2020) trifft dieses Fahrzeug und kommt hinzu.
-check("K3 Evidence unverändert vorhanden", len(_ins_b["ins"]) == 5)
+# BATCH A: +1 — der amtlich belegte Rückruf KBA 10237 (unzureichende Montage
+# der Tankbänder, Produktion 2020) trifft dieses Fahrzeug ebenfalls.
+check("K3 Evidence unverändert vorhanden (5 + 1 aus Batch A)",
+      len(_ins_b["ins"]) == 6)
 check("K3d der amtliche Bremskraft-Rückruf KBA 12223 ist sichtbar und verified",
       any("Bremskraftausgleich" in f.titel and f.trust == "verified"
           for f in _ins_b["ins"]))

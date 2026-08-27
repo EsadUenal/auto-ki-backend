@@ -22,7 +22,7 @@ sys.path.insert(0, ".")
 
 from app.evidence import build_insights                    # noqa: E402
 from app.kaufaktionen import build_kaufaktionen            # noqa: E402
-from app.empfehlungs_floor import ermittle_floor           # noqa: E402
+from app.empfehlungs_floor import darf_floor_tragen, ermittle_floor  # noqa: E402
 import app.recall_filter as _rf                            # noqa: E402
 # Der Kollisionsindex des KBA-Trust-Gates liest sonst die LIVE-DB: die Referenz
 # "009696" ist dort bei BMW vergeben und wuerde gegen die Testmarke als
@@ -330,8 +330,21 @@ else:
                       if i.kategorie == "schwachstelle"))
         check(f"F {name}: '{verbotenes_kuerzel}' erscheint in keiner Kaufaktion",
               not any(verbotenes_kuerzel in a.titel for a in spez))
+        # BATCH A: seit dem Import amtlicher KBA-Rueckrufe koennen BMW 3er F30
+        # und 5er E60 sehr wohl einen Floor tragen — aber ausschliesslich ueber
+        # VERIFIZIERTE Fakten (Quelle KBA, Stufe A). Die zu sichernde Aussage
+        # ist deshalb nicht mehr "gar kein Floor", sondern die urspruengliche:
+        # kein Floor aus UNVERIFIZIERTEN Daten. Geprueft wird das jetzt direkt
+        # an den belegenden Insights statt indirekt an ihrer Abwesenheit.
+        _floor = ermittle_floor(ins)
+        _traeger = ([i for i in ins if i.id in set(_floor.evidence_ids)]
+                    if _floor else [])
+        if _floor is not None:
+            print(f"       (Floor {_floor.stufe} getragen von "
+                  f"{[(i.kategorie, getattr(i, 'trust', None)) for i in _traeger]})")
         check(f"F {name}: kein Floor aus unverifizierten DB-Daten",
-              ermittle_floor(ins) is None)
+              _floor is None or (bool(_traeger)
+                                 and all(darf_floor_tragen(i) for i in _traeger)))
         check(f"F {name}: der Check liefert trotzdem Pruefpunkte (kein Kahlschlag)",
               len(spez) > 0)
 
