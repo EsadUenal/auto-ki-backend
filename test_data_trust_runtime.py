@@ -264,8 +264,15 @@ check("G6 der Rueckrufinhalt bleibt in beiden Faellen vollstaendig erhalten",
       "Bremskraftunterst" in rr_u.beschreibung and "Bremskraftunterst" in rr_v.beschreibung)
 check("G7 unverifiziert: die FIN-Pruefung wird weiterhin empfohlen",
       any("FIN" in (a.aktion or "") for a in spez_u))
-check("G8 KBA-Format-Gate bleibt aktiv (Applicability unveraendert)",
-      rr_u.applicability == rr_v.applicability == "variant_match")
+# RECALL-PILOT §9: Bis hierher galt "Applicability unabhaengig von der
+# Verifikation" — eine bloss FORMATPLAUSIBLE Nummer hob jeden Rueckruf auf
+# "variant_match". Genau diese Gleichsetzung von Plausibilitaet und Beleg ist
+# aufgehoben. Der Rueckruf bleibt in BEIDEN Faellen vollstaendig sichtbar (G6);
+# nur die Vertrauensstufe haengt jetzt am Beleg.
+check("G8 unverifiziert: die formatplausible Nummer hebt die Stufe NICHT mehr",
+      rr_u.applicability == "series_only")
+check("G9 verifiziert: dieselbe Nummer hebt sehr wohl auf variant_match",
+      rr_v.applicability == "variant_match")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

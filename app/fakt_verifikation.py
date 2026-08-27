@@ -45,6 +45,11 @@ STATUSWERTE
 ``rejected``            Die Quellenlage widerspricht der Aussage. Bleibt
                         `unverified_db`; die Zeile wird hier NICHT geloescht —
                         Datenkorrekturen laufen ueber app/data_migrations.py.
+``unverified``          Geprueft, aber KEIN Beleg gefunden — und ebenso kein
+                        Widerspruch. Verhaelt sich zur Laufzeit wie ein
+                        fehlender Eintrag; haelt nur fest, DASS geprueft wurde
+                        und was dabei durchsucht wurde. Ausdruecklich nicht
+                        `rejected`: "nicht gefunden" ist keine Widerlegung.
 
 QUELLENSTUFEN
 -------------
@@ -62,6 +67,22 @@ log = logging.getLogger(__name__)
 STATUS_VERIFIED = "verified"
 STATUS_PARTIALLY = "partially_verified"
 STATUS_REJECTED = "rejected"
+# RECALL-PILOT: das dokumentierte Ergebnis "geprueft, kein Beleg gefunden".
+# Verhaelt sich zur Laufzeit EXAKT wie ein fehlender Eintrag (kein `verified`,
+# keine Sperre) — `trust_des_fakts` und `ist_gesperrt` vergleichen beide gegen
+# genau einen Statuswert, jeder andere faellt auf den vorsichtigen Pfad. Der
+# Eintrag existiert allein, damit die NEGATIVE Pruefung nachvollziehbar in der
+# Datenbank steht statt nur im Rechercheprotokoll.
+#
+# Warum er nicht `partially_verified` heissen darf: dieser Status bedeutet
+# ausdruecklich "Thema belegt, Zuschnitt zu weit". Ein Fakt ohne jeden Beleg als
+# `partially_verified` zu fuehren, behauptet eine Quellenlage, die es nicht gibt
+# — genau das ist im Verifikations-Pilot an drei Rueckrufen passiert (Quellentext
+# "keine belastbare Quelle gefunden" bei Status `partially_verified`) und wird
+# vom Recall-Pilot korrigiert.
+STATUS_UNVERIFIED = "unverified"
+
+STATUS_WERTE = (STATUS_VERIFIED, STATUS_PARTIALLY, STATUS_REJECTED, STATUS_UNVERIFIED)
 
 QUELLENSTUFEN = ("A", "B", "C")
 

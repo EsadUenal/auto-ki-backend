@@ -202,8 +202,16 @@ def build_insights(
         # vertrauenswuerdig.
         trust_rueckruf = _trust_des_fakts(r, baureihe, "rueckrufe")
         if trust_rueckruf == TRUST_VERIFIED:
+            # RECALL-PILOT (§13): "KBA" darf nur dastehen, wo tatsächlich eine
+            # amtlich bestätigte KBA-Referenz vorliegt. Ein Rückruf kann sehr wohl
+            # belegt sein, ohne dass eine deutsche Aktionsnummer auffindbar ist —
+            # der BMW-Hochvoltspeicher-Rückruf vom Oktober 2020 ist über die
+            # amtliche NHTSA-Datenbank (20V-601) und mehrere Fachmedien belegt,
+            # trägt aber keine KBA-Nummer. Ihn als "KBA-Rückruf" auszuweisen wäre
+            # dieselbe Sorte falscher Amtlichkeit, gegen die das Trust-Gate
+            # überhaupt gebaut wurde.
             quellen_titel = ("KBA-Rückrufdatenbank" if kba_anzeige
-                             else "KBA-Rückruf (Referenz nicht hinterlegt)")
+                             else "Amtlich belegter Rückruf (keine KBA-Referenz hinterlegt)")
         else:
             quellen_titel = ("Rückrufhinweis aus der VIRA-Fahrzeugdatenbank — "
                              "nicht amtlich bestätigt")
@@ -212,8 +220,14 @@ def build_insights(
         # Phase 1B: Varianten-/Antriebs-Zuordnung -> applicability (getrennt von
         # confidence & severity). Ein Hochvolt-/PHEV-Rückruf wird NICHT als direkt
         # zutreffend für einen reinen Diesel markiert.
+        # RECALL-PILOT §9: `recall_filter.referenz_ist_belegt` liest den Trust vom
+        # Rückruf-Dict. `_trust_des_fakts` kennt darüber hinaus den Rückfall auf die
+        # BAUREIHENWEITE `verification` (Alt-Mechanismus, siehe _trust_der_baureihe).
+        # Damit Applicability und Insight-Trust nicht auseinanderlaufen, bekommt die
+        # Applicability-Berechnung genau den Wert, der gleich auch am Insight steht —
+        # statt eine zweite, schwächere Trust-Ermittlung zu benutzen.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
-            r, passt, kba, motor_match, marke=marke)
+            {**r, "_trust": trust_rueckruf}, passt, kba, motor_match, marke=marke)
         # §8/§27: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
         # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
         # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
@@ -235,7 +249,13 @@ def build_insights(
         # Rückrufdaten dieser Baureihe nicht verified sind, heißt es "Rückrufhinweis"
         # — die Aussage bleibt inhaltlich vollständig erhalten, sie gibt sich nur
         # nicht mehr als amtlich bestätigt aus.
-        praefix = "KBA-Rückruf" if trust_rueckruf == TRUST_VERIFIED else "Rückrufhinweis"
+        # §13/§6: drei Stufen statt zwei — "KBA-Rückruf" nur mit amtlicher Nummer,
+        # "Rückruf" für einen belegten Rückruf ohne KBA-Referenz, "Rückrufhinweis"
+        # für alles Ungeprüfte.
+        if trust_rueckruf == TRUST_VERIFIED:
+            praefix = "KBA-Rückruf" if kba_anzeige else "Rückruf"
+        else:
+            praefix = "Rückrufhinweis"
         if applicability in ("confirmed_by_vin", "variant_match"):
             titel = f"{praefix}: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
         else:

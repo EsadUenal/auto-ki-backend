@@ -97,9 +97,23 @@ def motor():
     }
 
 
-def rueckruf(kba, mangel="Testmangel", baujahre="Alle", abhilfe="Prüfen/Tausch"):
+def rueckruf(kba, mangel="Testmangel", baujahre="Alle", abhilfe="Prüfen/Tausch",
+             trust="verified"):
+    """Ein Rückruf-Dict, wie `app/database.py::get_baureihe` es liefert.
+
+    RECALL-PILOT: `_trust` gehört zur Produktions-Form dieses Dicts (gesetzt von
+    `app/fakt_verifikation.py::annotiere`) und ist hier aus demselben Grund auf
+    "verified" vorbelegt wie `verified=True` bei `baureihe()`: dieses Modul prüft
+    das KBA-REFERENZ-Gate ("welche Nummer darf angezeigt werden und die Stufe
+    heben"), nicht das Verifikations-Gate ("ist der Rückrufinhalt belegt").
+    Seit §9 des Recall-Piloten ist eine formatplausible Nummer allein nicht mehr
+    genug — ohne belegten Fakt bliebe jeder Rückruf auf "series_only" und das
+    Format-/Kollisionsgate wäre gar nicht mehr beobachtbar. Der unverifizierte
+    Produktions-Normalfall wird in test_recall_pilot.py Abschnitt E geprüft.
+    """
     return {"id": "rk-1", "datum": "2022-01", "betroffene_baujahre": baujahre,
-            "mangel": mangel, "abhilfe": abhilfe, "kba_referenz": kba}
+            "mangel": mangel, "abhilfe": abhilfe, "kba_referenz": kba,
+            "_trust": trust}
 
 
 def index_mit(**marken_je_ref):
@@ -177,8 +191,8 @@ _ins_c = build_insights(baureihe([rueckruf("1234567", baujahre="Alle")]), motor(
 _rr_c = [i for i in _ins_c if i.kategorie == "rueckruf"][0]
 check("C3 Platzhalter hebt NICHT auf variant_match", _rr_c.applicability == "series_only")
 check("C4 Platzhalter erscheint nicht als Evidence-Referenz", _rr_c.quellen[0].ref is None)
-check("C5 Titel signalisiert 'nicht hinterlegt' statt der Platzhalterzahl",
-      "nicht hinterlegt" in _rr_c.quellen[0].titel.lower())
+check("C5 Titel signalisiert die fehlende Referenz statt der Platzhalterzahl",
+      "keine kba-referenz hinterlegt" in _rr_c.quellen[0].titel.lower())
 
 # Realistische, aber knapp zu lange / zu kurze Werte
 check("C6 zu lang (>12 Zeichen) abgelehnt", not kba_referenz_format_plausibel("123456789012345"))
@@ -291,7 +305,8 @@ print("\n=== I) Keine falsche Nummer im Evidence-Output ===")
 check("I1 EvidenceQuelle.ref ist None bei kollidierender Referenz",
       [i for i in _ins_h if i.kategorie == "rueckruf"][0].quellen[0].ref is None)
 check("I2 EvidenceQuelle-Titel kennzeichnet die fehlende Referenz",
-      "nicht hinterlegt" in [i for i in _ins_h if i.kategorie == "rueckruf"][0].quellen[0].titel.lower())
+      "keine kba-referenz hinterlegt"
+      in [i for i in _ins_h if i.kategorie == "rueckruf"][0].quellen[0].titel.lower())
 _dbctx_h = build_db_context(_br_h, motor(), 2020)
 check("I3 die Nummer '011400' erscheint NICHT im DB-Kontext-Prompt",
       "011400" not in _dbctx_h)

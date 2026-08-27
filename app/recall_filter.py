@@ -192,6 +192,45 @@ def kba_referenz_anzeige(kba: str | None, marke: str | None = None) -> str | Non
     return kba if kba and kba_referenz_vertrauenswuerdig(kba, marke) else None
 
 
+def referenz_ist_belegt(r: dict | None) -> bool:
+    """Ist die `kba_referenz` dieses Rückrufs INHALTLICH belegt — nicht nur
+    formatplausibel?
+
+    RECALL-VERIFICATION-PILOT (§9 des Auftrags: "Format plausibel != inhaltlich
+    verified"). Die drei Funktionen `kba_referenz_format_plausibel` /
+    `kba_referenz_kollidiert_markenuebergreifend` / `kba_referenz_vertrauenswuerdig`
+    prüfen SCHREIBWEISE und Eindeutigkeit einer Nummer. Beides sind
+    Plausibilitätsaussagen: eine frei erfundene, aber sechsstellige und nur einmal
+    vergebene Nummer besteht sie mühelos. Der DATA-TRUTH-AUDIT hat genau das
+    gemessen — kein einziges Referenzformat des Bestands entsprach echten
+    KBA-Nummern, und trotzdem passierten 567 Werte die Formatprüfung.
+
+    Belegt ist eine Referenz erst, wenn der Fakt selbst gegen eine amtliche Quelle
+    geprüft und mit `status='verified'` in `fakt_verifikation` hinterlegt wurde.
+    Diese Information hängt bereits als `_trust` am Rückruf-Dict (gesetzt von
+    `app/fakt_verifikation.py::annotiere` über `app/database.py::get_baureihe`) —
+    es wird hier weder eine neue Quelle gelesen noch eine neue Regel erfunden.
+
+    WIRKUNG: nur ein `verified` Rückruf kann die stärkste Ohne-VIN-Stufe
+    "variant_match" erreichen. Ein ungeprüfter bleibt auf "series_only" ("Für Teile
+    der Baureihe gemeldet — per FIN prüfen"), bleibt aber vollständig sichtbar. Das
+    macht die Floor-Vorbedingung aus `app/empfehlungs_floor.py` strukturell wahr:
+    dort verlangt `darf_floor_tragen` ohnehin `trust == "verified"` — beide Bedingungen
+    fallen jetzt zusammen, statt unabhängig voneinander gelten zu müssen.
+
+    ZWEITE, GENAUSO WICHTIGE WIRKUNG: das Aufräumen unbelegter Referenzen wird
+    nebenwirkungsfrei. Der Kollisionsindex ist bestandsabhängig — löscht man eine
+    erfundene Nummer bei Fahrzeug A, kann dieselbe Nummer bei Fahrzeug B dadurch
+    "kollisionsfrei" und damit vertrauenswürdig werden. Ohne dieses Gate hätte die
+    Bereinigung der Pilot-Rückrufe zwei unbeteiligte Baureihen (BMW 5er G30,
+    Mercedes S-Klasse W222) still auf "variant_match"/Confidence "hoch" gehoben.
+
+    Fehlt `_trust` ganz (Aufrufer, die Rückruf-Dicts selbst bauen), gilt der Fakt
+    als ungeprüft — fail-safe in die vorsichtige Richtung.
+    """
+    return ((r or {}).get("_trust") or "").strip().lower() == "verified"
+
+
 def _jahre(text: str | None) -> list[int]:
     return [int(y) for y in _JAHR.findall(text or "")]
 
@@ -304,7 +343,8 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
     fahrzeug_kraftstoff = _norm_kraftstoff((motor_match or {}).get("kraftstoff"))
     # KBA-Trust-Gate: eine unplausible/kollidierende Referenz zählt wie keine.
-    kba_ok = bool(kba_referenz_anzeige(kba, marke))
+    # RECALL-PILOT (§9): und eine bloß FORMATPLAUSIBLE zählt ebenfalls wie keine.
+    kba_ok = bool(kba_referenz_anzeige(kba, marke)) and referenz_ist_belegt(r)
 
     # Der Rückruf grenzt sich auf einen bestimmten Antrieb ein (Klammer-Qualifier
     # ODER klarer Hochvolt-/Hybrid-Bezug).

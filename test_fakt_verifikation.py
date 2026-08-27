@@ -185,10 +185,19 @@ check("C6 verifizierter Rueckruf traegt trust=verified",
       bool(_rr_v) and _rr_v[0].trust == "verified")
 check("C7 unverifizierter Rueckruf derselben Baureihe bleibt unverified_db",
       bool(_rr_u) and _rr_u[0].trust == "unverified_db")
-check("C8 nur der verifizierte Rueckruf nennt sich KBA-Rueckruf",
-      bool(_rr_v) and bool(_rr_u)
-      and _rr_v[0].titel.startswith("KBA-Rückruf")
-      and _rr_u[0].titel.startswith("Rückrufhinweis"))
+# RECALL-PILOT §13: drei Stufen statt zwei. "KBA-Rueckruf" setzt eine amtlich
+# bestaetigte KBA-Nummer voraus; RR_A traegt bewusst keine (kba_referenz=None),
+# ist aber verifiziert -> "Rueckruf". Ungeprueft bleibt "Rueckrufhinweis".
+check("C8 verifizierter Rueckruf ohne KBA-Nummer heisst 'Rueckruf', "
+      "nicht 'KBA-Rueckruf' und nicht 'Rueckrufhinweis'",
+      bool(_rr_v) and _rr_v[0].titel.startswith("Rückruf")
+      and not _rr_v[0].titel.startswith("KBA-Rückruf")
+      and not _rr_v[0].titel.startswith("Rückrufhinweis"))
+check("C9 unverifizierter Rueckruf derselben Baureihe heisst 'Rueckrufhinweis'",
+      bool(_rr_u) and _rr_u[0].titel.startswith("Rückrufhinweis"))
+check("C10 der verifizierte Rueckruf nennt seine fehlende KBA-Referenz offen",
+      bool(_rr_v) and any("keine KBA-Referenz" in (q.titel or "")
+                          for q in _rr_v[0].quellen))
 
 # -- Wartung
 _ins_wa = build_insights(baureihe([], []),
