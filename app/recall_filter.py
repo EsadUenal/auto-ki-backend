@@ -258,8 +258,41 @@ def _baujahr_passt(betroffene: str | None, baujahr: int | None) -> bool | None:
 
 
 # Signalwörter, die einen Rückruf auf Hochvolt-/Hybrid-/Elektro-Antrieb eingrenzen.
-_HV_WORTE = ("hochvolt", "hochspannung", "plug-in", "plug in", "plugin", "phev",
-             "hybrid", "elektro", "elektrisch")
+#
+# BUGFIX (Insignia-Nachtrag): bis hierher wurde per reinem Substring-Vergleich
+# gesucht (`any(w in text for w in _HV_WORTE)`). Damit traf "elektro" auch in
+# "elektronisch", "Elektronik" und "elektromechanisch" — Wörter, die ELEKTRONIK
+# beschreiben, nicht einen Hochvolt-ANTRIEB. Folge: jeder Rückruf, der ein
+# elektronisches Steuergerät nennt, galt als Hochvolt-/PHEV-Rückruf und wurde
+# für jedes Verbrennerfahrzeug als "incompatible" VOLLSTÄNDIG ausgeblendet —
+# aus Findings, Kaufaktionen und jedem LLM-Prompt.
+#
+# Gemessen an der Datenbank betraf das 8 Rückrufe, darunter mehrere
+# sicherheitsrelevante: Ausfall der Lenkunterstützung (Audi Q7, Audi RS 7, VW
+# Tiguan, Mercedes A-Klasse), fehlerhafte Programmierung der elektronischen
+# Feststellbremse (Toyota Corolla) und des elektronischen Stabilitätsprogramms
+# (Toyota Camry, Toyota Hilux). Keiner davon war je für einen Verbrenner
+# sichtbar. Aufgefallen ist es, weil der amtlich belegte Insignia-Rückruf
+# KBA 12223 ("... weil das elektronische Bremssteuermodul nicht korrekt
+# konfiguriert ist") aus demselben Grund unsichtbar blieb.
+#
+# Die Erkennung läuft jetzt über ein Muster mit Wortanfangs-Grenze und einem
+# ausdrücklichen Ausschluss für "elektronisch*"/"Elektronik*"/
+# "elektromechanisch*". Alles andere bleibt unverändert: "Hochvoltbatterie",
+# "Elektromotor", "Plug-in-Hybrid" usw. treffen weiterhin.
+#
+# BEWUSST NICHT MIT BEHOBEN: "elektrisch" ist zusätzlich semantisch zu breit —
+# eine "elektrische Kraftstoffpumpe" oder eine "elektrische Servolenkung" ist
+# 12-Volt-Technik in einem ganz gewöhnlichen Verbrenner, kein Hochvoltsystem.
+# Das betrifft weitere 29 Rückrufe. Diese Änderung wäre eine BEDEUTUNGSfrage,
+# keine Fehlerkorrektur, und gehört in eine eigene Prüfung — siehe Bericht.
+_HV_MUSTER = re.compile(
+    r"(?<![a-zäöüß])(?:"
+    r"hochvolt|hochspannung|plug-?\s?in|plugin|phev|hybrid|"
+    r"elektro(?!nisch|nik|mechanisch)|elektrisch"
+    r")",
+    re.IGNORECASE,
+)
 
 
 # Normierung des Kraftstoffs (Motorvariante ODER Rückruf-Freitext-Qualifier).
@@ -339,7 +372,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     "series_only" erhalten.
     """
     text = " ".join(filter(None, [r.get("mangel"), r.get("abhilfe"), r.get("betroffene_baujahre")]))
-    ist_hv_rueckruf = any(w in text.lower() for w in _HV_WORTE)
+    ist_hv_rueckruf = bool(_HV_MUSTER.search(text))
     qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
     fahrzeug_kraftstoff = _norm_kraftstoff((motor_match or {}).get("kraftstoff"))
     # KBA-Trust-Gate: eine unplausible/kollidierende Referenz zählt wie keine.

@@ -117,7 +117,10 @@ with get_conn() as conn:
         "FROM fakt_verifikation WHERE fakt_art='rueckruf'")}
     _gesamt_rueckrufe = conn.execute("SELECT COUNT(*) FROM rueckruf").fetchone()[0]
 
-check("B1 14 Rueckrufzeilen an den vier Pilotfahrzeugen", len(_pilot_rows) == 14)
+# NACHTRAG (recall_insignia_012223_v1): +1 Zeile am Insignia B — der amtlich
+# belegte Rueckruf KBA 12223. Der Pilotbestand selbst ist unveraendert.
+check("B1 15 Rueckrufzeilen an den vier Pilotfahrzeugen (14 Pilot + 1 Nachtrag)",
+      len(_pilot_rows) == 15)
 check("B2 jede Pilotzeile hat eine Verifikation",
       all(r["id"] in _verifs for r in _pilot_rows))
 check("B3 alle Statuswerte sind bekannt",
@@ -131,8 +134,8 @@ for r in _pilot_rows:
     _verteilung[_verifs[r["id"]]["status"]] = _verteilung.get(
         _verifs[r["id"]]["status"], 0) + 1
 print(f"       Verteilung: {_verteilung}")
-check("B5 1 verified, 3 partially_verified, 10 unverified, 0 rejected",
-      _verteilung == {"verified": 1, "partially_verified": 3, "unverified": 10})
+check("B5 2 verified, 3 partially_verified, 10 unverified, 0 rejected",
+      _verteilung == {"verified": 2, "partially_verified": 3, "unverified": 10})
 check("B6 jede Verifikation nennt ihre durchsuchten Quellen",
       all(len(_verifs[r["id"]]["quelle"] or "") >= 20 for r in _pilot_rows))
 check("B7 jede Verifikation traegt eine nachvollziehbare Notiz",
@@ -162,8 +165,14 @@ print("\n--- D) §9 KBA-Referenzen ---")
 # Stufe-A-Quelle dafuer auffinden liess — siehe Abschnitt A7/G. Damit traegt
 # nach dem Safety-Check KEINE der 14 Pilotzeilen mehr eine KBA-Referenz.
 _mit_ref = [r for r in _pilot_rows if (r["kba_referenz"] or "").strip()]
-check("D1 keine einzige Pilotzeile traegt noch eine KBA-Referenz", len(_mit_ref) == 0)
-check("D2 speziell 011422 ist NICHT mehr gespeichert (Fehlzitation korrigiert)",
+# NACHTRAG: genau EINE Zeile traegt wieder eine KBA-Referenz — die amtlich aus
+# der KBA-Rueckrufdatenbank selbst gelesene 12223 des Nachtrags. Die 011422 des
+# Piloten bleibt entfernt (nur Sekundaerquellen).
+check("D1 genau eine Pilotzeile traegt eine KBA-Referenz (der amtliche Nachtrag)",
+      len(_mit_ref) == 1)
+check("D1b und zwar 12223 am Nachtrags-Rueckruf",
+      len(_mit_ref) == 1 and _mit_ref[0]["kba_referenz"] == "12223")
+check("D2 speziell 011422 ist NICHT gespeichert (Fehlzitation bleibt korrigiert)",
       not any((r["kba_referenz"] or "") == "011422" for r in _pilot_rows))
 check("D3 die entfernten Nummern sind wirklich weg (009696/010000/9600/8789/...)",
       not any((r["kba_referenz"] or "") in
@@ -296,11 +305,16 @@ check("G9 partially_verified traegt keinen Floor "
 check("G9b und zwar konkret der zurueckgestufte #546",
       any("Abschalteinrichtung" in i.titel and i.trust == "unverified_db"
           for i in _rueckrufe(_ins_pos)))
+# NACHTRAG: der Insignia-Testwagen traegt jetzt als EINZIGES der vier
+# Pilotfahrzeuge einen Floor — ausgeloest vom amtlich belegten Rueckruf
+# KBA 12223. Die drei anderen bleiben unveraendert ohne Floor.
+_FLOOR_ERWARTET = {("Opel", "2.0 Diesel"): True}
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _, _, _, _i = _check(_m, _mo, _g, _h, _bj, _k)
     _rr_floor = ermittle_floor(_rueckrufe(_i))
-    check(f"G10 {_m} {_h} {_bj}: kein Rueckruf-Floor (kein verified Variantentreffer)",
-          _rr_floor is None)
+    _soll = _FLOOR_ERWARTET.get((_m, _h), False)
+    check(f"G10 {_m} {_h} {_bj}: Rueckruf-Floor {'greift' if _soll else 'greift NICHT'}",
+          (_rr_floor is not None) == _soll)
 
 
 # ══ H) §13 — Nutzerwortlaut ══════════════════════════════════════════════════
@@ -347,7 +361,7 @@ print("\n--- I) §14 die vier Kaufchecks ---")
 _ERWARTET = {
     # (marke, hint): (Anzahl sichtbarer Rueckruf-Insights, Floor erwartet)
     ("BMW", "320d"):           2,
-    ("Opel", "2.0 Diesel"):    0,
+    ("Opel", "2.0 Diesel"):    1,   # NACHTRAG: der amtliche Rueckruf KBA 12223
     ("Audi", "2.0 FSI 150 PS"): 1,
     ("Mercedes-Benz", "C220d"): 1,
 }
@@ -397,10 +411,10 @@ check("J4 keine neue Applicability-Kategorie erfunden",
 
 # ══ K) §8 — keine Dubletten, keine Verluste ══════════════════════════════════
 print("\n--- K) §8 Bestandsintegritaet ---")
-check("K1 Rueckrufbestand insgesamt unveraendert (748 Zeilen)",
-      _gesamt_rueckrufe == 748)
-check("K2 keine Dublette an den Pilotfahrzeugen (14 Zeilen, 14 IDs)",
-      len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 14)
+check("K1 Rueckrufbestand 749 Zeilen (748 + 1 Nachtrag)",
+      _gesamt_rueckrufe == 749)
+check("K2 keine Dublette an den Pilotfahrzeugen (15 Zeilen, 15 IDs)",
+      len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 15)
 _paare = [(r["baureihe_id"], (r["mangel"] or "").strip()) for r in _pilot_rows]
 check("K3 kein doppelter Mangeltext je Baureihe", len(_paare) == len(set(_paare)))
 check("K4 keine Verifikation ohne zugehoerigen Fakt",

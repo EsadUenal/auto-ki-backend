@@ -1070,6 +1070,105 @@ MARKER_RECALL_PILOT = "recall_pilot_v1"
 SCHRITTE_RECALL_PILOT = (schritt_recall_korrekturen, schritt_recall_verifikationen)
 
 
+# ── NACHTRAG: fehlender, amtlich belegter Insignia-B-Rueckruf (KBA 12223) ────
+#
+# Eigener Marker und eigene Funktion: `recall_pilot_v1` ist abgeschlossen und
+# auf master gemergt und wird nicht nachtraeglich veraendert.
+
+def schritt_insignia_012223(conn, apply_):
+    """Ergaenzt EINE fehlende, amtlich belegte Rueckrufzeile samt Verifikation.
+
+    Idempotenz laeuft ueber den natuerlichen Schluessel (baureihe_id +
+    kba_referenz), NICHT ueber den Migrationsmarker: bei einer frischen
+    Installation legt bereits der Seed die Zeile an (mit derselben expliziten
+    ID), und die Migration darf sie dann nicht ein zweites Mal einfuegen.
+
+    Ist die vorgesehene ID von einem FREMDEN Fakt belegt, wird nichts
+    geschrieben. Das waere ein Zustand, den dieser Schritt nicht kennt — dann
+    ist Nicht-Schreiben die einzig sichere Antwort.
+    """
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.recall_insignia_012223_daten import (
+        GEPRUEFT_AM, NEUER_RUECKRUF, NEUE_VERIFIKATION,
+    )
+
+    fakt_id = NEUER_RUECKRUF["id"]
+    baureihe_id = NEUER_RUECKRUF["baureihe_id"]
+    kba = NEUER_RUECKRUF["kba_referenz"]
+
+    if conn.execute("select 1 from baureihe where id=?", (baureihe_id,)).fetchone() is None:
+        log(f"  [I] Baureihe {baureihe_id} fehlt — Nachtrag uebersprungen")
+        return
+
+    vorhanden = conn.execute(
+        "select id from rueckruf where baureihe_id=? and kba_referenz=?",
+        (baureihe_id, kba)).fetchone()
+    belegt_fremd = conn.execute(
+        "select baureihe_id, kba_referenz from rueckruf where id=?", (fakt_id,)).fetchone()
+
+    if vorhanden:
+        if vorhanden[0] != fakt_id:
+            log(f"  [I] Rueckruf KBA {kba} existiert bereits unter ID {vorhanden[0]} "
+                f"(erwartet {fakt_id}) — keine Dublette angelegt")
+        else:
+            log(f"  [I] Rueckruf KBA {kba} bereits vorhanden (#{fakt_id}) — unveraendert")
+    elif belegt_fremd is not None:
+        log(f"  [I] ID {fakt_id} ist von einem anderen Fakt belegt "
+            f"({belegt_fremd[0]}, ref={belegt_fremd[1]!r}) — NICHTS geschrieben")
+        return
+    else:
+        if apply_:
+            conn.execute(
+                "insert into rueckruf (id, baureihe_id, datum, betroffene_baujahre, "
+                "mangel, abhilfe, kba_referenz) values (?,?,?,?,?,?,?)",
+                (fakt_id, baureihe_id, NEUER_RUECKRUF["datum"],
+                 NEUER_RUECKRUF["betroffene_baujahre"], NEUER_RUECKRUF["mangel"],
+                 NEUER_RUECKRUF["abhilfe"], kba))
+        log(f"  [I] Rueckruf #{fakt_id} ({baureihe_id}, KBA {kba}) neu angelegt: "
+            f"{NEUER_RUECKRUF['mangel'][:60]}")
+
+    # Verifikation NACH dem Einfuegen — der Fingerprint muss ueber den
+    # tatsaechlich gespeicherten Inhalt gehen, sonst waere er sofort stale.
+    if "fakt_verifikation" not in {r[0] for r in conn.execute(
+            "select name from sqlite_master where type='table'")}:
+        log("  [I] fakt_verifikation-Tabelle fehlt — Verifikation uebersprungen")
+        return
+
+    fakt_art, v_fakt_id, status, quelle, stufe, url, referenz, notiz = NEUE_VERIFIKATION
+    tabelle, idspalte, _spalten = FAKT_ARTEN[fakt_art]
+    zeile = conn.execute(
+        f'select * from "{tabelle}" where {idspalte}=?', (v_fakt_id,)).fetchone()
+    if zeile is None:
+        log(f"  [I] {fakt_art} #{v_fakt_id} nicht vorhanden — Verifikation uebersprungen")
+        return
+    spalten = [d[0] for d in conn.execute(f'select * from "{tabelle}" limit 1').description]
+    fp = fingerprint(fakt_art, dict(zip(spalten, zeile)))
+    bestand = conn.execute(
+        "select id from fakt_verifikation where fakt_art=? and fakt_id=?",
+        (fakt_art, v_fakt_id)).fetchone()
+    if apply_:
+        if bestand:
+            conn.execute(
+                "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                "where fakt_art=? and fakt_id=?",
+                (fp, status, quelle, stufe, url, referenz, GEPRUEFT_AM, notiz,
+                 fakt_art, v_fakt_id))
+        else:
+            conn.execute(
+                "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, status, "
+                "quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                "values (?,?,?,?,?,?,?,?,?,?)",
+                (fakt_art, v_fakt_id, fp, status, quelle, stufe, url, referenz,
+                 GEPRUEFT_AM, notiz))
+    log(f"  [I] Verifikation fuer {fakt_art} #{v_fakt_id}: status={status}, "
+        f"Stufe={stufe}, Referenz={referenz}")
+
+
+MARKER_INSIGNIA_012223 = "recall_insignia_012223_v1"
+SCHRITTE_INSIGNIA_012223 = (schritt_insignia_012223,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -1099,6 +1198,8 @@ MIGRATIONEN = (
     # Rueckruf-Eintraegen (Fehlzitation bzw. Status `partially_verified` mit dem
     # Quellentext "keine belastbare Quelle gefunden") auf `unverified`.
     (MARKER_RECALL_PILOT, SCHRITTE_RECALL_PILOT),
+    # Nachtrag: EIN fehlender, amtlich belegter Insignia-B-Rueckruf (KBA 12223).
+    (MARKER_INSIGNIA_012223, SCHRITTE_INSIGNIA_012223),
 )
 
 

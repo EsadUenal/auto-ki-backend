@@ -191,7 +191,12 @@ check("K2 Baureihe unverändert", _ins_b["br"]["id"] == "opel-insignia-b")
 # ist er nicht einschlägig und fällt korrekt heraus. Der Zweck dieser Prüfung
 # (Identität stimmt, Evidence entsteht) bleibt unberührt; zusätzlich wird jetzt
 # ausdrücklich festgehalten, dass der Wegfall genau diesen Rückruf betrifft.
-check("K3 Evidence unverändert vorhanden", len(_ins_b["ins"]) == 4)
+# NACHTRAG (recall_insignia_012223_v1): wieder 5 — der amtlich belegte Rückruf
+# KBA 12223 (Bauzeitraum 2017-2020) trifft dieses Fahrzeug und kommt hinzu.
+check("K3 Evidence unverändert vorhanden", len(_ins_b["ins"]) == 5)
+check("K3d der amtliche Bremskraft-Rückruf KBA 12223 ist sichtbar und verified",
+      any("Bremskraftausgleich" in f.titel and f.trust == "verified"
+          for f in _ins_b["ins"]))
 check("K3b der amtliche NOx-Rückruf gilt für Baujahr 2020 korrekt NICHT mehr",
       not any("Abschalteinrichtung" in f.titel for f in _ins_b["ins"]))
 check("K3c die Baureihen-Schwachstellen sind vollständig erhalten",
