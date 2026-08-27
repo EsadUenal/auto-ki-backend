@@ -94,6 +94,22 @@ _SEQUENZ_MIN_LAENGE = 5
 _TRENNER = re.compile(r"[\s-]+")
 _ALNUM_MUSTER = re.compile(r"[0-9]?[A-Za-z][0-9]{5,7}")
 
+# AMTLICHE Schreibweise mit angehaengtem Kennbuchstaben ("14004R", "16905R").
+#
+# BATCH-A-BEFUND: der KBA-Gesamtexport vom 27.08.2026 (7.816 Datensaetze) kennt
+# genau drei Referenzformate — 4.702 vierstellig, 1.944 fuenfstellig und 1.170
+# fuenfstellig mit angehaengtem "R" (15,0 %). Die obige, aus dem ERFUNDENEN
+# VIRA-Altbestand hergeleitete Regel verlangt den Buchstaben VORNE
+# (Mercedes-Schreibweise "8A800000") und hat deshalb jede einzelne dieser 1.170
+# echten amtlichen Nummern als unplausibel verworfen. Wirkung war zwar in die
+# sichere Richtung (Rueckfall auf "series_only", Nummer wird nicht angezeigt),
+# aber inhaltlich falsch: eine amtliche Referenz galt als Platzhalter.
+#
+# Die Ergaenzung ist bewusst eng — Ziffernkern plus GENAU EIN Buchstabe am Ende;
+# der Ziffernkern durchlaeuft dieselbe Sequenzpruefung wie die reine
+# Ziffernform, damit "123456R" weiterhin als Testmuster faellt.
+_AMTLICH_SUFFIX_MUSTER = re.compile(r"([0-9]{3,8})[A-Za-z]")
+
 
 def _ist_sequentiell(ziffern: str) -> bool:
     """Erkennt Platzhalter-/Testwerte wie '1234567' oder '9876543': jede Ziffer
@@ -111,8 +127,9 @@ def kba_referenz_format_plausibel(kba: str | None) -> bool:
 
     Lehnt ab: leer, zu lang (Freitext/Hex-Platzhalter), zu kurz, und erkennbar
     sequenzielle Ziffernfolgen. Akzeptiert sowohl die reine Ziffernform als auch
-    die beobachteten Varianten mit Leerzeichen/Bindestrich-Trennern und die
-    einbuchstabige alphanumerische Form.
+    die beobachteten Varianten mit Leerzeichen/Bindestrich-Trennern, die
+    einbuchstabige alphanumerische Form und die amtliche Form mit angehaengtem
+    Kennbuchstaben ("14004R").
     """
     kba = (kba or "").strip()
     if not kba or len(kba) > _MAX_REFERENZ_LAENGE:
@@ -120,7 +137,29 @@ def kba_referenz_format_plausibel(kba: str | None) -> bool:
     kern = _TRENNER.sub("", kba)
     if kern.isdigit():
         return len(kern) >= _MIN_REFERENZ_LAENGE and not _ist_sequentiell(kern)
+    suffix = _AMTLICH_SUFFIX_MUSTER.fullmatch(kern)
+    if suffix:
+        return not _ist_sequentiell(suffix.group(1))
     return bool(_ALNUM_MUSTER.fullmatch(kern))
+
+
+def _hersteller(marke: str | None) -> str:
+    """Marke auf den HERSTELLER normalisiert ("Mercedes-AMG" -> "MERCEDES-BENZ").
+
+    BATCH-A-BEFUND: die Kollisionsprüfung verglich bisher die rohe
+    VIRA-Markenzeichenkette. VIRA führt den AMG GT unter der Marke
+    "Mercedes-AMG", die E-Klasse unter "Mercedes-Benz" — beim KBA stehen beide
+    unter MERCEDES-BENZ. Eine einzige amtliche Aktion über beide Modelle
+    (z.B. KBA 10715, 12026) sah dadurch aus wie dieselbe Nummer bei zwei
+    Herstellern, galt als Kollision, und die korrekte amtliche Referenz wurde
+    ausgeblendet — die Zeile fiel auf "series_only" zurück. Die Zuordnung
+    Untermarke -> Hersteller steht bereits in
+    `app.kba_reconciliation.MARKE_MAP`; sie wird hier benutzt statt neu
+    erfunden. Echte markenübergreifende Kollisionen (BMW gegen Renault) erkennt
+    die Prüfung unverändert.
+    """
+    from app.kba_reconciliation import kba_marke
+    return kba_marke(marke or "")
 
 
 def _referenz_marken_index() -> dict[str, set[str]]:
@@ -142,7 +181,7 @@ def _referenz_marken_index() -> dict[str, set[str]]:
     index: dict[str, set[str]] = {}
     for zeile in zeilen:
         ref = (zeile.get("kba_referenz") or "").strip().upper()
-        marke = (zeile.get("marke") or "").strip()
+        marke = _hersteller(zeile.get("marke"))
         if ref and marke:
             index.setdefault(ref, set()).add(marke)
     return index
@@ -162,7 +201,7 @@ def kba_referenz_kollidiert_markenuebergreifend(kba: str, marke: str | None) -> 
     marken = _referenz_marken_index().get(kba.strip().upper())
     if not marken:
         return False
-    return bool(marken - {marke.strip()})
+    return bool(marken - {_hersteller(marke)})
 
 
 def kba_referenz_vertrauenswuerdig(kba: str | None, marke: str | None = None) -> bool:

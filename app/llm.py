@@ -256,7 +256,11 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
             lines.append("\n### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
             for r in erlaubte_rueckrufe:
                 ref = r.get("kba_referenz_anzeige")
-                lines.append(f"  {r['datum']}: {r['text']}" + (f" (Ref: {ref})" if ref else ""))
+                # Ein fehlendes Datum darf nicht als "None:" im Prompt landen —
+                # Batch A laesst es bewusst leer, wo der amtliche Datensatz nur
+                # den Sammelstempel des Erstbefuellungslaufs traegt.
+                praefix = f"  {r['datum']}: " if r.get("datum") else "  "
+                lines.append(praefix + r["text"] + (f" (Ref: {ref})" if ref else ""))
 
         parts.append("\n".join(lines))
 

@@ -551,8 +551,11 @@ def _rebuild_chroma_from_sqlite() -> dict:
         for r in conn.execute(
             "SELECT * FROM rueckruf WHERE baureihe_id=?", (bid,)
         ).fetchall():
+            # Fehlendes Datum bleibt weg statt als "None" im Vektortext zu landen
+            # (Batch A: amtlicher Sammelstempel wird nicht uebernommen).
             _tadd_r(
-                f"Rückruf {r['datum']}: {r['mangel']} "
+                (f"Rückruf {r['datum']}: " if r["datum"] else "Rückruf: ")
+                + f"{r['mangel']} "
                 f"(betroffen: {r['betroffene_baujahre']}, Abhilfe: {r['abhilfe']})",
                 "rueckruf",
             )
