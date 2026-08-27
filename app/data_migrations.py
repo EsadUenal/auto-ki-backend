@@ -1169,6 +1169,168 @@ MARKER_INSIGNIA_012223 = "recall_insignia_012223_v1"
 SCHRITTE_INSIGNIA_012223 = (schritt_insignia_012223,)
 
 
+# -- KBA-GESAMTABGLEICH ------------------------------------------------------
+#
+# Drei Schritte in fester Reihenfolge:
+#   1. Dubletten entfernen  - bevor irgendetwas anderes IDs anfasst
+#   2. Korrekturen + amtliche Referenzen der 15 kuratierten Faelle
+#   3. ALLE uebrigen Referenzen entfernen und die Verifikationen schreiben
+# Die Verifikationen entstehen zuletzt, damit die Fingerprints ueber den
+# KORRIGIERTEN Inhalt gehen - sonst waeren sie sofort stale.
+
+def schritt_kba_dubletten(conn, apply_):
+    """Entfernt wortgleiche Rueckruf-Dubletten derselben Baureihe."""
+    from app.kba_abgleich_daten import DUBLETTEN
+
+    entfernt = uebersprungen = 0
+    for weg, kanon, baureihe_id, _begr in DUBLETTEN:
+        a = conn.execute(
+            "select mangel, abhilfe, baureihe_id from rueckruf where id=?",
+            (weg,)).fetchone()
+        b = conn.execute(
+            "select mangel, abhilfe, baureihe_id from rueckruf where id=?",
+            (kanon,)).fetchone()
+        if a is None:
+            uebersprungen += 1
+            log(f"  [K] Dublette #{weg} bereits entfernt")
+            continue
+        if b is None:
+            uebersprungen += 1
+            log(f"  [K] Kanon #{kanon} fehlt - Dublette #{weg} NICHT entfernt")
+            continue
+        if tuple(a)[:2] != tuple(b)[:2] or a[2] != baureihe_id:
+            uebersprungen += 1
+            log(f"  [K] #{weg}/#{kanon} nicht mehr wortgleich - NICHT entfernt")
+            continue
+        offen = conn.execute(
+            "select count(*) from fakt_verifikation where fakt_art='rueckruf' "
+            "and fakt_id=?", (weg,)).fetchone()[0]
+        if offen:
+            uebersprungen += 1
+            log(f"  [K] #{weg} traegt {offen} Verifikation(en) - NICHT entfernt")
+            continue
+        entfernt += 1
+        if apply_:
+            conn.execute("delete from rueckruf where id=?", (weg,))
+        log(f"  [K] Dublette #{weg} entfernt (kanonisch bleibt #{kanon}, {baureihe_id})")
+    log(f"  [K] Dubletten: {entfernt} entfernt, {uebersprungen} uebersprungen")
+
+
+def schritt_kba_korrekturen(conn, apply_):
+    """Setzt Datum, Bauzeitraum und amtliche Referenz der 15 belegten Faelle."""
+    from app.kba_abgleich_daten import VERIFIZIERTE_ZUORDNUNGEN
+
+    geaendert = bereits = uebersprungen = 0
+    for eintrag in VERIFIZIERTE_ZUORDNUNGEN:
+        fakt_id, baureihe_id, erwartet, neu_werte = eintrag[0], eintrag[1], eintrag[2], eintrag[3]
+        zeile = conn.execute("select * from rueckruf where id=? and baureihe_id=?",
+                             (fakt_id, baureihe_id)).fetchone()
+        if zeile is None:
+            uebersprungen += 1
+            log(f"  [K] rueckruf #{fakt_id} ({baureihe_id}) fehlt - uebersprungen")
+            continue
+        spalten = [d[0] for d in conn.execute(
+            "select * from rueckruf limit 1").description]
+        ist = dict(zip(spalten, zeile))
+        if all(ist.get(k) == v for k, v in neu_werte.items()):
+            bereits += 1
+            continue
+        if not all(ist.get(k) == v for k, v in erwartet.items()):
+            uebersprungen += 1
+            abw = {k: ist.get(k) for k, v in erwartet.items() if ist.get(k) != v}
+            log(f"  [K] rueckruf #{fakt_id}: Ausgangszustand weicht ab {abw!r} "
+                f"- NICHT geschrieben")
+            continue
+        geaendert += 1
+        if apply_:
+            sql = ", ".join(f"{k}=?" for k in neu_werte)
+            conn.execute(f"update rueckruf set {sql} where id=?",
+                         (*neu_werte.values(), fakt_id))
+        log(f"  [K] rueckruf #{fakt_id} korrigiert: "
+            + ", ".join(f"{k}: {ist.get(k)!r} -> {v!r}" for k, v in neu_werte.items()))
+    log(f"  [K] Korrekturen: {geaendert} geaendert, {bereits} bereits korrekt, "
+        f"{uebersprungen} uebersprungen")
+
+
+def schritt_kba_referenzen_und_verifikation(conn, apply_):
+    """Entfernt jede nicht amtlich bestaetigte `kba_referenz` und schreibt die
+    Verifikationen der belegten Faelle.
+
+    Die Allowlist ist genau die Menge der kuratierten Fakt-IDs. Alles andere
+    verliert seine Nummer: 569 von 570 Referenzen des Bestands sind entweder
+    frei erfunden oder gehoeren amtlich zu einem anderen Fahrzeug. Der
+    Rueckrufinhalt bleibt dabei unangetastet - es verschwindet nur die
+    Scheingenauigkeit einer erfundenen Aktennummer.
+    """
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.kba_abgleich_daten import (
+        GEPRUEFT_AM, KBA_QUELLE, KBA_URL, VERIFIZIERTE_ZUORDNUNGEN,
+        verifizierte_ids,
+    )
+
+    erlaubt = sorted(verifizierte_ids())
+    platzhalter = ",".join("?" * len(erlaubt))
+    betroffen = conn.execute(
+        f"select count(*) from rueckruf where kba_referenz is not null "
+        f"and trim(kba_referenz) <> '' and id not in ({platzhalter})",
+        erlaubt).fetchone()[0]
+    if apply_:
+        conn.execute(
+            f"update rueckruf set kba_referenz=NULL where kba_referenz is not null "
+            f"and trim(kba_referenz) <> '' and id not in ({platzhalter})",
+            erlaubt)
+    log(f"  [K] {betroffen} nicht amtlich bestaetigte KBA-Referenzen entfernt "
+        f"({len(erlaubt)} bestaetigte bleiben)")
+
+    vorhandene_tabellen = {r[0] for r in conn.execute(
+        "select name from sqlite_master where type='table'")}
+    if "fakt_verifikation" not in vorhandene_tabellen:
+        log("  [K] fakt_verifikation-Tabelle fehlt - Verifikationen uebersprungen")
+        return
+
+    neu_ = aktualisiert = fehlend = 0
+    tabelle, idspalte, _sp = FAKT_ARTEN["rueckruf"]
+    for eintrag in VERIFIZIERTE_ZUORDNUNGEN:
+        fakt_id, ref, code, notiz = eintrag[0], eintrag[4], eintrag[5], eintrag[6]
+        zeile = conn.execute(f'select * from "{tabelle}" where {idspalte}=?',
+                             (fakt_id,)).fetchone()
+        if zeile is None:
+            fehlend += 1
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        fp = fingerprint("rueckruf", dict(zip(spalten, zeile)))
+        referenz = f"{ref} (Herstellercode {code})" if code else ref
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art='rueckruf' and fakt_id=?",
+            (fakt_id,)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art='rueckruf' and fakt_id=?",
+                    (fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz,
+                     GEPRUEFT_AM, notiz, fakt_id))
+        else:
+            neu_ += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, "
+                    "status, quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values ('rueckruf',?,?,?,?,?,?,?,?,?)",
+                    (fakt_id, fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz,
+                     GEPRUEFT_AM, notiz))
+    log(f"  [K] Verifikationen: {neu_} neu, {aktualisiert} aktualisiert, "
+        f"{fehlend} Fakt fehlt")
+
+
+MARKER_KBA_ABGLEICH = "kba_abgleich_v1"
+SCHRITTE_KBA_ABGLEICH = (schritt_kba_dubletten, schritt_kba_korrekturen,
+                         schritt_kba_referenzen_und_verifikation)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -1200,6 +1362,8 @@ MIGRATIONEN = (
     (MARKER_RECALL_PILOT, SCHRITTE_RECALL_PILOT),
     # Nachtrag: EIN fehlender, amtlich belegter Insignia-B-Rueckruf (KBA 12223).
     (MARKER_INSIGNIA_012223, SCHRITTE_INSIGNIA_012223),
+    # Gesamtabgleich des Rueckrufbestands gegen den amtlichen KBA-Export.
+    (MARKER_KBA_ABGLEICH, SCHRITTE_KBA_ABGLEICH),
 )
 
 

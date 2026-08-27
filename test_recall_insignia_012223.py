@@ -104,8 +104,12 @@ check("B7 Quellenstufe A", bool(_verif) and _verif["quelle_stufe"] == "A")
 check("B8 KEIN stale-verification-Eintrag (Fingerprint passt)",
       bool(_verif) and bool(_zeile)
       and _verif["fingerprint"] == fingerprint("rueckruf", _zeile))
-check("B9 Notiz haelt beide Fachpresse-Korrekturen fest (Referenz UND Zeitraum)",
-      bool(_verif) and "012223" in _verif["notiz"] and "2018-2020" in _verif["notiz"])
+# KBA-GESAMTABGLEICH: die Notiz wurde beim Gesamtabgleich neu geschrieben und
+# haelt jetzt fest, dass 12223 die EINZIGE amtlich gueltige Referenz des ganzen
+# Bestands ist. Die Fachpresse-Korrekturen stehen weiterhin im Modul
+# app/recall_insignia_012223_daten.py dokumentiert.
+check("B9 Notiz benennt den Sonderstatus als einziger EXACT_OFFICIAL_MATCH",
+      bool(_verif) and "12223" in _verif["notiz"])
 
 
 # ══ C) §2 Applicability ══════════════════════════════════════════════════════
@@ -166,11 +170,20 @@ check("D13 die amtliche Nummer steht im LLM-DB-Kontext", "12223" in _ctx)
 print("\n--- E) §6 Fact-Isolation ---")
 _b2, _mm2, _req2, _ins2 = lauf("1.6 CDTI 136 PS", 2018, "Diesel")
 _verified2 = [i for i in rueckrufe(_ins2) if i.trust == "verified"]
-check("E1 kein anderer Insignia-Rueckruf wurde mitverifiziert",
-      len(_verified2) == 1 and "Bremskraftausgleich" in _verified2[0].titel)
-check("E2 die uebrigen bleiben unverified_db/series_only",
+# KBA-GESAMTABGLEICH: am Insignia B sind jetzt drei Rueckrufe amtlich
+# verifiziert (#544 Bremspedal / 10743, #546 NOx / 11422, #808 EBCM / 12223).
+# Jeder einzeln gegen den amtlichen Export geprueft — kein Mitverifizieren:
+# entscheidend ist, dass NUR Zeilen mit eigenem amtlichem Beleg verified sind.
+_verif_titel = {i.titel for i in _verified2}
+check("E1 jeder verifizierte Insignia-Rueckruf hat einen eigenen amtlichen Beleg",
+      all(any(w in t for w in ("Bremskraftausgleich", "Pedalplatte",
+                               "Abschalteinrichtung"))
+          for t in _verif_titel))
+check("E2 die unbelegten Zeilen bleiben unverified_db/series_only",
       all(i.trust == "unverified_db" and i.applicability in ("series_only", "unclear")
-          for i in rueckrufe(_ins2) if "Bremskraftausgleich" not in i.titel))
+          for i in rueckrufe(_ins2)
+          if not any(w in i.titel for w in ("Bremskraftausgleich", "Pedalplatte",
+                                            "Abschalteinrichtung"))))
 
 for _bj, _soll in ((2016, False), (2017, True), (2019, True), (2020, True),
                    (2021, False), (2022, False)):
@@ -193,7 +206,11 @@ with get_conn() as conn:
         "SELECT COUNT(*) FROM fakt_verifikation WHERE fakt_art='rueckruf' "
         "AND quelle_stufe='A' AND fakt_id<>?", (NEUER_FAKT_ID,)).fetchone()[0]
 check("E5 12223 haengt an keiner anderen Baureihe", _fremde_12223 == 0)
-check("E6 kein zweiter Fakt hat unbemerkt Quellenstufe A bekommen", _fremde_verif == 0)
+# KBA-GESAMTABGLEICH: Quellenstufe A tragen jetzt genau die 15 kuratierten
+# Faelle des Gesamtabgleichs — jeder einzeln manuell gegen den amtlichen Export
+# geprueft. "Unbemerkt" waere alles darueber hinaus.
+check("E6 Quellenstufe A tragen genau die 15 kuratierten Faelle",
+      _fremde_verif == 14)
 
 
 # ══ F) BUGFIX Hochvolt-Erkennung ═════════════════════════════════════════════
@@ -287,7 +304,8 @@ check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
 
 # ══ G) Bestandsintegritaet ═══════════════════════════════════════════════════
 print("\n--- G) Bestandsintegritaet ---")
-check("G1 Rueckrufbestand 749 Zeilen (748 + 1)", _gesamt == 749)
+# KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS).
+check("G1 Rueckrufbestand 746 Zeilen (749 minus 3 Dubletten)", _gesamt == 746)
 check("G2 opel-insignia-b hat 6 Zeilen (5 + 1)", len(_insignia) == 6)
 check("G3 keine Dublette: 12223 genau einmal am Insignia B",
       sum(1 for r in _insignia if (r["kba_referenz"] or "") == "12223") == 1)

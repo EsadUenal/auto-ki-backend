@@ -134,8 +134,13 @@ for r in _pilot_rows:
     _verteilung[_verifs[r["id"]]["status"]] = _verteilung.get(
         _verifs[r["id"]]["status"], 0) + 1
 print(f"       Verteilung: {_verteilung}")
-check("B5 2 verified, 3 partially_verified, 10 unverified, 0 rejected",
-      _verteilung == {"verified": 2, "partially_verified": 3, "unverified": 10})
+# KBA-GESAMTABGLEICH: #13 (Hochvoltspeicher, jetzt amtlich 10176), #544
+# (Bremspedal, 10743) und #546 (NOx, 11422) wurden gegen den amtlichen Export
+# verifiziert und aus `partially_verified` hochgestuft. #123 (eCall) bleibt
+# partially_verified. Der Pilot hatte diese drei nur deshalb nicht verifiziert,
+# weil die KBA-Primaerquelle damals nicht erreichbar war.
+check("B5 4 verified, 1 partially_verified, 10 unverified, 0 rejected",
+      _verteilung == {"verified": 4, "partially_verified": 1, "unverified": 10})
 check("B6 jede Verifikation nennt ihre durchsuchten Quellen",
       all(len(_verifs[r["id"]]["quelle"] or "") >= 20 for r in _pilot_rows))
 check("B7 jede Verifikation traegt eine nachvollziehbare Notiz",
@@ -168,10 +173,12 @@ _mit_ref = [r for r in _pilot_rows if (r["kba_referenz"] or "").strip()]
 # NACHTRAG: genau EINE Zeile traegt wieder eine KBA-Referenz — die amtlich aus
 # der KBA-Rueckrufdatenbank selbst gelesene 12223 des Nachtrags. Die 011422 des
 # Piloten bleibt entfernt (nur Sekundaerquellen).
-check("D1 genau eine Pilotzeile traegt eine KBA-Referenz (der amtliche Nachtrag)",
-      len(_mit_ref) == 1)
-check("D1b und zwar 12223 am Nachtrags-Rueckruf",
-      len(_mit_ref) == 1 and _mit_ref[0]["kba_referenz"] == "12223")
+# KBA-GESAMTABGLEICH: vier Pilotzeilen tragen jetzt eine amtlich bestaetigte
+# Referenz — jede davon direkt aus dem KBA-Gesamtexport gelesen.
+check("D1 vier Pilotzeilen tragen eine amtlich bestaetigte KBA-Referenz",
+      len(_mit_ref) == 4)
+check("D1b und zwar genau 10176, 10743, 11422 und 12223",
+      {r["kba_referenz"] for r in _mit_ref} == {"10176", "10743", "11422", "12223"})
 check("D2 speziell 011422 ist NICHT gespeichert (Fehlzitation bleibt korrigiert)",
       not any((r["kba_referenz"] or "") == "011422" for r in _pilot_rows))
 check("D3 die entfernten Nummern sind wirklich weg (009696/010000/9600/8789/...)",
@@ -220,9 +227,16 @@ with get_conn() as conn:
         "FROM rueckruf WHERE id IN (257,147)")}
 check("F1 die beiden fremden Zeilen existieren unveraendert weiter",
       set(_fremd) == {257, 147})
-check("F2 ihre Referenzen wurden NICHT angefasst",
-      (_fremd[257]["kba_referenz"] or "").strip() == "7900"
-      and (_fremd[147]["kba_referenz"] or "").strip() == "10000")
+# KBA-GESAMTABGLEICH: die beiden erfundenen Nummern sind inzwischen entfernt —
+# nicht als Nebenwirkung des Piloten, sondern durch den bestandsweiten Abgleich,
+# der 558 nicht amtlich bestaetigte Referenzen geloescht hat. Der urspruengliche
+# Zweck dieser Pruefung bleibt: das Cleanup darf fremde Baureihen nicht
+# ANHEBEN. Genau das sichert F3 weiterhin zu.
+check("F2 ihre erfundenen Referenzen sind entfernt (Gesamtabgleich), "
+      "die Rueckrufzeilen selbst bestehen weiter",
+      (_fremd[257]["kba_referenz"] or "").strip() == ""
+      and (_fremd[147]["kba_referenz"] or "").strip() == ""
+      and _fremd[257]["mangel"] and _fremd[147]["mangel"])
 for _fid, _marke, _kraftst in ((257, "BMW", "Diesel"), (147, "Mercedes-Benz", "Diesel")):
     _a, _c, _, _ = rueckruf_applicability(
         _fremd[_fid], True, _fremd[_fid]["kba_referenz"],
@@ -302,8 +316,11 @@ check("G9 partially_verified traegt keinen Floor "
       "(Insignia 1.6 CDTI 2018, realer Pilot-Fixture)",
       all(ermittle_floor([i]) is None for i in _rueckrufe(_ins_pos)
           if i.trust != "verified"))
-check("G9b und zwar konkret der zurueckgestufte #546",
-      any("Abschalteinrichtung" in i.titel and i.trust == "unverified_db"
+# KBA-GESAMTABGLEICH: #546 ist nicht mehr zurueckgestuft — der amtliche Export
+# bestaetigt Referenz 11422 samt Herstellercode und Motoreingrenzung. Er traegt
+# jetzt trust=verified und damit auch wieder den Floor.
+check("G9b #546 ist durch den amtlichen Export verifiziert",
+      any("Abschalteinrichtung" in i.titel and i.trust == "verified"
           for i in _rueckrufe(_ins_pos)))
 # NACHTRAG: der Insignia-Testwagen traegt jetzt als EINZIGES der vier
 # Pilotfahrzeuge einen Floor — ausgeloest vom amtlich belegten Rueckruf
@@ -332,13 +349,20 @@ _b_hv, _mm_hv, _req_hv, _ins_hv = _check(
 _hv = [i for i in _rueckrufe(_ins_hv) if "Hochvoltspeicher" in i.titel]
 check("H2 der NHTSA-belegte Rueckruf erscheint beim PHEV", len(_hv) == 1)
 check("H3 er ist verified", bool(_hv) and _hv[0].trust == "verified")
-check("H4 aber NICHT als 'KBA-Rückruf' betitelt (keine KBA-Nummer vorhanden)",
-      bool(_hv) and not _hv[0].titel.startswith("KBA-Rückruf")
-      and _hv[0].titel.startswith("Rückruf"))
-check("H5 Quellentitel benennt die fehlende KBA-Referenz ausdruecklich",
-      bool(_hv) and any("keine KBA-Referenz" in (q.titel or "") for q in _hv[0].quellen))
-check("H6 verified ohne Nummer erreicht NICHT variant_match",
-      bool(_hv) and _hv[0].applicability == "series_only")
+# KBA-GESAMTABGLEICH: dieser Rueckruf traegt jetzt die amtliche Nummer 10176 —
+# der Pilot hatte ihn nur ueber die US-Behoerde NHTSA belegen koennen, weil der
+# KBA-Export damals nicht erreichbar war. Damit heisst er zu Recht
+# "KBA-Rueckruf" und erreicht die staerkste Ohne-VIN-Stufe.
+# Der Fall "verified OHNE amtliche Nummer" kommt im Bestand nicht mehr vor; die
+# Wortlaut-Regel dafuer wird synthetisch in test_kba_trust.py und
+# test_fakt_verifikation.py (C8-C10) weiter zugesichert.
+check("H4 mit amtlicher Nummer heisst er 'KBA-Rückruf'",
+      bool(_hv) and _hv[0].titel.startswith("KBA-Rückruf"))
+check("H5 Quellentitel ist die KBA-Rückrufdatenbank mit der Nummer 10176",
+      bool(_hv) and any(q.ref == "10176" and q.titel == "KBA-Rückrufdatenbank"
+                        for q in _hv[0].quellen))
+check("H6 verified MIT amtlicher Nummer erreicht variant_match",
+      bool(_hv) and _hv[0].applicability == "variant_match")
 
 # unverified -> nie eine amtlich klingende Nummer
 _alle_unverified = []
@@ -411,8 +435,10 @@ check("J4 keine neue Applicability-Kategorie erfunden",
 
 # ══ K) §8 — keine Dubletten, keine Verluste ══════════════════════════════════
 print("\n--- K) §8 Bestandsintegritaet ---")
-check("K1 Rueckrufbestand 749 Zeilen (748 + 1 Nachtrag)",
-      _gesamt_rueckrufe == 749)
+# KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS) —
+# keine davon an einem Pilotfahrzeug.
+check("K1 Rueckrufbestand 746 Zeilen (749 minus 3 Dubletten)",
+      _gesamt_rueckrufe == 746)
 check("K2 keine Dublette an den Pilotfahrzeugen (15 Zeilen, 15 IDs)",
       len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 15)
 _paare = [(r["baureihe_id"], (r["mangel"] or "").strip()) for r in _pilot_rows]
@@ -429,12 +455,20 @@ check("L1 #546 Insignia NOx: Datum auf den durch Sekundaerquellen belegten Stand
       _nach_id[546]["datum"] == "2022-02")
 check("L2 #546: Bauzeitraum auf das belegte Fenster verengt",
       _nach_id[546]["betroffene_baujahre"] == "2017-2018 (1,6 l Diesel Euro 6)")
-check("L2b #546: KEINE KBA-Referenz gespeichert (Safety-Check §1 — "
-      "keine Stufe-A-Quelle auffindbar)",
-      _nach_id[546]["kba_referenz"] is None)
-check("L3 #544 Bremspedal: Datum/Bauzeitraum auf die reale Aktion korrigiert",
-      _nach_id[544]["datum"] == "2021-06"
-      and _nach_id[544]["betroffene_baujahre"] == "2021")
+# KBA-GESAMTABGLEICH: die im Safety-Check entfernte Nummer ist zurueck — jetzt
+# aber aus der amtlichen Primaerquelle statt aus Sekundaerberichten. Der
+# amtliche Datensatz bestaetigt 11422 samt Herstellercode E222115640 (22-C-013)
+# O7A und der Motoreingrenzung "1,3 l und 1,6 l Dieselmotor Euro 6 mit AGR +
+# NSK (LNT)".
+check("L2b #546: amtlich bestaetigte KBA-Referenz 11422 gespeichert",
+      _nach_id[546]["kba_referenz"] == "11422")
+# KBA-GESAMTABGLEICH: Datum auf die amtliche Veroeffentlichung 2021-05
+# praezisiert (der Pilot hatte 2021-06 aus einem Fachmedium); Bauzeitraum
+# unveraendert und amtlich bestaetigt.
+check("L3 #544 Bremspedal: Datum/Bauzeitraum amtlich bestaetigt",
+      _nach_id[544]["datum"] == "2021-05"
+      and _nach_id[544]["betroffene_baujahre"] == "2021"
+      and _nach_id[544]["kba_referenz"] == "10743")
 check("L4 #13 Hochvoltspeicher: Bauzeitraum auf 2020 verengt",
       _nach_id[13]["betroffene_baujahre"] == "2020 (Plug-in-Hybrid)")
 check("L5 #283/#284 Audi: Motorbezug maschinenlesbar",
