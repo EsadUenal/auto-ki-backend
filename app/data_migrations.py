@@ -963,6 +963,113 @@ MARKER_VERIFIKATION_PILOT = "verifikation_pilot_v1"
 SCHRITTE_VERIFIKATION_PILOT = (schritt_verifikation_pilot,)
 
 
+# ── RECALL-VERIFICATION-/CLEANUP-PILOT ───────────────────────────────────────
+#
+# Zwei Schritte, strikt in dieser Reihenfolge: erst die Datenkorrekturen, dann
+# die Verifikationen. Nur so entstehen die Fingerprints ueber den KORRIGIERTEN
+# Inhalt — ein Fingerprint ueber den alten Stand waere sofort stale und die
+# Verifikation zur Laufzeit wirkungslos (app/fakt_verifikation.py).
+
+def schritt_recall_korrekturen(conn, apply_):
+    """Korrigiert die fachlich falschen Rueckrufzeilen der vier Pilotfahrzeuge.
+
+    Jede Korrektur traegt eine PRECONDITION (`erwartet`). Geschrieben wird nur,
+    wenn die Zeile exakt den erwarteten Ausgangszustand hat. Traegt sie bereits
+    die Zielwerte, gilt die Korrektur als erledigt — das macht den Schritt
+    idempotent, ohne dass er sich auf den Migrationsmarker verlassen muesste.
+    Jede andere Belegung wird uebersprungen: eine Zeile, die weder der eine noch
+    der andere Stand ist, wurde zwischenzeitlich veraendert, und dann ist Nicht-
+    Schreiben die richtige Antwort.
+    """
+    from app.recall_pilot_daten import RECALL_KORREKTUREN
+
+    geaendert = bereits = uebersprungen = fehlend = 0
+    for fakt_id, baureihe_id, erwartet, neu, _begruendung in RECALL_KORREKTUREN:
+        zeile = conn.execute(
+            "select * from rueckruf where id=? and baureihe_id=?",
+            (fakt_id, baureihe_id)).fetchone()
+        if zeile is None:
+            fehlend += 1
+            log(f"  [R] rueckruf #{fakt_id} ({baureihe_id}) nicht vorhanden — uebersprungen")
+            continue
+        ist = dict(zip([d[0] for d in conn.execute(
+            "select * from rueckruf limit 1").description], zeile))
+
+        if all(ist.get(k) == v for k, v in neu.items()):
+            bereits += 1
+            continue
+        if not all(ist.get(k) == v for k, v in erwartet.items()):
+            uebersprungen += 1
+            abweichung = {k: ist.get(k) for k, v in erwartet.items() if ist.get(k) != v}
+            log(f"  [R] rueckruf #{fakt_id}: Ausgangszustand weicht ab {abweichung!r} "
+                f"— NICHT geschrieben")
+            continue
+
+        geaendert += 1
+        if apply_:
+            spalten = ", ".join(f"{k}=?" for k in neu)
+            conn.execute(f"update rueckruf set {spalten} where id=?",
+                         (*neu.values(), fakt_id))
+        log(f"  [R] rueckruf #{fakt_id} ({baureihe_id}) korrigiert: "
+            + ", ".join(f"{k}: {ist.get(k)!r} -> {v!r}" for k, v in neu.items()))
+
+    log(f"  [R] Recall-Korrekturen: {geaendert} geaendert, {bereits} bereits korrekt, "
+        f"{uebersprungen} wegen abweichendem Ausgangszustand uebersprungen, "
+        f"{fehlend} Zeilen fehlen in dieser DB")
+
+
+def schritt_recall_verifikationen(conn, apply_):
+    """Schreibt die kuratierten Rueckruf-Verifikationen (nach den Korrekturen)."""
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.recall_pilot_daten import GEPRUEFT_AM, RECALL_VERIFIKATIONEN
+
+    vorhanden = {r[0] for r in conn.execute(
+        "select name from sqlite_master where type='table'")}
+    if "fakt_verifikation" not in vorhanden:
+        log("  [R] fakt_verifikation-Tabelle fehlt — Recall-Verifikationen uebersprungen")
+        return
+
+    neu_ = aktualisiert = uebersprungen = 0
+    for fakt_art, fakt_id, status, quelle, stufe, url, referenz, notiz in RECALL_VERIFIKATIONEN:
+        tabelle, idspalte, _spalten = FAKT_ARTEN[fakt_art]
+        zeile = conn.execute(
+            f'select * from "{tabelle}" where {idspalte}=?', (fakt_id,)).fetchone()
+        if zeile is None:
+            uebersprungen += 1
+            log(f"  [R] {fakt_art} #{fakt_id}: Fakt nicht vorhanden — uebersprungen")
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        fp = fingerprint(fakt_art, dict(zip(spalten, zeile)))
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art=? and fakt_id=?",
+            (fakt_art, fakt_id)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art=? and fakt_id=?",
+                    (fp, status, quelle, stufe, url, referenz, GEPRUEFT_AM, notiz,
+                     fakt_art, fakt_id))
+        else:
+            neu_ += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, status, "
+                    "quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values (?,?,?,?,?,?,?,?,?,?)",
+                    (fakt_art, fakt_id, fp, status, quelle, stufe, url, referenz,
+                     GEPRUEFT_AM, notiz))
+    log(f"  [R] Recall-Verifikationen: {neu_} neu, {aktualisiert} aktualisiert, "
+        f"{uebersprungen} uebersprungen (Fakt nicht in dieser DB)")
+
+
+MARKER_RECALL_PILOT = "recall_pilot_v1"
+SCHRITTE_RECALL_PILOT = (schritt_recall_korrekturen, schritt_recall_verifikationen)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -988,6 +1095,10 @@ SCHRITTE_P0_V1 = (
 MIGRATIONEN = (
     (MARKER_P0_V1, SCHRITTE_P0_V1),
     (MARKER_VERIFIKATION_PILOT, SCHRITTE_VERIFIKATION_PILOT),
+    # Muss NACH dem Verifikations-Pilot laufen: er korrigiert drei von dessen
+    # Rueckruf-Eintraegen (Fehlzitation bzw. Status `partially_verified` mit dem
+    # Quellentext "keine belastbare Quelle gefunden") auf `unverified`.
+    (MARKER_RECALL_PILOT, SCHRITTE_RECALL_PILOT),
 )
 
 

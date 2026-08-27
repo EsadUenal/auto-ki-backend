@@ -185,7 +185,17 @@ check("J4 Basislisten trotzdem vorhanden", len(basis(_g20_alt["ka"])) >= 40)
 _ins_b = pipeline("Opel", "Insignia", 2020, motor="2.0 Diesel 174 PS")
 check("K1 Opel Insignia B: belastbar", _ins_b["info"]["belastbar"])
 check("K2 Baureihe unverändert", _ins_b["br"]["id"] == "opel-insignia-b")
-check("K3 Evidence unverändert vorhanden", len(_ins_b["ins"]) == 5)
+# RECALL-PILOT: vorher 5. Der NOx-Rückruf (#546) trug den unbelegten
+# Bauzeitraum "2019-2020" und erschien deshalb an diesem Fahrzeug. Der amtliche
+# Rückruf 011422 betrifft die Baujahre 2013-2018 — für einen 2020er Insignia B
+# ist er nicht einschlägig und fällt korrekt heraus. Der Zweck dieser Prüfung
+# (Identität stimmt, Evidence entsteht) bleibt unberührt; zusätzlich wird jetzt
+# ausdrücklich festgehalten, dass der Wegfall genau diesen Rückruf betrifft.
+check("K3 Evidence unverändert vorhanden", len(_ins_b["ins"]) == 4)
+check("K3b der amtliche NOx-Rückruf gilt für Baujahr 2020 korrekt NICHT mehr",
+      not any("Abschalteinrichtung" in f.titel for f in _ins_b["ins"]))
+check("K3c die Baureihen-Schwachstellen sind vollständig erhalten",
+      len([f for f in _ins_b["ins"] if f.kategorie == "schwachstelle"]) == 3)
 check("K4 Fahrzeugkontext vorhanden", _ins_b["ctx"] is not None)
 
 
