@@ -34,6 +34,23 @@ Fachmedien, die amtliche Referenznummern mitfuehren. Wo das keinen Beleg ergab,
 steht `unverified` — ausdruecklich NICHT `rejected`. "Nicht gefunden" ist keine
 Widerlegung.
 
+STAND NACH DEM SAFETY-CHECK VOR DEM MERGE (2026-08-27, zweite Pruefung)
+-------------------------------------------------------------------------
+#546 (Insignia NOx) stand zunaechst auf `verified` mit gespeicherter
+KBA-Referenz "011422". Die dabei als Beleg zitierte KBA-Pressearchiv-URL
+belegt nachweislich eine ANDERE, frueher veroeffentlichte Aktion (Insignia/
+Cascada 2,0 l + Zafira, 19.10.2018, ohne Astra/Corsa, ohne die Referenz
+011422) — eine Fehlzitation, unabhaengig von der Trust-Frage. Eine echte
+KBA-Primaerquelle fuer die hier beschriebene Aktion vom 17.02.2022 liess sich
+trotz erneuter, gezielter Suche NICHT auffinden; vorliegen nur ueber ein
+Dutzend inhaltlich uebereinstimmende Rechtsanwaltskanzlei-Seiten (Abgasskandal-
+Mandantenwerbung). Das ist keine Stufe-A- und auch keine "etablierte
+Fachmedien"-Stufe-B-Quelle im Sinne dieses Piloten. #546 wurde deshalb auf
+`partially_verified` zurueckgestuft, die kba_referenz auf None gesetzt (§9).
+Ergebnis seither: 1 verified (BMW Hochvoltspeicher, #13, NHTSA-belegt — traegt
+KEINE KBA-Nummer), 3 partially_verified, 10 unverified, 0 rejected. KEINE der
+14 Pilotzeilen traegt mehr eine gespeicherte KBA-Referenz.
+
 DIE REGEL, DIE UEBERALL GLEICH ANGEWANDT WURDE
 ----------------------------------------------
 Ein DB-Rueckruf wird nur dann inhaltlich UMGESCHRIEBEN, wenn Modell UND
@@ -135,7 +152,22 @@ RECALL_KORREKTUREN: tuple[tuple, ...] = (
      {"kba_referenz": None},
      "Unbelegte KBA-Referenz entfernt (§9). 8064 kommt nur an dieser Zeile vor."),
 
-    # ── §4 des Auftrags: der bekannte Insignia-Fall 011422 ────────────────
+    # ── §4 des Auftrags: der Insignia-Fall "011422" ────────────────────────
+    #
+    # KORREKTUR VOR DEM MERGE (Safety-Check): dieser Eintrag stand zunaechst auf
+    # `verified` mit kba_referenz="011422". Beim erneuten Pruefen der Quelle vor
+    # dem Merge stellte sich heraus, dass die als Stufe-A-Beleg zitierte KBA-URL
+    # eine ANDERE Aktion belegt (Insignia/Cascada 2,0 l + Zafira 1,6/2,0 l,
+    # veroeffentlicht 19.10.2018, ohne Astra/Corsa, ohne Referenz 011422) — nicht
+    # die hier behauptete Aktion vom 17.02.2022. Eine eigene, direkte KBA-Quelle
+    # fuer "011422"/"E222115640 (22-C-013)" liess sich trotz gezielter Suche
+    # NICHT auffinden; ueber ein Dutzend Treffer sind ausschliesslich
+    # Rechtsanwaltskanzlei-Seiten (Abgasskandal-Mandantenwerbung), die sich alle
+    # wortgleich zitieren. Das ist keine Stufe-A-Quelle und nach der Definition
+    # dieses Piloten auch keine "etablierte Fachmedien"-Stufe-B-Quelle — der
+    # Eintrag wird deshalb auf `partially_verified` zurueckgestuft (siehe
+    # Verifikationsnotiz). Die kba_referenz "011422" wird NICHT gespeichert:
+    # §9 verlangt eine exakt amtlich bestaetigte Nummer, und genau die fehlt hier.
     (546, "opel-insignia-b",
      {"datum": "2020-07",
       "betroffene_baujahre": "2019-2020",
@@ -145,19 +177,24 @@ RECALL_KORREKTUREN: tuple[tuple, ...] = (
      {"datum": "2022-02",
       "betroffene_baujahre": "2017-2018 (1,6 l Diesel Euro 6)",
       "mangel": "Unzulässige Abschalteinrichtung: erhöhte NOx-Emissionen im realen "
-                "Fahrbetrieb (vom KBA angeordneter Rückruf).",
+                "Fahrbetrieb (laut übereinstimmenden Sekundärquellen vom KBA "
+                "angeordneter Rückruf, primärquellenseitig nicht bestätigt).",
       "abhilfe": "Software-Update des Motorsteuergeräts.",
-      "kba_referenz": "011422"},
-     "Der einzige Fall des Piloten, in dem eine amtliche Aktion vollstaendig "
-     "belegt ist. Alle vier pruefbaren Felder waren falsch und wurden auf den "
-     "amtlichen Stand gebracht: Datum 2020-07 -> 2022-02 (KBA-Veroeffentlichung "
-     "17.02.2022), Referenz 9600 -> 011422, Bauzeitraum 2019-2020 -> 2017-2018, "
-     "Mangeltext auf die amtliche Aussage. Der Bauzeitraum ist die Schnittmenge "
-     "des amtlichen Fensters 2013-2018 mit dem Bauzeitraum des Insignia B (ab "
-     "2017) — die Zeile behauptet damit nicht mehr, als die Quelle hergibt. Der "
-     "Klammerzusatz grenzt die Aktion zusaetzlich auf Diesel ein, damit sie bei "
-     "Benzinern gar nicht erst erscheint. KEINE Dublette: die vorhandene Zeile "
-     "wurde korrigiert, keine zweite daneben angelegt."),
+      "kba_referenz": None},
+     "Inhaltlich weiterhin die bestmoegliche Korrektur: Datum, Bauzeitraum und "
+     "Mangeltext folgen ueber ein Dutzend unabhaengig voneinander recherchierter, "
+     "untereinander vollstaendig konsistenter Sekundaerquellen (Datum 17.02.2022, "
+     "74.500-75.000 Fahrzeuge in Deutschland, 1,3/1,6-l-Diesel Euro 6, Baujahre "
+     "2013-2018) und sind damit erheblich naeher an der Realitaet als der "
+     "urspruengliche DB-Stand (Datum 2020-07, Referenz 9600 — eine bei einem "
+     "Audi A1 GB, BMW X5 G05 und Toyota kollidierende Platzhalterzahl). Die "
+     "kba_referenz wird trotzdem NICHT auf '011422' gesetzt (§9): keine der "
+     "Sekundaerquellen ist eine amtliche Stelle, und eine formatplausible, "
+     "durchgaengig wiederholte Zahl ist keine amtliche Bestaetigung. Der "
+     "Bauzeitraum bleibt die Schnittmenge des behaupteten Fensters 2013-2018 mit "
+     "dem Bauzeitraum des Insignia B (ab 2017); der Klammerzusatz grenzt "
+     "zusaetzlich auf Diesel ein. KEINE Dublette: die vorhandene Zeile wurde "
+     "korrigiert, keine zweite daneben angelegt."),
 
     (547, "opel-insignia-b",
      {"kba_referenz": "10000"},
@@ -333,30 +370,63 @@ RECALL_VERIFIKATIONEN: tuple[tuple, ...] = (
      "Quellenlage der Insignia A. Keine Umschreibung, keine Uebernahme der "
      "fremden Referenz."),
 
-    # ── §4 des Auftrags ───────────────────────────────────────────────────
-    ("rueckruf", 546, "verified",
-     "Vom KBA angeordneter Rueckruf 011422, Opel-Herstellercode E222115640 "
-     "(22-C-013) O7A, veroeffentlicht 17.02.2022; KBA-Presseinformation zur "
-     "Opel-Abgasthematik", "A",
-     "https://www.kba.de/DE/Presse/Archiv/Abgasthematik/opel_inhalt.html",
-     "011422",
-     "Amtlich vollstaendig belegt. Das KBA hat den Rueckruf am 17.02.2022 unter "
-     "der Referenznummer 011422 veroeffentlicht; Opel fuehrt ihn intern als "
-     "E222115640 (22-C-013) O7A. Betroffen sind Astra, Corsa und Insignia mit "
-     "1,3-l- und 1,6-l-Dieselmotoren der Abgasnorm Euro 6 mit AGR und "
-     "NOx-Speicherkatalysator (NSK/LNT), Baujahre 2013 bis 2018; rund 75.000 "
-     "Fahrzeuge in Deutschland, ueber 400.000 weltweit. Grund ist eine "
-     "unzulaessige Abschalteinrichtung, Abhilfe ein Software-Update des "
-     "Motorsteuergeraets. Da das KBA den Rueckruf ueberwacht, ist er verbindlich "
-     "— bei Nichtdurchfuehrung droht die Stilllegung. Der Bauzeitraum der Zeile "
-     "wurde auf 2017-2018 verengt: das ist die Schnittmenge des amtlichen "
-     "Fensters mit dem Bauzeitraum des Insignia B. VERBLEIBENDE UNSICHERHEIT, "
-     "bewusst festgehalten: das KBA benennt die Insignia-GENERATION nicht, und ob "
-     "jeder Insignia B mit 1,6-l-Diesel den NOx-Speicherkatalysator statt eines "
-     "SCR-Systems traegt, liess sich nicht abschliessend klaeren. Die konkrete "
-     "Betroffenheit bleibt deshalb eine FIN-Frage — genau so wird sie dem Nutzer "
-     "auch angezeigt. Das Testfahrzeug (2.0 Diesel, Baujahr 2019/2020) liegt "
-     "ausserhalb des belegten Fensters und ist nicht betroffen."),
+    # ── §4 des Auftrags — KORRIGIERT im Safety-Check vor dem Merge ─────────
+    #
+    # Urspruenglich hier: status "verified", quelle_stufe "A", referenz "011422",
+    # url die KBA-Pressearchiv-Seite zur Aktion vom 19.10.2018. Beim erneuten
+    # Pruefen dieser Quelle vor dem Merge stellte sich heraus: die zitierte URL
+    # traegt einen ANDEREN Inhalt (Insignia/Cascada 2,0 l + Zafira, 2018,
+    # OHNE Astra/Corsa, OHNE Referenz 011422) — die Quellenangabe war damit
+    # schlicht falsch, unabhaengig von der Trust-Frage. Eine direkte KBA-Seite
+    # fuer die hier behauptete Aktion vom 17.02.2022 ("011422" /
+    # "E222115640 (22-C-013) O7A") liess sich trotz gezielter Suche (KBA-
+    # Pressearchiv-Uebersicht, KBA-interne Suche, mehrere Suchanfragen) NICHT
+    # auffinden. Was stattdessen vorliegt: ueber ein Dutzend voneinander
+    # unabhaengige Treffer, die aber AUSNAHMSLOS Rechtsanwaltskanzlei-Webseiten
+    # sind (anwalt24.de, anwalt.de, rechtecheck.de, rueden.de, bruellmann.de,
+    # baumeister-kollegen.de, kanzleimitte.de, drhoffmann-partner.de,
+    # deutscherpresseindex.de, presseportal.de/Rogert&Ulbrich) — Mandantenwerbung
+    # im Abgasskandal, die sich inhaltlich wortgleich zitieren und erkennbar auf
+    # dieselbe (nicht auffindbare) Ursprungsmeldung zurueckgehen. Das ist weder
+    # eine Stufe-A- noch eine "etablierte Fachmedien"-Stufe-B-Quelle im Sinne
+    # dieses Piloten — es ist Mandantenwerbung, die zufaellig recht bekommen
+    # haben KOENNTE, aber amtlich unbestaetigt bleibt.
+    ("rueckruf", 546, "partially_verified",
+     "Ueber ein Dutzend unabhaengig recherchierter, inhaltlich uebereinstimmender "
+     "Rechtsanwaltskanzlei-Seiten zum Opel-Abgasskandal (u.a. anwalt24.de, "
+     "rechtecheck.de, rueden.de, bruellmann.de, baumeister-kollegen.de); KEINE "
+     "davon ist eine amtliche Quelle. KBA-Pressearchiv und KBA-interne Suche "
+     "gezielt nach dieser Aktion durchsucht — ohne Treffer.", "B",
+     "https://rechtecheck.de/news/opel-rueckruf-e222115640-22-c-013-o7a/",
+     "E222115640 (22-C-013) O7A",
+     "THEMA BELEGT, QUELLE NICHT AMTLICH — der Lehrbuchfall von "
+     "'partially_verified'. Ueber ein Dutzend voneinander unabhaengige "
+     "Rechtsanwaltskanzlei-Seiten stimmen in jedem Detail ueberein (Datum "
+     "17.02.2022, 74.500-75.000 Fahrzeuge in Deutschland, ueber 400.000 "
+     "weltweit, 1,3/1,6-l-Diesel Euro 6, Astra/Corsa/Insignia, Baujahre "
+     "2013-2018, Herstellercode E222115640/22-C-013/O7A, KBA-Referenz 011422) — "
+     "das spricht fuer eine reale Aktion. Aber KEINE dieser Quellen ist amtlich, "
+     "und eine direkte KBA-Seite dafuer war trotz gezielter Suche nicht "
+     "auffindbar (die zuvor hier zitierte KBA-URL belegt nachweislich eine "
+     "ANDERE, frueher (19.10.2018) veroeffentlichte Aktion ueber Insignia/"
+     "Cascada 2,0 l + Zafira, ohne Astra/Corsa und ohne die Referenz 011422 — "
+     "diese Fehlzitation wird mit dieser Korrektur zurueckgenommen). Datum, "
+     "Bauzeitraum und Mangeltext wurden trotzdem auf den durch die Sekundaer-"
+     "quellen uebereinstimmend belegten Stand gebracht — das ist naeher an der "
+     "Realitaet als der urspruengliche DB-Stand (Datum 2020-07, Referenz 9600 — "
+     "eine bei einem Audi A1 GB, BMW X5 G05 und Toyota kollidierende "
+     "Platzhalterzahl). Die kba_referenz '011422' wird NICHT gespeichert (§9): "
+     "eine formatplausible, durchgaengig wiederholte Zahl ohne amtliche "
+     "Bestaetigung ist kein Beleg. `referenz` traegt stattdessen den ebenfalls "
+     "unbestaetigten, aber als Herstellercode konsistent berichteten Wert — zur "
+     "Nachvollziehbarkeit, nicht zur Anzeige. GENERATIONSFRAGE (§1 des "
+     "Safety-Checks): selbst WENN die Aktion amtlich waere, nennt keine einzige "
+     "Quelle die Insignia-GENERATION (A oder B), und ob der Insignia B mit "
+     "1,6-l-Diesel ueberhaupt den NOx-Speicherkatalysator statt eines "
+     "SCR-Systems traegt, blieb ungeklaert. Zwei unabhaengige Gruende gegen "
+     "'verified' also, nicht nur einer. Das Testfahrzeug (2.0 Diesel, Baujahr "
+     "2019/2020) liegt ohnehin ausserhalb des behaupteten Fensters 2013-2018 "
+     "und ist unabhaengig von der Trust-Frage nicht betroffen."),
 
     ("rueckruf", 547, "unverified",
      "Recherche ohne Treffer: rueckrufe.net-Archiv Opel Insignia, "

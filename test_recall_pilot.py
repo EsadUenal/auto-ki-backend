@@ -88,8 +88,20 @@ check("A5 alle Korrekturen betreffen nur Pilot-Baureihen",
       all(e[1] in PILOT_BAUREIHEN for e in RECALL_KORREKTUREN))
 check("A6 kein 'rejected' — nichts wurde positiv widerlegt",
       not any(e[2] == "rejected" for e in RECALL_VERIFIKATIONEN))
-check("A7 genau ein Fakt mit amtlicher KBA-Referenz (011422)",
-      [e[6] for e in RECALL_VERIFIKATIONEN].count("011422") == 1)
+# SAFETY-CHECK VOR MERGE (§1): #546 (Insignia NOx) stand zunaechst auf
+# `verified` mit kba_referenz="011422", zitierte dabei aber eine KBA-URL, die
+# nachweislich eine ANDERE Aktion belegt. Eine echte Stufe-A-Quelle fuer diese
+# Aktion war nicht auffindbar — nur uebereinstimmende Rechtsanwaltskanzlei-
+# Seiten. Zurueckgestuft auf `partially_verified`; keine Pilotzeile traegt mehr
+# eine gespeicherte KBA-Referenz.
+# `referenz` in fakt_verifikation darf einen dokumentierten Herstellercode
+# tragen (wie schon bei #544), auch wenn die DB-Spalte kba_referenz leer bleibt
+# (§9) — das ist Nachvollziehbarkeit der Recherche, keine Anzeige. Geprueft wird
+# hier ausschliesslich, dass "011422" selbst nirgends mehr als Referenz steht.
+check("A7 keine Pilotzeile traegt mehr die Fehlzitation '011422' als Referenz",
+      not any(e[6] == "011422" for e in RECALL_VERIFIKATIONEN))
+check("A7b #546 ist nach dem Safety-Check partially_verified, nicht verified",
+      next(e[2] for e in RECALL_VERIFIKATIONEN if e[1] == 546) == "partially_verified")
 
 
 # ══ B) Verifikationen in der Datenbank ═══════════════════════════════════════
@@ -119,8 +131,8 @@ for r in _pilot_rows:
     _verteilung[_verifs[r["id"]]["status"]] = _verteilung.get(
         _verifs[r["id"]]["status"], 0) + 1
 print(f"       Verteilung: {_verteilung}")
-check("B5 2 verified, 2 partially_verified, 10 unverified, 0 rejected",
-      _verteilung == {"verified": 2, "partially_verified": 2, "unverified": 10})
+check("B5 1 verified, 3 partially_verified, 10 unverified, 0 rejected",
+      _verteilung == {"verified": 1, "partially_verified": 3, "unverified": 10})
 check("B6 jede Verifikation nennt ihre durchsuchten Quellen",
       all(len(_verifs[r["id"]]["quelle"] or "") >= 20 for r in _pilot_rows))
 check("B7 jede Verifikation traegt eine nachvollziehbare Notiz",
@@ -145,16 +157,20 @@ check("C4 'unverified' traegt niemals eine amtliche Referenz",
 
 # ══ D) §9 — keine unbestaetigte KBA-Referenz mehr ════════════════════════════
 print("\n--- D) §9 KBA-Referenzen ---")
+# SAFETY-CHECK VOR MERGE (§1): #546 trug urspruenglich die einzige gespeicherte
+# Referenz des Piloten (011422). Sie wurde entfernt, weil sich keine echte
+# Stufe-A-Quelle dafuer auffinden liess — siehe Abschnitt A7/G. Damit traegt
+# nach dem Safety-Check KEINE der 14 Pilotzeilen mehr eine KBA-Referenz.
 _mit_ref = [r for r in _pilot_rows if (r["kba_referenz"] or "").strip()]
-check("D1 nur noch EINE Pilotzeile traegt eine KBA-Referenz", len(_mit_ref) == 1)
-check("D2 und zwar die amtlich bestaetigte 011422 am Insignia-NOx-Rueckruf",
-      len(_mit_ref) == 1 and _mit_ref[0]["id"] == 546
-      and _mit_ref[0]["kba_referenz"] == "011422")
+check("D1 keine einzige Pilotzeile traegt noch eine KBA-Referenz", len(_mit_ref) == 0)
+check("D2 speziell 011422 ist NICHT mehr gespeichert (Fehlzitation korrigiert)",
+      not any((r["kba_referenz"] or "") == "011422" for r in _pilot_rows))
 check("D3 die entfernten Nummern sind wirklich weg (009696/010000/9600/8789/...)",
       not any((r["kba_referenz"] or "") in
               ("009696", "010000", "010078", "7698", "7900", "8064", "9600",
                "10000", "8789", "9201", "9876") for r in _pilot_rows))
-check("D4 jede Zeile MIT Referenz ist auch verified",
+check("D4 jede Zeile MIT Referenz waere auch verified (aktuell vakuum wahr: "
+      "keine Zeile hat eine Referenz)",
       all(_verifs[r["id"]]["status"] == "verified" for r in _mit_ref))
 
 
@@ -210,16 +226,38 @@ check("F4 keine Verifikation an einer fremden Baureihe angelegt",
 
 # ══ G) §12 — Floor ═══════════════════════════════════════════════════════════
 print("\n--- G) §12 Empfehlungs-Floor ---")
-# Positivfall: Insignia B 1.6 CDTI, Baujahr 2018 — der amtlich belegte
-# NOx-Rueckruf 011422 trifft Baujahr UND Kraftstoff.
-_b_pos, _mm_pos, _req_pos, _ins_pos = _check(
-    "Opel", "Insignia", "B", "1.6 CDTI 136 PS", 2018, "Diesel")
-_nox = [i for i in _rueckrufe(_ins_pos) if "Abschalteinrichtung" in i.titel]
-check("G1 der amtlich belegte Rueckruf erscheint", len(_nox) == 1)
+# SAFETY-CHECK VOR MERGE (§1): #546 war der einzige Fall des Piloten, der
+# trust=verified + applicability=variant_match erreichte, und damit der
+# einzige, an dem der Floor je griff. Nach der Ruecksstufung auf
+# partially_verified (keine echte Stufe-A-Quelle auffindbar) erreicht KEIN
+# reales Pilotfahrzeug mehr diese Kombination — G1-G8 pruefen den Mechanismus
+# deshalb ab hier SYNTHETISCH (eine selbst gebaute Baureihe, keine DB-Zeile),
+# exakt nach dem Muster aus test_kba_trust.py. Das ist kein Rueckschritt: der
+# Mechanismus selbst (referenz_ist_belegt, Applicability, Floor) ist unabhaengig
+# von der Frage bewiesen, ob die vier Pilotfahrzeuge ihn gerade auslösen.
+_syn_rr_verified = {
+    "id": 9001, "baureihe_id": "syn-br", "datum": "2022-01",
+    "betroffene_baujahre": "2019-2021",
+    "mangel": "Synthetischer Testrueckruf fuer den Floor-Nachweis",
+    "abhilfe": "Pruefung/Austausch", "kba_referenz": "445566",
+    "_trust": "verified",
+}
+_syn_baureihe = {
+    "id": "syn-br", "marke": "SynMarke", "modell": "SynModell", "generation": "G1",
+    "karosserie": [], "ausstattungslinien": [], "motoren": [],
+    "schwachstellen_baureihe": [], "rueckrufe": [_syn_rr_verified],
+}
+_syn_motor = {"variante_id": "syn-mo", "bezeichnung": "SynMotor", "kraftstoff": "Diesel",
+             "schwachstellen_motor": [], "kritische_wartung": []}
+_syn_req = KaufCheckRequest(marke="SynMarke", modell="SynModell", baujahr=2020,
+                            motor="SynMotor", kraftstoff="Diesel")
+_ins_syn = build_insights(_syn_baureihe, _syn_motor, [], _syn_req, check_typ="kauf")
+_nox = _rueckrufe(_ins_syn)
+check("G1 der verifizierte synthetische Rueckruf erscheint", len(_nox) == 1)
 check("G2 er traegt trust=verified", bool(_nox) and _nox[0].trust == "verified")
-check("G3 und applicability=variant_match",
+check("G3 und applicability=variant_match (Baujahr+Kraftstoff passen, Referenz plausibel)",
       bool(_nox) and _nox[0].applicability == "variant_match")
-_floor_pos = ermittle_floor(_ins_pos)
+_floor_pos = ermittle_floor(_ins_syn)
 check("G4 Floor greift", _floor_pos is not None
       and _floor_pos.stufe == "nur_mit_werkstattpruefung")
 check("G5 Floor-Grund ist der Rueckruf-Variantentreffer",
@@ -228,14 +266,36 @@ check("G6 Floor belegt ueber die ECHTE Insight-ID dieses Checks",
       _floor_pos is not None and bool(_nox)
       and _nox[0].id in _floor_pos.evidence_ids)
 check("G7 Floor hebt eine zu milde Empfehlung an",
-      wende_floor_an("kaufen", _ins_pos)[0] == "nur_mit_werkstattpruefung")
+      wende_floor_an("kaufen", _ins_syn)[0] == "nur_mit_werkstattpruefung")
 check("G8 Floor senkt eine vorsichtigere Empfehlung NICHT",
-      wende_floor_an("finger_weg", _ins_pos)[0] == "finger_weg")
+      wende_floor_an("finger_weg", _ins_syn)[0] == "finger_weg")
 
-# Negativfaelle
-check("G9 partially_verified traegt keinen Floor",
+# G3b/G4b: Gegenprobe (§3 des Safety-Checks) — identischer Rueckruf, aber
+# unverifiziert -> series_only, kein Floor.
+_syn_rr_unverified = {**_syn_rr_verified, "_trust": "unverified_db"}
+_ins_syn_u = build_insights(
+    {**_syn_baureihe, "rueckrufe": [_syn_rr_unverified]},
+    _syn_motor, [], _syn_req, check_typ="kauf")
+_nox_u = _rueckrufe(_ins_syn_u)
+check("G3b identischer Rueckruf unverifiziert: applicability faellt auf series_only",
+      bool(_nox_u) and _nox_u[0].applicability == "series_only")
+check("G4b identischer Rueckruf unverifiziert: kein Floor",
+      ermittle_floor(_ins_syn_u) is None)
+check("G4c der Rueckruf selbst bleibt in beiden Faellen sichtbar (nur Stufe unterscheidet sich)",
+      len(_nox) == len(_nox_u) == 1)
+
+# Negativfaelle auf den echten Pilotdaten: KEIN reales Testfahrzeug erreicht
+# nach der Korrektur noch trust=verified+variant_match — das ist das ehrliche
+# Ergebnis dieses Safety-Checks, nicht ein Fehlschlag des Mechanismus.
+_b_pos, _mm_pos, _req_pos, _ins_pos = _check(
+    "Opel", "Insignia", "B", "1.6 CDTI 136 PS", 2018, "Diesel")
+check("G9 partially_verified traegt keinen Floor "
+      "(Insignia 1.6 CDTI 2018, realer Pilot-Fixture)",
       all(ermittle_floor([i]) is None for i in _rueckrufe(_ins_pos)
           if i.trust != "verified"))
+check("G9b und zwar konkret der zurueckgestufte #546",
+      any("Abschalteinrichtung" in i.titel and i.trust == "unverified_db"
+          for i in _rueckrufe(_ins_pos)))
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _, _, _, _i = _check(_m, _mo, _g, _h, _bj, _k)
     _rr_floor = ermittle_floor(_rueckrufe(_i))
@@ -245,9 +305,11 @@ for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
 
 # ══ H) §13 — Nutzerwortlaut ══════════════════════════════════════════════════
 print("\n--- H) §13 Nutzerwortlaut ---")
-check("H1 verified MIT amtlicher Nummer -> 'KBA-Rückruf' + Nummer als Quelle",
+check("H1 verified MIT amtlicher Nummer -> 'KBA-Rückruf' + Nummer als Quelle "
+      "(synthetische Fixture aus Abschnitt G — kein reales Pilotfahrzeug "
+      "erreicht diese Kombination mehr, siehe A7/D1)",
       bool(_nox) and _nox[0].titel.startswith("KBA-Rückruf")
-      and any(q.ref == "011422" and q.titel == "KBA-Rückrufdatenbank"
+      and any(q.ref == "445566" and q.titel == "KBA-Rückrufdatenbank"
               for q in _nox[0].quellen))
 
 # verified OHNE amtliche Nummer (BMW Hochvoltspeicher, NHTSA-belegt)
@@ -349,10 +411,13 @@ check("K4 keine Verifikation ohne zugehoerigen Fakt",
 # ══ L) Datenkorrekturen sind angekommen ══════════════════════════════════════
 print("\n--- L) Datenkorrekturen ---")
 _nach_id = {r["id"]: r for r in _pilot_rows}
-check("L1 #546 Insignia NOx: Datum auf die KBA-Veroeffentlichung korrigiert",
+check("L1 #546 Insignia NOx: Datum auf den durch Sekundaerquellen belegten Stand korrigiert",
       _nach_id[546]["datum"] == "2022-02")
-check("L2 #546: Bauzeitraum auf die belegte Schnittmenge verengt",
+check("L2 #546: Bauzeitraum auf das belegte Fenster verengt",
       _nach_id[546]["betroffene_baujahre"] == "2017-2018 (1,6 l Diesel Euro 6)")
+check("L2b #546: KEINE KBA-Referenz gespeichert (Safety-Check §1 — "
+      "keine Stufe-A-Quelle auffindbar)",
+      _nach_id[546]["kba_referenz"] is None)
 check("L3 #544 Bremspedal: Datum/Bauzeitraum auf die reale Aktion korrigiert",
       _nach_id[544]["datum"] == "2021-06"
       and _nach_id[544]["betroffene_baujahre"] == "2021")
