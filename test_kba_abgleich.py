@@ -190,11 +190,18 @@ with get_conn() as conn:
 # eine Aussage ueber einen ganz anderen Datenbestand treffen.
 from app.kba_batch_a_daten import ZEILEN as _BATCH_A_ZEILEN  # noqa: E402
 from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids  # noqa: E402
+from app.kba_batch_b1_daten import ZEILEN as _BATCH_B1_ZEILEN  # noqa: E402
+from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids  # noqa: E402
 
+# Batch B1 kam nach Batch A hinzu: amtliche Rueckrufe auf OFFENEN, aber
+# primaerquellenbestaetigten Generationen. Fuer diesen Abschnitt gilt dieselbe
+# Abgrenzung wie fuer Batch A — er prueft das Ergebnis des GESAMTABGLEICHS.
 _BATCH_A = _batch_a_ids()
-_abgleich = [r for r in _alle if r["id"] not in _BATCH_A]
-check("F0 Gesamtbestand = Abgleichsstand + Batch A",
-      len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN))
+_BATCH_B1 = _batch_b1_ids()
+_IMPORTIERT = _BATCH_A | _BATCH_B1
+_abgleich = [r for r in _alle if r["id"] not in _IMPORTIERT]
+check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1",
+      len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN) + len(_BATCH_B1_ZEILEN))
 check("F1 746 Rueckrufe aus dem Gesamtabgleich (749 minus 3 Dubletten)",
       len(_abgleich) == 746)
 _mit_ref = [r for r in _abgleich if (r["kba_referenz"] or "").strip()]
@@ -202,12 +209,13 @@ check("F2 genau 15 Abgleichszeilen tragen noch eine KBA-Referenz", len(_mit_ref)
 check("F3 und das sind exakt die kuratierten",
       {r["id"] for r in _mit_ref} == verifizierte_ids())
 _verified = [f for f, v in _verifs.items()
-             if v["status"] == "verified" and f not in _BATCH_A]
+             if v["status"] == "verified" and f not in _IMPORTIERT]
 check("F4 genau 15 verifizierte Rueckruf-Fakten aus dem Gesamtabgleich",
       len(_verified) == 15)
-check("F5 jede Batch-A-Zeile traegt eine eigene amtliche Referenz "
+check("F5 jede importierte Zeile traegt eine eigene amtliche Referenz "
       "(der Referenz-Kahlschlag des Abgleichs hat sie nicht mitgenommen)",
-      all((r["kba_referenz"] or "").strip() for r in _alle if r["id"] in _BATCH_A))
+      all((r["kba_referenz"] or "").strip()
+          for r in _alle if r["id"] in _IMPORTIERT))
 check("F5 alle mit Quellenstufe A",
       all(_verifs[f]["quelle_stufe"] == "A" for f in _verified))
 check("F6 alle nennen den amtlichen Export als Quelle",
@@ -305,13 +313,13 @@ check("I3 keine wortgleiche Dublette mehr im Abgleichsbestand",
 # das schliesst Tor A5 in app/kba_import_batch_a.py aus.
 _a_paare = [(r["baureihe_id"], (r["mangel"] or "").strip(),
              r["betroffene_baujahre"], r["datum"])
-            for r in _alle if r["id"] in _BATCH_A]
-check("I3b Batch A enthaelt keine ununterscheidbare Zeile",
+            for r in _alle if r["id"] in _IMPORTIERT]
+check("I3b die importierten Chargen enthalten keine ununterscheidbare Zeile",
       len(_a_paare) == len(set(_a_paare)))
-check("I3c keine Batch-A-Zeile wiederholt eine Abgleichszeile wortgleich",
+check("I3c keine importierte Zeile wiederholt eine Abgleichszeile wortgleich",
       not ({(r["baureihe_id"], (r["mangel"] or "").strip(),
              (r["abhilfe"] or "").strip())
-            for r in _alle if r["id"] in _BATCH_A} & set(_paare)))
+            for r in _alle if r["id"] in _IMPORTIERT} & set(_paare)))
 check("I4 keine verwaiste Verifikation (jeder Fakt existiert noch)",
       all(f in _ids for f in _verifs))
 

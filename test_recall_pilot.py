@@ -119,7 +119,8 @@ with get_conn() as conn:
     # test_kba_batch_a.py; sie hier mitzuzaehlen wuerde die Pilotaussagen
     # verwaessern statt sie zu pruefen.
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
-    _BATCH_A = _batch_a_ids()
+    from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids()
     _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
     _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
@@ -494,7 +495,7 @@ print("\n--- K) §8 Bestandsintegritaet ---")
 # keine davon an einem Pilotfahrzeug.
 # BATCH A: +271 amtliche Zeilen, davon 20 an Pilotfahrzeugen.
 check(f"K1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
-      f"(746 + {len(_BATCH_A)} aus Batch A)",
+      f"(746 + {len(_BATCH_A)} aus Batch A und B1)",
       _gesamt_rueckrufe == 746 + len(_BATCH_A))
 check("K2 keine Dublette an den Pilotfahrzeugen (15 Zeilen, 15 IDs)",
       len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 15)
@@ -503,7 +504,7 @@ check("K3 kein doppelter Mangeltext je Baureihe", len(_paare) == len(set(_paare)
 # Die Batch-A-Zeilen duerfen den Pilotbestand nicht verdoppeln: keine von ihnen
 # darf denselben Mangeltext auf derselben Baureihe tragen wie eine Pilotzeile.
 _pilot_texte = set(_paare)
-check("K4 keine Batch-A-Zeile wiederholt einen Pilot-Mangeltext",
+check("K4 keine importierte Zeile wiederholt einen Pilot-Mangeltext",
       not [r for r in _batch_a_rows
            if (r["baureihe_id"], (r["mangel"] or "").strip()) in _pilot_texte],
       )

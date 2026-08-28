@@ -1500,6 +1500,156 @@ MARKER_BATCH_A = "kba_batch_a_v1"
 SCHRITTE_BATCH_A = (schritt_batch_a_zeilen, schritt_batch_a_verifikation)
 
 
+# -- BATCH B1: primaerquellenbestaetigte Rueckrufe offener Generationen ------
+#
+# Klasse B sind Rueckrufe, deren Zielbaureihe `bauzeitraum_bis IS NULL` traegt.
+# Zwei Auditrunden haben sie eingegrenzt: das Fachquellen-Audit
+# (app/kba_generation_audit.py) und die Pruefung gegen HERSTELLERquellen
+# (app/kba_generation_quellen.py). Uebrig bleibt, was danach noch durch die
+# fuenf Batch-A-Tore kommt: app/kba_batch_b1_daten.py.
+#
+# Der Schritt ist bis auf die Datenquelle identisch zu Batch A und benutzt
+# denselben Mechanismus: Idempotenz ueber die EXPLIZITEN IDs, Reparatur einer
+# vorhandenen eigenen Zeile statt zweitem Insert, kein Schreiben auf eine von
+# einem fremden Fakt belegte ID.
+#
+# Die Verifikation traegt WEITERHIN die KBA-Quelle - der Rueckruf-Fakt stammt
+# aus der amtlichen Rueckrufdatenbank. Die Herstellerquelle belegt etwas
+# anderes, naemlich die Generationszuordnung, und steht deshalb zusaetzlich in
+# der Notiz.
+
+def _batch_b1_notiz(z: dict) -> str:
+    from app.kba_import_batch_a import QUELLENVERMERK
+
+    teile = [f"Amtlicher Datensatz: Modelle {z['amtliche_modelle']!r}, "
+             f"Produktionszeitraum {z['amtlicher_zeitraum']}, "
+             f"Veroeffentlichung {z['amtliches_datum']}."]
+    if z["betroffene_baujahre"] != z["amtlicher_zeitraum"]:
+        teile.append(f"Baujahre auf den Bauzeitraum der Baureihe verengt "
+                     f"({z['betroffene_baujahre']}).")
+    if z["datum"] is None:
+        teile.append("Datum nicht uebernommen: amtlicher Sammelstempel "
+                     "2008-01-01 des Erstbefuellungslaufs.")
+    teile.append(f"Generationszuordnung belegt durch Herstellerquelle "
+                 f"(Stufe {z['generationsstufe']}): {z['generationsbeleg']} "
+                 f"{z['generationsquelle']}")
+    teile.append(QUELLENVERMERK)
+    return " ".join(teile)
+
+
+def schritt_batch_b1_zeilen(conn, apply_):
+    """Legt die Batch-B1-Rueckrufe an bzw. stellt sie wieder her."""
+    from app.kba_batch_b1_daten import ZEILEN
+
+    neu = repariert = unveraendert = uebersprungen = 0
+    spalten_sql = ", ".join(_BATCH_A_SPALTEN)
+    for z in ZEILEN:
+        fid, bid = z["id"], z["baureihe_id"]
+        soll = {s: z[s] for s in _BATCH_A_SPALTEN}
+
+        if conn.execute("select 1 from baureihe where id=?", (bid,)).fetchone() is None:
+            uebersprungen += 1
+            log(f"  [B1] Baureihe {bid} fehlt - #{fid} uebersprungen")
+            continue
+
+        zeile = conn.execute(f"select {spalten_sql} from rueckruf where id=?",
+                             (fid,)).fetchone()
+        if zeile is None:
+            fremd = conn.execute(
+                "select id from rueckruf where baureihe_id=? and kba_referenz=?",
+                (bid, z["kba_referenz"])).fetchone()
+            if fremd:
+                uebersprungen += 1
+                log(f"  [B1] KBA {z['kba_referenz']} steht auf {bid} bereits "
+                    f"unter #{fremd[0]} - keine Dublette angelegt")
+                continue
+            neu += 1
+            if apply_:
+                conn.execute(
+                    f"insert into rueckruf (id, {spalten_sql}) values (?,?,?,?,?,?,?)",
+                    (fid, *[soll[s] for s in _BATCH_A_SPALTEN]))
+            log(f"  [B1] #{fid} ({bid}, KBA {z['kba_referenz']}) angelegt: "
+                f"{z['mangel'][:60]}")
+            continue
+
+        ist = dict(zip(_BATCH_A_SPALTEN, zeile))
+        if ist["baureihe_id"] != bid or ist["mangel"] != z["mangel"]:
+            uebersprungen += 1
+            log(f"  [B1] ID {fid} ist von einem anderen Fakt belegt "
+                f"({ist['baureihe_id']}) - NICHTS geschrieben")
+            continue
+        abweichend = {s: soll[s] for s in _BATCH_A_SPALTEN if ist[s] != soll[s]}
+        if not abweichend:
+            unveraendert += 1
+            continue
+        repariert += 1
+        if apply_:
+            sql = ", ".join(f"{s}=?" for s in abweichend)
+            conn.execute(f"update rueckruf set {sql} where id=?",
+                         (*abweichend.values(), fid))
+        log(f"  [B1] #{fid} wiederhergestellt: "
+            + ", ".join(f"{s}: {ist[s]!r} -> {v!r}" for s, v in abweichend.items()))
+    log(f"  [B1] Zeilen: {neu} neu, {repariert} wiederhergestellt, "
+        f"{unveraendert} unveraendert, {uebersprungen} uebersprungen")
+
+
+def schritt_batch_b1_verifikation(conn, apply_):
+    """Schreibt je Batch-B1-Zeile genau eine `verified`-Verifikation (Stufe A)."""
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.kba_batch_b1_daten import GEPRUEFT_AM, ZEILEN
+    from app.kba_import_batch_a import KBA_QUELLE, KBA_URL
+
+    if "fakt_verifikation" not in {r[0] for r in conn.execute(
+            "select name from sqlite_master where type='table'")}:
+        log("  [B1] fakt_verifikation-Tabelle fehlt - Verifikationen uebersprungen")
+        return
+
+    tabelle, idspalte, _sp = FAKT_ARTEN["rueckruf"]
+    neu = aktualisiert = fehlend = 0
+    for z in ZEILEN:
+        fid = z["id"]
+        zeile = conn.execute(f'select * from "{tabelle}" where {idspalte}=?',
+                             (fid,)).fetchone()
+        if zeile is None:
+            fehlend += 1
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        ist = dict(zip(spalten, zeile))
+        if ist["baureihe_id"] != z["baureihe_id"] or ist["mangel"] != z["mangel"]:
+            fehlend += 1
+            continue
+        fp = fingerprint("rueckruf", ist)
+        code = z["herstellercode"]
+        referenz = (f"{z['kba_referenz']} (Herstellercode {code})" if code
+                    else z["kba_referenz"])
+        werte = (fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz,
+                 GEPRUEFT_AM, _batch_b1_notiz(z))
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art='rueckruf' and fakt_id=?",
+            (fid,)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art='rueckruf' and fakt_id=?", (*werte, fid))
+        else:
+            neu += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, "
+                    "status, quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values ('rueckruf',?,?,?,?,?,?,?,?,?)", (fid, *werte))
+    log(f"  [B1] Verifikationen: {neu} neu, {aktualisiert} aktualisiert, "
+        f"{fehlend} ohne eigene Zeile")
+
+
+MARKER_BATCH_B1 = "kba_batch_b1_v1"
+SCHRITTE_BATCH_B1 = (schritt_batch_b1_zeilen, schritt_batch_b1_verifikation)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -1537,6 +1687,9 @@ MIGRATIONEN = (
     # Installation alle Referenzen ausserhalb seiner eigenen Allowlist — auch
     # die der geseedeten Batch-A-Zeilen. Dieser Schritt stellt sie wieder her.
     (MARKER_BATCH_A, SCHRITTE_BATCH_A),
+    # Batch B1 aus demselben Grund nach dem Gesamtabgleich - und nach
+    # Batch A, damit die ID-Bloecke in stabiler Reihenfolge entstehen.
+    (MARKER_BATCH_B1, SCHRITTE_BATCH_B1),
 )
 
 

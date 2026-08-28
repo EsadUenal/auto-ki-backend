@@ -225,7 +225,8 @@ with get_conn() as conn:
         "SELECT COUNT(*) FROM rueckruf WHERE kba_referenz='12223' "
         "AND baureihe_id<>'opel-insignia-b'").fetchone()[0]
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
-    _BATCH_A = _batch_a_ids()
+    from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids()
     _platz = ",".join("?" * len(_BATCH_A))
     # BATCH A traegt ebenfalls Quellenstufe A — jede Zeile mit eigener amtlicher
     # Referenz aus dem KBA-Gesamtexport. Diese Zusicherung gilt dem Bestand
@@ -243,9 +244,9 @@ check("E5 12223 haengt an keiner anderen Baureihe", _fremde_12223 == 0)
 # KBA-GESAMTABGLEICH: Quellenstufe A tragen jetzt genau die 15 kuratierten
 # Faelle des Gesamtabgleichs — jeder einzeln manuell gegen den amtlichen Export
 # geprueft. "Unbemerkt" waere alles darueber hinaus.
-check("E6 Quellenstufe A tragen ausser Batch A genau die 15 kuratierten Faelle",
+check("E6 Quellenstufe A tragen ausser Batch A/B1 genau die 15 kuratierten Faelle",
       _fremde_verif == 14)
-check("E6b jede Batch-A-Zeile traegt Quellenstufe A",
+check("E6b jede importierte Zeile traegt Quellenstufe A",
       _batch_a_stufe_a == len(_BATCH_A))
 
 
@@ -359,7 +360,8 @@ check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
 # ══ G) Bestandsintegritaet ═══════════════════════════════════════════════════
 print("\n--- G) Bestandsintegritaet ---")
 # KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS).
-check(f"G1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen (746 + Batch A)",
+check(f"G1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
+      f"(746 + Batch A + Batch B1)",
       _gesamt == 746 + len(_BATCH_A))
 _insignia_alt = [r for r in _insignia if r["id"] not in _BATCH_A]
 check("G2 opel-insignia-b hat 6 Zeilen aus dem Altbestand (5 + 1 Nachtrag)",
