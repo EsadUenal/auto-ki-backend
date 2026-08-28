@@ -79,9 +79,12 @@ GENERATIONEN: dict[str, tuple] = {
 
     # ── Volkswagen ──────────────────────────────────────────────────────────
     "volkswagen-tiguan-ii": (
-        2024, 2024, "de.wikipedia.org/wiki/VW_Tiguan_III",
-        "Tiguan II 2016-2024; Tiguan III seit November 2023 bestellbar, "
-        "Auslieferung ab Februar 2024."),
+        2024, 2023, "de.wikipedia.org/wiki/VW_Tiguan_III; volkswagen-newsroom.com",
+        "Tiguan II 2016-2024. Der Nachfolgeanlauf steht hier auf 2023, nicht "
+        "auf 2024: die amtlichen KBA-Fenster sind PRODUKTIONSzeitraeume, und "
+        "der Tiguan III laeuft laut VW-Medieninformation 140/2023 ab Herbst "
+        "2023 in Wolfsburg vom Band — die Auslieferung begann erst im Februar "
+        "2024. Der frueheste der beiden Zeitpunkte ist der konservative."),
     "volkswagen-arteon-typ-3h": (
         2025, None, "de.motor1.com/news/746885; motor1.com/news/707378",
         "Limousine 2023 vom Markt, Shooting Brake bis 2025; kein Nachfolger."),
