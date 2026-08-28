@@ -1650,6 +1650,142 @@ MARKER_BATCH_B1 = "kba_batch_b1_v1"
 SCHRITTE_BATCH_B1 = (schritt_batch_b1_zeilen, schritt_batch_b1_verifikation)
 
 
+# -- MIXED TARGET: 32 einzeln auditierte, sichere Zielpaare -------------------
+#
+# Batch A und B1 haben einen KBA-Fall bisher vollstaendig verworfen, sobald
+# auch nur eines seiner VIRA-Ziele unsicher war. Der Mixed-Target-Audit vom
+# 2026-08-28 bewertet stattdessen jedes Zielpaar einzeln. Importiert wird nur
+# die feste 32er-Whitelist in app/kba_mixed_target_daten.py; die sieben
+# unsicheren Paare stehen dort als ausdrueckliche Negativliste.
+#
+# Wie bei Batch A/B1 sind die IDs stabil, der natuerliche Schluessel
+# (baureihe_id, kba_referenz) verhindert eine zweite echte Recall-Zeile und
+# eine fremd belegte ID wird niemals ueberschrieben. Die Fakten sind amtliche
+# KBA-Datensaetze; die zielgenaue Generationszuordnung ist zusaetzlich durch
+# den lokalen Audit belegt. Es wird kein Varianten-Qualifier gespeichert.
+
+def _mixed_target_notiz(z: dict) -> str:
+    return (_batch_a_notiz(z)
+            + " Mixed-Target-Audit 2026-08-28: dieses VIRA-Zielpaar wurde "
+              "einzeln als generationssicher, variantenfrei und dublettenfrei "
+              "freigegeben; unsichere Ziele desselben KBA-Falls bleiben draussen.")
+
+
+def schritt_mixed_target_zeilen(conn, apply_):
+    """Legt ausschliesslich die 32 freigegebenen Mixed-Target-Zeilen an."""
+    from app.kba_mixed_target_daten import ZEILEN
+
+    neu = repariert = unveraendert = uebersprungen = 0
+    spalten_sql = ", ".join(_BATCH_A_SPALTEN)
+    for z in ZEILEN:
+        fid, bid = z["id"], z["baureihe_id"]
+        soll = {s: z[s] for s in _BATCH_A_SPALTEN}
+
+        if conn.execute("select 1 from baureihe where id=?", (bid,)).fetchone() is None:
+            uebersprungen += 1
+            log(f"  [MIXED] Baureihe {bid} fehlt - #{fid} uebersprungen")
+            continue
+
+        zeile = conn.execute(f"select {spalten_sql} from rueckruf where id=?",
+                             (fid,)).fetchone()
+        if zeile is None:
+            fremd = conn.execute(
+                "select id from rueckruf where baureihe_id=? and kba_referenz=?",
+                (bid, z["kba_referenz"])).fetchone()
+            if fremd:
+                uebersprungen += 1
+                log(f"  [MIXED] KBA {z['kba_referenz']} steht auf {bid} bereits "
+                    f"unter #{fremd[0]} - keine Dublette angelegt")
+                continue
+            neu += 1
+            if apply_:
+                conn.execute(
+                    f"insert into rueckruf (id, {spalten_sql}) values (?,?,?,?,?,?,?)",
+                    (fid, *[soll[s] for s in _BATCH_A_SPALTEN]))
+            log(f"  [MIXED] #{fid} ({bid}, KBA {z['kba_referenz']}) angelegt: "
+                f"{z['mangel'][:60]}")
+            continue
+
+        ist = dict(zip(_BATCH_A_SPALTEN, zeile))
+        if ist["baureihe_id"] != bid or ist["mangel"] != z["mangel"]:
+            uebersprungen += 1
+            log(f"  [MIXED] ID {fid} ist von einem anderen Fakt belegt "
+                f"({ist['baureihe_id']}) - NICHTS geschrieben")
+            continue
+        abweichend = {s: soll[s] for s in _BATCH_A_SPALTEN if ist[s] != soll[s]}
+        if not abweichend:
+            unveraendert += 1
+            continue
+        repariert += 1
+        if apply_:
+            sql = ", ".join(f"{s}=?" for s in abweichend)
+            conn.execute(f"update rueckruf set {sql} where id=?",
+                         (*abweichend.values(), fid))
+        log(f"  [MIXED] #{fid} wiederhergestellt: "
+            + ", ".join(f"{s}: {ist[s]!r} -> {v!r}"
+                        for s, v in abweichend.items()))
+    log(f"  [MIXED] Zeilen: {neu} neu, {repariert} wiederhergestellt, "
+        f"{unveraendert} unveraendert, {uebersprungen} uebersprungen")
+
+
+def schritt_mixed_target_verifikation(conn, apply_):
+    """Schreibt fuer jede eigene Mixed-Target-Zeile verified/Stufe A."""
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.kba_import_batch_a import KBA_QUELLE, KBA_URL
+    from app.kba_mixed_target_daten import GEPRUEFT_AM, ZEILEN
+
+    if "fakt_verifikation" not in {r[0] for r in conn.execute(
+            "select name from sqlite_master where type='table'")}:
+        log("  [MIXED] fakt_verifikation-Tabelle fehlt - Verifikationen uebersprungen")
+        return
+
+    tabelle, idspalte, _sp = FAKT_ARTEN["rueckruf"]
+    neu = aktualisiert = fehlend = 0
+    for z in ZEILEN:
+        fid = z["id"]
+        zeile = conn.execute(f'select * from "{tabelle}" where {idspalte}=?',
+                             (fid,)).fetchone()
+        if zeile is None:
+            fehlend += 1
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        ist = dict(zip(spalten, zeile))
+        if ist["baureihe_id"] != z["baureihe_id"] or ist["mangel"] != z["mangel"]:
+            fehlend += 1
+            continue
+        fp = fingerprint("rueckruf", ist)
+        code = z["herstellercode"]
+        referenz = (f"{z['kba_referenz']} (Herstellercode {code})" if code
+                    else z["kba_referenz"])
+        werte = (fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz,
+                 GEPRUEFT_AM, _mixed_target_notiz(z))
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art='rueckruf' and fakt_id=?",
+            (fid,)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art='rueckruf' and fakt_id=?", (*werte, fid))
+        else:
+            neu += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, "
+                    "status, quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values ('rueckruf',?,?,?,?,?,?,?,?,?)", (fid, *werte))
+    log(f"  [MIXED] Verifikationen: {neu} neu, {aktualisiert} aktualisiert, "
+        f"{fehlend} ohne eigene Zeile")
+
+
+MARKER_MIXED_TARGET = "kba_mixed_target_v1"
+SCHRITTE_MIXED_TARGET = (schritt_mixed_target_zeilen,
+                         schritt_mixed_target_verifikation)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -1690,6 +1826,9 @@ MIGRATIONEN = (
     # Batch B1 aus demselben Grund nach dem Gesamtabgleich - und nach
     # Batch A, damit die ID-Bloecke in stabiler Reihenfolge entstehen.
     (MARKER_BATCH_B1, SCHRITTE_BATCH_B1),
+    # Ausschliesslich die 32 einzeln auditierten sicheren Mixed-Target-Paare.
+    # Muss nach Batch A/B1 laufen, damit deren Bestand beim Dublettengate steht.
+    (MARKER_MIXED_TARGET, SCHRITTE_MIXED_TARGET),
 )
 
 

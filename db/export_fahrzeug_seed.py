@@ -85,9 +85,9 @@ VERBOTEN = {
 # aber eine grobe Abweichung ist ein Alarmsignal und stoppt den Export.
 ERWARTET = {
     "baureihe": 416, "motorvariante": 3231, "schwachstelle_baureihe": 1448,
-    # rueckruf: 746 gewachsen + 269 Zeilen BATCH A + 58 Zeilen BATCH B1 (amtliche
-    # KBA-Rueckrufe; app/kba_batch_a_daten.py, app/kba_batch_b1_daten.py).
-    "schwachstelle_motor": 2750, "kritische_wartung": 1476, "rueckruf": 1073,
+    # rueckruf: 746 gewachsen + 269 Zeilen BATCH A + 58 Zeilen BATCH B1 +
+    # 32 einzeln auditierte Mixed-Target-Zielpaare (amtliche KBA-Rueckrufe).
+    "schwachstelle_motor": 2750, "kritische_wartung": 1476, "rueckruf": 1105,
     "ausstattungslinie": 1677, "quelle": 0,
 }
 # Die Verifikationstabelle waechst mit jeder Pruefrunde und hat noch keine
