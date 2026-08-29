@@ -9,12 +9,14 @@ Ablauf:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
 
-from app.car_lookup import call_gemini_json
+from app.car_lookup import call_gemini_json, find_baureihe_mit_vertrauen, find_motor
 from app.config import TAVILY_API_KEY
 from app.ersatzteil_gate import require_ersatzteil_access
 from app.ersatzteil_kompat import parse_fahrzeug, parse_bauteil, klassifiziere, HINWEIS_UNCERTAIN
@@ -98,7 +100,10 @@ AUSGABE: Ausschließlich gültiges JSON, kein Text davor oder danach.
 REGELN:
 1. Nutze NUR Informationen aus den bereitgestellten Web-Ergebnissen. Erfinde keine Preise oder Produkte.
 2. Wenn ein Preis im Text nicht eindeutig erkennbar ist, setze preis_eur auf null — niemals schätzen.
-3. "oem" = vom Fahrzeughersteller selbst (z.B. "BMW Original"), "original" = Erstausrüster-Marke (z.B. Brembo, Bosch, ATE), "nachbau" = günstige Nachbau-Marke ohne Erstausrüster-Bezug.
+3. Der aktuelle Suchpfad besitzt keine autoritative OE/OEM- oder Herstellerquelle.
+   Setze deshalb "marke_typ" immer auf "unbekannt" und "qualitaetsstufe" auf
+   "Typ nicht verifiziert". Händlerbehauptungen wie "Original" oder "OEM" sind
+   keine von VIRA bestätigte Herkunft.
 4. Maximal 8 Einträge, sortiert nach Preis aufsteigend.
 5. Wenn KEINE brauchbaren Treffer in den Web-Ergebnissen stehen, gib "ergebnisse": [] zurück und erkläre in "empfehlung" ehrlich, dass keine Angebote gefunden wurden.
 6. Die Empfehlung soll dem Nutzer Sicherheit geben: worauf er beim gewählten Teil achten sollte (Qualität vs. Preis), nicht nur "das billigste".
@@ -259,7 +264,75 @@ def _mindestnutzen(fahrzeug: str, bauteil: str) -> str:
     )
 
 
-def _bewerte_kompatibilitaet(fahrzeug: str, bauteil: str, ergebnisse: list[dict]) -> tuple[list[dict], int | None]:
+def _parts_identity_context(fahrzeug: str) -> dict:
+    """Verpflichtendes Parts-Identity-Gate aus der vorhandenen VIRA-Infrastruktur.
+
+    Ein belastbarer Fahrzeugtreffer erlaubt nur die weitere Prüfung; er bestätigt
+    noch kein Teil. Ein Motor gilt nur dann als belastbar, wenn der Nutzer einen
+    Motor nennt und `find_motor` ihn innerhalb der belastbaren Baureihe auflöst.
+    """
+    identity = VehicleIdentity.from_text(fahrzeug)
+    modell_hint = " ".join(
+        str(x).strip() for x in (identity.model, identity.generation) if x
+    ) or None
+    baureihe, info = find_baureihe_mit_vertrauen(
+        identity.make, modell_hint, identity.year
+    )
+    motor_hint = identity.motor_kurz()
+    motor = None
+    if baureihe and info.get("belastbar") and motor_hint:
+        motor = find_motor(baureihe, motor_hint)
+    return {
+        "baureihe_belastbar": bool(baureihe and info.get("belastbar")),
+        "motor_belastbar": bool(motor),
+        "motor_genannt": bool(motor_hint),
+        "match_art": info.get("match_art"),
+    }
+
+
+def _neutralisiere_unbelegte_herkunft(ergebnisse: list[dict]) -> list[dict]:
+    """Web-/LLM-Herkunftsclaims ohne autoritative OE/OEM-Evidenz neutralisieren."""
+    claim_muster = re.compile(
+        r"\b(?:original\s+equipment|original(?:teil)?|oem|oes|"
+        r"erstausrüster(?:-qualität)?|genuine(?:\s+part)?)\b",
+        re.I,
+    )
+
+    def neutraler_text(wert) -> str:
+        text = claim_muster.sub("Herkunftsangabe ungeprüft", str(wert or ""))
+        return re.sub(
+            r"(?:Herkunftsangabe ungeprüft\s*){2,}",
+            "Herkunftsangabe ungeprüft ",
+            text,
+            flags=re.I,
+        ).strip()
+
+    for eintrag in ergebnisse:
+        if not isinstance(eintrag, dict):
+            continue
+        hatte_claim = (
+            str(eintrag.get("marke_typ") or "").lower() != "unbekannt"
+            or str(eintrag.get("qualitaetsstufe") or "").lower()
+            not in ("", "typ nicht verifiziert")
+            or bool(claim_muster.search(str(eintrag.get("teilename") or "")))
+            or bool(claim_muster.search(str(eintrag.get("hinweis") or "")))
+        )
+        eintrag["marke_typ"] = "unbekannt"
+        eintrag["qualitaetsstufe"] = "Typ nicht verifiziert"
+        if hatte_claim:
+            eintrag["teilename"] = neutraler_text(eintrag.get("teilename"))
+            hinweis = neutraler_text(eintrag.get("hinweis"))
+            neutral = "Herkunftsangabe nicht verifiziert."
+            eintrag["hinweis"] = f"{hinweis} {neutral}".strip()
+    return ergebnisse
+
+
+def _bewerte_kompatibilitaet(
+    fahrzeug: str,
+    bauteil: str,
+    ergebnisse: list[dict],
+    identity_context: dict | None = None,
+) -> tuple[list[dict], int | None]:
     """§5: jedes Produkt strukturiert gegen das Zielfahrzeug einstufen.
 
     - "rejected" (klarer Widerspruch, z.B. normale E92-Bremse für einen M3, falsche
@@ -281,6 +354,13 @@ def _bewerte_kompatibilitaet(fahrzeug: str, bauteil: str, ergebnisse: list[dict]
         if kompat == "rejected":
             # Sicherheitsrelevant falsch -> gar nicht anzeigen.
             continue
+        if identity_context and not identity_context.get("baureihe_belastbar"):
+            kompat = "uncertain"
+            grund = "Fahrzeugidentität nicht belastbar bestätigt"
+        elif (identity_context and identity_context.get("motor_genannt")
+              and not identity_context.get("motor_belastbar")):
+            kompat = "uncertain"
+            grund = "Motorisierung nicht belastbar bestätigt"
         e["kompatibilitaet"] = kompat
         e["kompat_grund"] = grund
         if kompat == "uncertain":
@@ -301,6 +381,7 @@ async def ersatzteil_suche(
     body: SucheBody,
     _user_id: int = Depends(require_ersatzteil_access),
 ):
+    identity_context = await asyncio.to_thread(_parts_identity_context, body.fahrzeug)
     web_results = await _mehrstufige_suche(body.fahrzeug, body.bauteil)
 
     if not web_results:
@@ -346,17 +427,19 @@ async def ersatzteil_suche(
     ergebnisse = result.get("ergebnisse", [])
     if not isinstance(ergebnisse, list):
         ergebnisse = []
+    ergebnisse = _neutralisiere_unbelegte_herkunft(ergebnisse)
 
     # §5: Kompatibilität strukturiert einstufen — "rejected" ausblenden, "uncertain"
     # nie empfehlen, nur "confirmed" darf empfohlen werden (deterministisch, nicht LLM).
-    ergebnisse, empfohlener_index = _bewerte_kompatibilitaet(body.fahrzeug, body.bauteil, ergebnisse)
+    ergebnisse, empfohlener_index = _bewerte_kompatibilitaet(
+        body.fahrzeug, body.bauteil, ergebnisse, identity_context
+    )
 
     # §30: Freitext-Empfehlung DETERMINISTISCH aus dem tatsächlich gewählten Produkt
     # aufbauen — nicht mehr die LLM-Prosa unverändert übernehmen. Root-Cause-
     # Absicherung: die LLM-"empfehlung" wurde VOR der Kompatibilitätsfilterung
     # geschrieben und konnte ein anderes (ggf. verworfenes) Produkt beschreiben als
     # den am Ende deterministisch gewählten Index — Text und Badge widersprachen sich.
-    llm_empfehlung = result.get("empfehlung", "") or ""
     if not ergebnisse:
         # Treffer vorhanden, aber das LLM konnte keine kaufbaren Angebote strukturieren
         # (oder alle wurden als inkompatibel ausgeblendet): ehrlicher Mindestnutzen (§9).
@@ -371,8 +454,6 @@ async def ersatzteil_suche(
             f"da die Kompatibilität mit dem erkannten Fahrzeug am besten bestätigt ist "
             f"({gewaehlt.get('kompat_grund', 'Kompatibilität bestätigt')})."
         )
-        if llm_empfehlung:
-            empfehlung += f" {llm_empfehlung}"
     else:
         # Es gibt sichtbare Treffer, aber keiner ist bestätigt kompatibel -> ehrlich
         # darauf hinweisen (§5: uncertain nie als "empfohlen" darstellen). KEIN

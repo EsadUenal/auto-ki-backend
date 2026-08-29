@@ -28,14 +28,14 @@ k = klass("BMW M3 E92", "Bremsscheiben vorne", "Bremsscheiben BMW 3er E92 320d V
 check("A1: normale E92-Bremsscheibe (320d) beim M3 E92 -> rejected", k == "rejected")
 
 k = klass("BMW M3 E92", "Bremsscheiben vorne", "Bremsscheiben Satz BMW M3 E92 Vorderachse 360mm")
-check("A1: echte M3-E92-Bremsscheibe (vorne) -> confirmed", k == "confirmed")
+check("A1: M3-E92-Webtreffer ohne autoritative Fitmentquelle -> uncertain", k == "uncertain")
 
 k = klass("BMW M3 E92", "Bremsscheiben vorne", "Bremsscheiben vorne für BMW E92")
 check("A1: reine E92-Angabe ohne M3 -> nicht confirmed (uncertain)", k == "uncertain")
 
 # ── A2) Normales E92-Modell: passende normale Teile möglich, M3-Teil abgelehnt ──
 k = klass("BMW 320i E92", "Bremsscheiben vorne", "Bremsscheiben BMW 3er E92 320i Vorderachse")
-check("A2: normale E92-Bremsscheibe beim 320i E92 -> confirmed", k == "confirmed")
+check("A2: normale E92-Bremsscheibe ohne Fitmentbeweis -> uncertain", k == "uncertain")
 
 k = klass("BMW 320i E92", "Bremsscheiben vorne", "Bremsscheiben BMW M3 E92 Hochleistung Vorderachse")
 check("A2: M3-Bremsscheibe beim normalen 320i E92 -> rejected", k == "rejected")
@@ -45,18 +45,18 @@ k = klass("Mercedes-AMG C63 W205", "Bremsscheiben vorne", "Bremsscheiben Mercede
 check("A3: normale C220d-Bremsscheibe beim C63 AMG -> rejected", k == "rejected")
 
 k = klass("Mercedes-AMG C63 W205", "Bremsscheiben vorne", "Bremsscheiben Mercedes-AMG C63 W205 Vorderachse")
-check("A3: echte AMG-C63-Bremsscheibe -> confirmed", k == "confirmed")
+check("A3: AMG-C63-Webtreffer ohne Fitmentbeweis -> uncertain", k == "uncertain")
 
 # "AMG Line" ist KEIN Performance-Modell -> darf ein Standardmodell nicht als Perf verwerfen
 k = klass("Mercedes C200 W205 AMG Line", "Bremsscheiben vorne", "Bremsscheiben Mercedes C-Klasse W205 C200 Vorderachse")
-check("A3: 'AMG Line' (Ausstattung) beim C200 -> Standardteil confirmed", k == "confirmed")
+check("A3: 'AMG Line' bleibt Standardmodell, aber ohne Fitmentbeweis uncertain", k == "uncertain")
 
 # ── A4) Achse vorne/hinten nicht vermischen ────────────────────────────────────
 k = klass("BMW 320i E92", "Bremsscheiben vorne", "Bremsscheiben BMW E92 Hinterachse")
 check("A4: gesuchte Vorderachse, Produkt Hinterachse -> rejected", k == "rejected")
 
 k = klass("BMW 320i E92", "Bremsscheiben hinten", "Bremsscheiben BMW E92 Hinterachse")
-check("A4: gesuchte Hinterachse, Produkt Hinterachse -> confirmed", k == "confirmed")
+check("A4: gleiche Achse ohne Fitmentbeweis -> uncertain", k == "uncertain")
 
 # ── Hersteller-Widerspruch ─────────────────────────────────────────────────────
 k = klass("BMW 320i E92", "Bremsscheiben vorne", "Bremsscheiben Audi A4 B8 Vorderachse")
@@ -76,8 +76,8 @@ check("Sprint3: RS3-Teil beim RS6-Ziel -> rejected (RS-Nummern nicht kollabiert)
 k = klass("BMW M3 E92 GTS", "Bremsscheiben vorne", "ATE Bremsscheiben BMW M3 E92 Vorderachse 360mm")
 check("Sprint3: normales M3-Teil beim GTS-Zielfahrzeug -> NICHT confirmed (uncertain)", k == "uncertain")
 
-# End-to-End (§6): das GTS/CRT-Teil darf auch über _bewerte_kompatibilitaet nie als
-# VIRAs Empfehlung erscheinen — nur das echte, unspezifische M3-Teil.
+# End-to-End (§6): Ohne autoritative Parts-Fitmentquelle darf weder das GTS/CRT-
+# Teil noch der plausible M3-Webtreffer als VIRAs Empfehlung erscheinen.
 ergebnisse_gts = [
     {"teilename": "ATE Bremsscheiben BMW E92 M3 GTS/CRT Vorderachse 370mm",
      "passt_fahrzeug": "BMW E92 M3 GTS/CRT", "hinweis": "", "url": "https://autodoc.de/gts", "preis_eur": 45},
@@ -85,10 +85,11 @@ ergebnisse_gts = [
      "passt_fahrzeug": "BMW M3 E92", "hinweis": "", "url": "https://autodoc.de/m3", "preis_eur": 210},
 ]
 sichtbar_gts, idx_gts = _bewerte_kompatibilitaet("BMW M3 E92", "Bremsscheiben vorne", ergebnisse_gts)
-check("Sprint3: GTS/CRT-Teil (billiger) wird NICHT empfohlen, obwohl günstiger",
-      idx_gts is not None and "GTS" not in sichtbar_gts[idx_gts]["teilename"])
-check("Sprint3: stattdessen das echte M3-Teil empfohlen",
-      idx_gts is not None and sichtbar_gts[idx_gts]["teilename"].endswith("360mm"))
+check("Sprint3: ohne autoritative Fitmentquelle wird kein Treffer empfohlen",
+      idx_gts is None)
+check("Sprint3: plausibler M3-Treffer bleibt sichtbar, aber uncertain",
+      any(e["teilename"].endswith("360mm") and e.get("kompatibilitaet") == "uncertain"
+          for e in sichtbar_gts))
 check("Sprint3: GTS/CRT-Teil bleibt sichtbar, aber als uncertain markiert",
       any("GTS" in e["teilename"] and e.get("kompatibilitaet") == "uncertain" for e in sichtbar_gts))
 
@@ -102,8 +103,9 @@ sichtbar, idx = _bewerte_kompatibilitaet("BMW M3 E92", "Bremsscheiben vorne", er
 titel_sichtbar = [e["teilename"] for e in sichtbar]
 check("A5: normale 320d-Bremsscheibe (rejected) wird ausgeblendet",
       not any("320d" in t for t in titel_sichtbar))
-check("A5: die echte M3-Bremsscheibe ist empfohlen (confirmed)",
-      idx is not None and "M3" in sichtbar[idx]["teilename"])
+check("A5: auch der plausible M3-Webtreffer bleibt ohne Fitmentbeweis uncertain",
+      idx is None and any("M3" in e["teilename"] and e.get("kompatibilitaet") == "uncertain"
+                          for e in sichtbar))
 check("A5: unspezifisches Teil bleibt sichtbar, aber uncertain (nicht empfohlen)",
       any(e.get("kompatibilitaet") == "uncertain" for e in sichtbar))
 
