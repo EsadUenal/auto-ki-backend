@@ -240,6 +240,54 @@ def verkaufs_prompt_block(strategie: dict | None) -> str:
     ])
 
 
+def verkaufs_no_market_prompt_block() -> str:
+    """VERBINDLICHER Block für den VerkaufsCheck, wenn KEINE belastbare
+    Marktdatenbasis vorliegt (P1 #2).
+
+    Gegenstück zu `verkaufs_prompt_block`: dort gibt das Backend dem Modell die
+    deterministische Preisstrategie vor — hier sagt es ihm, dass es GAR KEINE
+    Preisaussage gibt. Ohne diesen Block würde das Modell die Preisregeln aus dem
+    System-Prompt ("leite eine grobe Spanne ab", "## (b) Empfohlene Preisspanne")
+    weiter befolgen und aus den Web-Snippets eine Marktspanne konstruieren — genau
+    die Halluzination, die der deterministische Marktvergleich verhindern soll.
+
+    Wie beim KaufCheck-Gegenstück (`no_market_prompt_block`) muss das Modell
+    ausdrücklich wissen, dass ggf. im Prompt stehende Web-Preise bereits geprüft
+    und als nicht belastbar verworfen wurden — sonst wirkt der Widerspruch wie ein
+    Kontextfehler und wird "hilfsbereit" überschrieben.
+    """
+    return "\n".join([
+        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft — VERBINDLICH) ===",
+        "Für dieses Fahrzeug liegen KEINE belastbaren aktuellen Marktpreisdaten vor.",
+        "Der deterministische Marktvergleich hat kein verwertbares Ergebnis geliefert.",
+        "",
+        "Falls im Abschnitt WEB-ERGEBNISSE Preisangaben stehen: diese wurden bereits",
+        "geprüft und als NICHT belastbare Vergleichsbasis verworfen (zu wenige",
+        "modelltreue Angebote, zu hohe Streuung oder ungeeignete Quelle). Sie sind",
+        "KEINE Marktpreisgrundlage.",
+        "",
+        "Daraus folgt VERBINDLICH:",
+        "- Nenne KEINEN Marktpreis, KEINEN Median und KEINE Marktspanne.",
+        "- Setze marktpreis_min, marktpreis_max, schnellverkaufs_preis,",
+        "  empfohlener_preis und maximal_preis ALLE auf null.",
+        "- Nenne KEINE Verkaufsdauer und KEINE Euro-/Prozent-Abweichung zum Markt.",
+        "- Stufe eine ggf. genannte Preisvorstellung NICHT ein — weder als",
+        "  realistisch, zu hoch, zu niedrig, günstig, marktgerecht noch ambitioniert.",
+        "  Auch keine indirekte Andeutung.",
+        "- Im Abschnitt '## (a) Marktvergleich' schreibe NUR ein bis zwei sachliche",
+        "  Sätze, dass derzeit keine belastbaren Vergleichspreise ermittelt werden",
+        "  konnten.",
+        "- Lass den Abschnitt '## (b) Empfohlene Preisspanne' samt Preistabelle WEG",
+        "  oder schreibe dort NUR, dass die Preisempfehlung mangels Marktdaten offen",
+        "  bleibt. KEINE Beträge, KEINE Tabelle mit Zahlen.",
+        "",
+        "Alles Übrige führst du davon unberührt VOLLSTÄNDIG durch: Fahrzeug erkannt,",
+        "wertsteigernde Ausstattung, Zustands- und Mängeltransparenz, Inserats-",
+        "Optimierungstipps und die Verkaufsstrategie (Kanäle, Ablauf, Verhandlung) —",
+        "nur eben ohne konkrete Preiszahlen.",
+    ])
+
+
 def no_market_prompt_block() -> str:
     """VERBINDLICHER Block für den Fall, dass KEINE belastbare Marktdatenbasis
     vorliegt (KaufCheck-P0-1).

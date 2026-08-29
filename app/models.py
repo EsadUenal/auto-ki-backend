@@ -904,8 +904,22 @@ class VerkaufsCheckResponse(BaseModel):
     # dieselbe Quelle für obere Zusammenfassung, Bericht, Key Findings und Strategie.
     price_assessment: PriceAssessment | None = None
     # Reliability-Sprint: Quality-Gate-Ergebnis (§1/§14). "completed_high" |
-    # "completed_medium"; "research_failed" wird nicht als fertiger Check geliefert.
+    # "completed_medium" | "completed_no_market" (P1 #2 — Check fachlich vollständig,
+    # aber kein belastbarer Marktpreis: alle Preisfelder None, price_assessment.
+    # verdict = "unbekannt"; KEIN Fehler, KEINE Kontingent-Rückerstattung).
+    # "research_failed" wird weiterhin nicht als fertiger Check geliefert.
     research_status: str = "completed_high"
+    # P1 #1: Verlässlichkeit der Fahrzeug-Zuordnung (analog KaufCheckResponse).
+    #   "hoch"    — exakter Modell-/Motor-/Generationstreffer oder Substring mit
+    #               ausschließlich bekannten Aufbauwörtern ("3er Touring"). Voller
+    #               Funktionsumfang, fahrzeugspezifische DB-Fakten möglich.
+    #   "niedrig" — nur Teiltreffer, mehrdeutig, oder Baujahr widerspricht dem
+    #               Bauzeitraum. Dann bleibt `baureihe_erkannt` leer und es
+    #               entstehen KEINE fahrzeugspezifischen Aussagen; Inseratsanalyse,
+    #               Key-Findings und Bericht laufen ohne DB-Befund weiter.
+    identitaet_konfidenz: str = "hoch"
+    # Eine der MATCH_*-Konstanten aus app/car_lookup.py.
+    identitaet_match_art: str | None = None
 
 
 # ---------- Phase 5: VIRA Dealer (Händler-Bestand) ----------

@@ -13,7 +13,7 @@ Ablauf:
 import asyncio
 import logging
 
-from app.car_lookup import find_baureihe, find_motor, build_db_context, call_gemini_json
+from app.car_lookup import find_baureihe_mit_vertrauen, find_motor, build_db_context, call_gemini_json
 from app.config import TAVILY_API_KEY
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.evidence import (
@@ -23,16 +23,18 @@ from app.evidence import (
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
     vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
-    RechercheUnzureichend, nachricht_unzureichend,
 )
 from app.preisurteil import (
-    bewerte_preis, verkaufs_strategie, verkaufs_prompt_block, prompt_block as preis_prompt_block,
+    bewerte_preis, verkaufs_strategie, verkaufs_prompt_block, verkaufs_no_market_prompt_block,
+    prompt_block as preis_prompt_block,
 )
 from app.key_findings import build_key_findings_verkauf
 from app.inserat import build_listing_analyse
 from app.models import VerkaufsCheckRequest
 from app.vehicle_identity import VehicleIdentity
-from app.postprocess import postprocess_answer, entferne_erfundene_verkaufsdauer
+from app.postprocess import (
+    postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_no_market_preisurteil,
+)
 from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
 from app.web_search import (
@@ -228,7 +230,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     # 1. Baureihe erkennen (DB, blockierend) UND Marktpreise per Tavily (Netzwerk) laufen
     #    PARALLEL — die Tavily-Queries hängen nur an den Fahrzeug-Rohdaten (req.*), nicht
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
-    baureihe_task = asyncio.to_thread(find_baureihe, req.marke, req.modell, req.baujahr)
+    baureihe_task = asyncio.to_thread(find_baureihe_mit_vertrauen, req.marke, req.modell, req.baujahr)
 
     web_results_task: asyncio.Task[list[dict]] | None = None
     if TAVILY_API_KEY and req.marke and req.modell:
@@ -253,20 +255,44 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
             )
         )
 
-    baureihe    = await baureihe_task
-    motor_match = find_motor(baureihe, req.motor) if baureihe else None
+    # ── Identity-Trust-Gate (P1 #1) ─────────────────────────────────────────────
+    # Wie im gefreezten KaufCheck (app/kaufcheck.py): ein reiner Teilstring- oder
+    # mehrdeutiger Treffer ("Golf XV" -> Golf I, "BMW" ohne Modell -> konkrete
+    # Baureihe) darf KEINE fahrzeugspezifische DB-Aussage tragen.
+    #
+    #   `baureihe_markt` — Rohtreffer, unverändert. Geht AUSSCHLIESSLICH in die
+    #       Marktrecherche (baue_ziel / VehicleIdentity); dort greift weiterhin die
+    #       eigene Trust-Schicht (app/verification.py), die Etappe-1-Marktanalyse
+    #       soll durch dieses Gate nicht regressieren.
+    #   `baureihe` — die GEGATETE Sicht: bei nicht belastbarer Identität None und
+    #       damit behandelt wie "kein DB-Profil vorhanden" (keine Schwachstellen,
+    #       keine Motorprobleme, keine Rückruf-Betroffenheit, kein DB-Profil im
+    #       Prompt, keine fahrzeugspezifischen Insights/Key-Findings).
+    #
+    # Der Check bricht dabei NICHT ab: Fahrzeugangaben, Marktrecherche,
+    # Inseratsanalyse, Mängeltransparenz und LLM-Bericht laufen vollständig weiter.
+    baureihe_markt, identitaet = await baureihe_task
+    motor_markt = find_motor(baureihe_markt, req.motor) if baureihe_markt else None
+    if identitaet["belastbar"]:
+        baureihe, motor_match = baureihe_markt, motor_markt
+    else:
+        log.info("Verkaufscheck: Baureihe nicht belastbar zugeordnet (match=%s) — "
+                 "fahrzeugspezifische DB-Aussagen werden unterdrückt",
+                 identitaet["match_art"])
+        baureihe, motor_match = None, None
 
-    # 2. DB-Kontext
+    # 2. DB-Kontext (gegatete Sicht)
     db_ctx = build_db_context(baureihe, motor_match, req.baujahr)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
     # Marktvergleich 2.0 + adaptive Recherche (harte Modelltreue via baue_ziel; die
     # Recherche wird vertieft, bis genug akzeptierte, modelltreue Vergleiche vorliegen).
-    ziel = baue_ziel(baureihe, motor_match, req,
-                     get_alle_baureihen_kurz() if baureihe else [],
-                     get_alle_motorvarianten_kurz() if baureihe else [])
-    identity = VehicleIdentity.from_market_context(baureihe, motor_match, req)
+    # Bewusst mit dem ROHTREFFER — unverändertes Verhalten der Etappe-1-Marktanalyse.
+    ziel = baue_ziel(baureihe_markt, motor_markt, req,
+                     get_alle_baureihen_kurz() if baureihe_markt else [],
+                     get_alle_motorvarianten_kurz() if baureihe_markt else [])
+    identity = VehicleIdentity.from_market_context(baureihe_markt, motor_markt, req)
     if TAVILY_API_KEY and req.marke and req.modell:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
@@ -279,17 +305,35 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
         diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
 
-    # ── Quality-Gate (§0/§17/§21) ────────────────────────────────────────────────
-    # Reicht die Datenbasis nicht für einen belastbaren Marktwert, wird KEINE
-    # Preisstrategie erzeugt und der LLM-Call gespart -> research_failed. §25 verbietet
-    # ausdrücklich, eine niedrige Qualität einfach zu akzeptieren und trotzdem exakte
-    # Preise/Verkaufszeiten auszugeben.
-    status = research_status(marktanalyse)
-    if status == "research_failed":
-        grund = diag.get("research_failure_grund", "data_exhausted")
-        raise RechercheUnzureichend(marktanalyse, nachricht_unzureichend(identity, grund), grund)
+    # ── Quality-Gate + Marktpreis-Entkopplung (P1 #2, analog KaufCheck P0-1) ─────
+    # `markt_status` bewertet AUSSCHLIESSLICH die Marktrecherche (unverändert:
+    # app/marktrecherche.research_status — "research_failed" heißt weiterhin "kein
+    # belastbarer Median", diese Regel ist NICHT gelockert).
+    #
+    # Geändert hat sich nur die REAKTION: research_failed bricht den VerkaufsCheck
+    # NICHT mehr ab (vorher: `raise RechercheUnzureichend` -> Fahrzeug-/Technik-
+    # Insights, Inseratsanalyse, Mängeltransparenz und Key-Findings wurden komplett
+    # verworfen, obwohl sie marktdatenunabhängig feststehen). Der Marktvergleich ist
+    # jetzt ein OPTIONALES Zusatzmodul:
+    #   PFAD A (markt_verfuegbar): unverändert — Median, kanonisches Preisurteil,
+    #           deterministische Preisstrategie, verbindliche Prompt-Blöcke.
+    #   PFAD B (kein belastbarer Markt): der Rest des Checks läuft vollständig
+    #           weiter, es entsteht nur KEINE Preisaussage (§4/§10 — keine
+    #           erfundenen Preise). Status `completed_no_market` bedeutet "Check
+    #           fachlich abgeschlossen, Marktpreis nicht verfügbar" — KEIN Fehler,
+    #           KEINE Kontingent-Rückerstattung. RechercheUnzureichend bleibt als
+    #           Router-Sicherheitsnetz erhalten, wird hier aber nicht mehr geworfen.
+    markt_status = research_status(marktanalyse)
+    markt_verfuegbar = markt_status != "research_failed"
+    status = markt_status if markt_verfuegbar else "completed_no_market"
+    if not markt_verfuegbar:
+        log.info("Verkaufscheck ohne Marktdaten (grund=%s) — Analyse läuft weiter",
+                 diag.get("research_failure_grund", "data_exhausted"))
 
-    # Kanonisches Preisurteil + deterministische Preisstrategie (§6/§10/§13).
+    # Kanonisches Preisurteil + deterministische Preisstrategie (§6/§10/§13). Ohne
+    # belastbaren Median liefert `bewerte_preis` von sich aus verdict="unbekannt"
+    # (kein Dummy-Preis, kein Angebotspreis als Marktwert) und `verkaufs_strategie`
+    # gibt None zurück — beides wird unten sauber behandelt (PFAD B).
     price_assessment = bewerte_preis(marktanalyse, req.preis_vorstellung, check_typ="verkauf")
     strategie = verkaufs_strategie(marktanalyse)
 
@@ -310,9 +354,20 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf",
                               marktanalyse=marktanalyse)
     evidence_block = format_evidence_for_prompt(insights)
-    markt_block = markt_prompt_block(marktanalyse)
-    preis_block = preis_prompt_block(price_assessment)
-    strategie_block = verkaufs_prompt_block(strategie)
+    # PFAD A: verbindliche Markt-/Preis-/Strategie-Blöcke wie bisher.
+    # PFAD B: EIN expliziter No-Market-Block statt aller drei. Ohne ihn würde das
+    # Modell die Preisregeln aus _SYSTEM ("leite eine grobe Spanne ab") weiter
+    # befolgen und aus den Web-Snippets eine Marktspanne konstruieren — die drei
+    # Block-Funktionen liefern bei fehlendem Median nur Leerstrings, Schweigen
+    # allein reicht also nicht.
+    if markt_verfuegbar:
+        markt_block = markt_prompt_block(marktanalyse)
+        preis_block = preis_prompt_block(price_assessment)
+        strategie_block = verkaufs_prompt_block(strategie)
+    else:
+        markt_block = verkaufs_no_market_prompt_block()
+        preis_block = ""
+        strategie_block = ""
     user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx,
                                          markt_block, preis_block, strategie_block, evidence_block]))
     result = await call_gemini_json(_SYSTEM, user_msg)
@@ -322,6 +377,15 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         # Verkaufsdauer-Zahl ("innerhalb von 3-4 Wochen"), falls das LLM sie trotz
         # Anweisung erzeugt hat. Nur in Sätzen mit Verkaufs-/Vermarktungskontext.
         result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
+        # P1 #2: Sicherheitsnetz NACH dem Call. Im No-Market-Pfad verbietet der
+        # Prompt bereits jedes Preisurteil und jede Marktspanne — dieser Guard
+        # entfernt eine trotzdem in den Freitext geschriebene Marktpreisbehauptung
+        # (qualitatives Urteil ODER Euro-Spanne mit Marktbezug). NUR im No-Market-
+        # Pfad aufgerufen: bei belastbarer Markt-Evidence (PFAD A) bleibt das echte
+        # kanonische Preisurteil unberührt. Andere Kostenangaben (z.B.
+        # Reparaturkosten) und die Inserats-Vergleichstabelle bleiben unangetastet.
+        if not markt_verfuegbar:
+            result["bericht"] = neutralisiere_no_market_preisurteil(result["bericht"])
         # §Phase 8: letztes Sicherheitsnetz gegen ausgeschlossene Rückrufe im
         # Freitext-Bericht (dieselbe Absicherung wie im Kaufcheck, siehe kaufcheck.py).
         if baureihe and baureihe.get("rueckrufe"):
@@ -354,8 +418,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     if marktanalyse and marktanalyse.median_eur:
         result["marktpreis_min"] = marktanalyse.spanne_min_eur
         result["marktpreis_max"] = marktanalyse.spanne_max_eur
-    else:
+    elif markt_verfuegbar:
         enrich_marktvergleich_spanne(insights, result.get("marktpreis_min"), result.get("marktpreis_max"))
+    else:
+        # PFAD B: kein belastbarer Markt -> Preisfelder bleiben leer, egal was das
+        # Modell geliefert hat. Kein Dummy-Wert, keine LLM-Spanne in die Insights.
+        result["marktpreis_min"] = None
+        result["marktpreis_max"] = None
 
     # §10/§11/§13: Preisstrategie DETERMINISTISCH aus dem validierten Marktvergleich
     # verankern — die vom LLM genannten Preise werden NICHT übernommen. Verkaufszeiten
@@ -367,6 +436,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         result["verkaufsdauer_schnell"] = strategie["verkaufsdauer_schnell"]
         result["verkaufsdauer_empfohlen"] = strategie["verkaufsdauer_empfohlen"]
         result["verkaufsdauer_maximal"] = strategie["verkaufsdauer_maximal"]
+    else:
+        # PFAD B: kein belastbarer Markt -> KEINE Preisstrategie, unabhängig davon,
+        # was das LLM geliefert hat. Kein 0 €, kein erfundener Fahrzeugwert, keine
+        # Vermarktungs-Kategorie ohne Datenbasis.
+        for _feld in ("schnellverkaufs_preis", "empfohlener_preis", "maximal_preis",
+                      "verkaufsdauer_schnell", "verkaufsdauer_empfohlen", "verkaufsdauer_maximal"):
+            result[_feld] = None
     result["verkaufsdauer_tage_schnell"] = None
     result["verkaufsdauer_tage_maximal"] = None
 
@@ -411,6 +487,11 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         "marktpreis_max":              result.get("marktpreis_max"),
         "baureihe_erkannt":            baureihe["id"] if baureihe else None,
         "motor_erkannt":               motor_match["variante_id"] if motor_match else None,
+        # P1 #1: Verlässlichkeit der Fahrzeug-Zuordnung (analog KaufCheck). Bei
+        # niedriger Konfidenz bleibt `baureihe_erkannt` leer und es entstehen keine
+        # fahrzeugspezifischen DB-Aussagen — die übrigen Bausteine laufen weiter.
+        "identitaet_konfidenz":        identitaet["konfidenz"],
+        "identitaet_match_art":        identitaet["match_art"],
         "quelle":                      quelle,
         "vertrauen":                   vertrauen,
         "belege":                      belege,
