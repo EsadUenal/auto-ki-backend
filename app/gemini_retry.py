@@ -5,6 +5,9 @@ transienten Fehlerklassen, die bei einem Gemini-Aufruf auftreten können:
   429 RESOURCE_EXHAUSTED  → warte retryDelay aus dem Fehler (oder exponentiell
                             wachsend, falls Google keinen Wert mitliefert)
   503 UNAVAILABLE         → exponentielles Backoff (kurze Überlast-Spitzen)
+  504 DEADLINE_EXCEEDED   → dasselbe Backoff wie 503 (Generierung lief noch,
+                            riss aber die Server-Deadline) — siehe
+                            _ist_transienter_serverfehler
   Netzwerkfehler/Timeouts → exponentielles Backoff (httpx.TransportError:
                             Verbindungsabbruch, Timeout, DNS-Fehler, ...)
 
@@ -73,7 +76,8 @@ class RateLimitExhausted(GeminiFehlgeschlagen):
 
 
 class GeminiVoruebergehendNichtErreichbar(GeminiFehlgeschlagen):
-    """503 Überlastung oder Netzwerkfehler — nach Ausschöpfen aller Retries."""
+    """503 Überlastung, 504 Deadline oder Netzwerkfehler — nach Ausschöpfen
+    aller Retries."""
     pass
 
 
@@ -81,8 +85,39 @@ def _is_429(exc: Exception) -> bool:
     return isinstance(exc, ClientError) and exc.code == 429
 
 
-def _is_503(exc: Exception) -> bool:
-    return isinstance(exc, ServerError) and exc.code == 503
+# Transiente Server-Antworten von Gemini. BEIDE bedeuten fachlich dasselbe:
+# "gerade nicht lieferbar, gleich vielleicht schon" — und beide werden deshalb
+# mit derselben bestehenden Backoff-Mechanik wiederholt (KEINE zweite parallele
+# Retry-Architektur).
+#
+#   503 UNAVAILABLE       Google lehnt direkt ab ("This model is currently
+#                         experiencing high demand").
+#   504 DEADLINE_EXCEEDED Die Generierung lief noch, hat aber die Deadline
+#                         gerissen, die der google-genai-SDK aus
+#                         HttpOptions.timeout als Header `X-Server-Timeout`
+#                         mitschickt. Das ist eine ECHTE Serverantwort (nicht
+#                         der lokale httpx-Timeout — der käme als
+#                         httpx.TimeoutException und wird unten separat
+#                         behandelt).
+#
+# Warum das vorher fehlte und was es angerichtet hat (Root-Cause-Audit):
+# `ServerError(504)` ist weder `GeminiFehlgeschlagen` noch `RechercheUnzureichend`.
+# Der Fehler lief deshalb an JEDEM Router-`except` vorbei bis in
+# `main.generic_exception_handler` -> HTTP 500 "Ein interner Fehler ist
+# aufgetreten", OHNE `refund_check_credit`. Der Nutzer verlor bei jeder
+# Provider-Störung ein bezahltes Check-Kontingent und bekam eine unbrauchbare
+# Meldung. Zusätzlich wiederholte NIEMAND den Call: das SDK-eigene Retry ist
+# mangels `retry_options` deaktiviert (retry_args(None) -> stop_after_attempt(1)),
+# obwohl der SDK-Default 504 sehr wohl als retrybar führt.
+#
+# Bewusst NICHT als transient gewertet: 500, 502 und sonstige 5xx. Ein
+# pauschales "alle 5xx sind transient" würde echte, dauerhafte Fehler hinter
+# minutenlangen Retries verstecken.
+_TRANSIENTE_SERVER_CODES = (503, 504)
+
+
+def _ist_transienter_serverfehler(exc: Exception) -> bool:
+    return isinstance(exc, ServerError) and exc.code in _TRANSIENTE_SERVER_CODES
 
 
 def _extract_retry_delay(exc: ClientError) -> float | None:
@@ -164,18 +199,18 @@ def with_retry_sync(fn: Callable[[], T]) -> T:
             time.sleep(delay)
 
         except ServerError as exc:
-            if not _is_503(exc):
-                raise  # andere 5xx sofort
+            if not _ist_transienter_serverfehler(exc):
+                raise  # andere 5xx (500, 502, …) sofort
 
             attempts_503 += 1
             if attempts_503 >= MAX_RETRIES_503:
                 raise GeminiVoruebergehendNichtErreichbar(
-                    f"Gemini 503 nach {MAX_RETRIES_503} Versuchen weiterhin überlastet."
+                    f"Gemini {exc.code} nach {MAX_RETRIES_503} Versuchen weiterhin nicht lieferbar."
                 ) from exc
 
             delay = _exponential_delay(RETRY_DELAY_503_S, attempts_503 - 1, RETRY_DELAY_503_CAP_S)
-            log.warning("Gemini 503 transient (Versuch %d/%d). Warte %.0f s …",
-                        attempts_503, MAX_RETRIES_503, delay)
+            log.warning("Gemini %s transient (Versuch %d/%d). Warte %.0f s …",
+                        exc.code, attempts_503, MAX_RETRIES_503, delay)
             time.sleep(delay)
 
         except httpx.TransportError as exc:
@@ -231,18 +266,18 @@ async def with_retry(fn: Callable[[], Awaitable[T]]) -> T:
             await asyncio.sleep(delay)
 
         except ServerError as exc:
-            if not _is_503(exc):
-                raise
+            if not _ist_transienter_serverfehler(exc):
+                raise  # andere 5xx (500, 502, …) sofort
 
             attempts_503 += 1
             if attempts_503 >= MAX_RETRIES_503:
                 raise GeminiVoruebergehendNichtErreichbar(
-                    f"Gemini 503 nach {MAX_RETRIES_503} Versuchen weiterhin überlastet."
+                    f"Gemini {exc.code} nach {MAX_RETRIES_503} Versuchen weiterhin nicht lieferbar."
                 ) from exc
 
             delay = _exponential_delay(RETRY_DELAY_503_S, attempts_503 - 1, RETRY_DELAY_503_CAP_S)
-            log.warning("Gemini 503 async transient (Versuch %d/%d). Warte %.0f s …",
-                        attempts_503, MAX_RETRIES_503, delay)
+            log.warning("Gemini %s async transient (Versuch %d/%d). Warte %.0f s …",
+                        exc.code, attempts_503, MAX_RETRIES_503, delay)
             await asyncio.sleep(delay)
 
         except httpx.TransportError as exc:
