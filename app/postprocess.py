@@ -333,6 +333,9 @@ _MARKTPREIS_KONTEXT_WORTE = (
     "marktpreis", "marktwert", "marktvergleich", "marktspanne", "vergleichspreis",
     "median", "preiseinschätzung", "preiseinschaetzung", "preisbewertung",
     "marktniveau", "markttrend", "marktlage",
+    # P2-B: zusätzlich typische TABELLEN-Zeilenlabels, mit denen ein Modell eine
+    # Marktaussage in eine Tabelle schreibt statt in den Fließtext.
+    "preisbereich", "preisspanne", "markterwartung", "preisempfehlung",
 )
 _RE_MARKTURTEIL_WORT = re.compile(
     r"\b(?:extrem\s+)?g[üu]nstig(?:e|er|es|en)?\b|\b(?:extrem\s+)?teuer(?:e|er|es|en)?\b"
@@ -342,12 +345,32 @@ _RE_MARKTURTEIL_WORT = re.compile(
 _RE_MARKT_RICHTUNG = re.compile(
     r"\b[üu]ber\s+(?:dem\s+)?markt(?:preis|wert)?\b|\bunter\s+(?:dem\s+)?markt(?:preis|wert)?\b",
     re.IGNORECASE)
+# P2-B-Nebenbefund (Bug im Bestand): die Vorfassung endete auf `(?:€|EUR)\b`.
+# `\b` verlangt einen Wortzeichen-Übergang — `€` ist selbst KEIN Wortzeichen, und
+# auf einen Betrag folgt praktisch immer Leerzeichen, Satzende oder `|`. Dadurch
+# matchte der Guard NIE einen Betrag in der gebräuchlichen €-Schreibweise
+# ("8.500 €") und griff faktisch nur bei "EUR". Die Wortgrenze gehört deshalb
+# ausschliesslich hinter die BUCHSTABEN-Formen.
+_WAEHRUNG = r"(?:€|EUR\b|Euro\b)"
 _RE_EURO_ZAHL = re.compile(
-    r"\d[\d.,]*\s*(?:[-–—]\s*\d[\d.,]*\s*)?(?:€|EUR)\b", re.IGNORECASE)
+    r"\d[\d.,]*\s*(?:[-–—]\s*\d[\d.,]*\s*)?" + _WAEHRUNG, re.IGNORECASE)
+
+# P2-B: Eine SPANNE ("7.000–9.000 EUR", "7.000 bis 9.000 €") ist für sich genommen
+# bereits eine Marktaussage — ein einzelner Betrag kann dagegen der legitime eigene
+# Angebots-/Inseratspreis oder eine Reparaturkostenangabe sein. Deshalb triggert die
+# Spanne OHNE zusätzlichen Marktkontext, der Einzelbetrag nur MIT.
+_RE_EURO_SPANNE = re.compile(
+    r"\d[\d.,]*\s*(?:€|EUR|Euro)?\s*(?:[-–—]|bis)\s*\d[\d.,]*\s*" + _WAEHRUNG,
+    re.IGNORECASE)
 
 _NO_MARKET_NEUTRALSATZ = (
     "Eine belastbare Marktpreisbewertung ist für diesen Check nicht verfügbar."
 )
+# Ersatz INNERHALB einer Tabellenzelle — kurz, damit die Tabelle lesbar bleibt.
+_NO_MARKET_ZELLE = "nicht verfügbar"
+
+# Trennzeile einer Markdown-Tabelle (|---|:---:|) — enthält nie Inhalt.
+_IST_TABELLEN_TRENNZEILE = re.compile(r"^\s*\|[\s\|:\-]+\|?\s*$")
 
 
 def _hat_marktkontext(text: str) -> bool:
@@ -368,13 +391,75 @@ def _ist_marktpreisurteil(satz: str, *, zeile_hat_marktkontext: bool = False) ->
     return False
 
 
+def _neutralisiere_tabellenzeile(zeile: str) -> str:
+    """P2-B: Marktpreis-Behauptungen in einer Markdown-TABELLENZEILE neutralisieren.
+
+    Vorher wurden Tabellenzeilen komplett übersprungen. Begründung damals: der
+    Inserats-Preis in der Vergleichstabelle ist KEIN Marktpreisurteil. Das stimmt
+    weiterhin — nur galt dieselbe Ausnahme eben auch für eine vom Modell frei
+    erfundene Zeile wie `| Marktwert | 8.500 € |`.
+
+    Deshalb wird jetzt ZELLENWEISE entschieden statt die ganze Zeile pauschal zu
+    behalten oder zu verwerfen:
+
+      * Urteilswort in der Zelle (marktgerecht/günstig/teuer/überteuert/fair/
+        Schnäppchen) -> Zelle neutralisieren. Diese Wörter sind nie neutral gemeint.
+      * Euro-SPANNE in der Zelle -> neutralisieren, auch ohne weiteren Kontext
+        (eine Spanne ist eine Marktaussage, siehe _RE_EURO_SPANNE).
+      * Einzelner Euro-Betrag -> nur neutralisieren, wenn die ZEILE Marktkontext
+        trägt (Zeilenlabel wie "Marktwert", "Preisbereich", "Median"). Sonst bleibt
+        er stehen: das ist der eigene Angebotspreis oder eine Reparaturkostenangabe.
+      * Alles andere bleibt UNVERÄNDERT — Baujahr, Kilometerstand, Leistung,
+        Verbrauch, Bewertungssymbole. Es wird ausdrücklich nicht "jede Zahl in
+        Tabellen" entfernt.
+    """
+    if _IST_TABELLEN_TRENNZEILE.match(zeile):
+        return zeile
+
+    zeile_kontext = _hat_marktkontext(zeile)
+    # Führendes/abschließendes "|" erzeugt leere Randfelder — die bleiben erhalten,
+    # damit die Tabellenstruktur exakt gleich bleibt.
+    zellen = zeile.split("|")
+    geaendert = False
+    for i, zelle in enumerate(zellen):
+        if not zelle.strip():
+            continue
+        treffer = (
+            _RE_MARKTURTEIL_WORT.search(zelle)
+            or _RE_MARKT_RICHTUNG.search(zelle)
+            or _RE_EURO_SPANNE.search(zelle)
+            or (_RE_EURO_ZAHL.search(zelle) and zeile_kontext)
+        )
+        if not treffer:
+            continue
+        # Das Zeilenlabel selbst (z.B. "Marktwert") ist die Frage, nicht die
+        # Behauptung — es bleibt stehen, damit die Tabelle verständlich bleibt.
+        # Neutralisiert wird nur die Zelle, die den Wert/das Urteil trägt.
+        if _hat_marktkontext(zelle) and not (
+            _RE_EURO_ZAHL.search(zelle) or _RE_MARKTURTEIL_WORT.search(zelle)
+            or _RE_MARKT_RICHTUNG.search(zelle)
+        ):
+            continue
+        fuehrend = " " if zelle.startswith(" ") else ""
+        folgend = " " if zelle.endswith(" ") else ""
+        zellen[i] = f"{fuehrend}{_NO_MARKET_ZELLE}{folgend}"
+        geaendert = True
+
+    if geaendert:
+        log.info("No-Market-Preisurteil-Guard: Tabellenzelle im Bericht neutralisiert.")
+    return "|".join(zellen)
+
+
 def neutralisiere_no_market_preisurteil(text: str) -> str:
     """Entfernt konkrete Marktpreisbehauptungen und -urteile aus dem Freitext —
     NUR aufzurufen, wenn für diesen Check KEINE belastbare Markt-Evidence vorliegt
     (research_status == "completed_no_market"). Andere Kostenangaben (z.B.
-    Reparaturkosten aus der Fahrzeugdatenbank) bleiben unberührt, ebenso
-    Markdown-Tabellenzeilen (der Inserats-Preis in der Vergleichstabelle ist
-    KEIN Marktpreisurteil)."""
+    Reparaturkosten aus der Fahrzeugdatenbank) bleiben unberührt.
+
+    P2-B: Markdown-Tabellen werden nicht mehr pauschal übersprungen, sondern
+    ZELLENWEISE geprüft (siehe `_neutralisiere_tabellenzeile`) — eine erfundene
+    Zeile `| Marktwert | 8.500 € |` wird neutralisiert, während Baujahr,
+    Kilometerstand, Leistung und der eigene Angebotspreis unverändert bleiben."""
     if not text:
         return text
 
@@ -386,7 +471,8 @@ def neutralisiere_no_market_preisurteil(text: str) -> str:
         neue_zeilen = []
         for zeile in zeilen:
             if _IST_TABELLENZEILE.match(zeile):
-                neue_zeilen.append(zeile)
+                # P2-B: nicht mehr pauschal überspringen, sondern zellenweise prüfen.
+                neue_zeilen.append(_neutralisiere_tabellenzeile(zeile))
                 continue
             saetze = _RE_SATZGRENZE.split(zeile) if zeile.strip() else [zeile]
             zeile_hat_marktkontext = _hat_marktkontext(zeile)

@@ -463,7 +463,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
 
     # Phase 2: Kern-Erkenntnisse deterministisch verdichten (Marktposition, fehlende
     # Angaben, wertsteigernde Ausstattung, Markt-Datenqualität) — kein weiteres LLM.
-    key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights, price_assessment)
+    # P2-A: `identitaet` mitgeben — bei nicht belastbarer Zuordnung entsteht ein
+    # erklärendes Key-Finding ("Fahrzeug nicht eindeutig identifiziert") statt einer
+    # stillen Einschränkung. Die Unterdrückung der DB-Fakten selbst passiert bereits
+    # oben im Identity-Trust-Gate; hier wird sie nur für den Nutzer sichtbar.
+    key_findings = build_key_findings_verkauf(req, baureihe, motor_match, insights,
+                                              price_assessment, identitaet=identitaet)
 
     # Phase 4: deterministische Inseratsanalyse (Qualität, fehlende Angaben,
     # Verkaufsargumente, Widersprüche, Titelvorschlag) — kein LLM. Die optimierte

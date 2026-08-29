@@ -449,10 +449,44 @@ def _ausstattung_treffer(ausstattung: list[str]) -> list[str]:
     return gefunden
 
 
+def _identitaets_finding_verkauf(fehlende_angabe: str | None) -> KeyFinding:
+    """Unsichere Fahrzeugzuordnung im VerkaufsCheck sichtbar machen (P2-A).
+
+    Gegenstück zu `_identitaets_finding` (Kaufcheck) mit derselben Kernregel —
+    KEINE vermutete Baureihe nennen, denn genau diese Zuordnung war ja nicht
+    belastbar. Eigene Funktion statt eines gemeinsamen Textes, weil der letzte
+    Halbsatz produktspezifisch ist: der Kaufcheck verweist auf seine
+    Prüflisten, der Verkaufscheck auf Inseratsanalyse und Verkaufstipps. Der
+    gefreezte Kaufcheck-Text bleibt dadurch unangetastet.
+
+    Bewusst STUFE_WARNUNG und kein harter Safety-Floor: es ist eine
+    Transparenz-Information, kein Mangel am Fahrzeug. Formulierung sachlich,
+    ohne Angst-/Fehlerton.
+    """
+    fehlt = fehlende_angabe or "die genaue Modell- und Generationsbezeichnung"
+    return KeyFinding(
+        id="", kategorie="identitaet", stufe=STUFE_WARNUNG, icon="❓",
+        titel="Fahrzeug nicht eindeutig identifiziert",
+        beschreibung="Die genaue Baureihe/Motorisierung konnte aus deinen Angaben nicht "
+                     "sicher bestimmt werden. Fahrzeugspezifische Hinweise wurden deshalb "
+                     "bewusst eingeschränkt — Inseratsanalyse, Verkaufstipps und die "
+                     "Bewertung deiner Angaben gelten unverändert.",
+        aktion=f"Für eine gezieltere Analyse bitte {fehlt} nachtragen.",
+        prioritaet=_P_IDENTITAET)
+
+
 def build_key_findings_verkauf(req, baureihe: dict | None, motor_match: dict | None,
                                insights: list[Insight],
-                               price_assessment: PriceAssessment | None = None) -> list[KeyFinding]:
+                               price_assessment: PriceAssessment | None = None,
+                               identitaet: dict | None = None) -> list[KeyFinding]:
+    """`identitaet` (optional, P2-A): Info-dict aus
+    `car_lookup.find_baureihe_mit_vertrauen`. Ist die Zuordnung nicht belastbar,
+    entsteht ein erklärendes Finding statt einer stillen Leerausgabe. Der
+    Parameter ist additiv — ohne ihn verhält sich die Funktion exakt wie bisher."""
     findings: list[KeyFinding] = []
+
+    if identitaet is not None and not identitaet.get("belastbar", True):
+        findings.append(_identitaets_finding_verkauf(identitaet.get("fehlende_angabe")))
 
     # ── A) Marktposition aus dem KANONISCHEN Preisurteil (§6) ────────────────────
     mv = _marktvergleich_insight(insights)
