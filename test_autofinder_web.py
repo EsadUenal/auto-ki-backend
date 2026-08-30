@@ -542,6 +542,56 @@ check("V: Kandidat, der sich auf eine Marktplatz-Quelle stuetzt -> abgelehnt",
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# W) Kurze Modellnamen — Belegabgleich auf Wortgrenzen statt Substring
+# ══════════════════════════════════════════════════════════════════════════
+# Ohne Wortgrenzen wuerde "i3" auch in "i30" und "C4" auch in "C4H" als belegt
+# gelten. Weil dieser Abgleich Teil des Safety-Gates ist, wird er hier direkt
+# und vollstaendig geprueft.
+def _match(begriff, text):
+    return afw._kommt_vor(begriff, afw._normalisiere_beleg(text))
+
+
+check("W-A: echtes 'BMW i3' -> Match",
+      _match("i3", "BMW i3 Elektro 170 PS Baujahr 2018"))
+check("W-B: 'Hyundai i30' bestaetigt NICHT 'i3'",
+      not _match("i3", "Hyundai i30 Kombi Diesel 136 PS"))
+check("W-C: echtes 'Citroën C4' -> Match",
+      _match("C4", "Citroën C4 BlueHDi 130 Diesel"))
+check("W-C2: Unicode-/Bindestrich-Schreibweisen werden gefaltet "
+      "('Citroën' findet 'CITROEN-C4')",
+      _match("Citroën", "CITROEN-C4 PureTech 130"))
+check("W-D: eingebettetes 'C4H' bestaetigt NICHT 'C4'",
+      not _match("C4", "Renault C4H Limousine Studie"))
+check("W-E: echtes 'Audi A3' -> Match",
+      _match("A3", "Audi A3 Sportback 35 TDI 150 PS"))
+check("W-F: 'A31' bestaetigt NICHT 'A3'", not _match("A3", "Audi A31 Studie"))
+check("W-F2: 'A3X' bestaetigt NICHT 'A3'", not _match("A3", "Audi A3X Concept"))
+check("W-G: normale, lange Modellnamen weiterhin unveraendert erkannt",
+      _match("Megane", "Renault Megane Grandtour Blue dCi 150")
+      and _match("Grandtour", "Renault Megane Grandtour Blue dCi 150"))
+check("W: auch Zahlen werden auf Wortgrenzen geprueft — '150' gilt NICHT "
+      "als belegt durch '1500'",
+      not _match("150", "Drehmoment 1500 Nm") and _match("150", "Leistung 150 PS"))
+check("W: leerer/nur-Sonderzeichen-Begriff gilt nie als belegt",
+      not _match("", "irgendein text") and not _match("---", "irgendein text"))
+
+# Gate-Ebene: ein Kandidat "BMW i3", dessen einziger Beleg von einem i30
+# handelt, muss abgelehnt werden.
+_EV_I30 = [{
+    "url": "https://www.hyundai.de/modelle/i30/",
+    "title": "Hyundai i30 Kombi — Technische Daten",
+    "content": "Der Hyundai i30 Kombi ist als Diesel mit 136 PS erhaeltlich, Baujahr ab 2018.",
+}]
+_k_w, _g_w = afw._pruefe_kandidat({
+    "marke": "BMW", "modell": "i3", "generation": "I01", "motor": "i3",
+    "baujahr_von": 2018, "kraftstoff": "Diesel", "leistung_ps": 136,
+    "evidence": [1],
+}, _EV_I30)
+check("W: Kandidat 'BMW i3', belegt nur durch einen Hyundai-i30-Treffer -> "
+      "abgelehnt (kein Substring-Fehltreffer)", _k_w is None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Quellenlage: eine einzelne Nicht-Primaerquelle reicht NICHT
 # ══════════════════════════════════════════════════════════════════════════
 _EV_EINZEL_SCHWACH = [{

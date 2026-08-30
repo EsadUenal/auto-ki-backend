@@ -428,6 +428,64 @@ def _int_oder_none(wert: Any) -> int | None:
     return None
 
 
+# ── Belegabgleich mit Wortgrenzen (Runde-4-Haertung) ────────────────────────
+#
+# WARUM NICHT EINFACH `needle in text`:
+# Fahrzeugmodelle heissen oft nur zwei bis drei Zeichen — "i3", "C4", "A3",
+# "A1". Ein reiner Substring-Test bestaetigt "i3" dann auch in "i30", "C4" in
+# "C4H" und "A3" in "A31". Genau solche Nachbarmodelle stehen in Suchtreffern
+# regelmaessig nebeneinander, ein Fehltreffer waere also nicht theoretisch,
+# sondern der Normalfall — und er wuerde ein Fahrzeug als "belegt" durchwinken,
+# das in der Quelle gar nicht vorkommt.
+#
+# Der Abgleich laeuft deshalb ueber Wortgrenzen auf einer normalisierten Form:
+# Umlaute/Akzente werden gefaltet (Citroën -> citroen), Binde-/Schraegstriche
+# und Sonderzeichen zu Leerzeichen, Mehrfach-Leerzeichen kollabiert. Ein Treffer
+# zaehlt nur, wenn links UND rechts eine Wortgrenze steht — wobei die Grenze
+# bewusst NICHT `\b` ist: `\b` liegt in "i30" auch zwischen "i3" und "0" nicht,
+# aber in "C4H" zwischen "4" und "H" ebenfalls nicht — verlassen wir uns auf
+# `\b`, waere "A3" in "A3X" trotzdem kein Treffer, "C4" in "C4 H" hingegen
+# schon. Sicherer und einfacher nachvollziehbar: das Nachbarzeichen darf kein
+# Buchstabe und keine Ziffer sein.
+_UMLAUT_FALTUNG = str.maketrans({
+    "ä": "a", "ö": "o", "ü": "u", "ß": "ss",
+    "á": "a", "à": "a", "â": "a", "ã": "a", "å": "a",
+    "é": "e", "è": "e", "ê": "e", "ë": "e",
+    "í": "i", "ì": "i", "î": "i", "ï": "i",
+    "ó": "o", "ò": "o", "ô": "o", "õ": "o",
+    "ú": "u", "ù": "u", "û": "u",
+    "ç": "c", "ñ": "n", "š": "s", "ž": "z", "č": "c",
+})
+
+
+def _normalisiere_beleg(text: str) -> str:
+    """Vereinheitlicht Schreibweisen fuer den Belegabgleich.
+
+    Kleinschreibung, Umlaut-/Akzentfaltung, alles Nicht-Alphanumerische zu
+    Leerzeichen. Damit greift derselbe Vergleich fuer "Citroën C4",
+    "citroen c4" und "CITROEN-C4".
+    """
+    gefaltet = str(text or "").lower().translate(_UMLAUT_FALTUNG)
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", gefaltet)).strip()
+
+
+def _kommt_vor(begriff: str, normtext: str) -> bool:
+    """True, wenn `begriff` im normalisierten Belegtext als eigenstaendige
+    Zeichenfolge vorkommt — nicht eingebettet in ein laengeres Wort.
+
+    Mehrwortige Begriffe ("3er Touring", "Blue dCi 150") werden als
+    zusammenhaengende Folge geprueft; die inneren Leerzeichen sind nach der
+    Normalisierung einheitlich.
+    """
+    norm_begriff = _normalisiere_beleg(begriff)
+    if not norm_begriff:
+        return False
+    muster = re.escape(norm_begriff).replace(r"\ ", r"\s+")
+    # Nachbarzeichen duerfen keine Buchstaben/Ziffern sein -> "i3" trifft in
+    # "bmw i3 elektro", aber nicht in "hyundai i30".
+    return re.search(rf"(?<![a-z0-9]){muster}(?![a-z0-9])", normtext) is not None
+
+
 def _pruefe_kandidat(roh: dict, evidenzen: list[dict]) -> tuple[WebKandidat | None, str]:
     """Prueft EINEN rohen Gemini-Kandidaten. Gibt `(kandidat_oder_None, grund)`.
 
@@ -482,35 +540,40 @@ def _pruefe_kandidat(roh: dict, evidenzen: list[dict]) -> tuple[WebKandidat | No
     # ── 3. Gegenprobe gegen den Text der ZITIERTEN Belege ────────────────────
     # Hier faellt durch, was Gemini aus eigenem Wissen ergaenzt hat, selbst wenn
     # es eine formal gueltige Belegnummer angibt.
-    text = _belegtext(indices, evidenzen)
+    # `_kommt_vor` prueft auf Wortgrenzen statt auf blosse Teilzeichenfolgen —
+    # sonst wuerde "i3" in "i30" und "C4" in "C4H" als Beleg durchgehen.
+    text = _normalisiere_beleg(_belegtext(indices, evidenzen))
     verifiziert: list[str] = []
 
-    if marke.lower() not in text:
+    if not _kommt_vor(marke, text):
         return None, "Marke kommt in den zitierten Belegen nicht vor"
     verifiziert.append("marke")
 
-    if modell.lower() not in text:
+    if not _kommt_vor(modell, text):
         return None, "Modell kommt in den zitierten Belegen nicht vor"
     verifiziert.append("modell")
 
-    if not any(w in text for w in _KRAFTSTOFF_BELEGWORTE[kraftstoff]):
+    if not any(_kommt_vor(w, text) for w in _KRAFTSTOFF_BELEGWORTE[kraftstoff]):
         return None, "Kraftstoff ist in den zitierten Belegen nicht belegt"
     verifiziert.append("kraftstoff")
 
     if leistung_ps is not None:
-        if str(leistung_ps) not in text:
+        # Auch hier zaehlt die Wortgrenze: "150" darf nicht durch "1500" oder
+        # eine Jahreszahl wie "2150" bestaetigt werden.
+        if not _kommt_vor(str(leistung_ps), text):
             return None, "Leistungsangabe kommt in den zitierten Belegen nicht vor"
         verifiziert.append("leistung_ps")
 
-    if baujahr_von is not None and str(baujahr_von) in text:
+    if baujahr_von is not None and _kommt_vor(str(baujahr_von), text):
         verifiziert.append("baujahr_von")
-    if generation and generation.lower() in text:
+    if generation and _kommt_vor(generation, text):
         verifiziert.append("generation")
 
     # ── 4. Normalisierung der weichen Felder ─────────────────────────────────
     getriebe_roh = (roh.get("getriebe") or "").strip().lower()
     getriebe = sorted(normalisiere_getriebe(json.dumps([getriebe_roh]))) if getriebe_roh else []
-    if getriebe and any(w in text for w in ("automatik", "schalt", "manuell", "dsg", "dct")):
+    if getriebe and any(_kommt_vor(w, text)
+                        for w in ("automatik", "schalt", "manuell", "dsg", "dct")):
         verifiziert.append("getriebe")
 
     karosserie_roh = (roh.get("karosserie") or "").strip().lower()
