@@ -1211,10 +1211,24 @@ class AutoFinderKandidatOut(BaseModel):
     karosserie: list[str] = Field(default_factory=list)
 
     # -- Ranking --
+    # `match_score` ist der FINALE Score, der die Reihenfolge bestimmt — also
+    # `base_match_score + budget_adjustment` (Runde 3). Ohne Budgetangabe bzw.
+    # bei UNKNOWN ist `budget_adjustment == 0.0` und `match_score ==
+    # base_match_score`, also identisch zum Runde-2-Verhalten.
     match_score: float
     datenqualitaet: float
     match_gruende: list[str] = Field(default_factory=list)
     trade_offs: list[str] = Field(default_factory=list)
+
+    # -- Budget-Plausibilität (Runde 3, additiv — Gemini urteilt, KEIN Marktpreis) --
+    # Default "UNKNOWN": ohne Budgetangabe oder bei Gemini-Ausfall bleibt jeder
+    # Kandidat neutral UNKNOWN, niemals ein geratener Ersatzwert (§7/§8).
+    budget_status: str = "UNKNOWN"        # IN_BUDGET | NEAR_BUDGET | OUT_OF_BUDGET | UNKNOWN
+    budget_confidence: str = "UNKNOWN"    # HIGH | MEDIUM | LOW | UNKNOWN
+    # Nachvollziehbarkeit (§12): Foundation-Score VOR der Budget-Anpassung, und
+    # die tatsächlich angewendete (streng begrenzte) Anpassung selbst.
+    base_match_score: float | None = None
+    budget_adjustment: float = 0.0
 
     # -- Herkunft --
     source_type: str = "internal_db"   # "internal_db" | "web_discovered" (Runde 2: immer internal_db)

@@ -8,6 +8,16 @@ nach), no_internal_match, Coverage-/Diesel-Stadt-Warnungen, Input-Validierung
 (422), Trust/rejected-Regression, Determinismus, Data-Scope-Hinweis, und dass
 Runde 2 strukturell weiterhin 0 externe Calls macht.
 
+Runde 3 (Budget-Plausibilität) fügt einen ECHTEN Gemini-Call in den Endpunkt
+ein, sobald ein Budget angegeben wird — deshalb wird `call_gemini_json` hier
+global auf einen neutralen Stub gepatcht (siehe unten), der IMMER eine leere
+Kandidatenliste liefert (-> alle Kandidaten bleiben budget_status=UNKNOWN,
+budget_adjustment=0.0). Das hält diese Datei bei ihrem ursprünglichen Zweck
+(HTTP-Vertrag der Runde 2, unbeeinflusst von Budget-Feinheiten) und weiterhin
+vollständig netzwerkfrei. Die Budget-Feinheiten selbst (IN_BUDGET-Bonus,
+Gemini-Ausfall-Fallback, Validierung kaputter Antworten, ...) deckt die
+separate test_autofinder_budget.py mit gezielten Fake-Antworten ab.
+
 Kein Netzwerk, kein LLM. Ausfuehren:  python test_autofinder_api.py
 """
 import importlib
@@ -45,7 +55,19 @@ from fastapi.testclient import TestClient   # noqa: E402
 from app.main import app as fastapi_app     # noqa: E402
 import app.routers.autofinder as af_router  # noqa: E402
 import app.autofinder as af                 # noqa: E402
+import app.autofinder_budget as af_budget   # noqa: E402
 from app.rate_limit import limiter as _global_limiter   # noqa: E402
+
+
+async def _stub_gemini_neutral(system_prompt: str, user_msg: str) -> dict:
+    """Runde-3-Stub für diese Runde-2-Testdatei: liefert IMMER eine leere
+    Kandidatenliste (kein echter Netzwerk-/Gemini-Call). Wirkung im Router:
+    jeder Kandidat bleibt budget_status=UNKNOWN, budget_adjustment=0.0 — die
+    Reihenfolge bleibt identisch zur reinen Foundation-Sortierung."""
+    return {"candidates": []}
+
+
+af_budget.call_gemini_json = _stub_gemini_neutral
 
 client = TestClient(fastapi_app)   # OHNE `with` — kein Lifespan/Backup-Task nötig
 HEADERS = {"Authorization": "Bearer test-key-autofinder-api"}
