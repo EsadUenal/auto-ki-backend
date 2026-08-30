@@ -38,13 +38,27 @@ from app.utf8 import UTF8JSONResponse
 log = logging.getLogger(__name__)
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
-# 60/min: grosszügig genug für normale Filter-Klick-Nutzung (mehrere Suchen
-# pro Minute beim Anpassen von Filtern), endlich genug gegen Scraping/
-# Missbrauch eines Endpunkts ohne Check-Gate. Höher als KaufCheck/
-# VerkaufsCheck (10/min), weil dort das Check-Kontingent selbst bereits eine
-# harte Bremse ist — hier gibt es keine solche zweite Bremse.
+#
+# RATE-LIMIT-KLARSTELLUNG (Runde 2 P2-Cleanup):
+# `app/main.py` haengt bereits per SlowAPIMiddleware ein globales Default-
+# Limit (`app.rate_limit.RATE_LIMIT`, aktuell 20/min) an JEDEN Request —
+# unabhaengig davon, was hier steht. Ein hoeherer lokaler Wert (Runde 2 hatte
+# faelschlich 60/min dokumentiert) waere deshalb NIE wirksam: die Middleware
+# hat bereits vorher zugeschlagen. Geprueft wurde die einzige bestehende
+# Möglichkeit, davon abzuweichen — `Limiter.exempt` (siehe
+# app/routers/payments.py, Stripe-Webhook) — aber `exempt` schaltet für die
+# betroffene Route JEDE Pruefung ab (auch einen eigenen `.limit()` auf
+# DERSELBEN Limiter-Instanz), macht den Endpunkt also unlimitiert statt
+# separat limitiert. Das waere eine echte Schwächung, keine saubere Lösung.
+#
+# Deshalb bewusst Option A: der lokale Wert spiegelt exakt das globale
+# Default-Limit — kein irreführender höherer Wert, keine neue Rate-Limit-
+# Architektur, keine Änderung an app/rate_limit.py oder anderen Routen. Der
+# eigene Decorator bleibt trotzdem stehen (Konsistenz mit dem bestehenden
+# Muster bei KaufCheck/VerkaufsCheck: der Endpunkt dokumentiert sein Limit
+# selbst, statt sich implizit auf die App-weite Middleware zu verlassen).
 limiter = Limiter(key_func=get_remote_address)
-_AUTOFINDER_RATE_LIMIT = "60/minute"
+_AUTOFINDER_RATE_LIMIT = "20/minute"   # bewusst == app.rate_limit.RATE_LIMIT, siehe oben
 
 # §7: Pflicht-Transparenzhinweis — der aktuelle Bestand ist eine VIRA-Vor-
 # auswahl, kein vollständiger Marktüberblick. Zahl synchron mit dem

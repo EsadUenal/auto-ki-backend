@@ -323,6 +323,51 @@ check("§13: Router importiert kein Tavily/Gemini/Web-Modul",
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# S) Coverage-Warning — gezielter, realer Fall mit genau 2 internen
+# Kandidaten (Runde-2-P2-Cleanup, bisher nur implementiert, nicht getestet).
+# Realer Filter: Plug-in-Hybrid + Automatik + >=600 PS trifft in der
+# kanonischen DB exakt auf zwei Fahrzeuge (AMG S63 E Performance 802 PS,
+# AMG C63 E Performance 680 PS) — deterministisch reproduzierbar, kein
+# konstruiertes Fixture.
+# ══════════════════════════════════════════════════════════════════════════
+_reset_limiters()
+_body_low = {"kraftstoff": ["Plug-in-Hybrid"], "getriebe": ["automatik"], "leistung_min_ps": 600}
+r_low = post(_body_low)
+check("S: 200 bei niedriger Coverage", r_low.status_code == 200)
+data_low = r_low.json()
+check("S: status == 'ok' (NICHT no_internal_match — Kandidaten SIND vorhanden)",
+      data_low["status"] == "ok")
+check("S: genau 2 Kandidaten (kein erfundener Auffüller)",
+      len(data_low["kandidaten"]) == 2)
+check("S: total_candidates_considered == 2 (ehrlich, nicht beschönigt)",
+      data_low["total_candidates_considered"] == 2)
+check("S: Coverage-Warnung vorhanden",
+      any("wenige" in w.lower() for w in data_low["warnings"]))
+check("S: beide Kandidaten sind echte DB-Fahrzeuge (Plug-in-Hybrid, Automatik, >=600 PS)",
+      all(k["kraftstoff"] == "Plug-in-Hybrid" and "automatik" in k["getriebe"]
+          and (k["leistung_ps"] or 0) >= 600 for k in data_low["kandidaten"]))
+
+# Kontrastprobe 1: 0 Treffer -> no_internal_match, NICHT die Low-Coverage-Warnung
+_reset_limiters()
+r_null = post({"kraftstoff": ["Plug-in-Hybrid"], "getriebe": ["automatik"], "leistung_min_ps": 900})
+data_null = r_null.json()
+check("S: 0 Treffer -> status == 'no_internal_match' (nicht 'ok' mit Warnung)",
+      data_null["status"] == "no_internal_match")
+check("S: 0 Treffer -> KEINE Low-Coverage-Warnung, sondern die no_internal_match-Meldung",
+      not any("wenige" in w.lower() for w in data_null["warnings"]))
+
+# Kontrastprobe 2: großzügige Trefferzahl -> KEINE falsche Low-Coverage-Warnung
+_reset_limiters()
+r_viele = post({"kraftstoff": ["Plug-in-Hybrid"], "getriebe": ["automatik"], "leistung_min_ps": 300})
+data_viele = r_viele.json()
+check("S: Testvoraussetzung — >=3 interne Treffer vor Diversität",
+      data_viele["total_candidates_considered"] >= 3)
+check("S: bei ausreichender Coverage erscheint KEINE Low-Coverage-Warnung",
+      not any("wenige" in w.lower() for w in data_viele["warnings"]))
+check("S: bei ausreichender Coverage bleibt status == 'ok'", data_viele["status"] == "ok")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Score-Safety (§10): filters_applied spiegelt exakt die Eingabe, keine
 # versteckte Router-Logik verändert die Filter selbst.
 # ══════════════════════════════════════════════════════════════════════════
@@ -356,11 +401,20 @@ check("Performance: warm unter 150ms (§14)", max(_zeiten) < 150.0)
 # ══════════════════════════════════════════════════════════════════════════
 check("L: Endpoint traegt einen @limiter.limit(...)-Decorator",
       "@limiter.limit(" in _router_quelle)
+# P2-Cleanup: der routereigene Wert spiegelt bewusst exakt das globale
+# Default-Limit (20/min) — siehe Kommentar in app/routers/autofinder.py, warum
+# ein hoeherer lokaler Wert durch die globale SlowAPIMiddleware ohnehin nie
+# wirksam waere. Der Test prueft deshalb explizit gegen 20/min, nicht gegen
+# einen fiktiven groesseren Wert.
+check("L: routereigener Rate-Limit-Wert ist konsistent mit dem tatsaechlich "
+      "wirksamen globalen Default (20/minute) — keine irreführende Konfiguration",
+      "_AUTOFINDER_RATE_LIMIT = \"20/minute\"" in _router_quelle)
 _reset_limiters()
-_codes = [post({}).status_code for _ in range(80)]
-check("L: bei 80 Anfragen in Folge greift IRGENDEIN Rate-Limit (routereigenes "
-      "oder das globale Default-Limit; mind. ein 429)",
-      429 in _codes)
+_codes = [post({}).status_code for _ in range(25)]
+check("L: bei 25 Anfragen in Folge (Limit 20/min) greift das Rate-Limit "
+      "(mind. ein 429)", 429 in _codes)
+check("L: die ERSTEN 20 Anfragen sind NICHT limitiert (kein zu aggressives "
+      "Limit)", all(c == 200 for c in _codes[:20]))
 
 
 print()
