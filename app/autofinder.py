@@ -60,6 +60,14 @@ from app.database import get_baureihe, get_conn
 
 log = logging.getLogger(__name__)
 
+# Kraftstoff/Antrieb-Vokabular — spiegelt exakt die CHECK-Constraints von
+# `motorvariante.kraftstoff`/`motorvariante.antrieb` in db/schema.sql. Hier als
+# EINE Quelle der Wahrheit definiert (Runde 2, app/models.py importiert sie für
+# die HTTP-Eingabevalidierung), statt die fünf/drei Werte ein zweites Mal an
+# anderer Stelle zu wiederholen und stillschweigend auseinanderlaufen zu lassen.
+KRAFTSTOFF_WERTE = ("Benzin", "Diesel", "Elektro", "Plug-in-Hybrid", "Mild-Hybrid")
+ANTRIEB_WERTE = ("Heck", "Front", "Allrad")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # REQUEST — §4 der Produktspezifikation

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any
+
+from app.autofinder_norm import KAROSSERIE_KLASSEN, GETRIEBE_KLASSEN
+from app.autofinder import KRAFTSTOFF_WERTE, ANTRIEB_WERTE
 
 # ---------- Input-Limits (Sicherheitsnetz gegen DOS/Kostenmissbrauch) ----------
 # Ohne Obergrenzen kann ein einzelner Request beliebig große Strings/Listen an
@@ -1068,3 +1071,171 @@ class DealerSummary(BaseModel):
     geplante_bruttomarge: int | None = None
     realisierte_bruttomarge: int | None = None
     braucht_aufmerksamkeit: int = 0
+
+
+# ---------- AutoFinder (Runde 2: HTTP-Vertrag) ----------
+#
+# Diese Klassen sind der API-Vertrag von POST /api/v1/autofinder. Sie sind
+# NICHT dasselbe wie `app.autofinder.AutoFinderRequest`/`AutoFinderKandidat`
+# (Dataclasses der Ranking-Engine aus Runde 1) — der Router übersetzt zwischen
+# beiden (siehe app/routers/autofinder.py). Getrennt gehalten, damit die
+# Engine unabhängig von FastAPI/Pydantic bleibt und der HTTP-Vertrag eigene
+# Validierung (422 statt stillem Fehlverhalten) tragen kann.
+#
+# Budget/Kilometerstand/praktisch/komfortabel/familie werden hier ENTGEGEN-
+# GENOMMEN, aber in Runde 2 nicht ausgewertet — siehe app/autofinder.py
+# Moduldoc "VORBEREITET, ABER NICHT AUSGEWERTET". Kein Feld wird hier
+# verworfen, damit eine spätere Runde die Architektur erweitert statt umbaut.
+
+_AUTOFINDER_NUTZUNG = ("stadt", "gemischt", "langstrecke")
+_AUTOFINDER_MAX_LISTE = 20   # Sicherheitsnetz gegen überlange Filterlisten
+
+
+def _validiere_enum_liste(werte: list[str], erlaubt: tuple[str, ...], feldname: str) -> list[str]:
+    erlaubt_lower = {e.lower() for e in erlaubt}
+    for w in werte:
+        if w.strip().lower() not in erlaubt_lower:
+            raise ValueError(f"{feldname}: {w!r} ist kein bekannter Wert (erlaubt: {erlaubt})")
+    return werte
+
+
+class AutoFinderRequest(BaseModel):
+    """Nutzereingaben für den AutoFinder — kostenlos, kein Check-Credit."""
+
+    # ---- BASIS ---- Budget/Kilometer: kein Marktpreis-/Gebrauchtwagen-
+    # Datenbestand vorhanden, deshalb aktuell KEIN harter Filter (§4/§13).
+    budget_min: int | None = Field(default=None, ge=0)
+    budget_max: int | None = Field(default=None, ge=0)
+    baujahr_von: int | None = Field(default=None, ge=1900, le=2100)
+    baujahr_bis: int | None = Field(default=None, ge=1900, le=2100)
+    kilometer_max: int | None = Field(default=None, ge=0)
+
+    # ---- FAHRZEUG (harte Filter) ----
+    marken_bevorzugt: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    marken_ausschliessen: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    karosserie: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    kraftstoff: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    getriebe: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    antrieb: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
+    leistung_min_ps: int | None = Field(default=None, ge=0, le=2000)
+    leistung_max_ps: int | None = Field(default=None, ge=0, le=2000)
+
+    # ---- NUTZUNG (steuert Score, kein Hard Filter) ----
+    nutzung: str | None = Field(default=None)   # "stadt" | "gemischt" | "langstrecke"
+    km_pro_jahr: int | None = Field(default=None, ge=0)
+
+    # ---- PRIORITÄTEN ----
+    sportlich: bool = False
+    sparsam: bool = False
+    fahranfaenger: bool = False
+    praktisch: bool = False       # aktuell ohne Effekt — siehe Moduldoc oben
+    komfortabel: bool = False     # aktuell ohne Effekt
+    familie: bool = False         # aktuell ohne Effekt
+
+    @field_validator("karosserie")
+    @classmethod
+    def _val_karosserie(cls, v: list[str]) -> list[str]:
+        return _validiere_enum_liste(v, KAROSSERIE_KLASSEN, "karosserie")
+
+    @field_validator("getriebe")
+    @classmethod
+    def _val_getriebe(cls, v: list[str]) -> list[str]:
+        return _validiere_enum_liste(v, GETRIEBE_KLASSEN, "getriebe")
+
+    @field_validator("kraftstoff")
+    @classmethod
+    def _val_kraftstoff(cls, v: list[str]) -> list[str]:
+        return _validiere_enum_liste(v, KRAFTSTOFF_WERTE, "kraftstoff")
+
+    @field_validator("antrieb")
+    @classmethod
+    def _val_antrieb(cls, v: list[str]) -> list[str]:
+        return _validiere_enum_liste(v, ANTRIEB_WERTE, "antrieb")
+
+    @field_validator("nutzung")
+    @classmethod
+    def _val_nutzung(cls, v: str | None) -> str | None:
+        if v is not None and v not in _AUTOFINDER_NUTZUNG:
+            raise ValueError(f"nutzung muss einer von {_AUTOFINDER_NUTZUNG} sein")
+        return v
+
+    @model_validator(mode="after")
+    def _val_min_le_max(self) -> "AutoFinderRequest":
+        if self.budget_min is not None and self.budget_max is not None \
+                and self.budget_min > self.budget_max:
+            raise ValueError("budget_min darf nicht größer als budget_max sein")
+        if self.leistung_min_ps is not None and self.leistung_max_ps is not None \
+                and self.leistung_min_ps > self.leistung_max_ps:
+            raise ValueError("leistung_min_ps darf nicht größer als leistung_max_ps sein")
+        if self.baujahr_von is not None and self.baujahr_bis is not None \
+                and self.baujahr_von > self.baujahr_bis:
+            raise ValueError("baujahr_von darf nicht größer als baujahr_bis sein")
+        return self
+
+
+class AutoFinderSuchfilterHinweis(BaseModel):
+    """Vorbereitete Struktur für 'So findest du dieses Auto' (mobile.de/
+    AutoScout24-taugliche Filterangaben). NUR die Struktur — in Runde 2 wird
+    hier NICHTS befüllt und KEINE Plattform-URL erzeugt (§14 explizit NICHT
+    in dieser Runde)."""
+    marke: str | None = None
+    modell: str | None = None
+    baujahr_von: int | None = None
+    baujahr_bis: int | None = None
+    leistung_min_ps: int | None = None
+    leistung_max_ps: int | None = None
+    kraftstoff: str | None = None
+    getriebe: str | None = None
+    karosserie: str | None = None
+    kilometer_max: int | None = None
+    preis_max: int | None = None
+
+
+class AutoFinderKandidatOut(BaseModel):
+    """Ein Kandidat im HTTP-Vertrag — 1:1-Übersetzung von
+    `app.autofinder.AutoFinderKandidat` (Runde 1), keine zweite Ranking-Logik."""
+
+    # -- Identität --
+    baureihe_id: str
+    variante_id: str
+    marke: str
+    modell: str
+    generation: str
+    motor: str
+    baujahr_von: int | None = None
+    baujahr_bis: int | None = None
+    leistung_ps: int | None = None
+    kraftstoff: str
+    getriebe: list[str] = Field(default_factory=list)
+    antrieb: str | None = None
+    karosserie: list[str] = Field(default_factory=list)
+
+    # -- Ranking --
+    match_score: float
+    datenqualitaet: float
+    match_gruende: list[str] = Field(default_factory=list)
+    trade_offs: list[str] = Field(default_factory=list)
+
+    # -- Herkunft --
+    source_type: str = "internal_db"   # "internal_db" | "web_discovered" (Runde 2: immer internal_db)
+    visual_key: str = ""
+
+    # -- Markt (vorbereitet, §5/§13 — in Runde 2 IMMER None) --
+    market_price_min: int | None = None
+    market_price_max: int | None = None
+    market_price_median: int | None = None
+    market_data_quality: str | None = None
+    market_sample_size: int | None = None
+
+    # -- Spätere Suchfilter (vorbereitet, §5/§14 — in Runde 2 IMMER None) --
+    such_filter_hinweis: AutoFinderSuchfilterHinweis | None = None
+
+
+class AutoFinderResponse(BaseModel):
+    """Antwort von POST /api/v1/autofinder."""
+    status: str   # "ok" | "no_internal_match"
+    kandidaten: list[AutoFinderKandidatOut] = Field(default_factory=list)
+    total_candidates_considered: int = 0
+    filters_applied: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    data_scope_hint: str
