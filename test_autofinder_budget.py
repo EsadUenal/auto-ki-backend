@@ -42,6 +42,11 @@ _db_pfad = os.path.join(_tmp, "kanonisch.db")
 os.environ["AUTO_KI_DB_PATH"] = _db_pfad
 os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 os.environ["AUTO_KI_API_KEY"] = "test-key-autofinder-budget"
+# Runde 4: Web-Fallback darf in KEINEM Test echtes Netz anfassen. Ein leerer
+# Tavily-Key laesst `web_search._tavily_search_intern` sofort ([], True)
+# zurueckgeben — kein HTTP-Request, und mangels Evidenzen auch kein
+# Discovery-Gemini-Call. Muss VOR dem config-Import gesetzt werden.
+os.environ["TAVILY_API_KEY"] = ""
 
 import app.config as _cfg
 importlib.reload(_cfg)

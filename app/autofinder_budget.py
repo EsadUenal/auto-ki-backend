@@ -89,6 +89,19 @@ BUDGET_ADJUSTMENT: dict[str, float] = {
 }
 
 
+def _kandidat_id(k: Any) -> str:
+    """Kanonische Kandidaten-ID quer ueber beide Herkuenfte.
+
+    Interne DB-Kandidaten (`app.autofinder.AutoFinderKandidat`) tragen
+    `variante_id`. Web-Kandidaten (Runde 4, `app.autofinder_web.WebKandidat`)
+    tragen stattdessen eine eigene stabile `candidate_id` und bewusst KEINE
+    erfundene DB-ID — deshalb hier eine Regel statt zweier Sonderfaelle.
+    Bewusst per `getattr` und ohne Import aus `app.autofinder_web`: die
+    Budget-Schicht muss nichts ueber Web-Discovery wissen.
+    """
+    return getattr(k, "candidate_id", None) or getattr(k, "variante_id", None) or ""
+
+
 def budget_angegeben(budget_min: int | None, budget_max: int | None) -> bool:
     """§7: Gemini wird NUR aufgerufen, wenn der Nutzer tatsächlich ein
     Budgetfenster angegeben hat — mindestens eine der beiden Grenzen."""
@@ -121,7 +134,7 @@ def _formatiere_kandidat_zeile(k: Any) -> str:
     karosserie = "/".join(k.karosserie_klassen) if k.karosserie_klassen else "unbekannt"
     getriebe = "/".join(k.getriebe_klassen) if k.getriebe_klassen else "unbekannt"
     return (
-        f"- candidate_id={k.variante_id} | {k.marke} {k.modell} {k.generation} "
+        f"- candidate_id={_kandidat_id(k)} | {k.marke} {k.modell} {k.generation or ''} "
         f"{k.motor_bezeichnung} | Baujahre {zeitraum} | {k.kraftstoff} | "
         f"Getriebe {getriebe} | {k.leistung_ps or '?'} PS | Karosserie {karosserie}"
     )
@@ -200,7 +213,7 @@ async def bewerte_budget(
     if not kandidaten:
         return {}, False
 
-    erlaubte_ids = {k.variante_id for k in kandidaten}
+    erlaubte_ids = {_kandidat_id(k) for k in kandidaten}
     user_msg = _baue_user_message(
         kandidaten,
         budget_min=budget_min, budget_max=budget_max,

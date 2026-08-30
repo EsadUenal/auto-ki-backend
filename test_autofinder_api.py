@@ -44,6 +44,11 @@ _db_pfad = os.path.join(_tmp, "kanonisch.db")
 os.environ["AUTO_KI_DB_PATH"] = _db_pfad
 os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 os.environ["AUTO_KI_API_KEY"] = "test-key-autofinder-api"   # override=False in config.py respektiert das
+# Runde 4: Web-Fallback darf in KEINEM Test echtes Netz anfassen. Ein leerer
+# Tavily-Key laesst `web_search._tavily_search_intern` sofort ([], True)
+# zurueckgeben — kein HTTP-Request, und mangels Evidenzen auch kein
+# Discovery-Gemini-Call. Muss VOR dem config-Import gesetzt werden.
+os.environ["TAVILY_API_KEY"] = ""
 
 import app.config as _cfg
 importlib.reload(_cfg)
@@ -330,18 +335,28 @@ check("R: data_scope_hint auch bei no_internal_match vorhanden",
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# §13: strukturell 0 externe Calls in Runde 2
+# §13: keine DIREKTEN externen Clients im Router
 # ══════════════════════════════════════════════════════════════════════════
 # Praezise auf die tatsaechlichen Import-Zeilen pruefen (nicht auf den
 # gesamten Quelltext inkl. Docstrings/Kommentaren, die die AN-/ABWESENHEIT von
 # Tavily/Gemini bewusst in Prosa erklaeren und sonst selbst als Treffer zaehlen
 # wuerden).
+#
+# WICHTIG — was diese Pruefung seit Runde 3/4 bedeutet und was NICHT:
+# Der Router ORCHESTRIERT inzwischen sehr wohl externe Aufrufe (Budget-Gemini
+# ueber app.autofinder_budget, Web-Discovery ueber app.autofinder_web). Diese
+# Pruefung sagt deshalb nur noch: er tut das ausschliesslich ueber die dafuer
+# gebauten, einzeln getesteten Schichten und haelt KEINE eigenen HTTP-/
+# LLM-Clients. Die Aussage "0 externe Calls" gilt weiterhin fuer den
+# Normalfall (gute Coverage, kein Budget) — das pruefen die Call-Zaehler in
+# test_autofinder_budget.py und test_autofinder_web.py, nicht dieser Import-Test.
 _import_zeilen = [z for z in _router_quelle.splitlines()
                    if z.strip().startswith(("import ", "from "))]
 _imports_text = "\n".join(_import_zeilen).lower()
-check("§13: Router importiert kein Tavily/Gemini/Web-Modul",
+check("§13: Router haelt keine eigenen Tavily-/Gemini-/HTTP-Clients "
+      "(nur die geprueften AutoFinder-Schichten)",
       not any(w in _imports_text for w in
-              ("tavily", "gemini", "genai", "web_search", "requests", "httpx")))
+              ("tavily", "genai", "web_search", "requests", "httpx")))
 
 
 # ══════════════════════════════════════════════════════════════════════════

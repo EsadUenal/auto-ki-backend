@@ -1193,14 +1193,22 @@ class AutoFinderSuchfilterHinweis(BaseModel):
 
 class AutoFinderKandidatOut(BaseModel):
     """Ein Kandidat im HTTP-Vertrag — 1:1-Übersetzung von
-    `app.autofinder.AutoFinderKandidat` (Runde 1), keine zweite Ranking-Logik."""
+    `app.autofinder.AutoFinderKandidat` (Runde 1) bzw.
+    `app.autofinder_web.WebKandidat` (Runde 4), keine zweite Ranking-Logik."""
 
     # -- Identität --
-    baureihe_id: str
-    variante_id: str
+    # `candidate_id` ist die kanonische Kennung über BEIDE Herkünfte hinweg:
+    # bei DB-Kandidaten identisch zur `variante_id`, bei Web-Kandidaten deren
+    # eigene stabile `web:`-ID.
+    candidate_id: str = ""
+    # Runde 4: für web_discovered-Kandidaten bewusst None — es gibt zu ihnen
+    # keine DB-Zeile, und eine erfundene ID wäre genau die stille Vermischung
+    # von belegtem DB-Wissen und Web-Fund, die verhindert werden soll.
+    baureihe_id: str | None = None
+    variante_id: str | None = None
     marke: str
     modell: str
-    generation: str
+    generation: str | None = None
     motor: str
     baujahr_von: int | None = None
     baujahr_bis: int | None = None
@@ -1231,8 +1239,19 @@ class AutoFinderKandidatOut(BaseModel):
     budget_adjustment: float = 0.0
 
     # -- Herkunft --
-    source_type: str = "internal_db"   # "internal_db" | "web_discovered" (Runde 2: immer internal_db)
+    source_type: str = "internal_db"   # "internal_db" | "web_discovered"
     visual_key: str = ""
+
+    # -- Web-Discovery (Runde 4, additiv — bei internal_db immer leer/0/UNKNOWN) --
+    # Belegkette eines web_discovered-Kandidaten: genau die Quellen, aus denen
+    # seine Angaben stammen. Marktplatz-URLs können hier nicht auftauchen (§16 —
+    # doppelt gesperrt: schon bei der Suche und nochmal im Validierungs-Gate).
+    source_urls: list[str] = Field(default_factory=list)
+    evidence_count: int = 0
+    discovery_confidence: str = "UNKNOWN"   # HIGH | MEDIUM | LOW | UNKNOWN
+    # Welche Kernfelder tatsächlich im Text der zitierten Belege nachgewiesen
+    # wurden — NICHT, was das Modell behauptet hat.
+    web_verified_fields: list[str] = Field(default_factory=list)
 
     # -- Markt (vorbereitet, §5/§13 — in Runde 2 IMMER None) --
     market_price_min: int | None = None

@@ -27,13 +27,26 @@ Top-5-Auswahl danach ist ein reines STABILES Neu-Sortieren dieser Teilmenge
 Konstruktion JEDE Teilmenge/Umsortierung dieser Grenzen einhält, ist keine
 zweite Diversitäts-Berechnung nötig (siehe `_top5_nach_budget`).
 
-KEINE EXTERNEN CALLS AUSSER EINEM OPTIONALEN GEMINI-CALL (§13/§17 Runde 3)
-----------------------------------------------------------------------------
-Weiterhin KEIN Tavily, KEIN Search Grounding, KEIN neuer Gemini-Client. Wenn
-der Nutzer kein Budget angibt ODER die Foundation 0 Kandidaten liefert, wird
-`app.autofinder_budget` gar nicht erst aufgerufen — 0 externe Calls, exakt wie
-Runde 2. Ist ein Budget angegeben UND gibt es Kandidaten, läuft GENAU EIN
-Gemini-Call für die gesamte Shortlist (nie einer pro Kandidat).
+KOSTENDECKEL (§14 Runde 4)
+---------------------------
+Der Normalfall — gute interne Abdeckung, kein Budget — kostet weiterhin NULL
+externe Calls. Erst konkrete Mängel schalten Schichten zu:
+
+    gute DB-Coverage, kein Budget   Tavily 0   Discovery-Gemini 0   Budget-Gemini 0
+    gute DB-Coverage, mit Budget    Tavily 0   Discovery-Gemini 0   Budget-Gemini 1
+    schwache Coverage, kein Budget  Tavily ≤2  Discovery-Gemini ≤1  Budget-Gemini 0
+    schwache Coverage, mit Budget   Tavily ≤2  Discovery-Gemini ≤1  Budget-Gemini 1
+
+Das Coverage-Gate (`app.autofinder_web.braucht_web_fallback`) entscheidet das
+deterministisch — nicht "die DB ist nicht perfekt", sondern ein benennbarer
+Mangel (kein Treffer / <3 Treffer / gewünschte Marke gar nicht im Bestand).
+
+WEB ERGÄNZT FAHRZEUGE, NIE PREISE (§16 Runde 4)
+------------------------------------------------
+Der Web-Fallback sucht ausschließlich nach real existierenden MODELLEN.
+Marktplätze sind doppelt gesperrt (Ausschluss schon bei der Tavily-Anfrage,
+nochmals harte Ablehnung jeder Beleg-URL im Validierungs-Gate). Es gibt
+weiterhin keine Marktpreise, keine Preisspannen, keine Inserate, keine Bilder.
 """
 
 import logging
@@ -52,6 +65,13 @@ from app.autofinder_budget import (
     budget_adjustment_fuer,
     budget_angegeben,
 )
+from app.autofinder_web import (
+    braucht_web_fallback,
+    entdecke_web_kandidaten,
+    kandidat_id,
+    merge_und_diversifiziere,
+)
+from app.database import get_alle_baureihen_kurz
 from app.models import AutoFinderKandidatOut, AutoFinderRequest, AutoFinderResponse
 from app.utf8 import UTF8JSONResponse
 
@@ -104,6 +124,23 @@ _STADT_KURZSTRECKE_KM_SCHWELLE = 10_000
 # Foundation liefert diese Menge bereits vollständig diversitätsgeprüft
 # (siehe Moduldoc oben), der Router muss dafür nichts Eigenes berechnen.
 _BUDGET_SHORTLIST_K = 15
+
+
+def _bekannte_marken() -> set[str]:
+    """Alle Marken, die VIRA intern überhaupt führt (kleingeschrieben).
+
+    Nutzt die bereits gecachte Baureihen-Kurzliste (`database._cached_alle`,
+    60s TTL) — kein zusätzlicher Full-Table-Scan pro Request. Grundlage für
+    Coverage-Regel 3: verlangt der Nutzer eine Marke, die es intern gar nicht
+    gibt, hilft auch eine gefüllte Trefferliste anderer Marken nicht.
+    """
+    try:
+        return {(b.get("marke") or "").strip().lower()
+                for b in get_alle_baureihen_kurz() if b.get("marke")}
+    except Exception:
+        log.exception("AutoFinder: Markenliste nicht ermittelbar — "
+                      "Coverage-Regel 'Marke nicht im Bestand' greift diesmal nicht")
+        return set()
 
 
 def _diesel_stadt_kurzstrecke_warnung(body: AutoFinderRequest) -> str | None:
@@ -190,6 +227,9 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
     0.0 ohne Budget/bei UNKNOWN) wird additiv und NACHVOLLZIEHBAR obendrauf
     gelegt — kein Nachjustieren des Foundation-Werts selbst (§10/§12)."""
     return AutoFinderKandidatOut(
+        # Runde 4: bei web_discovered-Kandidaten sind baureihe_id/variante_id
+        # bewusst None — die kanonische Kennung ist candidate_id.
+        candidate_id=kandidat_id(k),
         baureihe_id=k.baureihe_id,
         variante_id=k.variante_id,
         marke=k.marke,
@@ -213,6 +253,12 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         budget_adjustment=budget_adjustment,
         source_type=k.source_type,
         visual_key=k.visual_key,
+        # Runde 4: bei internen DB-Kandidaten existieren diese Attribute nicht —
+        # dann bleiben die Felder auf ihren neutralen Defaults (leer/0/UNKNOWN).
+        source_urls=list(getattr(k, "source_urls", []) or []),
+        evidence_count=getattr(k, "evidence_count", 0) or 0,
+        discovery_confidence=getattr(k, "discovery_confidence", "UNKNOWN") or "UNKNOWN",
+        web_verified_fields=list(getattr(k, "web_verified_fields", []) or []),
         market_price_min=k.market_price_min,
         market_price_max=k.market_price_max,
         market_price_median=k.market_price_median,
@@ -232,7 +278,7 @@ def _top5_nach_budget(kandidaten: list, budget_map: dict[str, tuple[str, str]],
     derselben Reihenfolge verwendet werden wie in `app.autofinder._sortierschluessel`."""
     angereichert = []
     for kand in kandidaten:
-        status, conf = budget_map.get(kand.variante_id, (BUDGET_UNKNOWN, CONF_UNKNOWN))
+        status, conf = budget_map.get(kandidat_id(kand), (BUDGET_UNKNOWN, CONF_UNKNOWN))
         anpassung = budget_adjustment_fuer(status)
         finaler_score = kand.match_score + anpassung
         angereichert.append((finaler_score, kand, status, conf, anpassung))
@@ -241,7 +287,7 @@ def _top5_nach_budget(kandidaten: list, budget_map: dict[str, tuple[str, str]],
         -t[0],                              # finaler Score
         -t[1].datenqualitaet,
         -(t[1].baujahr_von or 0),
-        t[1].variante_id,
+        kandidat_id(t[1]),
     ))
 
     return [
@@ -286,7 +332,8 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     # diversitätsgeprüfte Shortlist geholt, damit Gemini genau EINMAL über
     # die ganze Auswahl urteilen kann, bevor auf 5 gekappt wird (§5).
     engine_request = _zu_engine_request(body)
-    ergebnis = finde_fahrzeuge(engine_request, k=_BUDGET_SHORTLIST_K if hat_budget else 5)
+    shortlist_k = _BUDGET_SHORTLIST_K if hat_budget else 5
+    ergebnis = finde_fahrzeuge(engine_request, k=shortlist_k)
 
     warnungen: list[str] = []
 
@@ -298,15 +345,40 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     if kilometer_hinweis:
         warnungen.append(kilometer_hinweis)
 
+    # ── Runde 4: kontrollierter Web-Fallback ────────────────────────────────
+    # Läuft NUR bei nachweislichem Coverage-Mangel. Schlägt er fehl (Tavily
+    # down, Gemini down, nichts Belastbares gefunden), bleibt es schlicht bei
+    # den internen Treffern — `entdecke_web_kandidaten` wirft nie (§13).
+    web_kandidaten: list = []
+    web_grund: str | None = None
+    braucht_web, web_grund = braucht_web_fallback(
+        ergebnis.kandidaten, body, _bekannte_marken())
+    if braucht_web:
+        web_ergebnis = await entdecke_web_kandidaten(body)
+        web_kandidaten = web_ergebnis.kandidaten
+        if web_kandidaten:
+            warnungen.append(
+                f"{len(web_kandidaten)} Vorschlag/Vorschläge stammen aus einer "
+                "Web-Recherche zu Fahrzeugmodellen, die VIRA intern noch nicht "
+                "pflegt — technische Angaben dort sind belegt, aber nicht "
+                "VIRA-geprüft."
+            )
+
+    # Interne und Web-Kandidaten in EINE Rangliste (§11) — ohne pauschalen
+    # DB-Bonus, mit erneut angewandten Diversitätsgrenzen.
+    zusammengefuehrt = merge_und_diversifiziere(
+        ergebnis.kandidaten, web_kandidaten, k=shortlist_k)
+
     budget_map: dict[str, tuple[str, str]] = {}
     gemini_aufgerufen = False
     gemini_ausgefallen = False
 
-    # §17: no_internal_match -> kein Gemini-Call. §7: kein Budget -> kein Call.
-    if hat_budget and ergebnis.kandidaten:
+    # §17 Runde 3: keine Kandidaten -> kein Budget-Call. §7: kein Budget -> kein Call.
+    # Web-Kandidaten dürfen mit in die Budget-Shortlist (§12 Runde 4).
+    if hat_budget and zusammengefuehrt:
         gemini_aufgerufen = True
         budget_map, gemini_ausgefallen = await bewerte_budget(
-            ergebnis.kandidaten,
+            zusammengefuehrt,
             budget_min=body.budget_min, budget_max=body.budget_max,
             baujahr_von=body.baujahr_von, baujahr_bis=body.baujahr_bis,
             kilometer_max=body.kilometer_max,
@@ -317,7 +389,10 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     if budget_hinweis:
         warnungen.append(budget_hinweis)
 
-    if not ergebnis.kandidaten:
+    if not zusammengefuehrt:
+        # Weder intern noch (falls überhaupt gesucht) im Web etwas Belastbares.
+        # Wortlaut und Statuswert bleiben unverändert zu Runde 2/3 — das ist
+        # weiterhin in erster Linie eine Aussage über den internen Bestand.
         status_wert = "no_internal_match"
         warnungen.append(
             "Der interne Datenbestand enthält aktuell keinen passenden Treffer "
@@ -335,7 +410,7 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
         # auf exakt 5 kappen — bei leerem budget_map (kein Budget ODER
         # Gemini ausgefallen) ist das ein Nullsummen-Re-Sort (siehe Docstring
         # von `_top5_nach_budget`), die Foundation-Reihenfolge bleibt erhalten.
-        finale_kandidaten = _top5_nach_budget(ergebnis.kandidaten, budget_map, k=5)
+        finale_kandidaten = _top5_nach_budget(zusammengefuehrt, budget_map, k=5)
 
     return AutoFinderResponse(
         status=status_wert,
