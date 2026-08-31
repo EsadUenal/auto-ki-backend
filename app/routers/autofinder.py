@@ -71,6 +71,7 @@ from app.autofinder_web import (
     kandidat_id,
     merge_und_diversifiziere,
 )
+from app.autofinder_visual import resolve_image
 from app.database import get_alle_baureihen_kurz
 from app.models import AutoFinderKandidatOut, AutoFinderRequest, AutoFinderResponse
 from app.utf8 import UTF8JSONResponse
@@ -221,7 +222,8 @@ def _zu_engine_request(body: AutoFinderRequest) -> _EngineRequest:
 
 def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
                       budget_confidence: str = CONF_UNKNOWN,
-                      budget_adjustment: float = 0.0) -> AutoFinderKandidatOut:
+                      budget_adjustment: float = 0.0,
+                      bevorzugte_karosserie: str | None = None) -> AutoFinderKandidatOut:
     """Übersetzung des Engine-Kandidaten. `k.match_score` (Foundation, Runde 1)
     bleibt unverändert `base_match_score`; die Budget-Anpassung (Runde 3, IMMER
     0.0 ohne Budget/bei UNKNOWN) wird additiv und NACHVOLLZIEHBAR obendrauf
@@ -265,11 +267,26 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         market_data_quality=k.market_data_quality,
         market_sample_size=k.market_sample_size,
         such_filter_hinweis=None,   # §5/§14: Struktur vorbereitet, weiterhin nicht befüllt
+        **_bild_felder(k, bevorzugte_karosserie=bevorzugte_karosserie),
     )
 
 
+def _bild_felder(k, *, bevorzugte_karosserie: str | None) -> dict:
+    """§7 Runde 5: Bildauflösung darf die Antwort NIE gefährden — jeder
+    Fehler landet im generischen Fallback (siehe `resolve_image`), nie als
+    Exception hier."""
+    try:
+        bild = resolve_image(k, bevorzugte_karosserie=bevorzugte_karosserie)
+        return dict(image_url=bild.image_url, image_type=bild.image_type,
+                    image_confidence=bild.image_confidence, ai_generated=bild.ai_generated)
+    except Exception:
+        log.exception("AutoFinder: Bildauflösung fehlgeschlagen — neutrale Defaults")
+        return dict(image_url="", image_type="generic_fallback",
+                    image_confidence="representative", ai_generated=False)
+
+
 def _top5_nach_budget(kandidaten: list, budget_map: dict[str, tuple[str, str]],
-                       *, k: int = 5) -> list[AutoFinderKandidatOut]:
+                       *, k: int = 5, bevorzugte_karosserie: str | None = None) -> list[AutoFinderKandidatOut]:
     """Wendet die begrenzte Budget-Anpassung an, sortiert die (bereits
     diversitätsgeprüfte, siehe Moduldoc) Shortlist stabil neu und kappt auf
     `k`. OHNE Budgetangabe/bei komplett leerem `budget_map` ist jede
@@ -292,7 +309,7 @@ def _top5_nach_budget(kandidaten: list, budget_map: dict[str, tuple[str, str]],
 
     return [
         _zu_kandidat_out(kand, budget_status=status, budget_confidence=conf,
-                         budget_adjustment=anpassung)
+                         budget_adjustment=anpassung, bevorzugte_karosserie=bevorzugte_karosserie)
         for _, kand, status, conf, anpassung in angereichert[:k]
     ]
 
@@ -410,7 +427,12 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
         # auf exakt 5 kappen — bei leerem budget_map (kein Budget ODER
         # Gemini ausgefallen) ist das ein Nullsummen-Re-Sort (siehe Docstring
         # von `_top5_nach_budget`), die Foundation-Reihenfolge bleibt erhalten.
-        finale_kandidaten = _top5_nach_budget(zusammengefuehrt, budget_map, k=5)
+        # §2 Runde 5: bei EINDEUTIGER Karosserie-Anfrage (genau eine gewählt)
+        # bevorzugt der Resolver diese Klasse — sie ist fachlich garantiert
+        # zutreffend (Hard Filter) UND nachweislich das, wonach gesucht wurde.
+        bevorzugte_karosserie = body.karosserie[0] if len(body.karosserie) == 1 else None
+        finale_kandidaten = _top5_nach_budget(
+            zusammengefuehrt, budget_map, k=5, bevorzugte_karosserie=bevorzugte_karosserie)
 
     return AutoFinderResponse(
         status=status_wert,

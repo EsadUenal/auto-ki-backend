@@ -1263,6 +1263,14 @@ class AutoFinderKandidatOut(BaseModel):
     # -- Spätere Suchfilter (vorbereitet, §5/§14 — in Runde 2 IMMER None) --
     such_filter_hinweis: AutoFinderSuchfilterHinweis | None = None
 
+    # -- Bild (Runde 5) — IMMER gesetzt, nie None: jeder Kandidat bekommt
+    # entweder ein echtes (kuratiertes/generiertes) Bild oder den generischen
+    # Fallback. Fehlschlag im Resolver darf die Antwort nie gefährden. --
+    image_url: str = ""
+    image_type: str = "generic_fallback"       # curated | generated_cached | generic_fallback
+    image_confidence: str = "representative"   # exact | generation_match | model_match | representative
+    ai_generated: bool = False
+
 
 class AutoFinderResponse(BaseModel):
     """Antwort von POST /api/v1/autofinder."""
