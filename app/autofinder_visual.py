@@ -25,8 +25,10 @@ nicht ein Fehler.
 
 import json
 import logging
+import os
 import re
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +207,31 @@ def lade_manifest_datei(pfad: Path | str | None = None, *, force: bool = False) 
 def invalidiere_manifest_cache() -> None:
     global _MANIFEST_CACHE
     _MANIFEST_CACHE = None
+
+
+def speichere_manifest_datei(manifest: dict[str, ManifestEintrag],
+                              pfad: Path | str | None = None) -> None:
+    """Atomarer Write (Teil H/K): erst in eine Temp-Datei im selben
+    Verzeichnis, dann `os.replace` — ein Absturz mitten im Schreiben kann
+    das bestehende, gueltige Manifest nie beschaedigen. Validiert vor dem
+    Schreiben erneut ueber `parse_manifest`, damit ein kaputtes/dupliziertes
+    Manifest gar nicht erst persistiert werden kann."""
+    ziel = Path(pfad) if pfad else _MANIFEST_PFAD
+    rohliste = [asdict(e) for e in manifest.values()]
+    parse_manifest(rohliste)  # wirft bei Duplikaten/ungueltigen Enums VOR dem Schreiben
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_pfad = tempfile.mkstemp(dir=str(ziel.parent), prefix=".manifest_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rohliste, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_pfad, ziel)
+    except Exception:
+        try:
+            os.unlink(tmp_pfad)
+        except OSError:
+            pass
+        raise
+    invalidiere_manifest_cache()
 
 
 # ══════════════════════════════════════════════════════════════════════════
