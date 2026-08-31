@@ -121,29 +121,48 @@ _KAROSSERIE_EN = {
     UNBEKANNTE_KAROSSERIE: "passenger car",
 }
 
-# Konstanter Stil-Teil — EIN Template, keine Variation zwischen Bildern
-# (§9 Bildaudit: konsistente Perspektive/Licht/Hintergrund über die
-# gesamte Bibliothek).
+# Stil-Version — EIN Template, keine Variation zwischen Bildern (§9 Bildaudit:
+# konsistente Perspektive/Hintergrund über die gesamte Bibliothek).
+#
+# VIRA_LINE_ART_V1 löst den vorherigen fotorealistischen Studio-Prompt ab.
+# Begründung: 2 reale Gemini-Proof-Runs (je 5 Fahrzeuge) — der fotorealistische
+# Ansatz brachte prominente echte Herstellerlogos; der Line-Art-Ansatz ist
+# marken­rechtlich risikoärmer, karten-tauglicher und liefert konsistentere
+# Perspektive. Es gibt bewusst nur EINEN Default-Stil.
+PROMPT_STYLE_VERSION = "VIRA_LINE_ART_V1"
+
 _STIL_SUFFIX = (
-    "Professional automotive studio photograph, complete vehicle fully visible, "
-    "consistent three-quarter front view angle, plain seamless light neutral grey "
-    "studio background, soft diffuse ground shadow beneath the car, even diffuse "
-    "studio lighting with no harsh reflections, neutral silver-grey paint color, "
-    "clean modern realistic design, photorealistic rendering, standard non-tuned "
-    "production trim, no aftermarket modifications. "
-    "Do not include: people, humans, pedestrians, drivers, license plates, "
-    "readable text, watermarks, prominent manufacturer badges or emblems, "
-    "dealership signage, outdoor scenery, city or street background, other "
-    "vehicles, logos of any kind."
+    "Accurately reproduce the recognizable proportions, silhouette, body shape, "
+    "roofline, headlights, grille shape and major exterior characteristics of "
+    "this exact vehicle generation and body style. "
+    "Do NOT mix styling elements from another generation. "
+    "Full vehicle visible in a clean slight 3/4 front view. Centered tightly in "
+    "frame. Vehicle occupies most of the available image area. Do not crop any "
+    "part of the vehicle. "
+    "Pure solid white background. Use ONLY very thin, clean BLACK linework. "
+    "NO BLUE. NO COLOR. NO SHADING. NO REALISTIC TEXTURES. NO GRADIENTS. "
+    "NO STREET. NO FLOOR LINE. NO ENVIRONMENT. NO PEOPLE. NO TEXT. NO WATERMARK. "
+    "CRITICAL BRAND-NEUTRALIZATION: Do not draw any manufacturer logo, "
+    "manufacturer emblem, brand symbol, model badge, lettering or wheel-center "
+    "logos. Do not even draw an empty circular badge placeholder, badge mounting "
+    "shape or emblem holder on the grille or hood. Replace any emblem location "
+    "with the natural uninterrupted grille/body geometry. "
+    "LICENSE PLATE: Do not draw a license plate, a blank license plate, a "
+    "rectangular license-plate placeholder, or a plate frame or plate holder. "
+    "The bumper/grille must continue naturally through the normal license-plate "
+    "area. "
+    "Do not add tuning parts. Standard non-tuned production trim. "
+    "Vector-like clean technical illustration. Uniform thin line thickness. "
+    "Easy to crop/isolate. Landscape 16:9 composition."
 )
 
 
 def baue_prompt(marke: str, modell: str, generation: str | None, karosserie: str,
                  baujahr_von: int | None = None, baujahr_bis: int | None = None) -> str:
-    """Genau EIN Prompt-Template für alle AutoFinder-Bilder. Karosserie ist
-    PFLICHT im Text (§C/§E: "richtige Karosserie zwingend"), Generation/
-    Baujahr fließen ein, soweit bekannt — nie erfunden, nur weitergegeben,
-    was der Kandidat tatsächlich trägt."""
+    """Genau EIN Prompt-Template für alle AutoFinder-Bilder (Stil:
+    VIRA_LINE_ART_V1). Karosserie ist PFLICHT im Text (§C/§E: "richtige
+    Karosserie zwingend"), Generation/Baujahr fließen ein, soweit bekannt —
+    nie erfunden, nur weitergegeben, was der Kandidat tatsächlich trägt."""
     karo_en = _KAROSSERIE_EN.get(karosserie, karosserie)
     gen_teil = f", generation/chassis code {generation}" if generation else ""
     if baujahr_von and baujahr_bis:
@@ -152,7 +171,8 @@ def baue_prompt(marke: str, modell: str, generation: str | None, karosserie: str
         jahr_teil = f", model year {baujahr_von} onward"
     else:
         jahr_teil = ""
-    fahrzeug = f"A {marke} {modell}{gen_teil}{jahr_teil}, {karo_en} body style."
+    fahrzeug = (f"Clean minimalist line-art illustration of a {marke} {modell}"
+                f"{gen_teil}{jahr_teil}, {karo_en} body style.")
     return f"{fahrzeug} {_STIL_SUFFIX}"
 
 

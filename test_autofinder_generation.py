@@ -88,10 +88,17 @@ check("D: Prompt schließt explizit Personen aus", "no people" in p_lower or "hu
 check("D: Prompt schließt explizit Kennzeichen aus", "license plate" in p_lower)
 check("D: Prompt schließt explizit Text/Wasserzeichen aus",
       "text" in p_lower and "watermark" in p_lower)
-check("D: Prompt schließt prominente Herstellerlogos/-embleme aus",
-      "badges" in p_lower or "emblems" in p_lower)
+check("D: Prompt schließt Herstellerlogos/-embleme aus",
+      "manufacturer logo" in p_lower or "emblem" in p_lower)
+check("D: Prompt schließt auch leere Badge-/Emblem-Platzhalter aus",
+      "badge placeholder" in p_lower or "emblem holder" in p_lower)
+check("D: Prompt schließt Plate-Holder/Kennzeichenrahmen aus",
+      "plate holder" in p_lower or "plate frame" in p_lower)
 check("D: Prompt fordert AN KEINER STELLE ein Tuning (falls Standardvariante)",
       "tuned" in p_lower and "non-tuned" in p_lower)
+check("D: Stil ist Line-Art (VIRA_LINE_ART_V1), nicht fotorealistisch",
+      "line-art" in p_lower and "photorealistic" not in p_lower
+      and ag.PROMPT_STYLE_VERSION == "VIRA_LINE_ART_V1")
 
 
 # ══════════════════════════════════════════════════════════════════════════
