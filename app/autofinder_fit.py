@@ -294,6 +294,10 @@ def berechne_fit(k: Any, req: Any) -> FitBewertung:
                 continue
             komp.append(FitKomponente(label, 1.5, e, e >= 0.7))
 
+    # Zahl der KRITERIEN, die der Nutzer wirklich vorgegeben hat (die zwei
+    # Qualitätskomponenten unten zählen NICHT dazu).
+    nutzer_kriterien = len(komp)
+
     # --- immer: Datenlage + Schwachpunkt-Sauberkeit ---
     dq = float(getattr(k, "datenqualitaet", 0.0) or 0.0)
     komp.append(FitKomponente("Datenlage vollständig", 0.6, dq, dq >= 0.85))
@@ -306,6 +310,17 @@ def berechne_fit(k: Any, req: Any) -> FitBewertung:
     fit_raw = sum(c.gewicht * c.erfuellung for c in komp) / gesamt_gewicht
     score = round(_FIT_BASIS + fit_raw * _FIT_SPANNE)
     score = max(0, min(99, score))
+
+    # §Punkt 2: bei sehr wenig Nutzereingaben ist "Passung" nur begrenzt
+    # aussagekräftig — dann NICHT künstlich Richtung 98 laufen lassen (das wäre
+    # genau die irreführende Gleichmacherei, nur oben statt unten). Kein
+    # Fake-Sockel: der Score wird nur GEDECKELT, nie angehoben.
+    if nutzer_kriterien == 0:
+        score = min(score, 85)
+    elif nutzer_kriterien == 1:
+        score = min(score, 90)
+    elif nutzer_kriterien == 2:
+        score = min(score, 94)
 
     gruende = [c.label for c in sorted(komp, key=lambda c: -c.gewicht * c.erfuellung)
                if c.positiv][:4]

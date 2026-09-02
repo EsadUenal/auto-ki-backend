@@ -91,6 +91,16 @@ s_score = berechne_fit(schwach_gesamt, req_streng).score
 check(f"D: schwach passender Kandidat kann unter die 80er-Schwelle fallen ({s_score})",
       s_score < 80)
 
+# ── A/E) bei 0 Nutzereingaben NICHT künstlich Richtung 98 ────────────────
+req_leer = AutoFinderRequest()
+top = kand(kraftstoff="Diesel", verbrauch_l_100km=4.0, datenqualitaet=1.0, trade_offs=[])
+check(f"A: ohne jede Nutzereingabe wird 'Passung' gedeckelt (<=85), nicht ~98 "
+      f"({berechne_fit(top, req_leer).score})",
+      berechne_fit(top, req_leer).score <= 85)
+# mit EINEM Kriterium etwas mehr Spielraum, aber weiterhin gedeckelt
+check("A: ein einzelnes Kriterium -> Deckel 90",
+      berechne_fit(top, AutoFinderRequest(sparsam=True)).score <= 90)
+
 # ── E) kein pauschaler Mindestwert / reine Funktion ──────────────────────
 # Zwei Aufrufe mit IDENTISCHEN Eingaben -> identischer Score (deterministisch).
 a1 = berechne_fit(mittlerer, req).score
