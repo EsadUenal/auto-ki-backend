@@ -50,6 +50,7 @@ weiterhin keine Marktpreise, keine Preisspannen, keine Inserate, keine Bilder.
 """
 
 import logging
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
 from slowapi import Limiter
@@ -65,6 +66,13 @@ from app.autofinder_budget import (
     budget_adjustment_fuer,
     budget_angegeben,
 )
+from app.autofinder_enrich import (
+    Enrichment,
+    deterministischer_fallback,
+    enrich_kandidaten,
+    strip_pruef_label,
+)
+from app.autofinder_fit import FIT_SCHWELLE, berechne_fit
 from app.autofinder_web import (
     braucht_web_fallback,
     entdecke_web_kandidaten,
@@ -73,7 +81,14 @@ from app.autofinder_web import (
 )
 from app.autofinder_visual import resolve_image
 from app.database import get_alle_baureihen_kurz
-from app.models import AutoFinderKandidatOut, AutoFinderRequest, AutoFinderResponse
+from app.models import (
+    AutoFinderImageEnsureRequest,
+    AutoFinderImageEnsureResponse,
+    AutoFinderImageResult,
+    AutoFinderKandidatOut,
+    AutoFinderRequest,
+    AutoFinderResponse,
+)
 from app.utf8 import UTF8JSONResponse
 
 log = logging.getLogger(__name__)
@@ -220,14 +235,29 @@ def _zu_engine_request(body: AutoFinderRequest) -> _EngineRequest:
     )
 
 
+def _karosserie_ausgabe(k, bevorzugte_karosserie: str | None) -> list[str]:
+    """Consumer-Karosserie-Liste. Bei EINDEUTIGER Karosserie-Anfrage steht die
+    gewünschte (Hard-Filter-garantiert vorhandene) Klasse ZUERST — ein
+    Multi-Body-Kandidat wird dann nicht mit einer irreführenden Fremdklasse
+    vorne angezeigt (§Multi-Body). Sonst wie gehabt (sortiert)."""
+    klassen = list(k.karosserie_klassen or [])
+    if bevorzugte_karosserie and bevorzugte_karosserie in klassen:
+        return [bevorzugte_karosserie] + [c for c in klassen if c != bevorzugte_karosserie]
+    return klassen
+
+
 def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
                       budget_confidence: str = CONF_UNKNOWN,
                       budget_adjustment: float = 0.0,
-                      bevorzugte_karosserie: str | None = None) -> AutoFinderKandidatOut:
-    """Übersetzung des Engine-Kandidaten. `k.match_score` (Foundation, Runde 1)
-    bleibt unverändert `base_match_score`; die Budget-Anpassung (Runde 3, IMMER
-    0.0 ohne Budget/bei UNKNOWN) wird additiv und NACHVOLLZIEHBAR obendrauf
-    gelegt — kein Nachjustieren des Foundation-Werts selbst (§10/§12)."""
+                      bevorzugte_karosserie: str | None = None,
+                      user_fit: int = 0, user_fit_gruende: list[str] | None = None,
+                      enrichment: Enrichment | None = None,
+                      enrichment_status: str = "unavailable") -> AutoFinderKandidatOut:
+    """Übersetzung des Engine-Kandidaten inkl. Fit-Score (deterministisch) und
+    Gemini-Enrichment (why_fits / trade_offs / known_points / Preisorientierung).
+    `k.match_score` bleibt der INTERNE Ranking-Score (`base_match_score`);
+    `user_fit` ist die nutzer-verständliche Passung."""
+    enr = enrichment or Enrichment()
     return AutoFinderKandidatOut(
         # Runde 4: bei web_discovered-Kandidaten sind baureihe_id/variante_id
         # bewusst None — die kanonische Kennung ist candidate_id.
@@ -244,11 +274,19 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         kraftstoff=k.kraftstoff,
         getriebe=list(k.getriebe_klassen),
         antrieb=k.antrieb,
-        karosserie=list(k.karosserie_klassen),
+        karosserie=_karosserie_ausgabe(k, bevorzugte_karosserie),
         match_score=k.match_score + budget_adjustment,
         datenqualitaet=k.datenqualitaet,
-        match_gruende=list(k.match_gruende),
-        trade_offs=list(k.trade_offs),
+        match_gruende=[strip_pruef_label(g) for g in k.match_gruende],
+        trade_offs=list(enr.trade_offs),
+        user_fit=user_fit,
+        user_fit_gruende=list(user_fit_gruende or []),
+        why_fits=list(enr.why_fits),
+        known_points=list(enr.known_points),
+        enrichment_status=enrichment_status,
+        estimated_price_min=enr.estimated_price_min,
+        estimated_price_max=enr.estimated_price_max,
+        price_confidence=enr.price_confidence,
         budget_status=budget_status,
         budget_confidence=budget_confidence,
         base_match_score=k.match_score,
@@ -285,33 +323,137 @@ def _bild_felder(k, *, bevorzugte_karosserie: str | None) -> dict:
                     image_confidence="representative", ai_generated=False)
 
 
-def _top5_nach_budget(kandidaten: list, budget_map: dict[str, tuple[str, str]],
-                       *, k: int = 5, bevorzugte_karosserie: str | None = None) -> list[AutoFinderKandidatOut]:
-    """Wendet die begrenzte Budget-Anpassung an, sortiert die (bereits
-    diversitätsgeprüfte, siehe Moduldoc) Shortlist stabil neu und kappt auf
-    `k`. OHNE Budgetangabe/bei komplett leerem `budget_map` ist jede
-    Anpassung 0.0 — die Reihenfolge bleibt dann bit-identisch zur reinen
-    Foundation-Sortierung (Runde 2), weil dieselben Tie-Break-Felder in
-    derselben Reihenfolge verwendet werden wie in `app.autofinder._sortierschluessel`."""
-    angereichert = []
+# §Punkt 2: nur Kandidaten mit diesem Fit oder besser gehen in die Ausgabe.
+_MAX_AUSGABE = 5
+
+
+@dataclass
+class _FinalErgebnis:
+    outs: list[AutoFinderKandidatOut]
+    status_wert: str                 # "ok" | "no_strong_match"
+    warnungen: list[str]
+    enrichment_notice: str | None
+    budget_ausgefallen: bool
+    budget_aufgerufen: bool
+
+
+async def _finalisiere(
+    kandidaten: list, engine_request, body: AutoFinderRequest, *,
+    bevorzugte_karosserie: str | None,
+) -> _FinalErgebnis:
+    """Der Quality-Enrichment-Kern:
+
+      1. Fit-Score (deterministisch) für ALLE gemergten Kandidaten.
+      2. Schwellen-Filter: nur >= FIT_SCHWELLE. Keiner -> no_strong_match.
+      3. Cap auf 5, stabile Fit-Sortierung.
+      4. Budget-Call (nur wenn Budget angegeben) auf GENAU DIESE <=5 -> begrenzte
+         Anpassung, stabile Neusortierung innerhalb der 5.
+      5. EIN Enrichment-Call auf die (ggf. neu sortierten) <=5.
+      6. Kandidaten-Objekte bauen. Bei Enrichment-Ausfall deterministischer
+         Fallback je Kandidat + neutraler Hinweis.
+    """
+    warnungen: list[str] = []
+
+    # 1) + 2) Fit + Schwelle
+    mit_fit: list[tuple] = []
     for kand in kandidaten:
-        status, conf = budget_map.get(kandidat_id(kand), (BUDGET_UNKNOWN, CONF_UNKNOWN))
-        anpassung = budget_adjustment_fuer(status)
-        finaler_score = kand.match_score + anpassung
-        angereichert.append((finaler_score, kand, status, conf, anpassung))
+        try:
+            fit = berechne_fit(kand, engine_request)
+        except Exception:
+            log.exception("AutoFinder: Fit-Berechnung fehlgeschlagen für %s", kandidat_id(kand))
+            continue
+        if fit.score >= FIT_SCHWELLE:
+            mit_fit.append((fit.score, fit.gruende, kand))
 
-    angereichert.sort(key=lambda t: (
-        -t[0],                              # finaler Score
-        -t[1].datenqualitaet,
-        -(t[1].baujahr_von or 0),
-        kandidat_id(t[1]),
+    if not mit_fit:
+        return _FinalErgebnis([], "no_strong_match", warnungen, None, False, False)
+
+    # 3) stabile Fit-Sortierung + Cap
+    mit_fit.sort(key=lambda t: (
+        -t[0], -t[2].match_score, -t[2].datenqualitaet,
+        -(t[2].baujahr_von or 0), kandidat_id(t[2]),
     ))
+    final = mit_fit[:_MAX_AUSGABE]
+    final_kands = [t[2] for t in final]
 
-    return [
-        _zu_kandidat_out(kand, budget_status=status, budget_confidence=conf,
-                         budget_adjustment=anpassung, bevorzugte_karosserie=bevorzugte_karosserie)
-        for _, kand, status, conf, anpassung in angereichert[:k]
-    ]
+    # 4) Budget-Call auf die finale Liste (§Punkt 3: grobe Orientierung, kein Preis)
+    budget_map: dict[str, tuple[str, str]] = {}
+    budget_aufgerufen = False
+    budget_ausgefallen = False
+    hat_budget = budget_angegeben(body.budget_min, body.budget_max)
+    if hat_budget:
+        budget_aufgerufen = True
+        budget_map, budget_ausgefallen = await bewerte_budget(
+            final_kands,
+            budget_min=body.budget_min, budget_max=body.budget_max,
+            baujahr_von=body.baujahr_von, baujahr_bis=body.baujahr_bis,
+            kilometer_max=body.kilometer_max,
+        )
+
+    def _b(kand) -> tuple[str, str, float]:
+        s, c = budget_map.get(kandidat_id(kand), (BUDGET_UNKNOWN, CONF_UNKNOWN))
+        return s, c, budget_adjustment_fuer(s)
+
+    # stabile Neusortierung: Fit ist PRIMÄR (Qualität vor Preis). Erst danach
+    # zählt der interne Ranking-Score PLUS die streng begrenzte Budget-
+    # Anpassung (max ±1.5) — genau wie in der bisherigen Budget-Logik: Budget
+    # kann zwischen technisch gleichwertigen Kandidaten den Ausschlag geben,
+    # aber nie einen klar besseren an einem klar schlechteren vorbeiziehen.
+    final.sort(key=lambda t: (
+        -t[0], -(t[2].match_score + _b(t[2])[2]), -t[2].datenqualitaet,
+        -(t[2].baujahr_von or 0), kandidat_id(t[2]),
+    ))
+    final_kands = [t[2] for t in final]
+    for kand in final_kands:
+        try:
+            kand.budget_status = _b(kand)[0]   # nur Kontext fürs Enrichment-Prompt
+        except Exception:
+            pass
+
+    budget_hinweis = _budget_ergebnis_hinweis(
+        body, gemini_aufgerufen=budget_aufgerufen, gemini_ausgefallen=budget_ausgefallen)
+    if budget_hinweis:
+        warnungen.append(budget_hinweis)
+
+    # 5) EIN Enrichment-Call
+    enr_map: dict[str, Enrichment] = {}
+    enr_ausgefallen = False
+    try:
+        enr_map, enr_ausgefallen = await enrich_kandidaten(final_kands, engine_request)
+    except Exception:
+        log.exception("AutoFinder: Enrichment-Aufruf unerwartet fehlgeschlagen")
+        enr_ausgefallen = True
+
+    # 6) Objekte bauen
+    outs: list[AutoFinderKandidatOut] = []
+    fallback_genutzt = False
+    for score, gruende, kand in final:
+        b_status, b_conf, b_anp = _b(kand)
+        enr = enr_map.get(kandidat_id(kand))
+        if enr is not None:
+            e_status = "ok"
+        else:
+            enr = deterministischer_fallback(kand)
+            e_status = "fallback"
+            fallback_genutzt = True
+        outs.append(_zu_kandidat_out(
+            kand, budget_status=b_status, budget_confidence=b_conf,
+            budget_adjustment=b_anp, bevorzugte_karosserie=bevorzugte_karosserie,
+            user_fit=score, user_fit_gruende=gruende,
+            enrichment=enr, enrichment_status=e_status,
+        ))
+
+    enrichment_notice = None
+    if enr_ausgefallen or fallback_genutzt:
+        enrichment_notice = (
+            "Die Zusatzanalyse (ausführliche Gründe, Preisorientierung) konnte "
+            "diesmal nicht vollständig geladen werden — die Fahrzeugdaten und "
+            "die Passung sind davon unberührt."
+        )
+        warnungen.append(enrichment_notice)
+
+    return _FinalErgebnis(outs, "ok", warnungen, enrichment_notice,
+                          budget_ausgefallen, budget_aufgerufen)
 
 
 def _filters_applied(body: AutoFinderRequest) -> dict:
@@ -343,14 +485,13 @@ def _filters_applied(body: AutoFinderRequest) -> dict:
 async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     verify_api_key(request)
 
-    hat_budget = budget_angegeben(body.budget_min, body.budget_max)
-    # §7: Ohne Budget bleibt es bei k=5 (Runde 2 unverändert, kein Gemini
-    # möglich). MIT Budget wird die groessere, aber weiterhin vollständig
-    # diversitätsgeprüfte Shortlist geholt, damit Gemini genau EINMAL über
-    # die ganze Auswahl urteilen kann, bevor auf 5 gekappt wird (§5).
+    # Quality-Enrichment-Runde: IMMER die größere, diversitätsgeprüfte
+    # Shortlist holen — der Fit-Filter (§Punkt 2) braucht Spielraum, um
+    # unter der 80er-Schwelle liegende Kandidaten wegzulassen und trotzdem
+    # bis zu 5 starke auszugeben. Budget + Enrichment laufen danach auf der
+    # finalen <=5-Liste (siehe _finalisiere).
     engine_request = _zu_engine_request(body)
-    shortlist_k = _BUDGET_SHORTLIST_K if hat_budget else 5
-    ergebnis = finde_fahrzeuge(engine_request, k=shortlist_k)
+    ergebnis = finde_fahrzeuge(engine_request, k=_BUDGET_SHORTLIST_K)
 
     warnungen: list[str] = []
 
@@ -384,32 +525,12 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     # Interne und Web-Kandidaten in EINE Rangliste (§11) — ohne pauschalen
     # DB-Bonus, mit erneut angewandten Diversitätsgrenzen.
     zusammengefuehrt = merge_und_diversifiziere(
-        ergebnis.kandidaten, web_kandidaten, k=shortlist_k)
+        ergebnis.kandidaten, web_kandidaten, k=_BUDGET_SHORTLIST_K)
 
-    budget_map: dict[str, tuple[str, str]] = {}
-    gemini_aufgerufen = False
-    gemini_ausgefallen = False
-
-    # §17 Runde 3: keine Kandidaten -> kein Budget-Call. §7: kein Budget -> kein Call.
-    # Web-Kandidaten dürfen mit in die Budget-Shortlist (§12 Runde 4).
-    if hat_budget and zusammengefuehrt:
-        gemini_aufgerufen = True
-        budget_map, gemini_ausgefallen = await bewerte_budget(
-            zusammengefuehrt,
-            budget_min=body.budget_min, budget_max=body.budget_max,
-            baujahr_von=body.baujahr_von, baujahr_bis=body.baujahr_bis,
-            kilometer_max=body.kilometer_max,
-        )
-
-    budget_hinweis = _budget_ergebnis_hinweis(
-        body, gemini_aufgerufen=gemini_aufgerufen, gemini_ausgefallen=gemini_ausgefallen)
-    if budget_hinweis:
-        warnungen.append(budget_hinweis)
+    enrichment_notice: str | None = None
 
     if not zusammengefuehrt:
         # Weder intern noch (falls überhaupt gesucht) im Web etwas Belastbares.
-        # Wortlaut und Statuswert bleiben unverändert zu Runde 2/3 — das ist
-        # weiterhin in erster Linie eine Aussage über den internen Bestand.
         status_wert = "no_internal_match"
         warnungen.append(
             "Der interne Datenbestand enthält aktuell keinen passenden Treffer "
@@ -417,22 +538,29 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
         )
         finale_kandidaten: list[AutoFinderKandidatOut] = []
     else:
-        status_wert = "ok"
         if ergebnis.treffer_vor_diversitaet < _NIEDRIGE_COVERAGE_SCHWELLE:
             warnungen.append(
                 "Nur wenige passende Fahrzeuge im internen Bestand gefunden — "
                 "die Auswahl ist entsprechend klein."
             )
-        # §6/§12: begrenzte Budget-Anpassung anwenden, stabil neu sortieren,
-        # auf exakt 5 kappen — bei leerem budget_map (kein Budget ODER
-        # Gemini ausgefallen) ist das ein Nullsummen-Re-Sort (siehe Docstring
-        # von `_top5_nach_budget`), die Foundation-Reihenfolge bleibt erhalten.
-        # §2 Runde 5: bei EINDEUTIGER Karosserie-Anfrage (genau eine gewählt)
-        # bevorzugt der Resolver diese Klasse — sie ist fachlich garantiert
-        # zutreffend (Hard Filter) UND nachweislich das, wonach gesucht wurde.
+        # §Punkt 2/Runde 5: bei EINDEUTIGER Karosserie-Anfrage (genau eine
+        # gewählt) ist diese Klasse Hard-Filter-garantiert vorhanden UND
+        # nachweislich das Gesuchte — Resolver + Consumer-Ausgabe stellen sie
+        # dann voran.
         bevorzugte_karosserie = body.karosserie[0] if len(body.karosserie) == 1 else None
-        finale_kandidaten = _top5_nach_budget(
-            zusammengefuehrt, budget_map, k=5, bevorzugte_karosserie=bevorzugte_karosserie)
+        fin = await _finalisiere(
+            zusammengefuehrt, engine_request, body,
+            bevorzugte_karosserie=bevorzugte_karosserie)
+        finale_kandidaten = fin.outs
+        status_wert = fin.status_wert
+        enrichment_notice = fin.enrichment_notice
+        warnungen.extend(fin.warnungen)
+        if status_wert == "no_strong_match":
+            warnungen.append(
+                "Zu deinen Angaben gibt es aktuell keinen wirklich starken "
+                "Treffer im Bestand. Versuche es mit weniger oder etwas "
+                "weiteren Filtern (Budget, Baujahr, Karosserie)."
+            )
 
     return AutoFinderResponse(
         status=status_wert,
@@ -441,4 +569,55 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
         filters_applied=_filters_applied(body),
         warnings=warnungen,
         data_scope_hint=_DATA_SCOPE_HINT,
+        enrichment_notice=enrichment_notice,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BILD-ON-DEMAND (§Punkt 1) — dedizierter Endpunkt, GETRENNT vom Such-Pfad
+# ══════════════════════════════════════════════════════════════════════════
+# Der Such-Endpunkt oben löst NIE eine Bildgenerierung aus. `app.autofinder_
+# images` (das die Offline-Pipeline nutzt) wird hier bewusst LAZY importiert,
+# damit `import app.routers.autofinder` bildgenerierungsfrei bleibt.
+
+_IMAGE_ENSURE_RATE_LIMIT = "10/minute"
+
+
+@router.post(
+    "/autofinder/images/ensure",
+    response_model=AutoFinderImageEnsureResponse,
+    summary="AutoFinder: fehlende finale Fahrzeugbilder nacherzeugen (gecacht)",
+)
+@limiter.limit(_IMAGE_ENSURE_RATE_LIMIT)
+async def autofinder_images_ensure(body: AutoFinderImageEnsureRequest, request: Request):
+    verify_api_key(request)
+    if not body.items:
+        return AutoFinderImageEnsureResponse(results=[])
+    from app.autofinder_images import ensure_images  # lazy: siehe oben
+
+    roh = [i.model_dump() for i in body.items]
+    try:
+        ergebnisse = await ensure_images(roh)
+    except Exception:
+        log.exception("AutoFinder-Images: ensure_images fehlgeschlagen — leeres Ergebnis")
+        ergebnisse = [{"visual_key": i["visual_key"], "status": "failed"} for i in roh]
+    return AutoFinderImageEnsureResponse(
+        results=[AutoFinderImageResult(**r) for r in ergebnisse]
+    )
+
+
+@router.get(
+    "/autofinder/img/{visual_key}",
+    summary="AutoFinder: on-demand erzeugtes Fahrzeugbild ausliefern",
+)
+async def autofinder_img(visual_key: str):
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    from app.autofinder_images import bild_pfad
+
+    pfad = bild_pfad(visual_key)
+    if pfad is None:
+        raise HTTPException(status_code=404, detail="Bild nicht vorhanden")
+    return FileResponse(str(pfad), media_type="image/webp",
+                        headers={"Cache-Control": "public, max-age=86400"})

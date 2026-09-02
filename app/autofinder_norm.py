@@ -24,6 +24,7 @@ Eine Baureihe/Motorisierung kann in MEHREREN Klassen gleichzeitig stehen
 
 import json
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
@@ -47,25 +48,43 @@ KAROSSERIE_KLASSEN = (
     KLEINWAGEN, KOMPAKT, LIMOUSINE, KOMBI, SUV, VAN, COUPE, CABRIO, PICKUP,
 )
 
+# Deutsche Karosserie-Rohwerte sind tückisch: "Kombilimousine" /
+# "Steilhecklimousine" / "Schräghecklimousine" bezeichnen ein SCHRÄGHECK
+# (Kompaktklasse) — NICHT einen Kombi und NICHT eine Stufenheck-Limousine.
+# "Avant" enthält als Teilwort "van". Solche Rohwerte werden ZUERST komplett
+# als EINE Klasse aufgelöst; erst wenn keiner dieser Sonderfälle greift, gilt
+# die generische Teilwort-Suche unten.
+# "Kombilimousine", "Schräghecklimousine", "Steilheck-Limousine",
+# "Fließheck Limousine" … = ein SCHRÄGHECK (Kompaktklasse).
+_HATCHBACK_LIMO_RE = re.compile(
+    r"(?:kombi|schräg|schraeg|steil|fließ|fliess|fliess?|flie[sß])"
+    r"(?:heck)?[ -]?limousine",
+    re.IGNORECASE,
+)
+
 # Reihenfolge ist bewusst: spezifischere Muster (van/pickup/suv) VOR den
-# generischen "…limousine"/"…heck"-Mustern geprüft, damit z.B.
-# "Großraumlimousine" als Van erkannt wird und nicht über das Teilwort
-# "limousine" fälschlich zur Limousine wird.
+# generischen "…limousine"/"…heck"-Mustern geprüft.
+# Regex-Muster (Präfix `re:`) statt Teilwort, wo Teilwort in die Irre führt:
+#  - `re:(?<!a)van` fängt "Kompaktvan"/"Minivan", aber NICHT "Avant".
+#  - "Kombilimousine" wird vorher schon von _HATCHBACK_LIMO_RE als kompakt
+#    aufgelöst, deshalb kann "kombi" hier Teilwort bleiben.
 _KAROSSERIE_MUSTER: tuple[tuple[str, tuple[str, ...]], ...] = (
     (PICKUP, ("pickup", "pick-up", "single cab", "double cab",
               "xtra cab", "extra cab")),
-    (VAN, ("van", "großraum", "grossraum", "hochdachkombi", "kastenwagen",
-           "transporter", "mpv")),
+    (VAN, (r"re:(?<!a)van", "großraum", "grossraum", "hochdachkombi",
+           "kastenwagen", "transporter", "mpv")),
     (SUV, ("suv", "geländewagen", "gelaendewagen", "crossover", "offroad")),
     (COUPE, ("coupé", "coupe")),
     (CABRIO, ("cabrio", "roadster", "spider", "spyder", "targa")),
     (KOMBI, ("kombi", "touring", "avant", "variant", "sportstourer",
-             "shooting brake", "estate", "allroad", "caravan", "steilheck")),
+             "sports tourer", "shooting brake", "estate", "allroad", "caravan")),
     (KLEINWAGEN, ("kleinwagen", "kleinstwagen")),
     (KOMPAKT, ("schrägheck", "schraegheck", "fließheck", "fliessheck",
-               "stufenheck", "sportback", "kompaktwagen", "compact",
+               "steilheck", "kompaktwagen", "compact",
                "türer", "tuerer", "türig", "tuerig")),
-    (LIMOUSINE, ("limousine", "stufenheck", "sedan", "saloon")),
+    # "Sportback" = fließheck-Fastback -> als Limousine geführt (A5/A7);
+    # bei SUV-Rohwerten dominiert ohnehin SUV.
+    (LIMOUSINE, ("limousine", "stufenheck", "sedan", "saloon", "sportback")),
 )
 
 
@@ -99,9 +118,20 @@ def normalisiere_karosserie(karosserie_json: str | None) -> frozenset[str]:
     treffer: set[str] = set()
     for roh in _roh_werte(karosserie_json):
         s = roh.lower()
+        # Sonderfall: "…hecklimousine" / "Kombilimousine" = Schrägheck ->
+        # KOMPAKT, und NUR das (dieser eine Rohwert trägt nichts anderes bei).
+        if _HATCHBACK_LIMO_RE.search(s):
+            treffer.add(KOMPAKT)
+            continue
         for klasse, muster in _KAROSSERIE_MUSTER:
-            if any(m in s for m in muster):
-                treffer.add(klasse)
+            for m in muster:
+                if m.startswith("re:"):
+                    if re.search(m[3:], s):
+                        treffer.add(klasse)
+                        break
+                elif m in s:
+                    treffer.add(klasse)
+                    break
     return frozenset(treffer)
 
 

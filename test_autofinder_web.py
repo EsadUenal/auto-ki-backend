@@ -53,7 +53,17 @@ import app.routers.autofinder as af_router         # noqa: E402
 import app.autofinder as af                        # noqa: E402
 import app.autofinder_web as afw                   # noqa: E402
 import app.autofinder_budget as af_budget          # noqa: E402
+import app.autofinder_enrich as af_enrich          # noqa: E402
 from app.rate_limit import limiter as _global_limiter   # noqa: E402
+
+
+async def _enrich_leer(system_prompt: str, user_msg: str) -> dict:
+    """Enrichment ohne Netzwerk faken — Router nutzt den deterministischen
+    Fallback. Diese Datei testet den Web-Fallback, nicht das Enrichment."""
+    return {"candidates": []}
+
+
+af_enrich.call_gemini_json = _enrich_leer
 
 client = TestClient(fastapi_app)
 HEADERS = {"Authorization": "Bearer test-key-autofinder-web"}
@@ -507,10 +517,16 @@ check("U: market_price_min/max/median/data_quality/sample_size bleiben None — 
       all(k["market_price_min"] is None and k["market_price_max"] is None
           and k["market_price_median"] is None and k["market_data_quality"] is None
           and k["market_sample_size"] is None for k in _t1["kandidaten"]))
-check("U: kein Preis-Feld im Kandidatenschema",
-      all("preis" not in schluessel.lower() and "price" not in schluessel.lower()
-          or schluessel.startswith("market_")
-          for k in _t1["kandidaten"] for schluessel in k))
+# Preisfelder gibt es jetzt zwei Sorten: `market_*` (immer None, keine
+# Live-Marktdaten) und `estimated_price_*` (KI-Schätzung, breite Spanne,
+# NIE "Marktpreis"). Beide sind erlaubt — ein echter Live-Marktpreis-Median
+# darf weiterhin nicht auftauchen.
+_ERLAUBTE_PREIS_PRAEFIXE = ("market_", "estimated_price_", "price_confidence")
+check("U: nur erlaubte Preisfelder (market_* None + estimated_price_* Schätzung), "
+      "kein Live-Marktpreis-Median",
+      all(not ("preis" in s.lower() or "price" in s.lower())
+          or s.startswith(_ERLAUBTE_PREIS_PRAEFIXE)
+          for k in _t1["kandidaten"] for s in k))
 
 
 # ══════════════════════════════════════════════════════════════════════════

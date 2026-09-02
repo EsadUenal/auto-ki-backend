@@ -147,6 +147,14 @@ class AutoFinderKandidat:
 
     trade_offs: list[str] = field(default_factory=list)
 
+    # Quality-Enrichment-Runde: rein informative Kennzahlen für den
+    # nutzer-verständlichen Fit-Score (app/autofinder_fit.py) und das
+    # Gemini-Enrichment. Kommen aus derselben DB-Zeile wie alles andere,
+    # verändern WEDER Hard-Filter NOCH Ranking-Score.
+    verbrauch_l_100km: float | None = None
+    beschleunigung_0_100_s: float | None = None
+    drehmoment_nm: int | None = None
+
     # ---- Vorbereitung für spätere Runden (§12/§13/§15) — in Runde 1 immer
     # der hier gezeigte Leerzustand, nie befüllt oder ausgewertet. ----
     source_type: Literal["internal_db", "web_discovered"] = "internal_db"
@@ -523,6 +531,9 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float) -> Auto
         match_gruende=gruende,
         datenqualitaet=dq,
         trade_offs=_trade_offs_fuer(roh),
+        verbrauch_l_100km=roh.get("_verbrauch"),
+        beschleunigung_0_100_s=roh.get("beschleunigung_0_100"),
+        drehmoment_nm=roh.get("drehmoment_nm"),
         visual_key=_visual_key(roh),
     )
 

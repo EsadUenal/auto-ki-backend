@@ -61,6 +61,7 @@ from app.main import app as fastapi_app     # noqa: E402
 import app.routers.autofinder as af_router  # noqa: E402
 import app.autofinder as af                 # noqa: E402
 import app.autofinder_budget as af_budget   # noqa: E402
+import app.autofinder_enrich as af_enrich   # noqa: E402
 from app.rate_limit import limiter as _global_limiter   # noqa: E402
 
 
@@ -73,6 +74,11 @@ async def _stub_gemini_neutral(system_prompt: str, user_msg: str) -> dict:
 
 
 af_budget.call_gemini_json = _stub_gemini_neutral
+# Quality-Enrichment-Runde: der Such-Endpunkt ruft jetzt IMMER ein
+# Gemini-Enrichment für die finale Liste auf. Für diese Datei ebenfalls ohne
+# Netzwerk faken (leere Antwort -> Router nutzt den deterministischen
+# Fallback, kein echter Call).
+af_enrich.call_gemini_json = _stub_gemini_neutral
 
 client = TestClient(fastapi_app)   # OHNE `with` — kein Lifespan/Backup-Task nötig
 HEADERS = {"Authorization": "Bearer test-key-autofinder-api"}

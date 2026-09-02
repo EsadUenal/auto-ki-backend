@@ -1271,12 +1271,66 @@ class AutoFinderKandidatOut(BaseModel):
     image_confidence: str = "representative"   # exact | generation_match | model_match | representative
     ai_generated: bool = False
 
+    # -- Nutzer-Fit (Quality-Enrichment-Runde) — deterministisch, siehe
+    # app/autofinder_fit.py. `user_fit` ist die im Consumer-UI gezeigte
+    # Passungs-Prozentzahl (>= 80, sonst nicht ausgegeben); `match_score`
+    # oben bleibt der INTERNE Ranking-Score. --
+    user_fit: int = 0
+    user_fit_gruende: list[str] = Field(default_factory=list)
+
+    # -- Gemini-Enrichment der finalen Kandidaten (§Punkt 3/6) — bei
+    # Gemini-Ausfall deterministischer Fallback bzw. leer. `trade_offs` oben
+    # wird vom Router durch die angereicherte Fassung ersetzt. --
+    why_fits: list[str] = Field(default_factory=list)
+    known_points: list[str] = Field(default_factory=list)
+    enrichment_status: str = "unavailable"   # ok | fallback | unavailable
+
+    # -- Preisorientierung (§Punkt 3) — KI-Schätzung, KEIN Marktpreis. Breite
+    # Spanne oder None; nie eine Einzelzahl, nie als "Marktpreis" bezeichnet. --
+    estimated_price_min: int | None = None
+    estimated_price_max: int | None = None
+    price_confidence: str = "UNKNOWN"         # HIGH | MEDIUM | LOW | UNKNOWN
+
 
 class AutoFinderResponse(BaseModel):
     """Antwort von POST /api/v1/autofinder."""
-    status: str   # "ok" | "no_internal_match"
+    status: str   # "ok" | "no_internal_match" | "no_strong_match"
     kandidaten: list[AutoFinderKandidatOut] = Field(default_factory=list)
     total_candidates_considered: int = 0
     filters_applied: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     data_scope_hint: str
+    # §Punkt 6/Enrichment-Failure: gesetzt, wenn das Gemini-Enrichment nicht
+    # (vollständig) geladen werden konnte — neutraler Hinweis fürs UI.
+    enrichment_notice: str | None = None
+
+
+# ---------- AutoFinder Bild-On-Demand (§Punkt 1) ----------
+
+class AutoFinderImageEnsureItem(BaseModel):
+    """Ein fehlendes finales Bild, das das Frontend nacherzeugen lassen will."""
+    visual_key: str = Field(max_length=160)
+    marke: str = Field(max_length=100)
+    modell: str = Field(max_length=100)
+    generation: str | None = Field(default=None, max_length=100)
+    karosserie: str = Field(max_length=40)
+    baujahr_von: int | None = Field(default=None, ge=1900, le=2100)
+    baujahr_bis: int | None = Field(default=None, ge=1900, le=2100)
+
+
+class AutoFinderImageEnsureRequest(BaseModel):
+    # Deckel: das Frontend fordert nie mehr als die tatsächlich fehlenden
+    # finalen Bilder an (Top-5 -> höchstens 5).
+    items: list[AutoFinderImageEnsureItem] = Field(default_factory=list, max_length=8)
+
+
+class AutoFinderImageResult(BaseModel):
+    visual_key: str
+    status: str        # "ready" | "generated" | "failed"
+    image_url: str | None = None
+    image_type: str | None = None       # generated_cached | generic_fallback
+    ai_generated: bool = False
+
+
+class AutoFinderImageEnsureResponse(BaseModel):
+    results: list[AutoFinderImageResult] = Field(default_factory=list)

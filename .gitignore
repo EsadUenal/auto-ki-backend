@@ -27,3 +27,9 @@ diagnose_runs/
 .idea/
 
 .env.stripe
+
+# AutoFinder — zur Laufzeit erzeugte Bilder + Job-/Cache-Zustand (nicht ins Repo;
+# das kuratierte Manifest app/data/autofinder_visual_manifest.json bleibt getrackt)
+app/data/autofinder_images/
+app/data/autofinder_generation_jobs.json
+.autofinder_generation_scratch/

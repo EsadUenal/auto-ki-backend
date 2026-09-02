@@ -59,8 +59,18 @@ from app.main import app as fastapi_app     # noqa: E402
 import app.routers.autofinder as af_router  # noqa: E402
 import app.autofinder as af                 # noqa: E402
 import app.autofinder_budget as af_budget   # noqa: E402
+import app.autofinder_enrich as af_enrich   # noqa: E402
 from app.gemini_retry import GeminiVoruebergehendNichtErreichbar   # noqa: E402
 from app.rate_limit import limiter as _global_limiter               # noqa: E402
+
+
+async def _enrich_leer(system_prompt: str, user_msg: str) -> dict:
+    """Enrichment ohne Netzwerk faken — diese Datei testet nur die
+    Budget-Plausibilität. Router nutzt dann den deterministischen Fallback."""
+    return {"candidates": []}
+
+
+af_enrich.call_gemini_json = _enrich_leer
 
 client = TestClient(fastapi_app)
 HEADERS = {"Authorization": "Bearer test-key-autofinder-budget"}
@@ -187,7 +197,10 @@ check("2: kein Budget -> 0 Gemini-Calls", zaehler2.n == 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 3) 10-15 Kandidaten -> EIN gemeinsamer Gemini-Call (nicht einer pro Auto)
+# 3) Budget-Bewertung: EIN gemeinsamer Gemini-Call für die FINALE Liste
+#    (Quality-Enrichment-Runde: Budget läuft nach dem Fit-Filter auf den
+#     ausgegebenen <=5 Kandidaten, nicht mehr auf der 15er-Rohshortlist —
+#     "passt DIESE Empfehlung zum Budget", genau ein Call.)
 # ══════════════════════════════════════════════════════════════════════════
 _reset_limiters()
 zaehler3 = _Zaehler(_gemini_leer)
@@ -196,9 +209,11 @@ r3 = post({"kraftstoff": ["Benzin"], "budget_min": 5000, "budget_max": 80000})
 data3 = r3.json()
 ids_im_prompt = _extrahiere_ids(zaehler3.letzter_user_msg or "")
 check("3: 200", r3.status_code == 200)
-check("3: Shortlist enthält mehrere Kandidaten (>=10)", len(ids_im_prompt) >= 10)
-check("3: trotzdem NUR EIN Gemini-Call für die GESAMTE Shortlist", zaehler3.n == 1)
-check("3: total_candidates_considered bestätigt großen Pool", data3["total_candidates_considered"] >= 10)
+check("3: der Budget-Prompt adressiert die finale Kandidatenliste (>=1, <=5)",
+      1 <= len(ids_im_prompt) <= 5 and len(ids_im_prompt) == len(data3["kandidaten"]))
+check("3: NUR EIN Gemini-Call für die gesamte finale Liste (nicht einer pro Auto)",
+      zaehler3.n == 1)
+check("3: total_candidates_considered bestätigt großen Vor-Pool", data3["total_candidates_considered"] >= 10)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -509,6 +524,9 @@ class _FakeKandidat:
     market_price_median: int | None = None
     market_data_quality: str | None = None
     market_sample_size: int | None = None
+    verbrauch_l_100km: float | None = 5.0
+    beschleunigung_0_100_s: float | None = 9.0
+    drehmoment_nm: int | None = 200
     visual_key: str = "test--x--1"
 
 
@@ -516,18 +534,52 @@ _bester = _FakeKandidat(baureihe_id="b1", variante_id="v1", match_score=10.0)   
 _schwaecher1 = _FakeKandidat(baureihe_id="b2", variante_id="v2", match_score=3.0)
 _schwaecher2 = _FakeKandidat(baureihe_id="b3", variante_id="v3", match_score=2.0)
 
-_budget_map_d = {"v1": (af_budget.OUT_OF_BUDGET, "HIGH")}   # NUR der beste bekommt einen Malus
-_top5_d = af_router._top5_nach_budget([_bester, _schwaecher1, _schwaecher2], _budget_map_d, k=5)
+
+@_dc
+class _FakeReq:
+    budget_min: int | None = 20000
+    budget_max: int | None = 35000
+    baujahr_von: int | None = None
+    baujahr_bis: int | None = None
+    kilometer_max: int | None = None
+    karosserie: list = _field(default_factory=list)
+    kraftstoff: list = _field(default_factory=lambda: ["Benzin"])
+    getriebe: list = _field(default_factory=list)
+    antrieb: list = _field(default_factory=list)
+    leistung_min_ps: int | None = None
+    leistung_max_ps: int | None = None
+    nutzung: str | None = None
+    km_pro_jahr: int | None = None
+    sportlich: bool = False
+    sparsam: bool = False
+    fahranfaenger: bool = False
+    praktisch: bool = False
+    komfortabel: bool = False
+    familie: bool = False
+
+
+async def _budget_nur_v1_out(sp, um):
+    return {"candidates": [{"candidate_id": "v1", "budget_status": "OUT_OF_BUDGET", "confidence": "HIGH"}]}
+
+
+import asyncio as _asyncio   # noqa: E402
+af_budget.call_gemini_json = _budget_nur_v1_out
+_fin_d = _asyncio.run(af_router._finalisiere(
+    [_bester, _schwaecher1, _schwaecher2], _FakeReq(), _FakeReq(),
+    bevorzugte_karosserie=None))
+_out_d = _fin_d.outs
 check("§11-D: der technisch stärkste Kandidat (v1) bleibt trotz OUT_OF_BUDGET "
       "IN der Ergebnisliste (kein Hard-Delete)",
-      any(k.variante_id == "v1" for k in _top5_d))
-_v1_out = next(k for k in _top5_d if k.variante_id == "v1")
+      any(k.variante_id == "v1" for k in _out_d))
+_v1_out = next(k for k in _out_d if k.variante_id == "v1")
 check("§11-D: v1 behält seinen Foundation-Score MINUS dem begrenzten Malus "
-      "(10.0 - 1.5 = 8.5), bleibt damit klar vor den schwächeren Kandidaten",
+      "(10.0 - 1.5 = 8.5)",
       _v1_out.match_score == 10.0 + af_budget.BUDGET_MALUS_OUT == 8.5)
-check("§11-D: trotz Malus bleibt v1 auf Platz 1 (10 - 1.5 = 8.5 > 3.0 und > 2.0 "
-      "— Budget dominiert NICHT das technische Ranking)",
-      _top5_d[0].variante_id == "v1")
+check("§11-D: v1 trägt OUT_OF_BUDGET, base_match_score bleibt 10.0",
+      _v1_out.budget_status == "OUT_OF_BUDGET" and _v1_out.base_match_score == 10.0)
+check("§11-D: trotz Malus bleibt v1 auf Platz 1 (Fit gleich, aber der "
+      "interne Score dominiert im Tie-Break — Budget kippt das Ranking nicht)",
+      _out_d[0].variante_id == "v1")
 
 
 # ══════════════════════════════════════════════════════════════════════════
