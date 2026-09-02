@@ -33,8 +33,10 @@ _tmp = tempfile.mkdtemp(prefix="vira_af_img_")
 os.environ["AUTO_KI_DB_PATH"] = os.path.join(_tmp, "k.db")
 os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 os.environ["AUTO_KI_AUTOFINDER_IMG_DIR"] = os.path.join(_tmp, "img")
-# eigenes Manifest, damit die echte Starter-Library nicht angefasst wird
+# eigene Manifeste, damit weder die kuratierte Starter-Library noch das echte
+# On-Demand-Manifest angefasst werden
 _manifest_pfad = os.path.join(_tmp, "manifest.json")
+os.environ["AUTO_KI_AUTOFINDER_ONDEMAND"] = os.path.join(_tmp, "ondemand.json")
 
 import app.config as _cfg; importlib.reload(_cfg)
 import app.database as _db; importlib.reload(_db)
@@ -42,6 +44,7 @@ _db.ensure_tables()
 
 import app.autofinder_visual as av
 av._MANIFEST_PFAD = __import__("pathlib").Path(_manifest_pfad)
+av._ONDEMAND_PFAD = __import__("pathlib").Path(os.environ["AUTO_KI_AUTOFINDER_ONDEMAND"])
 av.invalidiere_manifest_cache()
 
 import app.autofinder_images as ai
@@ -115,6 +118,17 @@ ai.generiere_bild = _make_gen(["good"])
 res2 = asyncio.run(ai.ensure_images([ITEM]))
 check("X/AB: bereits vorhandenes (Manifest) -> 0 Generierungs-Calls", _gen_calls["n"] == 0)
 check("X/AB: Ergebnis status 'ready' aus dem Cache", res2[0]["status"] == "ready")
+
+# ── Manifest-Trennung: on-demand landet NICHT im kuratierten Manifest ──────
+import json as _json
+_kur = _json.load(open(_manifest_pfad, encoding="utf-8")) if os.path.exists(_manifest_pfad) else []
+check("Trennung: kuratiertes Manifest bleibt unberührt (kein /api/-Eintrag)",
+      all(not e.get("image_url", "").startswith("/api/") for e in _kur))
+_od = _json.load(open(os.environ["AUTO_KI_AUTOFINDER_ONDEMAND"], encoding="utf-8"))
+check("Trennung: der on-demand-Eintrag liegt im separaten On-Demand-Manifest",
+      any(e["visual_key"] == "kia--ceed--cd--kombi" and e["image_url"].startswith("/api/") for e in _od))
+check("Trennung: lade_manifest_datei führt beide zusammen",
+      "kia--ceed--cd--kombi" in av.lade_manifest_datei(force=True))
 
 # ── Z) Generation-Failure -> kontrollierter Fallback ───────────────────
 _gen_calls["n"] = 0

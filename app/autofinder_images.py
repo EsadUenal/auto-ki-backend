@@ -39,8 +39,7 @@ from app.autofinder_visual import (
     UNBEKANNTE_KAROSSERIE,
     ManifestEintrag,
     lade_manifest_datei,
-    speichere_manifest_datei,
-    visual_key_v2,
+    speichere_ondemand_eintrag,
 )
 
 log = logging.getLogger(__name__)
@@ -179,22 +178,20 @@ async def ensure_images(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     BILD_DIR.mkdir(parents=True, exist_ok=True)
     # Sequentiell — je EIN Provider-Call, kein paralleler Ansturm.
-    neu_akzeptiert: list[tuple[dict, dict]] = []
     for item in zu_erzeugen:
         res = await _erzeuge_einen(item, BILD_DIR)
-        ergebnisse.append({k: v for k, v in res.items() if k != "pfad" and k != "error"})
+        if res["status"] == "failed":
+            log.info("AutoFinder-Images: %s NICHT erzeugt (%s)",
+                     res["visual_key"], res.get("error", "unbekannt"))
+        ergebnisse.append({k: v for k, v in res.items() if k not in ("pfad", "error")})
         if res["status"] == "generated":
-            neu_akzeptiert.append((item, res))
-
-    # Manifest EINMAL aktualisieren (atomarer Write, erneute Validierung).
-    if neu_akzeptiert:
-        for item, res in neu_akzeptiert:
-            manifest[res["visual_key"]] = _manifest_eintrag(item, res["visual_key"])
-        try:
-            speichere_manifest_datei(manifest)
-        except Exception:
-            log.exception("AutoFinder-Images: Manifest-Schreiben fehlgeschlagen — "
-                          "Bilder erzeugt, aber nicht gecacht")
+            # Akzeptiertes Bild sofort ins ON-DEMAND-Manifest (getrennt vom
+            # kuratierten Manifest) -> nächste Suche liefert es direkt.
+            try:
+                speichere_ondemand_eintrag(_manifest_eintrag(item, res["visual_key"]))
+            except Exception:
+                log.exception("AutoFinder-Images: On-Demand-Manifest-Schreiben fehlgeschlagen "
+                              "— Bild erzeugt, aber nicht gecacht (%s)", res["visual_key"])
 
     return ergebnisse
 

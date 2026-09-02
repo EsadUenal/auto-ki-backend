@@ -180,33 +180,69 @@ def parse_manifest(rohliste: list[dict]) -> dict[str, ManifestEintrag]:
 # explizit (Tests/Admin), sonst bleibt der erste geladene Stand aktiv.
 _MANIFEST_CACHE: dict[str, ManifestEintrag] | None = None
 _MANIFEST_PFAD = Path(__file__).resolve().parent / "data" / "autofinder_visual_manifest.json"
+# ON-DEMAND-Manifest: zur Laufzeit vom Ensure-Endpunkt erzeugte Bilder. GETRENNT
+# vom kuratierten Manifest (getrackt) — dieses hier ist deployment-lokaler Cache
+# (gitignored, liegt neben app/data/autofinder_images/) und regeneriert sich bei
+# Bedarf. So bleibt das kuratierte Manifest sauber und reproduzierbar.
+# Überschreibbar via Env (Tests / abweichende Deployments).
+_ONDEMAND_PFAD = Path(os.environ.get(
+    "AUTO_KI_AUTOFINDER_ONDEMAND",
+    str(Path(__file__).resolve().parent / "data" / "autofinder_ondemand_manifest.json"),
+))
+
+
+def _lade_eine_datei(ziel: Path) -> dict[str, ManifestEintrag]:
+    if not ziel.exists():
+        return {}
+    try:
+        return parse_manifest(json.loads(ziel.read_text(encoding="utf-8")))
+    except Exception:
+        log.exception("AutoFinder-Visual: %s konnte nicht geladen werden — ignoriert.", ziel.name)
+        return {}
 
 
 def lade_manifest_datei(pfad: Path | str | None = None, *, force: bool = False) -> dict[str, ManifestEintrag]:
-    """Laedt (und cached) das Manifest von der Platte. Eine fehlende Datei
-    ist KEIN Fehler — leeres Manifest, jeder Kandidat faellt auf den
-    generischen Fallback zurueck (V1 vor der ersten Kuratierung)."""
+    """Laedt (und cached) das kuratierte Manifest + on-demand-Manifest,
+    zusammengefuehrt. Der kuratierte Eintrag gewinnt bei Kollision. Eine
+    fehlende Datei ist KEIN Fehler (nur generische Fallbacks aktiv)."""
     global _MANIFEST_CACHE
     if _MANIFEST_CACHE is not None and not force:
         return _MANIFEST_CACHE
     ziel = Path(pfad) if pfad else _MANIFEST_PFAD
-    if not ziel.exists():
+    kuratiert = _lade_eine_datei(ziel)
+    # on-demand nur beim Default-Pfad (Tests uebergeben eigene Pfade)
+    ondemand = _lade_eine_datei(_ONDEMAND_PFAD) if pfad is None else {}
+    if not ziel.exists() and not ondemand:
         log.info("AutoFinder-Visual: kein Manifest unter %s — nur generische Fallbacks aktiv.", ziel)
-        _MANIFEST_CACHE = {}
-        return _MANIFEST_CACHE
-    try:
-        rohliste = json.loads(ziel.read_text(encoding="utf-8"))
-        _MANIFEST_CACHE = parse_manifest(rohliste)
-    except Exception:
-        log.exception("AutoFinder-Visual: Manifest konnte nicht geladen werden — "
-                      "falle auf leeres Manifest zurueck (nur generische Fallbacks).")
-        _MANIFEST_CACHE = {}
+    _MANIFEST_CACHE = {**ondemand, **kuratiert}
     return _MANIFEST_CACHE
 
 
 def invalidiere_manifest_cache() -> None:
     global _MANIFEST_CACHE
     _MANIFEST_CACHE = None
+
+
+def speichere_ondemand_eintrag(eintrag: ManifestEintrag) -> None:
+    """Fuegt EINEN on-demand erzeugten Eintrag ins deployment-lokale
+    On-Demand-Manifest ein (atomarer Write). Das kuratierte Manifest bleibt
+    unangetastet."""
+    aktuell = _lade_eine_datei(_ONDEMAND_PFAD)
+    aktuell[eintrag.visual_key] = eintrag
+    _ONDEMAND_PFAD.parent.mkdir(parents=True, exist_ok=True)
+    rohliste = [asdict(e) for e in aktuell.values()]
+    fd, tmp = tempfile.mkstemp(dir=str(_ONDEMAND_PFAD.parent), prefix=".od_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rohliste, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _ONDEMAND_PFAD)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    invalidiere_manifest_cache()
 
 
 def speichere_manifest_datei(manifest: dict[str, ManifestEintrag],

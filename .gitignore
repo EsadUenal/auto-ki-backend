@@ -33,3 +33,4 @@ diagnose_runs/
 app/data/autofinder_images/
 app/data/autofinder_generation_jobs.json
 .autofinder_generation_scratch/
+app/data/autofinder_ondemand_manifest.json
