@@ -324,7 +324,14 @@ def _bild_felder(k, *, bevorzugte_karosserie: str | None) -> dict:
 
 
 # §Punkt 2: nur Kandidaten mit diesem Fit oder besser gehen in die Ausgabe.
+# Sichtbare Empfehlungen im Consumer-UI (Frontend-Anzeigedeckel).
 _MAX_AUSGABE = 5
+# Image-Guarantee: der Such-Endpunkt liefert einen etwas GRÖSSEREN qualifizierten
+# Pool (alle >= FIT_SCHWELLE), damit die Frontend-/Ensure-Phase Kandidaten, deren
+# echtes VIRA-Line-Art-Bild trotz Nacherzeugung nicht zustande kommt, aus dem
+# finalen Set entfernen und durch den nächsten geeigneten Kandidaten ersetzen
+# kann. Enrichment + Budget bleiben JE EIN Gemini-Call — nur auf dem Pool.
+_KANDIDATEN_POOL = 8
 
 
 @dataclass
@@ -345,10 +352,12 @@ async def _finalisiere(
 
       1. Fit-Score (deterministisch) für ALLE gemergten Kandidaten.
       2. Schwellen-Filter: nur >= FIT_SCHWELLE. Keiner -> no_strong_match.
-      3. Cap auf 5, stabile Fit-Sortierung.
-      4. Budget-Call (nur wenn Budget angegeben) auf GENAU DIESE <=5 -> begrenzte
-         Anpassung, stabile Neusortierung innerhalb der 5.
-      5. EIN Enrichment-Call auf die (ggf. neu sortierten) <=5.
+      3. Cap auf den Kandidaten-Pool (<= _KANDIDATEN_POOL), stabile Fit-Sortierung.
+         Das Frontend trimmt daraus die bis zu _MAX_AUSGABE sichtbaren, bild-
+         fertigen Empfehlungen (Image-Guarantee).
+      4. Budget-Call (nur wenn Budget angegeben) auf GENAU DIESEN Pool -> begrenzte
+         Anpassung, stabile Neusortierung innerhalb des Pools.
+      5. EIN Enrichment-Call auf den (ggf. neu sortierten) Pool.
       6. Kandidaten-Objekte bauen. Bei Enrichment-Ausfall deterministischer
          Fallback je Kandidat + neutraler Hinweis.
     """
@@ -373,7 +382,7 @@ async def _finalisiere(
         -t[0], -t[2].match_score, -t[2].datenqualitaet,
         -(t[2].baujahr_von or 0), kandidat_id(t[2]),
     ))
-    final = mit_fit[:_MAX_AUSGABE]
+    final = mit_fit[:_KANDIDATEN_POOL]
     final_kands = [t[2] for t in final]
 
     # 4) Budget-Call auf die finale Liste (§Punkt 3: grobe Orientierung, kein Preis)

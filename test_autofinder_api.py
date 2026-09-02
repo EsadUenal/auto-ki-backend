@@ -104,12 +104,13 @@ def _reset_limiters() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# A) gültige Standardsuche -> 200 + max 5 Kandidaten
+# A) gültige Standardsuche -> 200 + qualifizierter Kandidaten-Pool (<= 8;
+#    Frontend trimmt auf die <=5 bild-fertigen Empfehlungen, Image-Guarantee)
 # ══════════════════════════════════════════════════════════════════════════
 r_a = post({})
 check("A: leerer Body -> 200", r_a.status_code == 200)
 data_a = r_a.json()
-check("A: max. 5 Kandidaten", len(data_a["kandidaten"]) <= 5)
+check("A: qualifizierter Pool <= 8 Kandidaten", len(data_a["kandidaten"]) <= 8)
 check("A: status ist 'ok' (416 Baureihen -> garantiert Treffer ohne Filter)",
       data_a["status"] == "ok")
 

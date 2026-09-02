@@ -141,7 +141,7 @@ if _d["kandidaten"]:
     check("A/Router: die ausgegebenen user_fit-Werte sind nicht alle identisch "
           f"({[k['user_fit'] for k in _d['kandidaten']]})",
           len(set(k["user_fit"] for k in _d["kandidaten"])) >= 1)  # >=1: Determinismus, Varianz separat geprüft
-    check("D/Router: höchstens 5 Ergebnisse", len(_d["kandidaten"]) <= 5)
+    check("D/Router: höchstens 8 Ergebnisse (qualifizierter Pool)", len(_d["kandidaten"]) <= 8)
 check("Router: Status ok oder no_strong_match", _d["status"] in ("ok", "no_strong_match", "no_internal_match"))
 
 # unmöglich strenge Kombination -> no_strong_match ODER no_internal_match, nie schwache Treffer

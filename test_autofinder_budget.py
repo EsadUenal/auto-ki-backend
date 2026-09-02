@@ -209,8 +209,8 @@ r3 = post({"kraftstoff": ["Benzin"], "budget_min": 5000, "budget_max": 80000})
 data3 = r3.json()
 ids_im_prompt = _extrahiere_ids(zaehler3.letzter_user_msg or "")
 check("3: 200", r3.status_code == 200)
-check("3: der Budget-Prompt adressiert die finale Kandidatenliste (>=1, <=5)",
-      1 <= len(ids_im_prompt) <= 5 and len(ids_im_prompt) == len(data3["kandidaten"]))
+check("3: der Budget-Prompt adressiert die finale Kandidatenliste (>=1, <=8)",
+      1 <= len(ids_im_prompt) <= 8 and len(ids_im_prompt) == len(data3["kandidaten"]))
 check("3: NUR EIN Gemini-Call für die gesamte finale Liste (nicht einer pro Auto)",
       zaehler3.n == 1)
 check("3: total_candidates_considered bestätigt großen Vor-Pool", data3["total_candidates_considered"] >= 10)
@@ -463,7 +463,7 @@ check("16: max. 2 Kandidaten je Marke bleibt AUCH nach Budget-Umsortierung erhal
       all(v <= 2 for v in _marken16.values()))
 check("16: max. 1 Kandidat je Baureihe bleibt AUCH nach Budget-Umsortierung erhalten",
       all(v <= 1 for v in _baureihen16.values()))
-check("16: exakt max. 5 Kandidaten", len(data16["kandidaten"]) <= 5)
+check("16: qualifizierter Pool <= 8 Kandidaten", len(data16["kandidaten"]) <= 8)
 
 
 # ══════════════════════════════════════════════════════════════════════════
