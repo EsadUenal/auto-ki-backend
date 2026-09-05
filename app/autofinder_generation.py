@@ -221,25 +221,32 @@ async def generiere_bild(job: GenerationJob) -> tuple[bytes | None, str | None, 
 # ══════════════════════════════════════════════════════════════════════════
 
 def schreibe_bild(bild_bytes: bytes, mime_type: str, ziel_ordner: Path, visual_key: str) -> Path:
-    """Schreibt die Rohdaten, konvertiert nach WebP wenn Pillow vorhanden.
-    Gibt den tatsächlich geschriebenen Pfad zurück. KEINE Metadaten/Secrets
-    im Dateinamen — nur der `visual_key` (§F)."""
+    """Schreibt die Rohdaten, normalisiert (Bild-Konsistenz-Runde: einheitlicher
+    Fahrzeug-Flächenanteil/Zentrierung, siehe app.autofinder_image_normalize)
+    und konvertiert nach WebP — wenn Pillow vorhanden. Gibt den tatsächlich
+    geschriebenen Pfad zurück. KEINE Metadaten/Secrets im Dateinamen — nur der
+    `visual_key` (§F). EIN Aufrufpfad für offline generierte (§scripts) UND
+    on-demand erzeugte Bilder (app.autofinder_images) — beide normalisieren
+    dadurch automatisch, ohne zusätzlichen Gemini-Call."""
     ziel_ordner.mkdir(parents=True, exist_ok=True)
     roh_ext = ".png" if "png" in mime_type else (".jpg" if "jpeg" in mime_type else ".bin")
     roh_pfad = ziel_ordner / f"{visual_key}{roh_ext}"
     roh_pfad.write_bytes(bild_bytes)
     try:
         from PIL import Image
+
+        from app.autofinder_image_normalize import normalize_lineart_image
         webp_pfad = ziel_ordner / f"{visual_key}.webp"
         with Image.open(roh_pfad) as img:
-            img.convert("RGB").save(webp_pfad, "WEBP", quality=85, method=6)
+            normalisiert = normalize_lineart_image(img)
+        normalisiert.save(webp_pfad, "WEBP", quality=85, method=6)
         return webp_pfad
     except ImportError:
         log.warning("AutoFinder-Generation: Pillow nicht installiert — "
-                    "Rohformat (%s) wird nicht nach WebP konvertiert.", roh_ext)
+                    "Rohformat (%s) wird nicht nach WebP konvertiert/normalisiert.", roh_ext)
         return roh_pfad
     except Exception:
-        log.exception("AutoFinder-Generation: WebP-Konvertierung fehlgeschlagen — "
+        log.exception("AutoFinder-Generation: WebP-Konvertierung/Normalisierung fehlgeschlagen — "
                       "Rohdatei bleibt bestehen: %s", roh_pfad)
         return roh_pfad
 
