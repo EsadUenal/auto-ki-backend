@@ -79,7 +79,13 @@ from app.autofinder_web import (
     kandidat_id,
     merge_und_diversifiziere,
 )
-from app.autofinder_visual import resolve_image
+from app.autofinder_visual import (
+    CONF_EXACT,
+    generischer_fallback,
+    resolve_image,
+    visual_key_v2,
+    waehle_karosserie,
+)
 from app.database import get_alle_baureihen_kurz
 from app.models import (
     AutoFinderImageEnsureRequest,
@@ -309,18 +315,87 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
     )
 
 
+def _neutrale_bildfelder(k, bevorzugte_karosserie: str | None) -> dict:
+    """Neutrale Silhouette statt eines falschen Fahrzeugbildes.
+
+    Wichtig: `image_url` bleibt NICHT leer — der bestehende Vertrag garantiert
+    jedem Kandidaten ein gueltiges Bildfeld (test_autofinder_visual.py K). Nur
+    `image_type=generic_fallback` signalisiert dem Frontend, dass hier noch ein
+    exaktes Bild nachgezogen werden muss.
+    """
+    try:
+        karo = waehle_karosserie(getattr(k, "karosserie_klassen", None) or [],
+                                 bevorzugte_karosserie=bevorzugte_karosserie)
+        bild = generischer_fallback(karo)
+        return dict(image_url=bild.image_url, image_type=bild.image_type,
+                    image_confidence=bild.image_confidence, ai_generated=False)
+    except Exception:
+        log.exception("AutoFinder: neutraler Bild-Fallback fehlgeschlagen")
+        return dict(image_url="", image_type="generic_fallback",
+                    image_confidence="representative", ai_generated=False)
+
+
+def _ist_exaktes_asset(k, bild, bevorzugte_karosserie: str | None) -> bool:
+    """§Exact-Image-Regel: für FINALE Consumer-Result-Cards zählt ein Asset nur
+    dann als Fahrzeugbild, wenn es GENAU dieses Fahrzeug zeigt.
+
+    BEFUND, der die Regel nötig gemacht hat: ein Ford Focus **Mk4** wurde mit
+    `ford--focus--mk3--kombi.webp` illustriert. Der Resolver hatte korrekt
+    `image_confidence='model_match'` und `fallback_used=True` gemeldet — nur
+    hat der Consumer-Pfad diese Abstufung nie ausgewertet und das Asset zudem
+    mit `image_type='generated_cached'` weitergereicht, weshalb auch das
+    Frontend es für ein echtes Bild hielt.
+
+    Der Resolver selbst behält seine Stufen (exact / generation_match /
+    model_match / representative) — andere interne Nutzer dürfen sie weiter
+    verwenden. Nur der Consumer-Ausgabepfad ist strenger:
+
+      * `image_confidence == exact`, UND
+      * der aufgelöste Key ist der Key GENAU DIESES Kandidaten.
+
+    Akzeptiert werden dabei die beiden kanonischen Key-Formen desselben
+    Fahrzeugs: der karosseriespezifische Resolver-Key
+    (`ford--focus--mk4--kombi`, kuratierte Assets) und der Engine-/On-Demand-Key
+    (`ford--focus--mk4`, unter dem der Ensure-Flow erzeugte Bilder ablegt).
+    Beide tragen Marke+Modell+Generation; ein Asset einer ANDEREN Generation
+    oder eines anderen Modells kann damit nie durchrutschen.
+    """
+    if bild.image_confidence != CONF_EXACT or bild.fallback_used:
+        return False
+    exakt_karo = visual_key_v2(
+        getattr(k, "marke", "") or "", getattr(k, "modell", "") or "",
+        getattr(k, "generation", None), getattr(k, "karosserie_klassen", None) or [],
+        bevorzugte_karosserie=bevorzugte_karosserie)
+    erlaubt = {exakt_karo, getattr(k, "visual_key", "") or ""}
+    return bild.resolved_visual_key in erlaubt
+
+
 def _bild_felder(k, *, bevorzugte_karosserie: str | None) -> dict:
     """§7 Runde 5: Bildauflösung darf die Antwort NIE gefährden — jeder
     Fehler landet im generischen Fallback (siehe `resolve_image`), nie als
-    Exception hier."""
+    Exception hier.
+
+    §Exact-Image-Regel: ein nicht-exaktes Asset wird NICHT als Fahrzeugbild
+    ausgegeben, sondern als `generic_fallback` gemeldet. Damit greift die
+    bereits vorhandene Image-Guarantee unverändert weiter: das Frontend zieht
+    für genau diesen visual_key ein exaktes Bild über den On-Demand-Ensure-Flow
+    nach und lässt den Kandidaten, wenn das zweimal scheitert, zugunsten des
+    nächsten qualifizierten Kandidaten fallen. Ein Bild der falschen Generation
+    wird nie ersatzweise angezeigt.
+    """
     try:
         bild = resolve_image(k, bevorzugte_karosserie=bevorzugte_karosserie)
+        if not _ist_exaktes_asset(k, bild, bevorzugte_karosserie):
+            log.info("AutoFinder: Asset %r fuer %s verworfen (confidence=%s) — kein exaktes "
+                     "Bild dieses Fahrzeugs, On-Demand-Ensure uebernimmt",
+                     bild.resolved_visual_key, getattr(k, "visual_key", "?"),
+                     bild.image_confidence)
+            return _neutrale_bildfelder(k, bevorzugte_karosserie)
         return dict(image_url=bild.image_url, image_type=bild.image_type,
                     image_confidence=bild.image_confidence, ai_generated=bild.ai_generated)
     except Exception:
         log.exception("AutoFinder: Bildauflösung fehlgeschlagen — neutrale Defaults")
-        return dict(image_url="", image_type="generic_fallback",
-                    image_confidence="representative", ai_generated=False)
+        return _neutrale_bildfelder(k, bevorzugte_karosserie)
 
 
 # §Punkt 2: nur Kandidaten mit diesem Fit oder besser gehen in die Ausgabe.

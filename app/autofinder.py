@@ -200,7 +200,7 @@ def _lade_rohkandidaten(conn: sqlite3.Connection) -> list[dict]:
 
 # Kurzlebiger In-Memory-Cache für die normalisierte Kandidatenbasis — dasselbe
 # Muster wie `app.database._cached_alle` (dort für baureihe/motorvariante-Kurz-
-# abfragen). Die Normalisierung (Karosserie/Getriebe/Segment über alle 3231
+# abfragen). Die Normalisierung (Karosserie/Getriebe/Segment über alle 3230
 # Motorvarianten) ist der teuerste Teil einer Suche (~50-65ms); ein 60s-TTL
 # spart das bei jeder Suche innerhalb desselben Fensters, ohne dass Nutzer je
 # einen veralteten Stand sehen (Admin-Schreibvorgänge sollten zusätzlich

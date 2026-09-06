@@ -6,7 +6,7 @@ den VOLLSTÄNDIGEN kanonischen Fahrzeugbestand (frisch gebootstrappt, nicht die
 Legacy-DB). Zwei Dinge stehen hier im Vordergrund:
 
   1. Klassifizierungsquote mindestens auf dem im Audit nachgewiesenen Niveau
-     (Karosserie >= 413/416, Getriebe >= 3226/3231) — mit vollständiger Liste
+     (Karosserie >= 413/416, Getriebe >= 3225/3230) — mit vollständiger Liste
      etwaiger nicht klassifizierter Rohwerte, damit ein Rückgang sofort
      sichtbar wird.
   2. Kein Raten: ein unbekannter Rohwert muss LEER (Karosserie/Getriebe) bzw.
@@ -59,7 +59,11 @@ with _db.get_conn() as conn:
 
 NB, NM = len(baureihen), len(motoren)
 check("Kanonischer Bestand geladen: 416 Baureihen", NB == 416)
-check("Kanonischer Bestand geladen: 3231 Motorvarianten", NM == 3231)
+# 3230 statt vormals 3231: die RS4-Motorzeile in der zivilen Baureihe
+# audi-a4-b9 war eine Dublette der eigenen Baureihe audi-rs-4-avant-b9
+# (identischer Motorcode DECA, 450 PS) und wurde in Quelle + Datenmigration
+# entfernt — siehe app/data_migrations.py::schritt_a4_b9_rs4_dublette.
+check("Kanonischer Bestand geladen: 3230 Motorvarianten", NM == 3230)
 
 # ── §18: vollständiger Klassifizierungsbericht ──────────────────────────────
 karo_bad = [(b["id"], b["karosserie"]) for b in baureihen
@@ -76,7 +80,7 @@ getr_ok = NM - len(getr_bad)
 print(f"\nGetriebe klassifiziert {getr_ok}/{NM}")
 if getr_bad:
     print("  nicht klassifiziert:", getr_bad)
-check("Getriebe-Klassifizierung >= Audit-Zielwert 3226/3231", getr_ok >= 3226)
+check("Getriebe-Klassifizierung >= Audit-Zielwert 3225/3230", getr_ok >= 3225)
 
 seg_bad = [(b["id"], b["segment"]) for b in baureihen
            if normalisiere_segment(b["segment"]) == UNBEKANNT]

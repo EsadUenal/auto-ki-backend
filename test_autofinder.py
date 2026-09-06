@@ -47,7 +47,10 @@ with _db.get_conn() as _conn:
     _NB = _conn.execute("SELECT COUNT(*) FROM baureihe").fetchone()[0]
     _NM = _conn.execute("SELECT COUNT(*) FROM motorvariante").fetchone()[0]
 check("Kanonischer Bestand: 416 Baureihen geladen", _NB == 416)
-check("Kanonischer Bestand: 3231 Motorvarianten geladen", _NM == 3231)
+# 3230 statt 3231: die RS4-Zeile in der zivilen Baureihe audi-a4-b9 war
+# eine Dublette der eigenen Baureihe audi-rs-4-avant-b9 (identischer
+# Motorcode DECA, 450 PS) und wurde in Quelle + Migration entfernt.
+check("Kanonischer Bestand: 3230 Motorvarianten geladen", _NM == 3230)
 
 
 def alle_kandidaten():

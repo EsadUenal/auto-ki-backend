@@ -1786,6 +1786,86 @@ SCHRITTE_MIXED_TARGET = (schritt_mixed_target_zeilen,
                          schritt_mixed_target_verifikation)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# AUDI A4 B9 — RS4-Motorvariante ist eine Dublette der eigenen RS-Baureihe
+# ══════════════════════════════════════════════════════════════════════════
+#
+# BEFUND (AutoFinder Consumer-Release-Audit): eine Suche nach sportlichen
+# Benzin-Kombis lieferte zwei Karten fuer dasselbe reale Auto —
+# "Audi A4 B9, 450 PS" und "Audi RS 4 Avant B9, 450 PS", beide mit identischer
+# Preisorientierung.
+#
+# URSACHE: die Baureihe `audi-a4-b9` (der ZIVILE A4, Karosserien Limousine/
+# Avant/Allroad) traegt zusaetzlich die Motorvariante
+# `audi-a4-b9-rs4-2.9-tfsi`. Dieselbe Maschine steht bereits in der eigenen
+# Baureihe `audi-rs-4-avant-b9` als `audi-rs-4-avant-b9-rs-4-avant-2.9-tfsi`.
+#
+# BELEG DER IDENTITAET (beide Zeilen, kanonischer Seed):
+#   Motorcode DECA | 2894 ccm | 6 Zyl. | 450 PS | 600 Nm | 4.1 s | Allrad
+# Es ist derselbe Motor, nicht zwei aehnliche Varianten. Der RS 4 B9 wurde
+# ausserdem ausschliesslich als Avant gebaut — eine RS4-Zeile in der zivilen
+# A4-Baureihe beschreibt kein zusaetzliches Fahrzeug.
+#
+# KORREKTUR: die RS4-Zeile aus `audi-a4-b9` entfernen. Die eigenstaendige
+# Baureihe `audi-rs-4-avant-b9` bleibt vollstaendig unangetastet — sie ist die
+# kanonische Heimat dieses Fahrzeugs. Alle uebrigen A4-Motoren (inklusive
+# BEIDER S4-Varianten) bleiben unveraendert.
+#
+# Die Quelle ist parallel korrigiert (db/seed_fahrzeugdaten.sql): eine frisch
+# aufgebaute Datenbank enthaelt die Zeile gar nicht erst, dieser Schritt meldet
+# dort "bereits aufgeloest". Beide Wege enden im selben Zustand.
+
+A4_B9_RS4_DUBLETTE = "audi-a4-b9-rs4-2.9-tfsi"
+A4_B9_RS4_KANON = "audi-rs-4-avant-b9-rs-4-avant-2.9-tfsi"
+
+
+def schritt_a4_b9_rs4_dublette(conn, apply_):
+    vorhanden = conn.execute(
+        "select count(*) from motorvariante where variante_id=?",
+        (A4_B9_RS4_DUBLETTE,)).fetchone()[0]
+    if not vorhanden:
+        log("  [A4-RS4] audi-a4-b9-rs4-2.9-tfsi: bereits aufgeloest (idempotent)")
+        return
+
+    # PRECONDITION: ohne die kanonische Zeile wuerde das Loeschen das Fahrzeug
+    # komplett aus dem Bestand entfernen — dann lieber abbrechen.
+    kanon = conn.execute(
+        "select baureihe_id, motorcode, leistung_ps from motorvariante where variante_id=?",
+        (A4_B9_RS4_KANON,)).fetchone()
+    if kanon is None:
+        raise RuntimeError("[A4-RS4] ABBRUCH: kanonische Variante "
+                           f"{A4_B9_RS4_KANON} fehlt — nicht geloescht")
+
+    dublette = conn.execute(
+        "select motorcode, leistung_ps, hubraum_ccm, drehmoment_nm from motorvariante "
+        "where variante_id=?", (A4_B9_RS4_DUBLETTE,)).fetchone()
+    kanon_voll = conn.execute(
+        "select motorcode, leistung_ps, hubraum_ccm, drehmoment_nm from motorvariante "
+        "where variante_id=?", (A4_B9_RS4_KANON,)).fetchone()
+    if tuple(dublette) != tuple(kanon_voll):
+        raise RuntimeError(
+            "[A4-RS4] ABBRUCH: die beiden Zeilen sind technisch NICHT identisch "
+            f"({tuple(dublette)} vs. {tuple(kanon_voll)}) — kein sicherer Dublettenfall")
+
+    # Eigener Anhang an der zu loeschenden Motorzeile? Dann nicht anfassen.
+    for tabelle in ("schwachstelle_motor", "kritische_wartung"):
+        n = conn.execute(f"select count(*) from {tabelle} where variante_id=?",
+                         (A4_B9_RS4_DUBLETTE,)).fetchone()[0]
+        if n:
+            raise RuntimeError(f"[A4-RS4] ABBRUCH: {A4_B9_RS4_DUBLETTE} hat {n} eigene "
+                               f"Zeile(n) in {tabelle} — manuelle Pruefung noetig")
+
+    log("  [A4-RS4] RS4 (2.9 TFSI) aus audi-a4-b9 entfernt — identischer Motor "
+        f"(Code {kanon['motorcode']}, {kanon['leistung_ps']} PS) steht kanonisch in "
+        f"{kanon['baureihe_id']}")
+    if apply_:
+        conn.execute("delete from motorvariante where variante_id=?", (A4_B9_RS4_DUBLETTE,))
+
+
+MARKER_A4_B9_RS4 = "audi_a4_b9_rs4_dublette_v1"
+SCHRITTE_A4_B9_RS4 = (schritt_a4_b9_rs4_dublette,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -1829,6 +1909,9 @@ MIGRATIONEN = (
     # Ausschliesslich die 32 einzeln auditierten sicheren Mixed-Target-Paare.
     # Muss nach Batch A/B1 laufen, damit deren Bestand beim Dublettengate steht.
     (MARKER_MIXED_TARGET, SCHRITTE_MIXED_TARGET),
+    # AutoFinder Consumer-Release-Audit: RS4-Motorzeile in der zivilen
+    # A4-B9-Baureihe, identisch zur eigenen RS-4-Avant-B9-Baureihe.
+    (MARKER_A4_B9_RS4, SCHRITTE_A4_B9_RS4),
 )
 
 
