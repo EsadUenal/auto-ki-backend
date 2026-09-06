@@ -1,43 +1,46 @@
 """
-Tägliche Nutzungsgrenzen für kostenlose Funktionen (Consumer V1).
+Monatliche Nutzungsgrenzen für KI-Chat und AutoFinder (Consumer Pricing V1 FINAL).
 
-ZWECK
------
-Kostenkontrolle und Missbrauchsschutz für den kostenlosen KI-Chat — NICHT
-Schikane für normale Nutzung. Die Grenze steht an EINER Stelle
-(`app.config.CHAT_FREE_LIMIT_TAEGLICH`); dieses Modul kapselt Zählung und
-Reset-Semantik, damit im restlichen Code keine Zahlen und keine Datums-Logik
-verstreut liegen.
+WARUM MONAT STATT TAG
+---------------------
+Die Vorgängerfassung zählte pro UTC-Kalendertag. Das deckelte zwar Missbrauch,
+passte aber nicht zum Produkt: verkauft wird in Monatskontingenten
+("20 Nachrichten im Monat", "100 im Plus"), und ein Tageslimit sagt dem Nutzer
+über seinen Tarif nichts. Zählung, Anzeige und Abrechnung sprechen jetzt
+dieselbe Sprache.
 
-WARUM NICHT NUR DAS BESTEHENDE RATE-LIMIT
------------------------------------------
-`app.rate_limit` (slowapi) begrenzt Anfragen PRO MINUTE pro IP. Das bremst
-Lastspitzen, deckelt aber keinen Dauerabruf: 20/Minute sind über einen Tag
-hinweg 28.800 Anfragen. Für ein kostenlos nutzbares LLM-Feature braucht es
-zusätzlich eine Tagesgrenze. Beide ergänzen sich und ersetzen sich nicht.
-
-SCHLÜSSEL
----------
-Der Chat-Endpunkt verlangt historisch KEINEN Login (nur den API-Key), das
-Frontend guardet die Route lediglich. Damit die Grenze trotzdem greift, wird
-per Nutzer gezählt, wenn ein gültiges Auth-Cookie vorliegt, sonst per IP:
-
-    'user:<id>'   eingeloggt   — folgt dem Konto über Geräte/IP-Wechsel hinweg
-    'ip:<adresse>' anonym      — bester verfügbarer Anker ohne Konto
+Ein Tageslimit war zudem wirtschaftlich falsch kalibriert: 20 Nachrichten pro
+TAG sind rund 600 pro Monat — ein Vielfaches dessen, was ein Abo trägt.
 
 RESET
 -----
-UTC-Kalendertag. Bewusst kein gleitendes 24-h-Fenster: der Reset-Zeitpunkt ist
-für den Nutzer damit benennbar ("morgen wieder") und braucht keine
-Countdown-Logik in der UI. Der Tag ist Teil des Primärschlüssels — ein neuer
-Tag ist automatisch ein neuer Zähler, es läuft kein Aufräum-Job dagegen.
+UTC-Kalendermonat (`YYYY-MM`). Bewusst NICHT der Stripe-Abrechnungszeitraum:
+für Free-Nutzer gäbe es keinen, und für Plus-Nutzer läge die Grenze je nach
+Kaufdatum anders — beides wäre für den Nutzer schwer zu erklären. Die
+CHECK-Kontingente von Plus folgen dagegen sehr wohl dem Stripe-Zeitraum
+(`app/plus.py`); dort ist es die bezahlte Leistung, hier nur ein Deckel.
+Der Monat ist Teil des Primärschlüssels — ein neuer Monat ist automatisch ein
+neuer Zähler, es braucht keinen Aufräum-Job.
+
+SCHLÜSSEL
+---------
+`/chat` und `/autofinder` verlangen historisch KEINEN Login. Damit die Grenze
+trotzdem greift, wird per Konto gezählt, wenn ein gültiges Auth-Cookie vorliegt,
+sonst per IP:
+
+    'user:<id>'    eingeloggt — folgt dem Konto über Geräte/IP-Wechsel hinweg
+    'ip:<adresse>' anonym     — bester verfügbarer Anker ohne Konto
+
+Bewusst KEIN Fingerprinting: die IP ist ein Soft-Abuse-Key, kein
+Identitätsmerkmal. Wer sie wechselt, umgeht das anonyme Limit — das ist
+akzeptiert, weil AutoFinder ohne Login ausprobierbar bleiben soll und der
+eigentliche Wert (gespeicherte Verläufe, Checks) ohnehin am Konto hängt.
 
 ATOMARITÄT
 ----------
 Hochzählen und Prüfen passieren in EINER SQL-Anweisung (UPSERT mit
 `WHERE anzahl < limit`). Ein „lesen, prüfen, dann schreiben" wäre zwischen zwei
-parallelen Requests umgehbar — beide läsen denselben Wert und beide kämen
-durch.
+parallelen Requests umgehbar.
 """
 from __future__ import annotations
 
@@ -46,39 +49,32 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request
 
-from app.config import CHAT_FREE_LIMIT_TAEGLICH
+from app import plus
+from app.config import (
+    AUTOFINDER_FREE_LIMIT_MONATLICH,
+    AUTOFINDER_PLUS_LIMIT_MONATLICH,
+    CHAT_FREE_LIMIT_MONATLICH,
+    CHAT_PLUS_LIMIT_MONATLICH,
+)
 from app.database import get_conn
 
 log = logging.getLogger(__name__)
 
 ART_CHAT = "chat"
+ART_AUTOFINDER = "autofinder"
 # Rueckfragen zu einer bereits bezahlten Check-Analyse zaehlen in einen EIGENEN
 # Topf: sie gehoeren zum gekauften Produkt und duerfen das kostenlose
-# Chat-Kontingent nicht aufbrauchen (und umgekehrt). Gleiche Hoehe, getrennte
-# Buchhaltung — ein Missbrauchsdeckel bleibt damit auf beiden Wegen bestehen.
+# Chat-Kontingent nicht aufbrauchen (und umgekehrt).
 ART_ANALYSE_FRAGE = "analyse_frage"
 
 
-def heute_utc() -> str:
-    """Aktueller UTC-Kalendertag als 'YYYY-MM-DD' (Reset-Grenze)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _schluessel(request: Request) -> str:
-    """Zähl-Anker: Konto wenn erkennbar, sonst IP."""
-    user_id = _user_id_aus_cookie(request)
-    if user_id is not None:
-        return f"user:{user_id}"
-    client = getattr(request, "client", None)
-    return f"ip:{getattr(client, 'host', None) or 'unbekannt'}"
+def monat_utc() -> str:
+    """Aktueller UTC-Kalendermonat als 'YYYY-MM' (Reset-Grenze)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
 def _user_id_aus_cookie(request: Request) -> int | None:
-    """Liest die user_id aus dem Auth-Cookie — ohne Login zu erzwingen.
-
-    Ein fehlendes oder ungültiges Cookie ist hier KEIN Fehler: der Endpunkt ist
-    auch anonym nutzbar, dann greift die IP-Zählung.
-    """
+    """Liest die user_id aus dem Auth-Cookie — ohne Login zu erzwingen."""
     token = request.cookies.get("auth_token")
     if not token:
         return None
@@ -89,108 +85,159 @@ def _user_id_aus_cookie(request: Request) -> int | None:
         return None
 
 
-def _hat_abo(user_id: int) -> bool:
-    """True, wenn der Nutzer ein laufendes Legacy-Abo besitzt.
+def _schluessel(request: Request, user_id: int | None) -> str:
+    if user_id is not None:
+        return f"user:{user_id}"
+    client = getattr(request, "client", None)
+    return f"ip:{getattr(client, 'host', None) or 'unbekannt'}"
 
-    Zahlende Bestandskunden hatten den Chat bisher ohne Tagesgrenze. Sie hier
-    nachträglich zu deckeln wäre eine Leistungskürzung an einem bestehenden
-    Vertrag — deshalb bleiben sie ausgenommen.
-    """
+
+def _nutzer_zustand(user_id: int | None) -> tuple[bool, bool]:
+    """(hat_legacy_abo, plus_aktiv) — beide sind von der Free-Grenze ausgenommen."""
+    if user_id is None:
+        return False, False
     try:
         with get_conn() as conn:
-            row = conn.execute("SELECT abo_typ FROM users WHERE id=?", (user_id,)).fetchone()
-        return bool(row) and row["abo_typ"] != "none"
+            row = conn.execute(
+                "SELECT abo_typ, plus_period_end FROM users WHERE id=?", (user_id,)
+            ).fetchone()
+        if not row:
+            return False, False
+        return row["abo_typ"] != "none", plus.ist_aktiv(row)
     except Exception:
-        log.exception("Abo-Prüfung für Tageslimit fehlgeschlagen (user_id=%s)", user_id)
-        return False
+        log.exception("Tarifprüfung für Monatslimit fehlgeschlagen (user_id=%s)", user_id)
+        return False, False
 
 
-def verbrauche(schluessel: str, art: str, limit: int, tag: str | None = None) -> bool:
-    """Zählt eine Nutzung. True = erlaubt, False = Tagesgrenze erreicht.
+def verbrauche(schluessel: str, art: str, limit: int, monat: str | None = None) -> bool:
+    """Zählt eine Nutzung. True = erlaubt, False = Monatsgrenze erreicht.
 
     limit <= 0 deaktiviert die Grenze (dann wird auch nicht gezählt).
     """
     if limit <= 0:
         return True
-    tag = tag or heute_utc()
+    monat = monat or monat_utc()
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO usage_taeglich (schluessel, art, tag_utc, anzahl) VALUES (?,?,?,1) "
-            "ON CONFLICT(schluessel, art, tag_utc) DO UPDATE SET anzahl = anzahl + 1 "
+            "INSERT INTO usage_monat (schluessel, art, monat_utc, anzahl) VALUES (?,?,?,1) "
+            "ON CONFLICT(schluessel, art, monat_utc) DO UPDATE SET anzahl = anzahl + 1 "
             "WHERE anzahl < ?",
-            (schluessel, art, tag, limit),
+            (schluessel, art, monat, limit),
         )
         conn.commit()
     return cur.rowcount == 1
 
 
-def stand(schluessel: str, art: str, tag: str | None = None) -> int:
-    """Aktueller Zählerstand (für Tests/Diagnose)."""
-    tag = tag or heute_utc()
+def stand(schluessel: str, art: str, monat: str | None = None) -> int:
+    """Aktueller Zählerstand des Monats."""
+    monat = monat or monat_utc()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT anzahl FROM usage_taeglich WHERE schluessel=? AND art=? AND tag_utc=?",
-            (schluessel, art, tag),
+            "SELECT anzahl FROM usage_monat WHERE schluessel=? AND art=? AND monat_utc=?",
+            (schluessel, art, monat),
         ).fetchone()
     return row["anzahl"] if row else 0
 
 
-ANALYSE_LIMIT_NACHRICHT = (
-    "Du hast heute sehr viele Rückfragen gestellt. "
-    "Morgen kannst du wieder weiterfragen."
-)
+def limit_fuer(art: str, plus_aktiv: bool) -> int:
+    if art == ART_AUTOFINDER:
+        return AUTOFINDER_PLUS_LIMIT_MONATLICH if plus_aktiv else AUTOFINDER_FREE_LIMIT_MONATLICH
+    return CHAT_PLUS_LIMIT_MONATLICH if plus_aktiv else CHAT_FREE_LIMIT_MONATLICH
 
-CHAT_LIMIT_NACHRICHT = (
-    "Dein kostenloses Tageslimit für den KI-Chat ist erreicht. "
-    "Morgen kannst du wieder weiterfragen."
-)
+
+def nutzung(user_id: int) -> dict:
+    """Verbrauch des laufenden Monats für die Kontoanzeige."""
+    _, plus_aktiv = _nutzer_zustand(user_id)
+    s = f"user:{user_id}"
+    return {
+        "chat_genutzt": stand(s, ART_CHAT),
+        "chat_limit": limit_fuer(ART_CHAT, plus_aktiv),
+        "autofinder_genutzt": stand(s, ART_AUTOFINDER),
+        "autofinder_limit": limit_fuer(ART_AUTOFINDER, plus_aktiv),
+        "monat": monat_utc(),
+    }
+
+
+# ── Nutzertexte ──────────────────────────────────────────────────────────────
+# Bewusst ohne Statuscode, ohne Provider-Namen, ohne "Fehler:" — ein erreichtes
+# Kontingent ist ein normaler Produktzustand, kein Defekt.
+
+def _chat_nachricht(plus_aktiv: bool) -> str:
+    if plus_aktiv:
+        return "Du hast dein monatliches KI-Chat-Kontingent erreicht."
+    return (f"Du hast deine {CHAT_FREE_LIMIT_MONATLICH} kostenlosen KI-Chat-Nachrichten "
+            f"für diesen Monat genutzt.")
+
+
+def _autofinder_nachricht(plus_aktiv: bool, eingeloggt: bool) -> str:
+    if plus_aktiv:
+        return "Du hast dein monatliches AutoFinder-Kontingent erreicht."
+    if not eingeloggt:
+        return (f"Du hast deine {AUTOFINDER_FREE_LIMIT_MONATLICH} kostenlosen AutoFinder-Suchen "
+                f"für diesen Monat genutzt. Melde dich an oder sieh dir VIRA Plus an.")
+    return (f"Du hast deine {AUTOFINDER_FREE_LIMIT_MONATLICH} kostenlosen AutoFinder-Suchen "
+            f"für diesen Monat genutzt.")
+
+
+def _wirf(code_nachricht: str, plus_aktiv: bool) -> None:
+    raise HTTPException(
+        status_code=429,
+        detail={"fehler": {
+            "code": "monatslimit_erreicht",
+            "nachricht": code_nachricht,
+            # Das Frontend blendet die Plus-CTA nur ein, wenn Plus überhaupt
+            # etwas ändern würde.
+            "plus_hilft": not plus_aktiv,
+        }},
+    )
+
+
+def _pruefe(request: Request, art: str) -> None:
+    user_id = _user_id_aus_cookie(request)
+    hat_legacy_abo, plus_aktiv = _nutzer_zustand(user_id)
+
+    # Zahlende Bestandskunden (light/pro/max) hatten nie eine solche Grenze.
+    # Sie nachträglich zu deckeln wäre eine Leistungskürzung am laufenden
+    # Vertrag — deshalb bleiben sie ausgenommen.
+    if hat_legacy_abo:
+        return
+
+    limit = limit_fuer(art, plus_aktiv)
+    if verbrauche(_schluessel(request, user_id), art, limit):
+        return
+
+    if art == ART_AUTOFINDER:
+        _wirf(_autofinder_nachricht(plus_aktiv, user_id is not None), plus_aktiv)
+    _wirf(_chat_nachricht(plus_aktiv), plus_aktiv)
 
 
 def require_chat_kontingent(request: Request) -> None:
-    """Erzwingt die Chat-Tagesgrenze. Wirft HTTP 429 mit strukturiertem Fehler.
+    """Erzwingt das monatliche Chat-Kontingent (Free 20, Plus 100)."""
+    _pruefe(request, ART_CHAT)
 
-    Reihenfolge: Abo-Kunden sind ausgenommen, alle anderen zählen gegen
-    `CHAT_FREE_LIMIT_TAEGLICH`.
+
+def require_autofinder_kontingent(request: Request) -> None:
+    """Erzwingt das monatliche AutoFinder-Kontingent (Free 5, Plus 50).
+
+    AutoFinder bleibt ohne Login nutzbar; anonym greift der IP-Anker. Das
+    bestehende Rate-Limit (20/min) bleibt zusätzlich bestehen — es schützt gegen
+    Lastspitzen, dieses Kontingent gegen Dauerabruf.
     """
-    user_id = _user_id_aus_cookie(request)
-    if user_id is not None and _hat_abo(user_id):
-        return
-
-    schluessel = f"user:{user_id}" if user_id is not None else _schluessel(request)
-    if verbrauche(schluessel, ART_CHAT, CHAT_FREE_LIMIT_TAEGLICH):
-        return
-
-    raise HTTPException(
-        status_code=429,
-        detail={
-            "fehler": {
-                "code": "tageslimit_erreicht",
-                "nachricht": CHAT_LIMIT_NACHRICHT,
-            }
-        },
-    )
+    _pruefe(request, ART_AUTOFINDER)
 
 
 def require_analyse_frage_kontingent(request: Request) -> None:
-    """Erzwingt die Tagesgrenze für Rückfragen zu einer Check-Analyse.
+    """Tagesgrenze für Rückfragen zu einer bezahlten Check-Analyse.
 
-    Eigener Zähler (`ART_ANALYSE_FRAGE`), damit das kostenlose Chat-Kontingent
-    unberührt bleibt. Abo-Kunden sind wie beim Chat ausgenommen.
+    Eigener Topf, damit das kostenlose Chat-Kontingent unberührt bleibt: die
+    Rückfragen gehören zum bereits bezahlten Check.
     """
     user_id = _user_id_aus_cookie(request)
-    if user_id is not None and _hat_abo(user_id):
+    hat_legacy_abo, plus_aktiv = _nutzer_zustand(user_id)
+    if hat_legacy_abo or plus_aktiv:
         return
-
-    schluessel = f"user:{user_id}" if user_id is not None else _schluessel(request)
-    if verbrauche(schluessel, ART_ANALYSE_FRAGE, CHAT_FREE_LIMIT_TAEGLICH):
+    limit = CHAT_PLUS_LIMIT_MONATLICH   # großzügig: Teil des gekauften Produkts
+    if verbrauche(_schluessel(request, user_id), ART_ANALYSE_FRAGE, limit):
         return
-
-    raise HTTPException(
-        status_code=429,
-        detail={
-            "fehler": {
-                "code": "tageslimit_erreicht",
-                "nachricht": ANALYSE_LIMIT_NACHRICHT,
-            }
-        },
-    )
+    _wirf("Du hast diesen Monat sehr viele Rückfragen gestellt. "
+          "Nächsten Monat kannst du wieder weiterfragen.", plus_aktiv)

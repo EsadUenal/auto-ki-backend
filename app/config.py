@@ -79,7 +79,32 @@ RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 # komfortabel ab und deckeln zugleich automatisierten Dauerabruf.
 # Kalibrierbar ohne Codeaenderung: AUTO_KI_CHAT_FREE_LIMIT_TAEGLICH=<n>.
 # 0 oder negativ deaktiviert das Tageslimit vollstaendig.
-CHAT_FREE_LIMIT_TAEGLICH = int(os.environ.get("AUTO_KI_CHAT_FREE_LIMIT_TAEGLICH", "20"))
+# ---------------------------------------------------------------------------
+# Consumer Pricing V1 FINAL — Monatskontingente
+# ---------------------------------------------------------------------------
+# EINZIGE Stelle, an der die Grenzen stehen. Router und Gates lesen nur von
+# hier; im uebrigen Code gibt es bewusst keine verstreuten Zahlen.
+#
+# Umstellung von TAG auf MONAT: ein Tageslimit deckelt den Missbrauch, sagt dem
+# Nutzer aber nichts ueber den Wert seines Tarifs ("20 pro Tag" klingt nach
+# unbegrenzt, kostet aber real ein Vielfaches eines Abos). Monatskontingente
+# sind die Einheit, in der das Produkt verkauft wird — Anzeige, Abrechnung und
+# Limit sprechen damit dieselbe Sprache.
+#
+# Reset: UTC-Kalendermonat (YYYY-MM). Bewusst NICHT der Stripe-Abrechnungs-
+# zeitraum: der Zaehler bliebe sonst fuer Free-Nutzer undefiniert und fuer
+# Plus-Nutzer waere die Grenze je nach Kaufdatum verschoben. Die
+# CHECK-Kontingente von Plus folgen dagegen sehr wohl dem Stripe-Zeitraum
+# (siehe app/plus.py) — dort ist es die bezahlte Leistung.
+CHAT_FREE_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_CHAT_FREE_LIMIT_MONATLICH", "20"))
+CHAT_PLUS_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_CHAT_PLUS_LIMIT_MONATLICH", "100"))
+AUTOFINDER_FREE_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH", "5"))
+AUTOFINDER_PLUS_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_AUTOFINDER_PLUS_LIMIT_MONATLICH", "50"))
+
+# VIRA Plus: monatlich enthaltene Check-Kontingente (Reset je bezahltem
+# Abrechnungszeitraum, KEIN Uebertrag).
+PLUS_KAUFCHECKS_PRO_MONAT = int(os.environ.get("AUTO_KI_PLUS_KAUFCHECKS", "5"))
+PLUS_VERKAUFSCHECKS_PRO_MONAT = int(os.environ.get("AUTO_KI_PLUS_VERKAUFSCHECKS", "1"))
 
 # Log-Level für die App-eigenen Logger (uvicorn-Access-Logs bleiben unberührt).
 # Ohne explizite Konfiguration surft die Root-Loglevel-Vorgabe auf WARNING und
@@ -120,7 +145,11 @@ STRIPE_PRICE_EINZELKAUF = os.environ.get("STRIPE_PRICE_EINZELKAUF", "")  # price
 # STRIPE_PRICE_EINZELKAUF bleibt fuer Bestandskaeufe/Legacy erhalten und schreibt
 # weiterhin auf das generische Kontingent.
 STRIPE_PRICE_KAUFCHECK     = os.environ.get("STRIPE_PRICE_KAUFCHECK", "")      # price_xxx (one_time, 9,99 EUR)
-STRIPE_PRICE_VERKAUFSCHECK = os.environ.get("STRIPE_PRICE_VERKAUFSCHECK", "")  # price_xxx (one_time, 7,99 EUR)
+STRIPE_PRICE_VERKAUFSCHECK = os.environ.get("STRIPE_PRICE_VERKAUFSCHECK", "")  # price_xxx (one_time, 8,99 EUR)
+# VIRA Plus — das EINZIGE neu beworbene Abo. Recurring/monatlich.
+# Die Legacy-Preise LIGHT/PRO/MAX bleiben ausschliesslich fuer
+# Bestandskunden konfiguriert und werden nirgends mehr angeboten.
+STRIPE_PRICE_PLUS = os.environ.get("STRIPE_PRICE_PLUS", "")  # price_xxx (recurring monthly, 16,99 EUR)
 FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")

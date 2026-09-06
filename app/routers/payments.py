@@ -19,11 +19,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app import plus as plus_modul
 from app.check_gate import gutschrift, kontingente
 from app.config import (
     FRONTEND_URL,
     STRIPE_PRICE_EINZELKAUF,
     STRIPE_PRICE_KAUFCHECK,
+    STRIPE_PRICE_PLUS,
     STRIPE_PRICE_VERKAUFSCHECK,
     STRIPE_PRICE_LIGHT,
     STRIPE_PRICE_MAX,
@@ -37,6 +39,7 @@ from app.einwilligung import (
     record as record_einwilligung, ART_AGB, ART_WIDERRUF,
 )
 from app.rate_limit import limiter
+from app.usage_limit import nutzung
 from app.routers.user_auth import get_current_user_id
 from app.utf8 import UTF8JSONResponse
 
@@ -79,7 +82,7 @@ _ABO_ERSATZTEIL_SUCHEN = {
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class CheckoutBody(BaseModel):
-    typ: str                        # "check" | "abo" | "einzelkauf"
+    typ: str                        # "check" | "plus" | "abo" | "einzelkauf"
     produkt: str | None = None      # "kaufcheck" | "verkaufscheck" (nur bei typ=="check")
     abo_typ: str | None = None      # "light" | "pro" | "max" (nur bei typ=="abo")
     agb_akzeptiert: bool = False    # AGB + Datenschutz — Pflicht bei jedem Kauf
@@ -125,6 +128,25 @@ def _period_end_ts(sub) -> int | None:
         pass
 
     log.warning("Stripe: current_period_end nicht gefunden auf sub %s", getattr(sub, "id", "?"))
+    return None
+
+
+def _period_start_ts(sub) -> int | None:
+    """Periodenbeginn robust aus dem Subscription-Objekt lesen (wie _period_end_ts)."""
+    ts = getattr(sub, "current_period_start", None)
+    if ts:
+        return int(ts)
+    try:
+        items = getattr(sub, "items", None)
+        data = getattr(items, "data", None) if items else None
+        if not data and isinstance(items, list):
+            data = items
+        if data:
+            ts = getattr(data[0], "current_period_start", None)
+            if ts:
+                return int(ts)
+    except Exception:
+        pass
     return None
 
 
@@ -270,6 +292,38 @@ def create_checkout_session(
             metadata={"user_id": str(user_id), "typ": "check", "produkt": body.produkt},
         )
 
+    elif body.typ == "plus":
+        # VIRA Plus — das einzige neu angebotene Abo. mode="subscription",
+        # damit Stripe die monatliche Verlaengerung und die Kuendigung fuehrt.
+        if not STRIPE_PRICE_PLUS:
+            raise HTTPException(
+                status_code=500,
+                detail={"fehler": {"code": "konfiguration", "nachricht": "Stripe-Preis nicht konfiguriert."}},
+            )
+        # Schutz vor zwei parallel abbuchenden Abos — gilt auch gegenueber
+        # bestehenden Legacy-Abos (light/pro/max).
+        if _hat_laufendes_abo(customer_id):
+            raise HTTPException(
+                status_code=409,
+                detail={"fehler": {"code": "abo_bereits_aktiv",
+                                   "nachricht": "Du besitzt bereits ein aktives Abonnement. "
+                                                "Bitte verwalte oder kuendige dieses zuerst."}},
+            )
+        session = stripe.checkout.Session.create(
+            customer=customer_id,
+            payment_method_types=["card"],
+            mode="subscription",
+            line_items=[{"price": STRIPE_PRICE_PLUS, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"user_id": str(user_id), "typ": "plus"},
+            # Auch auf der Subscription hinterlegen: invoice.paid der FOLGE-
+            # monate traegt die Session-Metadata nicht mehr, wohl aber die der
+            # Subscription. Ohne das waere der Nutzer beim Renewal nicht mehr
+            # zuzuordnen.
+            subscription_data={"metadata": {"user_id": str(user_id), "typ": "plus"}},
+        )
+
     elif body.typ == "einzelkauf":
         if not STRIPE_PRICE_EINZELKAUF:
             raise HTTPException(
@@ -298,6 +352,8 @@ def create_checkout_session(
         kontext = f"abo:{body.abo_typ}"
     elif body.typ == "check":
         kontext = f"check:{body.produkt}"
+    elif body.typ == "plus":
+        kontext = "plus"
     else:
         kontext = "einzelkauf"
     record_einwilligung(user_id, ART_AGB, kontext)
@@ -400,6 +456,16 @@ def _verarbeite_event(event_type: str, obj) -> None:
                     pass
                 conn.commit()
 
+        elif typ == "plus":
+            # Erste Periode. Zeitraum kommt aus der Subscription bei Stripe —
+            # nicht aus der Redirect-URL und nicht aus Client-State.
+            sub_id = getattr(obj, "subscription", None)
+            if not user_id or not sub_id:
+                raise ValueError("plus-Checkout ohne user_id oder subscription")
+            sub = stripe.Subscription.retrieve(sub_id)
+            plus_modul.grant_periode(user_id, sub_id,
+                                     _period_start_ts(sub), _period_end_ts(sub))
+
         elif typ == "check":
             # Produkt kommt aus der Session-Metadata, die der Server beim
             # Anlegen gesetzt hat — nicht aus einer Client-Angabe. Ein
@@ -478,6 +544,23 @@ def _verarbeite_event(event_type: str, obj) -> None:
         if not sub_id:
             return
 
+        # ── VIRA Plus: neuer bezahlter Abrechnungszeitraum ────────────────────
+        # Ausloeser ist ausschliesslich eine von Stripe als BEZAHLT gemeldete
+        # Rechnung. Eine fehlgeschlagene Verlaengerung feuert dieses Event nicht
+        # und erzeugt damit auch kein neues Kontingent.
+        with get_conn() as conn:
+            plus_user = conn.execute(
+                "SELECT id FROM users WHERE plus_subscription_id=?", (sub_id,)
+            ).fetchone()
+        if plus_user:
+            sub = stripe.Subscription.retrieve(sub_id)
+            # grant_periode SETZT auf 5/1 statt zu addieren -> kein Uebertrag
+            # nicht verbrauchter Plus-Checks und zugleich idempotent gegen
+            # doppelt zugestellte Events.
+            plus_modul.grant_periode(plus_user["id"], sub_id,
+                                     _period_start_ts(sub), _period_end_ts(sub))
+            return
+
         with get_conn() as conn:
             user = conn.execute(
                 "SELECT id, abo_typ FROM users WHERE stripe_subscription_id=?", (sub_id,)
@@ -495,6 +578,8 @@ def _verarbeite_event(event_type: str, obj) -> None:
     elif event_type == "customer.subscription.deleted":
         sub_id = getattr(obj, "id", None)
         if sub_id:
+            # Plus endet — GEKAUFTES Guthaben bleibt ausdruecklich erhalten.
+            plus_modul.beende(sub_id)
             with get_conn() as conn:
                 conn.execute(
                     "UPDATE users SET abo_typ='none', checks_verbleibend=0, ersatzteil_suchen_verbleibend=0, "
@@ -593,31 +678,38 @@ def cancel_subscription(user_id: int = Depends(get_current_user_id)):
     """
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT stripe_subscription_id, abo_typ FROM users WHERE id=? AND deleted_at IS NULL",
+            "SELECT stripe_subscription_id, abo_typ, plus_subscription_id, plus_period_end "
+            "FROM users WHERE id=? AND deleted_at IS NULL",
             (user_id,),
         ).fetchone()
 
-    if not row or row["abo_typ"] == "none" or not row["stripe_subscription_id"]:
+    # VIRA Plus zuerst: das ist das einzige Abo, das neue Nutzer abschliessen
+    # koennen. Legacy light/pro/max bleibt fuer Bestandskunden unveraendert
+    # kuendbar (Zweig darunter).
+    ist_plus = bool(row) and plus_modul.ist_aktiv(row) and bool(row["plus_subscription_id"])
+    sub_id = row["plus_subscription_id"] if ist_plus else (row["stripe_subscription_id"] if row else None)
+
+    if not row or (not ist_plus and (row["abo_typ"] == "none" or not row["stripe_subscription_id"])):
         raise HTTPException(
             status_code=400,
             detail={"fehler": {"code": "kein_abo", "nachricht": "Kein aktives Abo gefunden."}},
         )
 
-    sub = stripe.Subscription.modify(
-        row["stripe_subscription_id"],
-        cancel_at_period_end=True,
-    )
+    # cancel_at_period_end: die bereits bezahlte Periode laeuft vollstaendig zu
+    # Ende. Es wird bewusst NICHT sofort abgeschaltet — der Nutzer hat den Monat
+    # bezahlt. Erst danach bleibt der naechste Grant aus.
+    sub = stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
     ts = _period_end_ts(sub)
     kuendigt_zum = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else None
 
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE users SET abo_kuendigt_zum=? WHERE id=?",
-            (kuendigt_zum, user_id),
-        )
-        conn.commit()
+    if ist_plus:
+        plus_modul.merke_kuendigung(user_id, kuendigt_zum)
+    else:
+        with get_conn() as conn:
+            conn.execute("UPDATE users SET abo_kuendigt_zum=? WHERE id=?", (kuendigt_zum, user_id))
+            conn.commit()
 
-    return {"ok": True, "abo_kuendigt_zum": kuendigt_zum}
+    return {"ok": True, "abo_kuendigt_zum": kuendigt_zum, "plus": ist_plus}
 
 
 @router.get("/status")
@@ -636,4 +728,6 @@ def payment_status(user_id: int = Depends(get_current_user_id)):
         "hat_abo": row["abo_typ"] != "none",
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
         **kontingente(user_id),
+        **plus_modul.status(user_id),
+        **nutzung(user_id),
     }

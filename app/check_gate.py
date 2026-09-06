@@ -37,15 +37,23 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException
 
+from app import plus
 from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
 
 log = logging.getLogger(__name__)
 
-# Check-Art -> Spalte mit dem typgebundenen Kontingent.
+# Check-Art -> Spalte mit dem GEKAUFTEN typgebundenen Kontingent (verfaellt nie).
 _SPALTE = {
     "kauf":    "kaufchecks_verbleibend",
     "verkauf": "verkaufschecks_verbleibend",
+}
+
+# Check-Art -> Spalte mit dem MONATLICHEN Plus-Kontingent (verfaellt zum
+# Periodenende, siehe app/plus.py).
+_PLUS_SPALTE = {
+    "kauf":    "plus_kaufchecks_verbleibend",
+    "verkauf": "plus_verkaufschecks_verbleibend",
 }
 
 # Generisches Legacy-Kontingent (Registrierung, Abo, Alt-Einzelkäufe).
@@ -81,7 +89,11 @@ def _entnehme(user_id: int, typ: str) -> CheckZugriff:
     spalte = _SPALTE[typ]
 
     with get_conn() as conn:
-        user = conn.execute("SELECT abo_typ FROM users WHERE id=?", (user_id,)).fetchone()
+        user = conn.execute(
+            "SELECT abo_typ, plus_period_end FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+
+    plus_aktiv = plus.ist_aktiv(user)
 
     if not user:
         raise HTTPException(
@@ -92,8 +104,21 @@ def _entnehme(user_id: int, typ: str) -> CheckZugriff:
     if user["abo_typ"] == "max":
         return CheckZugriff(user_id=user_id, typ=typ, quelle=QUELLE_UNBEGRENZT)
 
-    # 1. Typgebundenes Kontingent, 2. generischer Legacy-Topf — beide atomar.
-    for kandidat in (spalte, _LEGACY_SPALTE):
+    # Reihenfolge (Consumer Pricing V1 FINAL):
+    #   1. MAX-Abo (oben)          — Legacy, unbegrenzt
+    #   2. Plus-Monatskontingent   — verfaellt ohnehin zum Periodenende
+    #   3. gekauftes Guthaben      — verfaellt nie
+    #   4. generischer Legacy-Topf — Bestandsschutz
+    #
+    # Plus VOR Gekauftem ist die entscheidende Regel: Wuerde zuerst das gekaufte
+    # Guthaben abgebucht, verloere der Nutzer dauerhaftes Eigentum, waehrend die
+    # bezahlte Monatsleistung ungenutzt verfaellt. Umgekehrt geht nichts
+    # verloren, was er nicht ohnehin verloren haette.
+    kandidaten = [spalte, _LEGACY_SPALTE]
+    if plus_aktiv:
+        kandidaten.insert(0, _PLUS_SPALTE[typ])
+
+    for kandidat in kandidaten:
         with get_conn() as conn:
             result = conn.execute(
                 f"UPDATE users SET {kandidat} = {kandidat} - 1 "
@@ -142,7 +167,7 @@ def refund_check_credit(zugriff: CheckZugriff) -> None:
     """
     if zugriff.quelle == QUELLE_UNBEGRENZT:
         return
-    if zugriff.quelle not in (*_SPALTE.values(), _LEGACY_SPALTE):
+    if zugriff.quelle not in (*_SPALTE.values(), *_PLUS_SPALTE.values(), _LEGACY_SPALTE):
         log.error("Unbekannte Kontingent-Quelle %r — keine Rückerstattung", zugriff.quelle)
         return
     try:
@@ -178,19 +203,31 @@ def gutschrift(user_id: int, produkt: str, anzahl: int = 1) -> None:
 
 
 def kontingente(user_id: int) -> dict:
-    """Liest die Kontingente eines Nutzers (für /payments/status und /auth/me)."""
+    """Liest alle Kontingente eines Nutzers (für /payments/status, /auth/me, Settings).
+
+    Gekauftes und monatliches Guthaben werden bewusst GETRENNT ausgewiesen —
+    die Oberfläche soll zeigen können, was zum Monatsende verfällt und was
+    dauerhaft bleibt.
+    """
     with get_conn() as conn:
         row = conn.execute(
             "SELECT abo_typ, checks_verbleibend, kaufchecks_verbleibend, "
-            "verkaufschecks_verbleibend FROM users WHERE id=?",
+            "verkaufschecks_verbleibend, plus_kaufchecks_verbleibend, "
+            "plus_verkaufschecks_verbleibend, plus_period_end FROM users WHERE id=?",
             (user_id,),
         ).fetchone()
     if not row:
         return {}
-    unbegrenzt = row["abo_typ"] == "max"
+    aktiv = plus.ist_aktiv(row)
     return {
-        "unbegrenzt": unbegrenzt,
+        "unbegrenzt": row["abo_typ"] == "max",
+        "plus_aktiv": aktiv,
+        # dauerhaft gekauft — verfällt nie
         "kaufchecks_verbleibend": row["kaufchecks_verbleibend"],
         "verkaufschecks_verbleibend": row["verkaufschecks_verbleibend"],
+        # monatlich aus Plus — verfällt zum Periodenende
+        "plus_kaufchecks_verbleibend": row["plus_kaufchecks_verbleibend"] if aktiv else 0,
+        "plus_verkaufschecks_verbleibend": row["plus_verkaufschecks_verbleibend"] if aktiv else 0,
+        # generisches Altguthaben
         "checks_verbleibend": row["checks_verbleibend"],
     }

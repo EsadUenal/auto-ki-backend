@@ -57,6 +57,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.auth import verify_api_key
+from app.usage_limit import require_autofinder_kontingent
 from app.autofinder import AutoFinderRequest as _EngineRequest
 from app.autofinder import finde_fahrzeuge
 from app.autofinder_budget import (
@@ -613,6 +614,10 @@ def _filters_applied(body: AutoFinderRequest) -> dict:
 @limiter.limit(_AUTOFINDER_RATE_LIMIT)
 async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     verify_api_key(request)
+    # Monatliches Kontingent (Free 5 / Plus 50) VOR jeder Datenbank- und
+    # Provider-Arbeit: eine ueberschrittene Grenze soll keine Kosten mehr
+    # verursachen. Ergaenzt das bestehende Rate-Limit (20/min), ersetzt es nicht.
+    require_autofinder_kontingent(request)
 
     # Quality-Enrichment-Runde: IMMER die größere, diversitätsgeprüfte
     # Shortlist holen — der Fit-Filter (§Punkt 2) braucht Spielraum, um

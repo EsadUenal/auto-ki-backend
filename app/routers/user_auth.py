@@ -256,7 +256,21 @@ def me(auth_token: str | None = Cookie(default=None)):
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
         "ist_haendler": bool(row["ist_haendler"]),
         "dealer_access": has_dealer_access(row["abo_typ"], row["ist_haendler"]),
+        # Plus-Status und Monatsverbrauch: das Frontend zeigt daraus die
+        # Kontingentanzeige und entscheidet, ob eine Plus-CTA sinnvoll ist.
+        **_plus_und_nutzung(user_id),
     }
+
+
+def _plus_und_nutzung(user_id: int) -> dict:
+    """Plus-Status + Monatsverbrauch. Lokaler Import gegen Zirkelbezug
+    (usage_limit liest seinerseits den Token-Decoder aus diesem Modul)."""
+    from app import plus as plus_modul
+    from app.usage_limit import nutzung
+    try:
+        return {**plus_modul.status(user_id), **nutzung(user_id)}
+    except Exception:
+        return {}
 
 
 @router.post("/logout")

@@ -58,8 +58,9 @@ async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: st
 @limiter.limit("20/minute")
 async def chat_endpunkt(body: ChatRequest, request: Request):
     verify_api_key(request)
-    # Kostenloses Tageskontingent — zaehlt VOR dem LLM-Aufruf, damit eine
-    # ueberschrittene Grenze keine Modellkosten mehr verursacht.
+    # Monatliches Chat-Kontingent (Free 20 / Plus 100) — zaehlt VOR dem
+    # LLM-Aufruf, damit eine ueberschrittene Grenze keine Modellkosten
+    # mehr verursacht.
     require_chat_kontingent(request)
 
     verlauf = [m.model_dump() for m in body.verlauf]

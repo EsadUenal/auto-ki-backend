@@ -94,6 +94,20 @@ CREATE TABLE IF NOT EXISTS usage_taeglich (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_taeglich_tag ON usage_taeglich(tag_utc);
 
+-- Consumer Pricing V1 FINAL: Nutzungszaehler je KALENDERMONAT (UTC, 'YYYY-MM').
+-- Loest usage_taeglich fachlich ab: verkauft wird in Monatskontingenten, also
+-- muss auch so gezaehlt werden. usage_taeglich bleibt stehen (keine Migration
+-- noetig, es enthaelt nur fluechtige Zaehlerstaende) und wird nicht mehr
+-- beschrieben.
+CREATE TABLE IF NOT EXISTS usage_monat (
+    schluessel  TEXT    NOT NULL,
+    art         TEXT    NOT NULL,
+    monat_utc   TEXT    NOT NULL,
+    anzahl      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (schluessel, art, monat_utc)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_monat ON usage_monat(monat_utc);
+
 -- Phase 5: VIRA Dealer — Fahrzeugakte pro Händler (Bestand/Beobachtung).
 -- Ownership über user_id (CASCADE: Konto weg -> Fahrzeuge weg). Verknüpfte Checks
 -- sind bewusst SET NULL: ein gelöschter Kauf-/Verkaufscheck darf den Händlerbestand
@@ -321,6 +335,30 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN kaufchecks_verbleibend INTEGER NOT NULL DEFAULT 0")
     if "verkaufschecks_verbleibend" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN verkaufschecks_verbleibend INTEGER NOT NULL DEFAULT 0")
+
+    # ── VIRA Plus (Consumer Pricing V1 FINAL) ────────────────────────────────
+    # Plus bekommt EIGENE Spalten und laesst `abo_typ` unangetastet. Zwei Gruende:
+    #   1. `abo_typ` traegt einen CHECK-Constraint (none/light/pro/max). SQLite
+    #      kann den nicht per ALTER aendern — ein Tabellen-Rebuild auf der
+    #      Live-DB waere ein unnoetiges Risiko fuer Bestandskunden.
+    #   2. Die monatliche Plus-Leistung und dauerhaft GEKAUFTES Guthaben duerfen
+    #      sich nie vermischen: Plus-Kontingente werden je Abrechnungszeitraum
+    #      zurueckgesetzt, gekaufte Checks verfallen nie. In einem gemeinsamen
+    #      Feld waere das nicht unterscheidbar.
+    # Plus ist aktiv, solange plus_period_end in der Zukunft liegt — abgeleitet
+    # aus dem von Stripe bezahlten Zeitraum, nicht aus einem lokalen Flag.
+    if "plus_kaufchecks_verbleibend" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_kaufchecks_verbleibend INTEGER NOT NULL DEFAULT 0")
+    if "plus_verkaufschecks_verbleibend" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_verkaufschecks_verbleibend INTEGER NOT NULL DEFAULT 0")
+    if "plus_period_start" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_period_start TEXT")
+    if "plus_period_end" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_period_end TEXT")
+    if "plus_subscription_id" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_subscription_id TEXT")
+    if "plus_kuendigt_zum" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN plus_kuendigt_zum TEXT")
 
     # Einmaliger Backfill: bestehende Abo-Kunden bekamen durch obigen DEFAULT 1 fälschlich
     # nur 1 statt ihres Abo-Kontingents (light=5, pro=20, max=unbegrenzt). Läuft nur einmal
