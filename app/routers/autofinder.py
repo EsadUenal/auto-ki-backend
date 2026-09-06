@@ -90,9 +90,9 @@ from app.autofinder_visual import (
 )
 from app.database import get_alle_baureihen_kurz
 from app.models import (
-    AutoFinderImageEnsureRequest,
-    AutoFinderImageEnsureResponse,
-    AutoFinderImageResult,
+    # Die AutoFinderImage*-Modelle bleiben in app/models.py bestehen (API-
+    # Contract/Offline-Werkzeuge), werden vom Router aber nicht mehr gebraucht:
+    # der Ensure-Endpunkt ist entfallen (siehe unten).
     AutoFinderKandidatOut,
     AutoFinderRequest,
     AutoFinderResponse,
@@ -411,12 +411,13 @@ def _bild_felder(k, *, bevorzugte_karosserie: str | None) -> dict:
 # §Punkt 2: nur Kandidaten mit diesem Fit oder besser gehen in die Ausgabe.
 # Sichtbare Empfehlungen im Consumer-UI (Frontend-Anzeigedeckel).
 _MAX_AUSGABE = 5
-# Image-Guarantee: der Such-Endpunkt liefert einen etwas GRÖSSEREN qualifizierten
-# Pool (alle >= FIT_SCHWELLE), damit die Frontend-/Ensure-Phase Kandidaten, deren
-# echtes VIRA-Line-Art-Bild trotz Nacherzeugung nicht zustande kommt, aus dem
-# finalen Set entfernen und durch den nächsten geeigneten Kandidaten ersetzen
-# kann. Enrichment + Budget bleiben JE EIN Gemini-Call — nur auf dem Pool.
-_KANDIDATEN_POOL = 8
+# Fruher lieferte der Endpunkt einen groesseren Pool (8), damit das Frontend
+# Kandidaten ohne erzeugbares Bild aus dem finalen Set werfen und ersetzen
+# konnte. Mit dem Wegfall der Fahrzeugbilder gibt es kein Image-Ready-Gate
+# mehr — die finale Auswahl ist wieder rein fachlich (Candidate Integrity +
+# Fit >= FIT_SCHWELLE + Budget + Enrichment) und damit exakt der Ausgabedeckel.
+# Weniger als 5 qualifizierte Kandidaten heisst schlicht: weniger Karten.
+_KANDIDATEN_POOL = _MAX_AUSGABE
 
 
 @dataclass
@@ -702,36 +703,28 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# BILD-ON-DEMAND (§Punkt 1) — dedizierter Endpunkt, GETRENNT vom Such-Pfad
+# BILD-ON-DEMAND — PRODUKTENTSCHEIDUNG: CONSUMER-SEITIG ABGESCHALTET
 # ══════════════════════════════════════════════════════════════════════════
-# Der Such-Endpunkt oben löst NIE eine Bildgenerierung aus. `app.autofinder_
-# images` (das die Offline-Pipeline nutzt) wird hier bewusst LAZY importiert,
-# damit `import app.routers.autofinder` bildgenerierungsfrei bleibt.
-
-_IMAGE_ENSURE_RATE_LIMIT = "10/minute"
-
-
-@router.post(
-    "/autofinder/images/ensure",
-    response_model=AutoFinderImageEnsureResponse,
-    summary="AutoFinder: fehlende finale Fahrzeugbilder nacherzeugen (gecacht)",
-)
-@limiter.limit(_IMAGE_ENSURE_RATE_LIMIT)
-async def autofinder_images_ensure(body: AutoFinderImageEnsureRequest, request: Request):
-    verify_api_key(request)
-    if not body.items:
-        return AutoFinderImageEnsureResponse(results=[])
-    from app.autofinder_images import ensure_images  # lazy: siehe oben
-
-    roh = [i.model_dump() for i in body.items]
-    try:
-        ergebnisse = await ensure_images(roh)
-    except Exception:
-        log.exception("AutoFinder-Images: ensure_images fehlgeschlagen — leeres Ergebnis")
-        ergebnisse = [{"visual_key": i["visual_key"], "status": "failed"} for i in roh]
-    return AutoFinderImageEnsureResponse(
-        results=[AutoFinderImageResult(**r) for r in ergebnisse]
-    )
+# AutoFinder zeigt keine modellgenauen Fahrzeugbilder mehr. Die Karten tragen
+# stattdessen ein gestaltetes VIRA Vehicle Identity Panel (Frontend).
+#
+# WARUM DER ENSURE-ENDPUNKT KOMPLETT WEG IST — und nicht nur ungenutzt bleibt:
+# er war der EINZIGE Pfad, über den ein oeffentlicher Consumer-Request eine
+# kostenpflichtige Gemini-Bildgenerierung ausloesen konnte. Ein bloss vom
+# Frontend nicht mehr aufgerufener, aber weiter erreichbarer Endpunkt haette
+# genau dieses Kostenrisiko offen gelassen (jeder Aufruf mit gueltigem
+# API-Key haette weiter generiert). Deshalb: aus dem Router entfernt.
+# Ergebnis: AUTOFINDER RUNTIME IMAGE COST = 0.
+#
+# Der OFFLINE-Code (app/autofinder_generation.py, app/autofinder_images.py,
+# scripts/autofinder_*) bleibt bewusst unangetastet im Repo: er ist ein
+# Admin-/Batch-Werkzeug ohne oeffentliche Route, seine Entfernung waere
+# reines Risiko ohne Nutzen. Ohne Router-Eintrag ist er von aussen nicht
+# mehr erreichbar.
+#
+# Die Ausliefer-Route unten bleibt: sie liest ausschliesslich bereits
+# vorhandene Dateien vom Datentraeger, ruft NIE einen Provider und kann damit
+# keine Kosten erzeugen. Sie versorgt weiterhin die Offline-Review-Werkzeuge.
 
 
 @router.get(

@@ -250,8 +250,16 @@ check("M: only-missing liefert trotzdem andere, noch fehlende Keys",
 # ══════════════════════════════════════════════════════════════════════════
 import app.routers.autofinder as af_router   # noqa: E402
 _router_quelle = inspect.getsource(af_router)
+# Geprueft wird der IMPORT, nicht das blosse Vorkommen der Zeichenfolge:
+# der Router darf das Modul nirgends laden (auch nicht lazy in einer
+# Funktion), ihn in einem Kommentar zu ERWAEHNEN ist dagegen erlaubt und
+# seit der Abschaltung des Ensure-Endpunkts sogar noetig, um zu
+# dokumentieren, warum der Offline-Code weiter existiert.
+import re as _re_o  # noqa: E402
+_gen_importe = _re_o.findall(r"^\s*(?:from|import)\s+app\.autofinder_generation",
+                             _router_quelle, _re_o.MULTILINE)
 check("O: Router importiert app.autofinder_generation NICHT — Pipeline ist "
-      "rein Offline-/Admin-Prozess", "autofinder_generation" not in _router_quelle)
+      "rein Offline-/Admin-Prozess", _gen_importe == [])
 
 
 # ══════════════════════════════════════════════════════════════════════════

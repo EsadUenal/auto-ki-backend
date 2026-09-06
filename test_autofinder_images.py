@@ -183,22 +183,34 @@ _r = _c.post("/api/v1/autofinder", headers={"Authorization": "Bearer dev-key-cha
 check("N: der Such-Endpunkt liefert 200", _r.status_code == 200)
 check("N: der Such-Endpunkt hat NULL Bildgenerierungen ausgelöst", _gen_calls["n"] == 0)
 
-# ── Router: /images/ensure + GET /img/{key} ──────────────────────────
+# ── Router: Ensure-Endpunkt ist ABGESCHALTET, Ausliefer-Route bleibt ──
+#
+# Produktentscheidung: AutoFinder zeigt keine Fahrzeugbilder mehr. Der
+# Ensure-Endpunkt war der EINZIGE Weg, ueber den ein oeffentlicher
+# Consumer-Request eine kostenpflichtige Gemini-Bildgenerierung ausloesen
+# konnte — er ist deshalb aus dem Router entfernt (nicht nur ungenutzt).
+# Die Offline-Pipeline oben bleibt vollstaendig funktionsfaehig und ist
+# weiter durch alle Tests dieser Datei abgedeckt.
 _H = {"Authorization": "Bearer dev-key-change-in-prod"}
-ai.generiere_bild = _make_gen(["good"])
-_re = _c.post("/api/v1/autofinder/images/ensure", headers=_H, json={"items": [
-    {"visual_key": "vw--polo--aw--kleinwagen", "marke": "VW", "modell": "Polo",
-     "generation": "AW", "karosserie": "kleinwagen"}]})
-check("Router: ensure -> 200", _re.status_code == 200)
-_erg = _re.json()["results"][0]
-check("Router: ensure erzeugt/liefert eine URL", _erg["status"] in ("generated", "ready") and _erg["image_url"])
-_img = _c.get(_erg["image_url"])
-check("Router: GET /img/{key} liefert das Bild (200, image/webp)",
+_ensure_weg = _c.post("/api/v1/autofinder/images/ensure", headers=_H, json={"items": []})
+check("Router: /images/ensure ist NICHT mehr oeffentlich erreichbar (kein Kosten-Trigger)",
+      _ensure_weg.status_code in (404, 405))
+_af_routen = {r.path for r in _app.routes if "autofinder" in getattr(r, "path", "")}
+check("Router: keine Ensure-Route mehr registriert",
+      not any("images/ensure" in p for p in _af_routen))
+check("Router: der Such-Endpunkt selbst bleibt registriert",
+      "/api/v1/autofinder" in _af_routen)
+
+# Die reine Ausliefer-Route bleibt: sie liest nur bereits vorhandene Dateien,
+# ruft NIE einen Provider und kann damit keine Kosten erzeugen.
+_bekannt = ai.BILD_DIR / "vw--polo--aw--kleinwagen.webp"
+_bekannt.parent.mkdir(parents=True, exist_ok=True)
+_bekannt.write_bytes(_weisses_lineart_png())   # Inhalt egal, nur die Datei muss da sein
+_img = _c.get("/api/v1/autofinder/img/vw--polo--aw--kleinwagen")
+check("Router: GET /img/{key} liefert weiterhin ein bereits vorhandenes Bild",
       _img.status_code == 200 and "image" in _img.headers.get("content-type", ""))
 _img404 = _c.get("/api/v1/autofinder/img/gibt--es--nicht--kombi")
-check("Router: GET /img für unbekannten Key -> 404", _img404.status_code == 404)
-check("Router: ensure mit leerer items-Liste -> 200 + leeres results",
-      _c.post("/api/v1/autofinder/images/ensure", headers=_H, json={"items": []}).json()["results"] == [])
+check("Router: GET /img fuer unbekannten Key -> 404", _img404.status_code == 404)
 
 print()
 if FEHLER:
