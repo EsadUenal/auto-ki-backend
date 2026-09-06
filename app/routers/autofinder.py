@@ -65,7 +65,9 @@ from app.autofinder_budget import (
     bewerte_budget,
     budget_adjustment_fuer,
     budget_angegeben,
+    konsolidiere_budget_status,
 )
+from app.autofinder_identity import consumer_modellname, dedupe_semantisch
 from app.autofinder_enrich import (
     Enrichment,
     deterministischer_fallback,
@@ -258,6 +260,14 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
     `k.match_score` bleibt der INTERNE Ranking-Score (`base_match_score`);
     `user_fit` ist die nutzer-verständliche Passung."""
     enr = enrichment or Enrichment()
+    karosserie_out = _karosserie_ausgabe(k, bevorzugte_karosserie)
+    # §Multi-Body: ein kombinierter Modellname ("S60/V60") beschreibt zwei
+    # Karosserievarianten derselben Baureihe — als Kombi-Empfehlung ausgegeben
+    # behauptet er ein Modell, das es nicht gibt. Ist die angezeigte Karosserie
+    # bekannt und löst genau EINEN Namensteil auf, wird auf diesen projiziert
+    # ("V60"); sonst bleibt der Name unverändert (kein Raten).
+    modell_out = consumer_modellname(
+        k.modell, karosserie_out[0] if karosserie_out else None)
     return AutoFinderKandidatOut(
         # Runde 4: bei web_discovered-Kandidaten sind baureihe_id/variante_id
         # bewusst None — die kanonische Kennung ist candidate_id.
@@ -265,7 +275,7 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         baureihe_id=k.baureihe_id,
         variante_id=k.variante_id,
         marke=k.marke,
-        modell=k.modell,
+        modell=modell_out,
         generation=k.generation,
         motor=k.motor_bezeichnung,
         baujahr_von=k.baujahr_von,
@@ -274,7 +284,7 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         kraftstoff=k.kraftstoff,
         getriebe=list(k.getriebe_klassen),
         antrieb=k.antrieb,
-        karosserie=_karosserie_ausgabe(k, bevorzugte_karosserie),
+        karosserie=karosserie_out,
         match_score=k.match_score + budget_adjustment,
         datenqualitaet=k.datenqualitaet,
         match_gruende=[strip_pruef_label(g) for g in k.match_gruende],
@@ -377,11 +387,28 @@ async def _finalisiere(
     if not mit_fit:
         return _FinalErgebnis([], "no_strong_match", warnungen, None, False, False)
 
-    # 3) stabile Fit-Sortierung + Cap
+    # 3) stabile Fit-Sortierung + semantischer Dedupe + Cap
     mit_fit.sort(key=lambda t: (
         -t[0], -t[2].match_score, -t[2].datenqualitaet,
         -(t[2].baujahr_von or 0), kandidat_id(t[2]),
     ))
+
+    # §Candidate Integrity: LETZTES Gate vor der Ausgabe. Interne DB und
+    # Web-Recherche können dasselbe reale Fahrzeug liefern (z.B. Ford Focus
+    # "Mk4" intern vs. "Vierte Generation" aus dem Web) — der Merge davor
+    # gruppiert nur über baureihe_id/candidate_id und kann das nicht sehen.
+    # Der Dedupe läuft VOR dem Pool-Cap, damit ein gestrichenes Duplikat
+    # einen echten weiteren Kandidaten nachrücken lässt statt einen Platz zu
+    # verschwenden — und damit die Image-Ready-Auswahl im Frontend garantiert
+    # keine semantischen Duplikate mehr sieht.
+    entdupliziert, entfernte_ids = dedupe_semantisch(
+        [(t[0], t[2]) for t in mit_fit])
+    if entfernte_ids:
+        log.info("AutoFinder: %d semantische(s) Duplikat(e) entfernt: %s",
+                 len(entfernte_ids), entfernte_ids)
+        behalten = {id(k) for _f, k in entdupliziert}
+        mit_fit = [t for t in mit_fit if id(t[2]) in behalten]
+
     final = mit_fit[:_KANDIDATEN_POOL]
     final_kands = [t[2] for t in final]
 
@@ -445,6 +472,23 @@ async def _finalisiere(
             enr = deterministischer_fallback(kand)
             e_status = "fallback"
             fallback_genutzt = True
+
+        # §Budget/Preis-Konsistenz: Budget-Kategorie und Preisorientierung
+        # kommen aus zwei getrennten Gemini-Calls und konnten sich bisher
+        # widersprechen ("Im Budget" neben "ca. 27.000–39.000 €" bei 25.000 €
+        # Budget). Liegt eine Spanne vor, ist sie die belastbarere Aussage —
+        # der ANGEZEIGTE Status wird deterministisch daraus abgeleitet.
+        # `budget_adjustment` (Ranking) bleibt bewusst unverändert: die
+        # Reihenfolge steht zu diesem Zeitpunkt bereits fest, und das
+        # Enrichment darf das Ranking nicht nachträglich umwerfen.
+        b_status, b_conf = konsolidiere_budget_status(
+            b_status, b_conf,
+            preis_min=enr.estimated_price_min,
+            preis_max=enr.estimated_price_max,
+            preis_confidence=enr.price_confidence,
+            budget_min=body.budget_min, budget_max=body.budget_max,
+        )
+
         outs.append(_zu_kandidat_out(
             kand, budget_status=b_status, budget_confidence=b_conf,
             budget_adjustment=b_anp, bevorzugte_karosserie=bevorzugte_karosserie,

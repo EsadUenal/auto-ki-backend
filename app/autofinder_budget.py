@@ -237,3 +237,83 @@ def budget_adjustment_fuer(status: str) -> float:
     """Begrenzte Score-Wirkung (§6) für einen validierten/gefehlten Status.
     Unbekannte/fehlende Werte fallen auf UNKNOWN -> 0.0 (neutral, §7 Test 7)."""
     return BUDGET_ADJUSTMENT.get(status, 0.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# KONSISTENZ MIT DER PREISORIENTIERUNG (Consumer-Release-Härtung)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# PROBLEM (realer Browser-Befund): `budget_status` und die angezeigte
+# Preisorientierung stammen aus ZWEI unabhängigen Gemini-Calls —
+# `bewerte_budget()` (grobe Kategorie, keine Zahlen) und
+# `app.autofinder_enrich` (estimated_price_min/max). Beide wurden bisher
+# unverändert nebeneinander ausgegeben. Ergebnis: eine Karte konnte
+# gleichzeitig "Im Budget" behaupten UND "ca. 27.000–39.000 €" anzeigen,
+# obwohl der Nutzer maximal 25.000 € angegeben hatte.
+#
+# LÖSUNG: Sobald eine Preisspanne vorliegt, ist SIE die belastbarere Aussage
+# — sie ist die Zahl, die der Nutzer tatsächlich sieht. Der Consumer-Status
+# wird dann deterministisch aus Spanne + Budgetfenster abgeleitet, statt der
+# Kategorie aus dem separaten Call zu vertrauen.
+#
+# KEIN FAKE: die Spanne bleibt eine KI-Schätzung ohne Live-Marktdaten. Es
+# wird nichts hinzuerfunden — fehlt die Spanne, bleibt der ursprüngliche
+# Status unverändert stehen.
+
+# Wie weit darf die Spanne über dem Budget liegen und trotzdem noch
+# "nahe am Budget" heißen? 15 % ist bewusst konservativ: darüber hinaus
+# wird ehrlich "Über Budget" gesagt statt schönzureden.
+NEAR_BUDGET_TOLERANZ = 0.15
+
+_CONF_RANG = {CONF_HIGH: 3, CONF_MEDIUM: 2, CONF_LOW: 1, CONF_UNKNOWN: 0}
+
+
+def konsolidiere_budget_status(
+    budget_status: str,
+    budget_confidence: str,
+    *,
+    preis_min: int | None,
+    preis_max: int | None,
+    preis_confidence: str = CONF_UNKNOWN,
+    budget_min: int | None,
+    budget_max: int | None,
+) -> tuple[str, str]:
+    """Leitet den WIDERSPRUCHSFREIEN Consumer-Budgetstatus ab.
+
+    Regeln (deterministisch, konservativ):
+      - kein Budgetfenster mit Obergrenze  -> Status unverändert
+      - keine Preisspanne vorhanden        -> Status unverändert
+        (kein erfundener Status aus einer Spanne, die es nicht gibt)
+      - Spanne komplett im Budget          -> IN_BUDGET
+      - Spanne reicht ins Budget hinein     -> NEAR_BUDGET
+      - Spanne startet knapp darüber        -> NEAR_BUDGET
+      - Spanne startet deutlich darüber     -> OUT_OF_BUDGET
+
+    Die Confidence des abgeleiteten Status ist höchstens so hoch wie die der
+    Preisspanne, auf der er beruht — eine LOW-Schätzung darf keinen
+    HIGH-sicheren Budgetstatus erzeugen.
+    """
+    if budget_max is None:
+        return budget_status, budget_confidence
+    if preis_min is None or preis_max is None:
+        return budget_status, budget_confidence
+
+    untergrenze = budget_min if budget_min is not None else 0
+    if preis_max <= budget_max and preis_min >= untergrenze:
+        neuer = IN_BUDGET
+    elif preis_min <= budget_max:
+        # Die Spanne überlappt das Budgetfenster: die günstigsten Angebote
+        # liegen drin, das typische Angebot aber nicht mehr sicher.
+        neuer = NEAR_BUDGET
+    elif preis_min <= budget_max * (1 + NEAR_BUDGET_TOLERANZ):
+        neuer = NEAR_BUDGET
+    else:
+        neuer = OUT_OF_BUDGET
+
+    if neuer == budget_status:
+        return budget_status, budget_confidence
+
+    conf = preis_confidence if preis_confidence in CONFIDENCE_WERTE else CONF_UNKNOWN
+    if _CONF_RANG.get(budget_confidence, 0) and _CONF_RANG.get(conf, 0):
+        conf = budget_confidence if _CONF_RANG[budget_confidence] < _CONF_RANG[conf] else conf
+    return neuer, conf
