@@ -19,9 +19,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.check_gate import gutschrift, kontingente
 from app.config import (
     FRONTEND_URL,
     STRIPE_PRICE_EINZELKAUF,
+    STRIPE_PRICE_KAUFCHECK,
+    STRIPE_PRICE_VERKAUFSCHECK,
     STRIPE_PRICE_LIGHT,
     STRIPE_PRICE_MAX,
     STRIPE_PRICE_PRO,
@@ -45,6 +48,15 @@ router = APIRouter(
     default_response_class=UTF8JSONResponse,
 )
 
+# Consumer Pricing V1 — kaufbare Einmalprodukte.
+# Der Client sendet AUSSCHLIESSLICH diesen Schluessel; Betrag und Price-ID
+# stammen immer aus der Server-Konfiguration. Ein Client kann damit weder einen
+# Preis noch ein fremdes Produkt bestimmen.
+_CHECK_PRICE = {
+    "kaufcheck":     lambda: STRIPE_PRICE_KAUFCHECK,
+    "verkaufscheck": lambda: STRIPE_PRICE_VERKAUFSCHECK,
+}
+
 _ABO_PRICE = {
     "light": lambda: STRIPE_PRICE_LIGHT,
     "pro":   lambda: STRIPE_PRICE_PRO,
@@ -67,7 +79,8 @@ _ABO_ERSATZTEIL_SUCHEN = {
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class CheckoutBody(BaseModel):
-    typ: str                        # "abo" | "einzelkauf"
+    typ: str                        # "check" | "abo" | "einzelkauf"
+    produkt: str | None = None      # "kaufcheck" | "verkaufscheck" (nur bei typ=="check")
     abo_typ: str | None = None      # "light" | "pro" | "max" (nur bei typ=="abo")
     agb_akzeptiert: bool = False    # AGB + Datenschutz — Pflicht bei jedem Kauf
     widerruf_verzicht: bool = False # Zustimmung zur sofortigen Ausführung (digitaler Kauf)
@@ -184,8 +197,15 @@ def create_checkout_session(
     require_agb(body.agb_akzeptiert)
     require_widerruf_verzicht(body.widerruf_verzicht)
     customer_id = _get_or_create_customer(user_id)
-    success_url = f"{FRONTEND_URL}/pricing?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url  = f"{FRONTEND_URL}/pricing?payment=cancelled"
+    # Nach dem Kauf kehrt der Kunde dorthin zurueck, wo er den Kauf begonnen hat:
+    # bei einem Check auf die jeweilige Check-Seite (der Kontext dort ist noch
+    # vorhanden), sonst wie bisher auf die Preisseite.
+    ziel = {
+        "kaufcheck":     "/kaufcheck",
+        "verkaufscheck": "/verkaufscheck",
+    }.get(body.produkt or "", "/pricing") if body.typ == "check" else "/pricing"
+    success_url = f"{FRONTEND_URL}{ziel}?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url  = f"{FRONTEND_URL}{ziel}?payment=cancelled"
 
     if body.typ == "abo":
         if not body.abo_typ or body.abo_typ not in _ABO_PRICE:
@@ -224,6 +244,32 @@ def create_checkout_session(
             metadata={"user_id": str(user_id), "typ": "abo", "abo_typ": body.abo_typ},
         )
 
+    elif body.typ == "check":
+        # Consumer V1: getrennte Einmalprodukte. Nur bekannte Schluessel sind
+        # kaufbar; alles andere wird abgelehnt, statt auf irgendein Produkt
+        # zurueckzufallen.
+        if body.produkt not in _CHECK_PRICE:
+            raise HTTPException(
+                status_code=400,
+                detail={"fehler": {"code": "bad_request", "nachricht": "Unbekanntes Produkt."}},
+            )
+        price_id = _CHECK_PRICE[body.produkt]()
+        if not price_id:
+            raise HTTPException(
+                status_code=500,
+                detail={"fehler": {"code": "konfiguration", "nachricht": "Stripe-Preis nicht konfiguriert."}},
+            )
+
+        session = stripe.checkout.Session.create(
+            customer=customer_id,
+            payment_method_types=["card"],
+            mode="payment",
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"user_id": str(user_id), "typ": "check", "produkt": body.produkt},
+        )
+
     elif body.typ == "einzelkauf":
         if not STRIPE_PRICE_EINZELKAUF:
             raise HTTPException(
@@ -248,7 +294,12 @@ def create_checkout_session(
         )
 
     # Nachweis der Zustimmungen für diesen Kauf festhalten.
-    kontext = f"abo:{body.abo_typ}" if body.typ == "abo" else "einzelkauf"
+    if body.typ == "abo":
+        kontext = f"abo:{body.abo_typ}"
+    elif body.typ == "check":
+        kontext = f"check:{body.produkt}"
+    else:
+        kontext = "einzelkauf"
     record_einwilligung(user_id, ART_AGB, kontext)
     record_einwilligung(user_id, ART_WIDERRUF, kontext)
 
@@ -348,6 +399,17 @@ def _verarbeite_event(event_type: str, obj) -> None:
                 except Exception:
                     pass
                 conn.commit()
+
+        elif typ == "check":
+            # Produkt kommt aus der Session-Metadata, die der Server beim
+            # Anlegen gesetzt hat — nicht aus einer Client-Angabe. Ein
+            # unbekannter Wert schaltet NICHTS frei (ValueError -> der Aufrufer
+            # rollt den Idempotenz-Claim zurueck und Stripe retryt; ein falsches
+            # Produkt still gutzuschreiben waere schlimmer als ein Retry).
+            produkt = _m.get("produkt", "")
+            if not user_id:
+                raise ValueError("checkout.session.completed ohne user_id")
+            gutschrift(user_id, produkt)
 
         elif typ == "einzelkauf":
             with get_conn() as conn:
@@ -573,4 +635,5 @@ def payment_status(user_id: int = Depends(get_current_user_id)):
         "checks_verbleibend": row["checks_verbleibend"],
         "hat_abo": row["abo_typ"] != "none",
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
+        **kontingente(user_id),
     }

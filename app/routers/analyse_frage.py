@@ -21,6 +21,7 @@ from slowapi.util import get_remote_address
 
 from app.models import AnalyseFrageRequest, FehlerResponse
 from app.auth import verify_api_key
+from app.usage_limit import require_analyse_frage_kontingent
 from app.llm import analyse_frage_stream
 from app.utf8 import UTF8JSONResponse
 
@@ -50,6 +51,7 @@ async def _sse_generator(analyse_kontext: str, frage: str, verlauf: list[dict], 
 @limiter.limit("20/minute")
 async def analyse_frage_endpunkt(body: AnalyseFrageRequest, request: Request):
     verify_api_key(request)
+    require_analyse_frage_kontingent(request)
     verlauf = [m.model_dump() for m in body.verlauf]
     return StreamingResponse(
         _sse_generator(body.analyse_kontext, body.frage, verlauf, body.check_typ),

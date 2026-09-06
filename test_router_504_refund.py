@@ -36,7 +36,7 @@ import app.verkaufscheck as vc
 import app.routers.kaufcheck as r_kauf
 import app.routers.verkaufscheck as r_verk
 from app.database import get_conn, ensure_tables
-from app.check_gate import refund_check_credit
+from app.check_gate import CheckZugriff, refund_check_credit
 from app.models import KaufCheckRequest, VerkaufsCheckRequest
 
 _FEHLER: list[str] = []
@@ -71,10 +71,19 @@ def credits() -> int:
 
 
 def dekrementiere() -> None:
-    """Simuliert, was require_check_access() vor dem Handler bereits getan hat."""
+    """Simuliert, was das Check-Gate vor dem Handler bereits getan hat."""
     with get_conn() as conn:
         conn.execute("UPDATE users SET checks_verbleibend = checks_verbleibend - 1 "
                      "WHERE id=?", (USER_ID,))
+
+
+def zugriff(typ: str) -> CheckZugriff:
+    """Das Zugriffsobjekt, das die Dependency an den Handler uebergeben haette.
+
+    `quelle` ist hier der generische Legacy-Topf, weil `dekrementiere()` genau
+    aus diesem abzieht — die Rueckerstattung muss also auch dorthin zurueck.
+    """
+    return CheckZugriff(user_id=USER_ID, typ=typ, quelle="checks_verbleibend")
 
 
 # Backoff neutralisieren — sonst laeuft der Test minutenlang.
@@ -102,9 +111,9 @@ class _Aufrufzaehler:
     def __init__(self):
         self.n = 0
 
-    def __call__(self, user_id):
+    def __call__(self, zugriff_obj):
         self.n += 1
-        refund_check_credit(user_id)
+        refund_check_credit(zugriff_obj)
 
 
 def _dauerhaft_504(*args, **kwargs):
@@ -173,7 +182,7 @@ vorher = credits()
 dekrementiere()
 exc_k = None
 try:
-    asyncio.run(r_kauf.kaufcheck_endpunkt(REQ_K, FakeRequest(), retry=False, user_id=USER_ID))
+    asyncio.run(r_kauf.kaufcheck_endpunkt(REQ_K, FakeRequest(), retry=False, zugriff=zugriff('kauf')))
 except HTTPException as e:
     exc_k = e
 except Exception as e:  # pragma: no cover
@@ -202,7 +211,7 @@ vorher = credits()
 dekrementiere()
 exc_v = None
 try:
-    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, user_id=USER_ID))
+    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, zugriff=zugriff('verkauf')))
 except HTTPException as e:
     exc_v = e
 except Exception as e:  # pragma: no cover
@@ -246,7 +255,7 @@ nach_abzug = credits()
 ok_erg = None
 try:
     ok_erg = asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False,
-                                                       user_id=USER_ID))
+                                                       zugriff=zugriff('verkauf')))
 finally:
     _zurueck(vc, orig)
 check("G4 erfolgreicher Check loest KEINEN Refund aus", zaehler_ok.n == 0)
@@ -268,7 +277,7 @@ orig = _umgebung(vc)
 vc.call_gemini_json = _gemini_500
 exc_500 = None
 try:
-    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, user_id=USER_ID))
+    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, zugriff=zugriff('verkauf')))
 except Exception as e:
     exc_500 = e
 finally:

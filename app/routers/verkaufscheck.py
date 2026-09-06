@@ -8,7 +8,7 @@ from slowapi.util import get_remote_address
 
 from app.models import VerkaufsCheckRequest, VerkaufsCheckResponse, FehlerResponse
 from app.auth import verify_api_key
-from app.check_gate import require_check_access, refund_check_credit
+from app.check_gate import require_verkaufscheck_access, refund_check_credit, CheckZugriff
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.verkaufscheck import run_verkaufscheck
 from app.marktrecherche import RechercheUnzureichend
@@ -38,7 +38,7 @@ async def verkaufscheck_endpunkt(
     body: VerkaufsCheckRequest,
     request: Request,
     retry: bool = False,
-    user_id: int = Depends(require_check_access),
+    zugriff: CheckZugriff = Depends(require_verkaufscheck_access),
 ):
     verify_api_key(request)
     try:
@@ -49,8 +49,8 @@ async def verkaufscheck_endpunkt(
         # §0/§4/§10: keine belastbare Marktdatenbasis -> KEINE Preisstrategie, kein
         # fertiger Bericht, Kontingent zurückerstatten (idempotent). research_failed
         # signalisiert dem Frontend, den Check nicht als abgeschlossen zu behandeln.
-        log.info("Verkaufscheck: research_failed, erstatte Kontingent zurück (user_id=%s)", user_id)
-        refund_check_credit(user_id)
+        log.info("Verkaufscheck: research_failed, erstatte Kontingent zurück (user_id=%s)", zugriff.user_id)
+        refund_check_credit(zugriff)
         return VerkaufsCheckResponse(
             bericht=exc.nachricht,
             quelle="web",
@@ -60,8 +60,8 @@ async def verkaufscheck_endpunkt(
     except GeminiFehlgeschlagen as exc:
         # Der Nutzer hat keine verwertbare Analyse erhalten — das bereits von
         # require_check_access() abgezogene Check-Kontingent zurückerstatten.
-        log.warning("Verkaufscheck: Gemini-Totalausfall, erstatte Kontingent zurück (user_id=%s): %s", user_id, exc)
-        refund_check_credit(user_id)
+        log.warning("Verkaufscheck: Gemini-Totalausfall, erstatte Kontingent zurück (user_id=%s): %s", zugriff.user_id, exc)
+        refund_check_credit(zugriff)
         raise HTTPException(
             status_code=503,
             detail={"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT}},

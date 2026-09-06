@@ -66,6 +66,21 @@ CHROMA_PATH = Path(os.environ.get("AUTO_KI_CHROMA_PATH", str(_chroma_default)))
 API_KEY = os.environ.get("AUTO_KI_API_KEY", "dev-key-change-in-prod")
 RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 
+# ---------------------------------------------------------------------------
+# Kostenloses KI-Chat-Kontingent (Consumer V1)
+# ---------------------------------------------------------------------------
+# EINZIGE Stelle, an der die Free-Grenze steht — Router und Gate lesen nur von
+# hier (keine verstreuten Zahlen im Code).
+#
+# Der Wert ist BEWUSST eine Produktgrenze, keine aus Kosten hergeleitete Zahl:
+# im Repo existiert keine belastbare Kostenbasis pro Chat-Anfrage (kein
+# Token-/Preis-Tracking), also wird hier auch keine vorgetaeuscht. 20 Anfragen
+# pro UTC-Kalendertag decken echte Consumer-Nutzung (ein Fahrzeug durchfragen)
+# komfortabel ab und deckeln zugleich automatisierten Dauerabruf.
+# Kalibrierbar ohne Codeaenderung: AUTO_KI_CHAT_FREE_LIMIT_TAEGLICH=<n>.
+# 0 oder negativ deaktiviert das Tageslimit vollstaendig.
+CHAT_FREE_LIMIT_TAEGLICH = int(os.environ.get("AUTO_KI_CHAT_FREE_LIMIT_TAEGLICH", "20"))
+
 # Log-Level für die App-eigenen Logger (uvicorn-Access-Logs bleiben unberührt).
 # Ohne explizite Konfiguration surft die Root-Loglevel-Vorgabe auf WARNING und
 # alle log.info(...)-Meldungen der App (DB-Pfad, Backups, Retries) sind unsichtbar.
@@ -98,6 +113,14 @@ STRIPE_PRICE_LIGHT      = os.environ.get("STRIPE_PRICE_LIGHT", "")       # price
 STRIPE_PRICE_PRO        = os.environ.get("STRIPE_PRICE_PRO", "")         # price_xxx
 STRIPE_PRICE_MAX        = os.environ.get("STRIPE_PRICE_MAX", "")         # price_xxx
 STRIPE_PRICE_EINZELKAUF = os.environ.get("STRIPE_PRICE_EINZELKAUF", "")  # price_xxx (one_time)
+
+# Consumer Pricing V1 — getrennte Einmalprodukte je Check-Art.
+# Bewusst ZWEI eigene Price-IDs statt eines gemeinsamen "Einzelkauf"-Preises:
+# ein gekaufter KaufCheck darf keinen VerkaufsCheck freischalten (und umgekehrt).
+# STRIPE_PRICE_EINZELKAUF bleibt fuer Bestandskaeufe/Legacy erhalten und schreibt
+# weiterhin auf das generische Kontingent.
+STRIPE_PRICE_KAUFCHECK     = os.environ.get("STRIPE_PRICE_KAUFCHECK", "")      # price_xxx (one_time, 9,99 EUR)
+STRIPE_PRICE_VERKAUFSCHECK = os.environ.get("STRIPE_PRICE_VERKAUFSCHECK", "")  # price_xxx (one_time, 7,99 EUR)
 FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")

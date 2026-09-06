@@ -10,6 +10,7 @@ from app.models import ChatRequest, ChatResponse, FehlerResponse
 from app.auth import verify_api_key
 from app.llm import chat_stream
 from app.postprocess import postprocess_answer
+from app.usage_limit import require_chat_kontingent
 from app.utf8 import UTF8JSONResponse
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
@@ -57,6 +58,9 @@ async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: st
 @limiter.limit("20/minute")
 async def chat_endpunkt(body: ChatRequest, request: Request):
     verify_api_key(request)
+    # Kostenloses Tageskontingent — zaehlt VOR dem LLM-Aufruf, damit eine
+    # ueberschrittene Grenze keine Modellkosten mehr verursacht.
+    require_chat_kontingent(request)
 
     verlauf = [m.model_dump() for m in body.verlauf]
 

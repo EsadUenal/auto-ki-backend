@@ -79,6 +79,21 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Consumer V1: taegliche Nutzungszaehler fuer kostenlose Funktionen (KI-Chat).
+-- Ein Zaehler je (Schluessel, Art, UTC-Kalendertag). Der Schluessel ist
+-- 'user:<id>' fuer eingeloggte und 'ip:<adresse>' fuer anonyme Nutzung — der
+-- Chat-Endpunkt verlangt (historisch) keinen Login, das Limit muss trotzdem
+-- greifen. PRIMARY KEY macht das Hochzaehlen per UPSERT atomar; ohne ihn waere
+-- "lesen, pruefen, schreiben" zwischen zwei parallelen Requests umgehbar.
+CREATE TABLE IF NOT EXISTS usage_taeglich (
+    schluessel  TEXT    NOT NULL,
+    art         TEXT    NOT NULL,
+    tag_utc     TEXT    NOT NULL,
+    anzahl      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (schluessel, art, tag_utc)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_taeglich_tag ON usage_taeglich(tag_utc);
+
 -- Phase 5: VIRA Dealer — Fahrzeugakte pro Händler (Bestand/Beobachtung).
 -- Ownership über user_id (CASCADE: Konto weg -> Fahrzeuge weg). Verknüpfte Checks
 -- sind bewusst SET NULL: ein gelöschter Kauf-/Verkaufscheck darf den Händlerbestand
@@ -296,6 +311,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         # Bestehende Abo-Kunden (light/pro) werden unten per Backfill auf ihr echtes Kontingent gehoben,
         # da für sie kein neues Stripe-Event feuert, das den Wert sonst setzen würde.
         conn.execute("ALTER TABLE users ADD COLUMN ersatzteil_suchen_verbleibend INTEGER NOT NULL DEFAULT 1")
+    if "kaufchecks_verbleibend" not in existing:
+        # Consumer Pricing V1: getrennte Kontingente je Check-Art. DEFAULT 0 ist
+        # hier richtig und KEIN Rechteverlust — das bestehende generische
+        # `checks_verbleibend` bleibt unangetastet und wird vom Gate weiterhin
+        # als Fallback für BEIDE Check-Arten akzeptiert (siehe app/check_gate.py).
+        # Bestandsnutzer behalten damit exakt die Ansprüche, die sie heute haben;
+        # nur NEU gekaufte Checks sind ab jetzt typgebunden.
+        conn.execute("ALTER TABLE users ADD COLUMN kaufchecks_verbleibend INTEGER NOT NULL DEFAULT 0")
+    if "verkaufschecks_verbleibend" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN verkaufschecks_verbleibend INTEGER NOT NULL DEFAULT 0")
 
     # Einmaliger Backfill: bestehende Abo-Kunden bekamen durch obigen DEFAULT 1 fälschlich
     # nur 1 statt ihres Abo-Kontingents (light=5, pro=20, max=unbegrenzt). Läuft nur einmal

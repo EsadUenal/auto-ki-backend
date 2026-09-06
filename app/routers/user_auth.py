@@ -163,6 +163,7 @@ def register(body: RegisterBody, response: Response, request: Request):
     return {
         "id": user_id, "email": body.email, "abo_typ": "none",
         "checks_verbleibend": 1, "ersatzteil_suchen_verbleibend": 1,
+        "kaufchecks_verbleibend": 0, "verkaufschecks_verbleibend": 0,
         "ist_haendler": False,
         "dealer_access": has_dealer_access("none", False),
     }
@@ -175,6 +176,7 @@ def login(body: LoginBody, response: Response, request: Request):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, email, password_hash, abo_typ, checks_verbleibend, "
+            "kaufchecks_verbleibend, verkaufschecks_verbleibend, "
             "ersatzteil_suchen_verbleibend, deleted_at, ist_haendler "
             "FROM users WHERE email = ?",
             (body.email.strip().lower(),),
@@ -199,6 +201,8 @@ def login(body: LoginBody, response: Response, request: Request):
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "kaufchecks_verbleibend": row["kaufchecks_verbleibend"],
+        "verkaufschecks_verbleibend": row["verkaufschecks_verbleibend"],
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": None,
         "ist_haendler": bool(row["ist_haendler"]),
@@ -220,6 +224,7 @@ def me(auth_token: str | None = Cookie(default=None)):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, email, abo_typ, checks_verbleibend, ersatzteil_suchen_verbleibend, "
+            "kaufchecks_verbleibend, verkaufschecks_verbleibend, "
             "deleted_at, abo_kuendigt_zum, ist_haendler "
             "FROM users WHERE id = ?",
             (user_id,),
@@ -235,6 +240,8 @@ def me(auth_token: str | None = Cookie(default=None)):
         "email": row["email"],
         "abo_typ": row["abo_typ"],
         "checks_verbleibend": row["checks_verbleibend"],
+        "kaufchecks_verbleibend": row["kaufchecks_verbleibend"],
+        "verkaufschecks_verbleibend": row["verkaufschecks_verbleibend"],
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
         "abo_kuendigt_zum": row["abo_kuendigt_zum"],
         "ist_haendler": bool(row["ist_haendler"]),

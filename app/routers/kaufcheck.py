@@ -8,7 +8,7 @@ from slowapi.util import get_remote_address
 
 from app.models import KaufCheckRequest, KaufCheckResponse, FehlerResponse
 from app.auth import verify_api_key
-from app.check_gate import require_check_access, refund_check_credit
+from app.check_gate import require_kaufcheck_access, refund_check_credit, CheckZugriff
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.kaufcheck import run_kaufcheck
 from app.marktrecherche import RechercheUnzureichend
@@ -38,7 +38,7 @@ async def kaufcheck_endpunkt(
     body: KaufCheckRequest,
     request: Request,
     retry: bool = False,
-    user_id: int = Depends(require_check_access),
+    zugriff: CheckZugriff = Depends(require_kaufcheck_access),
 ):
     verify_api_key(request)
     try:
@@ -57,8 +57,8 @@ async def kaufcheck_endpunkt(
         # Käme sie hier je wieder an, ist ein 500er die falsche Antwort; die
         # bestehende Rückerstattung ist das richtige Verhalten.
         log.info("Kaufcheck: RechercheUnzureichend (unerwartet nach P0-1), "
-                 "erstatte Kontingent zurück (user_id=%s)", user_id)
-        refund_check_credit(user_id)
+                 "erstatte Kontingent zurück (user_id=%s)", zugriff.user_id)
+        refund_check_credit(zugriff)
         return KaufCheckResponse(
             bericht=exc.nachricht,
             empfehlung="unbekannt",
@@ -71,8 +71,8 @@ async def kaufcheck_endpunkt(
         # Der Nutzer hat keine verwertbare Analyse erhalten — das bereits von
         # require_check_access() abgezogene Check-Kontingent zurückerstatten,
         # statt ihm einen Check zu berechnen, für den er nichts bekommen hat.
-        log.warning("Kaufcheck: Gemini-Totalausfall, erstatte Kontingent zurück (user_id=%s): %s", user_id, exc)
-        refund_check_credit(user_id)
+        log.warning("Kaufcheck: Gemini-Totalausfall, erstatte Kontingent zurück (user_id=%s): %s", zugriff.user_id, exc)
+        refund_check_credit(zugriff)
         raise HTTPException(
             status_code=503,
             detail={"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT}},
