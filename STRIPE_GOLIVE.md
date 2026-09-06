@@ -18,14 +18,29 @@ operativ noch nicht gesetzt ist. Der Code liest alle Stripe-Werte aus Env
 | Secret Key | `sk_test_…` → **Testmodus** |
 | Webhook-Secret | `whsec_…` aus lokalem `stripe listen` (kein Prod-Endpoint-Secret) |
 | Price-IDs LIGHT/PRO/MAX/EINZELKAUF | Test-Mode-Preise (`price_…`, im Testmodus erzeugt) |
+| Price-IDs KAUFCHECK/VERKAUFSCHECK | Test-Mode-Preise (Consumer V1: 9,99 € / 7,99 € einmalig) |
 | `FRONTEND_URL` | `http://localhost:3000` → Success/Cancel-Redirects zeigen auf localhost |
 | Hartcodierte Keys im Code | **keine** — alles über `os.environ.get(...)` (siehe `app/config.py`) |
 | `.env` committet | **nein** (gitignored — kein Secret-Leak) |
-| Frontend-Hinweis „Testmodus — keine echten Zahlungen" | aktuell **wahr** → bewusst NICHT entfernt |
+| Frontend-Hinweis „Testmodus — keine echten Zahlungen" | **entfällt** — mit Consumer Pricing V1 entfernt (siehe unten) |
 
-Weil Stripe im Testmodus ist, ist der Testmodus-Hinweis im Frontend
-(`PricingView.tsx`) korrekt. **Erst entfernen, wenn Live-Keys aktiv sind** —
-sonst glauben Nutzer, sie zahlen echt, obwohl es Testzahlungen sind.
+### Zum entfallenen Testmodus-Hinweis (Stand Consumer Pricing V1)
+
+Die frühere Fassung dieses Dokuments verlangte einen eigenen Hinweis
+„Testmodus — keine echten Zahlungen" in `PricingView.tsx`. Consumer Pricing V1
+hat diesen Text bewusst entfernt: die Preisseite ist eine reine
+Produktdarstellung und startet selbst keinen Checkout.
+
+Die Sorge dahinter — *niemand soll glauben, echt zu zahlen* — bleibt richtig
+und ist weiterhin gedeckt, aber an der Stelle, an der sie zählt: Stripe
+kennzeichnet seine eigene Checkout-Seite im Testmodus sichtbar als
+**„Sandbox"** (im Browser gegen den echten Test-Checkout verifiziert). Der
+Nutzer sieht die Kennzeichnung also genau dann, wenn er Zahlungsdaten eingeben
+soll, statt vorher auf einer Seite ohne Bezahlfunktion.
+
+**Vor Live-Gang zu prüfen:** dass diese Sandbox-Kennzeichnung mit Live-Keys
+verschwindet (das tut sie automatisch) — ein eigener Frontend-Hinweis ist dafür
+nicht mehr nötig und muss auch nicht wieder eingebaut werden.
 
 ## Was bereits korrekt ist (nicht anfassen)
 
@@ -92,8 +107,10 @@ Audits geändert, da Feature-/Verhaltensänderung mit Regressionsrisiko)
 
 - Repo-weit **keine** hartcodierten `sk_live_`/`sk_test_`/`whsec_` im Code.
   Platzhalter nur in `.env.example` / `.env.stripe` (Doku, keine echten Werte).
-- Frontend: einziger zahlungsbezogener Testtext ist „Testmodus — keine echten
-  Zahlungen" (`PricingView.tsx`) — aktuell korrekt, siehe oben.
+- Frontend: **kein** zahlungsbezogener Testtext mehr (der frühere Hinweis in
+  `PricingView.tsx` ist mit Consumer Pricing V1 entfallen, siehe oben). Die
+  Testmodus-Kennzeichnung übernimmt Stripes eigene Sandbox-Markierung auf der
+  Checkout-Seite.
 - Kommentare wie „Phase 2d (Stripe Testmodus)" in `payments.py`/`config.py` sind
   interne Code-Kommentare (nicht nutzersichtbar).
 
@@ -103,10 +120,12 @@ Audits geändert, da Feature-/Verhaltensänderung mit Regressionsrisiko)
 |---|---|
 | Stripe Live Keys (`sk_live_…`) | ❌ noch `sk_test_…` |
 | Live-Price-IDs (LIGHT/PRO/MAX/EINZELKAUF) | ❌ Test-Preise |
+| Live-Price-IDs (KAUFCHECK/VERKAUFSCHECK) | ❌ Test-Preise |
 | Prod-Webhook-Endpoint + `whsec_…` | ❌ lokales `stripe listen`-Secret |
 | `FRONTEND_URL` = echte Domain | ❌ `http://localhost:3000` |
-| Frontend „Testmodus"-Hinweis entfernt | ❌ (bewusst erst nach Live-Keys) |
+| Frontend „Testmodus"-Hinweis | ✅ entfällt (Stripe-Sandbox-Kennzeichnung genügt) |
 | Checkout-Session (Abo + Einzelkauf) | ✅ korrekt |
+| Checkout-Session (KaufCheck/VerkaufsCheck, typgebunden) | ✅ korrekt |
 | Webhook-Signaturprüfung | ✅ korrekt |
 | Webhook-Idempotenz / keine Doppel-Credits | ✅ korrekt (race-sicher, retry-fähig) |
 | Credits-Vergabe + Monatsreset | ✅ korrekt |

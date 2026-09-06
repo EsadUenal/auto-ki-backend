@@ -145,9 +145,19 @@ def register(body: RegisterBody, response: Response, request: Request):
     hashed = _hash_pw(body.password)
     try:
         with get_conn() as conn:
+            # Consumer Pricing V1: KEIN automatischer Gratis-Check mehr.
+            # Kauf- und VerkaufsCheck sind getrennt bepreiste Einmalprodukte
+            # (9,99 / 7,99 EUR); ein pauschal verschenkter generischer Check
+            # passte in keines von beiden und widerspraeche der Preisseite,
+            # die keinen Gratis-Check bewirbt. Die typgebundenen Spalten
+            # starten ohnehin per Schema-Default auf 0.
+            #
+            # WICHTIG: Das aendert ausschliesslich NEUE Konten. Bestehende
+            # generische Guthaben bleiben unangetastet — es gibt bewusst KEINE
+            # Migration, die vorhandene `checks_verbleibend` zurueksetzt.
             cursor = conn.execute(
                 "INSERT INTO users (email, password_hash, checks_verbleibend, ersatzteil_suchen_verbleibend) "
-                "VALUES (?, ?, 1, 1)",
+                "VALUES (?, ?, 0, 1)",
                 (body.email, hashed),
             )
             conn.commit()
@@ -162,7 +172,7 @@ def register(body: RegisterBody, response: Response, request: Request):
     _set_auth_cookie(response, _make_token(user_id, body.email))
     return {
         "id": user_id, "email": body.email, "abo_typ": "none",
-        "checks_verbleibend": 1, "ersatzteil_suchen_verbleibend": 1,
+        "checks_verbleibend": 0, "ersatzteil_suchen_verbleibend": 1,
         "kaufchecks_verbleibend": 0, "verkaufschecks_verbleibend": 0,
         "ist_haendler": False,
         "dealer_access": has_dealer_access("none", False),
