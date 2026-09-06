@@ -279,6 +279,18 @@ def speichere_manifest_datei(manifest: dict[str, ManifestEintrag],
 _FALLBACK_BASISPFAD = "/cars/autofinder/fallback"
 
 
+def generischer_fallback(karosserie: str) -> "ResolveErgebnis":
+    """Oeffentlicher Zugang zum neutralen Silhouetten-Fallback.
+
+    Der Consumer-Ausgabepfad (app.routers.autofinder) braucht ihn, wenn er ein
+    nicht-exaktes Asset verwirft: die Antwort muss weiterhin ein gueltiges,
+    nicht-leeres `image_url` tragen (bestehender Vertrag, siehe
+    test_autofinder_visual.py K) — nur eben als `generic_fallback`, damit der
+    On-Demand-Ensure-Flow greift.
+    """
+    return _generischer_fallback(karosserie)
+
+
 def _generischer_fallback(karosserie: str) -> "ResolveErgebnis":
     key = karosserie if karosserie in KAROSSERIE_KLASSEN else UNBEKANNTE_KAROSSERIE
     return ResolveErgebnis(
@@ -334,10 +346,31 @@ def resolve_image(kandidat: Any, *, bevorzugte_karosserie: str | None = None,
                 fallback_used=False, ai_generated=eintrag.ai_generated,
             )
 
-        # Stufe 2: kompatibles Asset derselben Baureihe, ANDERE Karosserie —
-        # NIE als exact, hoechstens generation_match (§ Grundregel oben).
         _slug_m, _slug_mo = _slug(marke), _slug(modell)
         _slug_g = _slug(generation or "")
+
+        # Stufe 1b: On-Demand-Assets werden unter dem karosserielosen
+        # Engine-Key abgelegt (`marke--modell--generation`, siehe
+        # app.autofinder_images), nicht unter dem vierteiligen Resolver-Key.
+        # Ein solcher Eintrag zeigt GENAU dieses Fahrzeug und ist damit exact —
+        # ohne diesen Zweig gaelte jedes selbst erzeugte Bild dauerhaft als
+        # blosser generation_match. Die Karosserie wird trotzdem geprueft: der
+        # Key allein traegt sie nicht, der Manifest-Eintrag schon. Passt sie
+        # nicht, faellt der Eintrag in die schwaecheren Stufen zurueck (§
+        # Grundregel: nie eine fremde Karosserie als exact ausgeben).
+        engine_key = "--".join(t for t in (_slug_m, _slug_mo, _slug_g) if t)
+        od_eintrag = manifest.get(engine_key)
+        if _freigegeben(od_eintrag) and engine_key != exact_key:
+            od_karo = _slug(od_eintrag.karosserie or "")
+            if not od_karo or od_karo == karo:
+                return ResolveErgebnis(
+                    image_url=od_eintrag.image_url, image_type=od_eintrag.image_type,
+                    image_confidence=CONF_EXACT, resolved_visual_key=engine_key,
+                    fallback_used=False, ai_generated=od_eintrag.ai_generated,
+                )
+
+        # Stufe 2: kompatibles Asset derselben Baureihe, ANDERE Karosserie —
+        # NIE als exact, hoechstens generation_match (§ Grundregel oben).
         for kand_eintrag in manifest.values():
             if not _freigegeben(kand_eintrag):
                 continue
