@@ -79,12 +79,19 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Consumer V1: taegliche Nutzungszaehler fuer kostenlose Funktionen (KI-Chat).
--- Ein Zaehler je (Schluessel, Art, UTC-Kalendertag). Der Schluessel ist
--- 'user:<id>' fuer eingeloggte und 'ip:<adresse>' fuer anonyme Nutzung — der
--- Chat-Endpunkt verlangt (historisch) keinen Login, das Limit muss trotzdem
--- greifen. PRIMARY KEY macht das Hochzaehlen per UPSERT atomar; ohne ihn waere
+-- Taegliche Nutzungszaehler: ein Zaehler je (Schluessel, Art, UTC-Kalendertag).
+-- PRIMARY KEY macht das Hochzaehlen per UPSERT atomar; ohne ihn waere
 -- "lesen, pruefen, schreiben" zwischen zwei parallelen Requests umgehbar.
+--
+-- Aktuell genutzt fuer GENAU EINEN Zweck: den anonymen AutoFinder-Demo-Zugang
+-- (art='autofinder_demo', Schluessel 'ip:<adresse>', 1 Suche pro Tag). Ein
+-- TAGES-Bucket ist hier richtig, weil der IP-Anker kein Monatskontingent
+-- tragen kann — hinter geteilten Adressen (NAT/CGNAT) waere es nach kurzer
+-- Zeit fuer alle aufgebraucht (Begruendung: app/usage_limit.py).
+--
+-- Die Tarif-Kontingente (Chat, AutoFinder je Konto) zaehlen dagegen monatlich
+-- in `usage_monat` — verkauft wird in Monatskontingenten. Alte Tageszaehler
+-- aus der Vorgaengerfassung bleiben stehen und werden nicht mehr gelesen.
 CREATE TABLE IF NOT EXISTS usage_taeglich (
     schluessel  TEXT    NOT NULL,
     art         TEXT    NOT NULL,

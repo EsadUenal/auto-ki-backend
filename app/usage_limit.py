@@ -36,6 +36,24 @@ Identitätsmerkmal. Wer sie wechselt, umgeht das anonyme Limit — das ist
 akzeptiert, weil AutoFinder ohne Login ausprobierbar bleiben soll und der
 eigentliche Wert (gespeicherte Verläufe, Checks) ohnehin am Konto hängt.
 
+WAS DIE IP NICHT DARF: EIN MONATSKONTINGENT TRAGEN
+--------------------------------------------------
+Für AutoFinder wurde anonym ursprünglich dasselbe Monatskontingent (5) am
+IP-Anker gezählt. Das war falsch: hinter Buero-NAT, Schul-/Hotel-WLAN oder
+Mobilfunk-CGNAT teilen sich beliebig viele Menschen eine Adresse. Fünf Suchen
+pro MONAT sind dort nach kurzer Zeit aufgebraucht, und der Ausprobier-Pfad ohne
+Login ist für alle dauerhaft zu — obwohl niemand von ihnen auch nur eine eigene
+Suche hatte.
+
+Anonym gilt deshalb: EINE Demo-Suche pro UTC-TAG und IP, in einem eigenen Topf
+(`ART_AUTOFINDER_DEMO`, Tabelle `usage_taeglich`). Ein täglicher Zugang
+regeneriert sich von selbst — geteilte Adressen bleiben nutzbar, Dauerabruf
+über dieselbe Adresse bleibt gedeckelt.
+
+Das Free-Kontingent (5/Monat) hängt ausschliesslich am KONTO. Beide Töpfe sind
+getrennt: wer seine anonyme Demo verbraucht hat und sich danach registriert,
+startet mit vollen 5 Suchen. Die Demo war kein Vorschuss darauf.
+
 ATOMARITÄT
 ----------
 Hochzählen und Prüfen passieren in EINER SQL-Anweisung (UPSERT mit
@@ -51,6 +69,7 @@ from fastapi import HTTPException, Request
 
 from app import plus
 from app.config import (
+    AUTOFINDER_ANONYM_DEMO_PRO_TAG,
     AUTOFINDER_FREE_LIMIT_MONATLICH,
     AUTOFINDER_PLUS_LIMIT_MONATLICH,
     CHAT_FREE_LIMIT_MONATLICH,
@@ -66,11 +85,21 @@ ART_AUTOFINDER = "autofinder"
 # Topf: sie gehoeren zum gekauften Produkt und duerfen das kostenlose
 # Chat-Kontingent nicht aufbrauchen (und umgekehrt).
 ART_ANALYSE_FRAGE = "analyse_frage"
+# AutoFinder OHNE Login. EIGENE Art und EIGENE Tabelle (usage_taeglich), damit
+# der Demo-Zaehler und das Konto-Monatskontingent sich niemals beruehren: wer
+# seine anonyme Demo verbraucht hat und sich danach registriert, startet mit
+# vollen 5 Suchen — die Demo war kein Vorschuss darauf.
+ART_AUTOFINDER_DEMO = "autofinder_demo"
 
 
 def monat_utc() -> str:
     """Aktueller UTC-Kalendermonat als 'YYYY-MM' (Reset-Grenze)."""
     return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def tag_utc() -> str:
+    """Aktueller UTC-Kalendertag als 'YYYY-MM-DD' (Reset-Grenze der Demo)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _user_id_aus_cookie(request: Request) -> int | None:
@@ -128,6 +157,42 @@ def verbrauche(schluessel: str, art: str, limit: int, monat: str | None = None) 
     return cur.rowcount == 1
 
 
+def verbrauche_tag(schluessel: str, art: str, limit: int, tag: str | None = None) -> bool:
+    """Wie `verbrauche`, aber je UTC-TAG — Tabelle `usage_taeglich`.
+
+    Ausschliesslich fuer den anonymen AutoFinder-Demo-Zugang. Getrennte Tabelle
+    statt eines Tageswerts in `usage_monat`: dort heisst die Spalte `monat_utc`
+    und traegt einen Monat. Ein Tagesdatum hineinzuschreiben wuerde zwar
+    funktionieren, aber jeden spaeteren Leser in die Irre fuehren.
+    `usage_taeglich` existiert bereits im Schema (siehe app/database.py) und
+    wurde seit der Monatsumstellung nicht mehr beschrieben — es braucht also
+    weder eine Migration noch ein neues Zeitmodell.
+    """
+    if limit <= 0:
+        return True
+    tag = tag or tag_utc()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO usage_taeglich (schluessel, art, tag_utc, anzahl) VALUES (?,?,?,1) "
+            "ON CONFLICT(schluessel, art, tag_utc) DO UPDATE SET anzahl = anzahl + 1 "
+            "WHERE anzahl < ?",
+            (schluessel, art, tag, limit),
+        )
+        conn.commit()
+    return cur.rowcount == 1
+
+
+def stand_tag(schluessel: str, art: str, tag: str | None = None) -> int:
+    """Aktueller Zaehlerstand des Tages (Demo)."""
+    tag = tag or tag_utc()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT anzahl FROM usage_taeglich WHERE schluessel=? AND art=? AND tag_utc=?",
+            (schluessel, art, tag),
+        ).fetchone()
+    return row["anzahl"] if row else 0
+
+
 def stand(schluessel: str, art: str, monat: str | None = None) -> int:
     """Aktueller Zählerstand des Monats."""
     monat = monat or monat_utc()
@@ -169,12 +234,10 @@ def _chat_nachricht(plus_aktiv: bool) -> str:
             f"für diesen Monat genutzt.")
 
 
-def _autofinder_nachricht(plus_aktiv: bool, eingeloggt: bool) -> str:
+def _autofinder_nachricht(plus_aktiv: bool) -> str:
+    """Kontingent-Text für EINGELOGGTE Nutzer. Anonyme bekommen `_wirf_demo`."""
     if plus_aktiv:
         return "Du hast dein monatliches AutoFinder-Kontingent erreicht."
-    if not eingeloggt:
-        return (f"Du hast deine {AUTOFINDER_FREE_LIMIT_MONATLICH} kostenlosen AutoFinder-Suchen "
-                f"für diesen Monat genutzt. Melde dich an oder sieh dir VIRA Plus an.")
     return (f"Du hast deine {AUTOFINDER_FREE_LIMIT_MONATLICH} kostenlosen AutoFinder-Suchen "
             f"für diesen Monat genutzt.")
 
@@ -192,6 +255,28 @@ def _wirf(code_nachricht: str, plus_aktiv: bool) -> None:
     )
 
 
+def _wirf_demo() -> None:
+    """Verbrauchte anonyme Demo — EIGENER Code, weil der Weg nach vorn ein anderer ist.
+
+    Der Nutzer soll sich hier kostenlos anmelden, nicht ein Abo ansehen: sein
+    Free-Kontingent (5/Monat) hat er noch vollstaendig vor sich. Ein
+    Plus-Angebot waere an dieser Stelle sachlich falsch und wuerde wie eine
+    Bezahlschranke wirken, wo gar keine ist.
+    """
+    raise HTTPException(
+        status_code=429,
+        detail={"fehler": {
+            "code": "demo_limit_erreicht",
+            "nachricht": "Du hast deine kostenlose AutoFinder-Demo genutzt.",
+            "hinweis": (f"Melde dich kostenlos an und erhalte "
+                        f"{AUTOFINDER_FREE_LIMIT_MONATLICH} AutoFinder-Suchen pro Monat."),
+            "anmelden_hilft": True,
+            # Plus ist hier NICHT der richtige Hinweis — siehe Docstring.
+            "plus_hilft": False,
+        }},
+    )
+
+
 def _pruefe(request: Request, art: str) -> None:
     user_id = _user_id_aus_cookie(request)
     hat_legacy_abo, plus_aktiv = _nutzer_zustand(user_id)
@@ -202,12 +287,24 @@ def _pruefe(request: Request, art: str) -> None:
     if hat_legacy_abo:
         return
 
+    # AutoFinder OHNE Login ist eine Demo, kein Tarif: ein Zaehler am IP-Anker
+    # kann kein Monatskontingent abbilden, weil sich hinter einer geteilten
+    # Adresse (Buero-NAT, Schul-/Hotel-WLAN, Mobilfunk-CGNAT) beliebig viele
+    # Menschen denselben Zaehler teilen. Deshalb hier: EIN Versuch pro Tag und
+    # IP, in einem EIGENEN Topf. Das Monatskontingent haengt am Konto und wird
+    # unten nur fuer eingeloggte Nutzer geprueft.
+    if art == ART_AUTOFINDER and user_id is None:
+        if verbrauche_tag(_schluessel(request, None), ART_AUTOFINDER_DEMO,
+                          AUTOFINDER_ANONYM_DEMO_PRO_TAG):
+            return
+        _wirf_demo()
+
     limit = limit_fuer(art, plus_aktiv)
     if verbrauche(_schluessel(request, user_id), art, limit):
         return
 
     if art == ART_AUTOFINDER:
-        _wirf(_autofinder_nachricht(plus_aktiv, user_id is not None), plus_aktiv)
+        _wirf(_autofinder_nachricht(plus_aktiv), plus_aktiv)
     _wirf(_chat_nachricht(plus_aktiv), plus_aktiv)
 
 
@@ -217,11 +314,18 @@ def require_chat_kontingent(request: Request) -> None:
 
 
 def require_autofinder_kontingent(request: Request) -> None:
-    """Erzwingt das monatliche AutoFinder-Kontingent (Free 5, Plus 50).
+    """Erzwingt das AutoFinder-Kontingent.
 
-    AutoFinder bleibt ohne Login nutzbar; anonym greift der IP-Anker. Das
-    bestehende Rate-Limit (20/min) bleibt zusätzlich bestehen — es schützt gegen
-    Lastspitzen, dieses Kontingent gegen Dauerabruf.
+    Eingeloggt: 5 (Free) bzw. 50 (Plus) pro UTC-Kalendermonat, gezählt
+    ausschliesslich am KONTO — ein Wechsel des Netzes oder Geräts ändert daran
+    nichts, und eine geteilte IP kostet niemanden sein Kontingent.
+
+    Anonym: EINE Demo-Suche pro UTC-Tag und IP, in einem eigenen Topf. Der
+    IP-Anker dient hier nur dem Abuse-Schutz, nicht der Identifikation — kein
+    Fingerprinting, und weder Cookie noch localStorage sind Autorität.
+
+    Das bestehende Rate-Limit (20/min) bleibt zusätzlich bestehen — es schützt
+    gegen Lastspitzen, dieses Kontingent gegen Dauerabruf.
     """
     _pruefe(request, ART_AUTOFINDER)
 

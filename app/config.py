@@ -101,6 +101,18 @@ CHAT_PLUS_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_CHAT_PLUS_LIMIT_MONATLIC
 AUTOFINDER_FREE_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH", "5"))
 AUTOFINDER_PLUS_LIMIT_MONATLICH = int(os.environ.get("AUTO_KI_AUTOFINDER_PLUS_LIMIT_MONATLICH", "50"))
 
+# AutoFinder OHNE Login: reine Demo, gezaehlt je UTC-Tag und IP.
+#
+# Der IP-Anker taugt fuer eine Demo, aber NICHT fuer ein Monatskontingent: hinter
+# Buero-NAT, Schul-/Hotel-WLAN oder Mobilfunk-CGNAT teilen sich beliebig viele
+# Menschen eine Adresse und damit einen Zaehler. Bei 5 Suchen im MONAT waere der
+# Ausprobier-Pfad dort nach kurzer Zeit dauerhaft zu. Ein TAEGLICHER Demo-Zugang
+# regeneriert sich dagegen von selbst — geteilte Adressen bleiben nutzbar, und
+# Dauerabruf ueber dieselbe IP bleibt trotzdem gedeckelt.
+#
+# Das eigentliche Free-Kontingent (5/Monat) haengt ausschliesslich am KONTO.
+AUTOFINDER_ANONYM_DEMO_PRO_TAG = int(os.environ.get("AUTO_KI_AUTOFINDER_ANONYM_DEMO_PRO_TAG", "1"))
+
 # VIRA Plus: monatlich enthaltene Check-Kontingente (Reset je bezahltem
 # Abrechnungszeitraum, KEIN Uebertrag).
 PLUS_KAUFCHECKS_PRO_MONAT = int(os.environ.get("AUTO_KI_PLUS_KAUFCHECKS", "5"))

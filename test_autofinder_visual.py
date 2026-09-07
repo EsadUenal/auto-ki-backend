@@ -32,6 +32,16 @@ os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 os.environ["AUTO_KI_API_KEY"] = "test-key-autofinder-visual"
 os.environ["TAVILY_API_KEY"] = ""
 
+# Kontingent-Isolation: /autofinder traegt zwei serverseitige Grenzen — das
+# Monatskontingent des Kontos (Free 5) und die anonyme Tages-Demo (1/Tag je IP).
+# Diese Datei prueft den AutoFinder-VERTRAG, der von beiden unabhaengig gelten
+# muss, und stellt dafuer mehr Anfragen als eine echte Sitzung. 0 schaltet eine
+# Grenze ab (dokumentierter Vertrag von usage_limit.verbrauche/verbrauche_tag).
+# Die Grenzen selbst gehoeren nach test_monatslimits.py und
+# test_autofinder_demo.py — nicht hierher.
+os.environ["AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH"] = "0"
+os.environ["AUTO_KI_AUTOFINDER_ANONYM_DEMO_PRO_TAG"] = "0"
+
 import app.config as _cfg
 importlib.reload(_cfg)
 import app.database as _db

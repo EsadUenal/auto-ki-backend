@@ -173,17 +173,25 @@ except HTTPException as e:
           "5 kostenlosen AutoFinder-Suchen" in d["nachricht"] and "diesen Monat" in d["nachricht"],
           d["nachricht"])
 
-# anonym: eigener IP-Anker, ebenfalls begrenzt
+# anonym: KEIN Monatskontingent am IP-Anker mehr, sondern eine Tages-Demo.
+# Der alte Vertrag (5/Monat je IP) stand hier bewusst und ist ersetzt: hinter
+# geteilten Adressen (NAT/CGNAT) haetten sich beliebig viele Menschen diese
+# fuenf Suchen geteilt. Details und die volle Matrix: test_autofinder_demo.py.
 anon = _Req(host="203.0.113.200")
-for _ in range(AUTOFINDER_FREE_LIMIT_MONATLICH):
-    ul.require_autofinder_kontingent(anon)
+ul.require_autofinder_kontingent(anon)
+check("AL: anonym ist genau EINE Demo-Suche pro Tag frei",
+      ul.stand_tag("ip:203.0.113.200", ul.ART_AUTOFINDER_DEMO) == 1)
 try:
     ul.require_autofinder_kontingent(anon)
-    check("AL: auch anonym greift das Limit", False)
+    check("AL: die zweite anonyme Suche wird blockiert", False)
 except HTTPException as e:
-    check("AL: auch anonym greift das Limit (429)", e.status_code == 429)
-    check("AL: anonymer Text bietet Anmeldung ODER Plus an",
-          "Melde dich an" in e.detail["fehler"]["nachricht"], e.detail["fehler"]["nachricht"])
+    d = e.detail["fehler"]
+    check("AL: die zweite anonyme Suche wird blockiert (429)", e.status_code == 429)
+    check("AL: eigener Demo-Code statt Monatslimit", d["code"] == "demo_limit_erreicht", d["code"])
+    check("AL: anonymer Text verweist auf die kostenlose Anmeldung",
+          d["anmelden_hilft"] is True and d["plus_hilft"] is False)
+check("AL: die anonyme Demo hat den Monatstopf NICHT angefasst",
+      ul.stand("ip:203.0.113.200", ul.ART_AUTOFINDER) == 0)
 
 # ── AM/AN) Plus-AutoFinder ───────────────────────────────────────────────────
 uid_ap = neuer_user("af-plus@test.de", plus_aktiv=True)

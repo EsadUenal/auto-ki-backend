@@ -48,13 +48,15 @@ os.environ["AUTO_KI_API_KEY"] = "test-key-autofinder-budget"
 # Discovery-Gemini-Call. Muss VOR dem config-Import gesetzt werden.
 os.environ["TAVILY_API_KEY"] = ""
 
-# Consumer Pricing V1: /autofinder traegt jetzt ein Monatskontingent (Free 5,
-# anonym am IP-Anker). Diese Datei stellt weit mehr als fuenf Suchen und wuerde
-# ab der sechsten den 429-Kontingenttext statt eines Ergebnisses lesen. 0
-# schaltet die Grenze ab — dokumentierter Vertrag von usage_limit.verbrauche.
-# Das Kontingent selbst ist Sache von test_monatslimits.py; hier geht es um den
-# AutoFinder-Vertrag, der von der Tarifgrenze unabhaengig gelten muss.
+# Kontingent-Isolation: /autofinder traegt zwei serverseitige Grenzen — das
+# Monatskontingent des Kontos (Free 5) und die anonyme Tages-Demo (1/Tag je IP).
+# Diese Datei prueft den AutoFinder-VERTRAG, der von beiden unabhaengig gelten
+# muss, und stellt dafuer mehr Anfragen als eine echte Sitzung. 0 schaltet eine
+# Grenze ab (dokumentierter Vertrag von usage_limit.verbrauche/verbrauche_tag).
+# Die Grenzen selbst gehoeren nach test_monatslimits.py und
+# test_autofinder_demo.py — nicht hierher.
 os.environ["AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH"] = "0"
+os.environ["AUTO_KI_AUTOFINDER_ANONYM_DEMO_PRO_TAG"] = "0"
 
 import app.config as _cfg
 importlib.reload(_cfg)
