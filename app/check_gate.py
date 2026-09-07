@@ -7,8 +7,8 @@ Berechtigung besitzt, bevor ein Kauf- oder Verkaufs-Check ausgeführt wird.
 WARUM TYPGEBUNDEN
 -----------------
 Bis Consumer Pricing V1 gab es EIN generisches Kontingent (`checks_verbleibend`)
-für beide Check-Arten. Mit zwei getrennt bepreisten Produkten (KaufCheck 9,99 €,
-VerkaufsCheck 7,99 €) wäre das falsch: ein gekaufter KaufCheck hätte einen
+für beide Check-Arten. Mit zwei getrennt bepreisten Produkten (KaufCheck 5,99 €,
+VerkaufsCheck 8,99 €) wäre das falsch: ein gekaufter KaufCheck hätte einen
 VerkaufsCheck mit freigeschaltet — der Kunde hätte das günstigere Produkt zum
 teureren Preis oder umgekehrt bekommen. Neu gekaufte Checks landen deshalb in
 eigenen Spalten (`kaufchecks_verbleibend`, `verkaufschecks_verbleibend`), die

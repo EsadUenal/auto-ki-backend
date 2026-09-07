@@ -144,7 +144,7 @@ STRIPE_PRICE_EINZELKAUF = os.environ.get("STRIPE_PRICE_EINZELKAUF", "")  # price
 # ein gekaufter KaufCheck darf keinen VerkaufsCheck freischalten (und umgekehrt).
 # STRIPE_PRICE_EINZELKAUF bleibt fuer Bestandskaeufe/Legacy erhalten und schreibt
 # weiterhin auf das generische Kontingent.
-STRIPE_PRICE_KAUFCHECK     = os.environ.get("STRIPE_PRICE_KAUFCHECK", "")      # price_xxx (one_time, 9,99 EUR)
+STRIPE_PRICE_KAUFCHECK     = os.environ.get("STRIPE_PRICE_KAUFCHECK", "")      # price_xxx (one_time, 5,99 EUR)
 STRIPE_PRICE_VERKAUFSCHECK = os.environ.get("STRIPE_PRICE_VERKAUFSCHECK", "")  # price_xxx (one_time, 8,99 EUR)
 # VIRA Plus — das EINZIGE neu beworbene Abo. Recurring/monatlich.
 # Die Legacy-Preise LIGHT/PRO/MAX bleiben ausschliesslich fuer

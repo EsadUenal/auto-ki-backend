@@ -3,7 +3,7 @@ Test: Neu registrierte Konten passen zum bezahlten Check-Pricing.
 
 Hintergrund: bis Consumer Pricing V1 bekam jede Registrierung einen
 generischen Gratis-Check (`checks_verbleibend = 1`). Mit zwei getrennt
-bepreisten Einmalprodukten (KaufCheck 9,99 EUR, VerkaufsCheck 7,99 EUR) passt
+bepreisten Einmalprodukten (KaufCheck 5,99 EUR, VerkaufsCheck 8,99 EUR) passt
 das nicht mehr — und die Preisseite bewirbt auch keinen Gratis-Check.
 
 Ebenso wichtig ist die Gegenrichtung: Bestandsnutzer duerfen dabei NICHTS

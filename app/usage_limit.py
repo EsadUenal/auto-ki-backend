@@ -227,7 +227,7 @@ def require_autofinder_kontingent(request: Request) -> None:
 
 
 def require_analyse_frage_kontingent(request: Request) -> None:
-    """Tagesgrenze für Rückfragen zu einer bezahlten Check-Analyse.
+    """Monatsgrenze für Rückfragen zu einer bezahlten Check-Analyse.
 
     Eigener Topf, damit das kostenlose Chat-Kontingent unberührt bleibt: die
     Rückfragen gehören zum bereits bezahlten Check.

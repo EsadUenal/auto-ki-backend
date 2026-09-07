@@ -18,7 +18,8 @@ operativ noch nicht gesetzt ist. Der Code liest alle Stripe-Werte aus Env
 | Secret Key | `sk_test_…` → **Testmodus** |
 | Webhook-Secret | `whsec_…` aus lokalem `stripe listen` (kein Prod-Endpoint-Secret) |
 | Price-IDs LIGHT/PRO/MAX/EINZELKAUF | Test-Mode-Preise (`price_…`, im Testmodus erzeugt) |
-| Price-IDs KAUFCHECK/VERKAUFSCHECK | Test-Mode-Preise (Consumer V1: 9,99 € / 7,99 € einmalig) |
+| Price-IDs KAUFCHECK/VERKAUFSCHECK | Test-Mode-Preise (Consumer V1 FINAL: 5,99 € / 8,99 €, je einmalig) |
+| Price-ID PLUS | Test-Mode-Preis (Consumer V1 FINAL: 16,99 €, **recurring monatlich**) |
 | `FRONTEND_URL` | `http://localhost:3000` → Success/Cancel-Redirects zeigen auf localhost |
 | Hartcodierte Keys im Code | **keine** — alles über `os.environ.get(...)` (siehe `app/config.py`) |
 | `.env` committet | **nein** (gitignored — kein Secret-Leak) |
@@ -121,6 +122,7 @@ Audits geändert, da Feature-/Verhaltensänderung mit Regressionsrisiko)
 | Stripe Live Keys (`sk_live_…`) | ❌ noch `sk_test_…` |
 | Live-Price-IDs (LIGHT/PRO/MAX/EINZELKAUF) | ❌ Test-Preise |
 | Live-Price-IDs (KAUFCHECK/VERKAUFSCHECK) | ❌ Test-Preise |
+| Live-Price-ID (PLUS, recurring monatlich) | ❌ Test-Preis |
 | Prod-Webhook-Endpoint + `whsec_…` | ❌ lokales `stripe listen`-Secret |
 | `FRONTEND_URL` = echte Domain | ❌ `http://localhost:3000` |
 | Frontend „Testmodus"-Hinweis | ✅ entfällt (Stripe-Sandbox-Kennzeichnung genügt) |

@@ -147,7 +147,7 @@ def register(body: RegisterBody, response: Response, request: Request):
         with get_conn() as conn:
             # Consumer Pricing V1: KEIN automatischer Gratis-Check mehr.
             # Kauf- und VerkaufsCheck sind getrennt bepreiste Einmalprodukte
-            # (9,99 / 7,99 EUR); ein pauschal verschenkter generischer Check
+            # (5,99 / 8,99 EUR); ein pauschal verschenkter generischer Check
             # passte in keines von beiden und widerspraeche der Preisseite,
             # die keinen Gratis-Check bewirbt. Die typgebundenen Spalten
             # starten ohnehin per Schema-Default auf 0.
