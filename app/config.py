@@ -63,7 +63,39 @@ DB_BACKUP_PATH = BASE_DIR / "db" / "auto_ki_backup.db"
 _chroma_default = _local / "chroma"
 CHROMA_PATH = Path(os.environ.get("AUTO_KI_CHROMA_PATH", str(_chroma_default)))
 
-API_KEY = os.environ.get("AUTO_KI_API_KEY", "dev-key-change-in-prod")
+# ---------------------------------------------------------------------------
+# Laufzeitumgebung — EINZIGE Stelle, an der Entwicklung und Produktion
+# unterschieden werden.
+# ---------------------------------------------------------------------------
+# Lokal ohne Angabe: "development" (bequemer HTTP-Betrieb, Dev-Defaults erlaubt).
+# Das Produktions-Image (Dockerfile) setzt AUTO_KI_ENV=production fest.
+#
+# Fail-closed: JEDER andere Wert als "development" gilt als Produktion. Ein
+# Tippfehler ("prod", "Production ") darf nie versehentlich die lockeren
+# Entwicklungsregeln aktivieren.
+ENVIRONMENT = os.environ.get("AUTO_KI_ENV", "development").strip().lower()
+IS_PRODUCTION = ENVIRONMENT != "development"
+
+# Oeffentlich bekannte Entwicklungs-Defaults. Stehen im Code und in der Doku —
+# in Produktion also so gut wie gar kein Secret (siehe validiere_produktion()).
+DEV_API_KEY = "dev-key-change-in-prod"
+DEV_JWT_SECRET = "dev-jwt-secret-change-in-prod"
+
+# Consumer-Key: Kauf-/Verkaufscheck, Chat, AutoFinder, /fahrzeug.
+# ACHTUNG: Das Frontend bettet diesen Key als VITE_API_KEY in das oeffentliche
+# JS-Bundle ein. Er ist damit fuer jeden Besucher lesbar und darf NIEMALS mehr
+# freischalten als die Consumer-Routen.
+API_KEY = os.environ.get("AUTO_KI_API_KEY", DEV_API_KEY).strip()
+
+# Admin-Key: ausschliesslich fuer app/routers/admin.py (Fahrzeugdaten schreiben,
+# LLM-Entwuerfe). Bewusst OHNE Default und OHNE Fallback auf API_KEY: fehlt er,
+# sind die Admin-Endpunkte geschlossen (siehe app/auth.verify_admin_key).
+# Niemals als VITE_-Variable setzen — er gehoert nie ins Frontend.
+ADMIN_API_KEY = os.environ.get("AUTO_KI_ADMIN_API_KEY", "").strip()
+
+# Mindestlaenge fuer Secrets in Produktion (`openssl rand -hex 32` = 64 Zeichen).
+MIN_SECRET_LEN = 32
+
 RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 
 # ---------------------------------------------------------------------------
@@ -125,8 +157,13 @@ LOG_LEVEL = os.environ.get("AUTO_KI_LOG_LEVEL", "INFO").upper()
 
 # --- Auth (Phase 2b) ---
 # In Produktion: langen Zufalls-String setzen, z.B. `openssl rand -hex 32`
-JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", "dev-jwt-secret-change-in-prod")
+JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", DEV_JWT_SECRET).strip()
 JWT_EXPIRE_DAYS = int(os.environ.get("AUTO_KI_JWT_EXPIRE_DAYS", "7"))
+
+# Auth-Cookie nur ueber HTTPS senden. Lokal (http://localhost) wuerde der Browser
+# ein Secure-Cookie verwerfen — deshalb folgt das Flag der Umgebung, nicht einer
+# eigenen Einstellung.
+COOKIE_SECURE = IS_PRODUCTION
 
 # CORS-Origins die Cookies senden dürfen (komma-getrennt in Env-Var)
 # WICHTIG: "null" NICHT aufnehmen — Browser senden Origin: null aus sandboxed
@@ -145,7 +182,9 @@ CORS_IS_DEFAULT: bool = "AUTO_KI_CORS_ORIGINS" not in os.environ
 # Testmodus-Keys unter https://dashboard.stripe.com/test/apikeys
 # Webhook-Secret via: stripe listen --forward-to localhost:8000/api/v1/payments/webhook
 STRIPE_SECRET_KEY       = os.environ.get("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# .strip(): ein nur aus Leerzeichen bestehender Wert ist KEIN Secret. Leer heisst
+# fuer den Webhook: geschlossen (siehe payments.stripe_webhook).
+STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_PRICE_LIGHT      = os.environ.get("STRIPE_PRICE_LIGHT", "")       # price_xxx
 STRIPE_PRICE_PRO        = os.environ.get("STRIPE_PRICE_PRO", "")         # price_xxx
 STRIPE_PRICE_MAX        = os.environ.get("STRIPE_PRICE_MAX", "")         # price_xxx
@@ -206,3 +245,59 @@ _ROH_MARKET_SOURCES = os.environ.get("AUTO_KI_ALLOWED_MARKET_SOURCES", "")
 ALLOWED_MARKET_SOURCES = frozenset(
     teil.strip().lower() for teil in _ROH_MARKET_SOURCES.split(",") if teil.strip()
 )
+
+
+# ---------------------------------------------------------------------------
+# Produktions-Startpruefung
+# ---------------------------------------------------------------------------
+def produktions_fehler(
+    *,
+    is_production: bool | None = None,
+    jwt_secret: str | None = None,
+    api_key: str | None = None,
+    admin_api_key: str | None = None,
+    webhook_secret: str | None = None,
+) -> list[str]:
+    """Liste der Konfigurationsfehler, mit denen Produktion NICHT starten darf.
+
+    Leer = startbereit. In Entwicklung immer leer (Dev-Defaults sind dort
+    gewollt). Parameter nur fuer Tests; ohne Angabe gelten die Modulwerte.
+    Die Meldungen nennen nur Variablennamen, NIE Werte.
+    """
+    is_production = IS_PRODUCTION if is_production is None else is_production
+    if not is_production:
+        return []
+    jwt_secret = JWT_SECRET if jwt_secret is None else jwt_secret.strip()
+    api_key = API_KEY if api_key is None else api_key.strip()
+    admin_api_key = ADMIN_API_KEY if admin_api_key is None else admin_api_key.strip()
+    webhook_secret = STRIPE_WEBHOOK_SECRET if webhook_secret is None else webhook_secret.strip()
+
+    fehler: list[str] = []
+    if not jwt_secret or jwt_secret == DEV_JWT_SECRET or len(jwt_secret) < MIN_SECRET_LEN:
+        fehler.append(f"AUTO_KI_JWT_SECRET fehlt, ist der Dev-Default oder kuerzer als {MIN_SECRET_LEN} Zeichen.")
+    if not api_key or api_key == DEV_API_KEY:
+        fehler.append("AUTO_KI_API_KEY fehlt oder ist der Dev-Default.")
+    if jwt_secret and jwt_secret == api_key:
+        # Der Consumer-Key steht im Frontend-Bundle — als JWT-Secret koennte
+        # damit jeder Login-Tokens faelschen.
+        fehler.append("AUTO_KI_JWT_SECRET darf nicht gleich AUTO_KI_API_KEY sein.")
+    if not webhook_secret:
+        fehler.append("STRIPE_WEBHOOK_SECRET fehlt — Zahlungen koennten nicht verifiziert werden.")
+    # Admin-Key fehlt = Admin geschlossen, das ist ein zulaessiger Zustand.
+    # Ist er gesetzt, muss er aber ein echtes, eigenes Secret sein.
+    if admin_api_key:
+        if admin_api_key == api_key:
+            fehler.append("AUTO_KI_ADMIN_API_KEY darf nicht gleich AUTO_KI_API_KEY sein (der steht im Frontend).")
+        if admin_api_key == DEV_API_KEY or len(admin_api_key) < MIN_SECRET_LEN:
+            fehler.append(f"AUTO_KI_ADMIN_API_KEY ist der Dev-Default oder kuerzer als {MIN_SECRET_LEN} Zeichen.")
+    return fehler
+
+
+def validiere_produktion() -> None:
+    """Bricht den Start ab, wenn Produktion unsicher konfiguriert ist."""
+    fehler = produktions_fehler()
+    if fehler:
+        raise RuntimeError(
+            "Unsichere Produktionskonfiguration (AUTO_KI_ENV=%s) — Start verweigert:\n  - %s"
+            % (ENVIRONMENT, "\n  - ".join(fehler))
+        )

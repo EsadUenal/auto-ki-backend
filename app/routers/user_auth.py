@@ -17,7 +17,7 @@ from pydantic import BaseModel, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from app.config import JWT_EXPIRE_DAYS, JWT_SECRET
+from app.config import COOKIE_SECURE, JWT_EXPIRE_DAYS, JWT_SECRET
 from app.database import get_conn
 from app.einwilligung import require_agb, record as record_einwilligung, ART_AGB
 from app.entitlements import has_dealer_access
@@ -42,7 +42,9 @@ COOKIE_NAME = "auth_token"
 COOKIE_OPTS = dict(
     httponly=True,
     samesite="lax",
-    secure=False,   # True setzen sobald HTTPS aktiv ist
+    # Produktion: nur ueber HTTPS (Secure). Lokal ueber http://localhost False,
+    # sonst verwirft der Browser den Cookie. Quelle: app.config.COOKIE_SECURE.
+    secure=COOKIE_SECURE,
     path="/",
 )
 

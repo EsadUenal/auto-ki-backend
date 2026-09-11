@@ -71,19 +71,22 @@ if '_hat_laufendes_abo(customer_id)' not in _src:
 else:
     print("[OK] Guard wird in create_checkout_session aufgerufen")
 
-# Der Guard muss im Abo-Zweig VOR der Session-Erzeugung stehen und darf den
-# Einzelkauf-Zweig (mode='payment') nicht betreffen.
-_abo_teil = _src.split('elif body.typ == "einzelkauf"')[0]
-if '_hat_laufendes_abo' in _abo_teil and 'mode="subscription"' in _abo_teil:
-    print("[OK] Guard steht im Abo-Zweig (mode=subscription)")
+# Security Fix Block 1: Legacy-Abos ("abo") und "einzelkauf" sind nicht mehr
+# kaufbar. Das einzige Abo ist Plus — der Guard muss dort VOR der Session-
+# Erzeugung stehen und darf den Check-Zweig (Einmalkauf, mode='payment') nicht
+# betreffen.
+_check_teil, _plus_teil = _src.split('elif body.typ == "plus"')
+_plus_teil = _plus_teil.split("else:")[0]
+if ('_hat_laufendes_abo' in _plus_teil and 'mode="subscription"' in _plus_teil
+        and _plus_teil.index('_hat_laufendes_abo') < _plus_teil.index('Session.create')):
+    print("[OK] Guard steht im Plus-Zweig vor der Session-Erzeugung (mode=subscription)")
 else:
-    FEHLER.append("[FEHLER] Guard nicht korrekt im Abo-Zweig platziert")
+    FEHLER.append("[FEHLER] Guard nicht korrekt im Plus-Zweig platziert")
 
-_einzel_teil = _src.split('elif body.typ == "einzelkauf"')[-1]
-if '_hat_laufendes_abo' in _einzel_teil:
-    FEHLER.append("[FEHLER] Guard betrifft faelschlich den Einzelkauf-Zweig")
+if '_hat_laufendes_abo' in _check_teil.split('if body.typ == "check"')[-1]:
+    FEHLER.append("[FEHLER] Guard betrifft faelschlich den Check-Zweig (Einmalkauf)")
 else:
-    print("[OK] Einzelkauf-Zweig unberührt")
+    print("[OK] Check-Zweig (Einmalkauf) unberührt")
 
 
 # ── Ergebnis ───────────────────────────────────────────────────────────────────

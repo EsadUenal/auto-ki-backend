@@ -11,7 +11,11 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL, DB_BACKUP_INTERVAL_SECONDS
+from app.config import (
+    RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL,
+    DB_BACKUP_INTERVAL_SECONDS, DEV_API_KEY, DEV_JWT_SECRET, ADMIN_API_KEY,
+    STRIPE_WEBHOOK_SECRET, validiere_produktion,
+)
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage, dealer, autofinder
@@ -168,6 +172,9 @@ async def _periodic_backup_loop() -> None:
 @app.on_event("startup")
 def on_startup() -> None:
     """Tabellen anlegen (idempotent) + ChromaDB vorladen."""
+    # ZUERST: Produktion mit bekannten/leeren Secrets startet nicht (fail-closed).
+    # Wirft RuntimeError -> uvicorn bricht mit "Application startup failed" ab.
+    validiere_produktion()
     ensure_tables()
     warmup_chroma()
     _warn_if_insecure_defaults()
@@ -189,14 +196,24 @@ async def on_shutdown() -> None:
 def _warn_if_insecure_defaults() -> None:
     """Lautes Log-Signal beim Start, falls sicherheitskritische Secrets noch auf
     dem Entwicklungs-Default stehen — leicht zu übersehen vor einem Public-Launch,
-    da die App damit anstandslos weiterläuft (fail-open)."""
-    if API_KEY == "dev-key-change-in-prod":
+    da die App damit anstandslos weiterläuft. In Produktion greift vorher
+    validiere_produktion() und verweigert den Start; hier bleibt es für die
+    lokale Entwicklung bei Hinweisen."""
+    if API_KEY == DEV_API_KEY:
         log.warning(
-            "!!! AUTO_KI_API_KEY ist nicht gesetzt — Admin-/Fahrzeug-Endpunkte "
-            "verwenden den öffentlich bekannten Dev-Default. Vor Launch per "
-            "Umgebungsvariable AUTO_KI_API_KEY setzen. !!!"
+            "!!! AUTO_KI_API_KEY ist nicht gesetzt — Consumer-Endpunkte "
+            "verwenden den öffentlich bekannten Dev-Default. !!!"
         )
-    if JWT_SECRET == "dev-jwt-secret-change-in-prod":
+    if not ADMIN_API_KEY:
+        log.warning(
+            "AUTO_KI_ADMIN_API_KEY ist nicht gesetzt — Admin-Endpunkte sind geschlossen."
+        )
+    if not STRIPE_WEBHOOK_SECRET:
+        log.warning(
+            "!!! STRIPE_WEBHOOK_SECRET ist nicht gesetzt — der Stripe-Webhook lehnt "
+            "jedes Event ab (keine Freischaltung über Webhooks). !!!"
+        )
+    if JWT_SECRET == DEV_JWT_SECRET:
         log.warning(
             "!!! AUTO_KI_JWT_SECRET ist nicht gesetzt — Login-Tokens verwenden "
             "den öffentlich bekannten Dev-Default und können von JEDEM gefälscht "

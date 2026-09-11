@@ -34,18 +34,23 @@ Unter **Variables** setzen (siehe `.env.example` für die vollständige Liste).
 | Variable | Wert |
 |----------|------|
 | `AUTO_KI_JWT_SECRET` | langer Zufalls-String (`openssl rand -hex 32`) |
-| `AUTO_KI_API_KEY` | langer Zufalls-String (anderer als JWT) |
+| `AUTO_KI_ENV` | `production` (im Dockerfile bereits gesetzt — nicht überschreiben) |
+| `AUTO_KI_API_KEY` | langer Zufalls-String (anderer als JWT). **Öffentlich:** steht als `VITE_API_KEY` im Frontend-Bundle, schützt nur Consumer-Routen |
+| `AUTO_KI_ADMIN_API_KEY` | optional; eigener Zufalls-String ≥ 32 Zeichen, NIE im Frontend. Ohne ihn sind die Admin-Endpunkte geschlossen |
 | `AUTO_KI_CORS_ORIGINS` | echte Frontend-Domain, z.B. `https://vira.de` |
 | `GEMINI_API_KEY` | Google-Gemini-Key |
 | `TAVILY_API_KEY` | Tavily-Key |
 | `STRIPE_SECRET_KEY` | **Live**-Key `sk_live_...` |
 | `STRIPE_WEBHOOK_SECRET` | aus dem **Prod**-Webhook (siehe 1.5) |
-| `STRIPE_PRICE_LIGHT/PRO/MAX/EINZELKAUF` | Live-Price-IDs |
+| `STRIPE_PRICE_KAUFCHECK/VERKAUFSCHECK/PLUS` | Live-Price-IDs (5,99 € / 8,99 € / 16,99 € mtl.) |
 | `FRONTEND_URL` | echte Frontend-URL (Stripe-Redirects) |
 
-Ohne `AUTO_KI_JWT_SECRET`/`AUTO_KI_API_KEY` startet die App zwar, warnt aber laut
-im Log und nutzt öffentlich bekannte Dev-Defaults → Tokens fälschbar. Nicht launchen,
-bevor beide gesetzt sind.
+Mit `AUTO_KI_ENV=production` **verweigert die App den Start** (`app/config.py`
+`validiere_produktion()`), wenn `AUTO_KI_JWT_SECRET` fehlt/Dev-Default/kürzer als
+32 Zeichen ist, `AUTO_KI_API_KEY` fehlt/Dev-Default ist, beide gleich sind,
+`STRIPE_WEBHOOK_SECRET` fehlt oder ein gesetzter `AUTO_KI_ADMIN_API_KEY` schwach
+oder gleich dem Consumer-Key ist. Das Auth-Cookie ist in Produktion `Secure`.
+LIGHT/PRO/MAX/EINZELKAUF werden nicht mehr verkauft — keine Price-IDs dafür setzen.
 
 ### 1.4 ⚠️ Daten-Seeding (PFLICHT — sonst leere Wissensdatenbank)
 Ein frisches Volume ist leer. `ensure_tables()` legt beim Start nur die **leeren**
@@ -90,7 +95,8 @@ für react-router-dom `BrowserRouter` und Security-Headern).
 3. **Build Args setzen** (Service → Settings → Build) — Vite bettet diese zur
    BUILD-Zeit ins JS-Bundle ein, NICHT zur Laufzeit:
    - `VITE_API_BASE_URL=https://<railway-backend-domain>`
-   - `VITE_API_KEY=<AUTO_KI_API_KEY>` (identisch zum Backend)
+   - `VITE_API_KEY=<AUTO_KI_API_KEY>` (identisch zum Backend — öffentlich lesbar;
+     NIEMALS `AUTO_KI_ADMIN_API_KEY` als Build-Arg setzen)
    Ändert sich einer der beiden Werte später, reicht ein Redeploy NICHT —
    das Image muss neu gebaut werden (Build Args wirken nur beim Build).
 4. Nach dem Deploy die Frontend-Domain in Backend-`AUTO_KI_CORS_ORIGINS`

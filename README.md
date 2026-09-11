@@ -67,7 +67,9 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/v1/chat" -Method POST -Headers
 | Variable | Default | Beschreibung |
 |----------|---------|--------------|
 | `GEMINI_API_KEY` | — | Pflicht für `/chat` |
-| `AUTO_KI_API_KEY` | `dev-key-change-in-prod` | API-Schlüssel für alle Endpunkte |
+| `AUTO_KI_ENV` | `development` | `production` = Startprüfung der Secrets + `Secure`-Cookie (Dockerfile setzt es) |
+| `AUTO_KI_API_KEY` | `dev-key-change-in-prod` | Consumer-Schlüssel (steht im Frontend-Bundle, kein Admin-Zugang) |
+| `AUTO_KI_ADMIN_API_KEY` | — (Admin geschlossen) | Eigener Schlüssel nur für `/api/v1/admin/*` |
 | `AUTO_KI_RATE_LIMIT` | `20/minute` | Rate-Limit für `/chat` |
 | `AUTO_KI_LLM_MODEL` | `gemini-2.5-flash` | Gemini-Modell |
 

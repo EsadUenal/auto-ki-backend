@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from google.genai.errors import ServerError
 
-from app.auth import verify_api_key
+from app.auth import verify_admin_key
 from app.admin_llm import entwurf_erstellen, entwurf_stream, generationen_auflisten, luecken_entwurf_erstellen
 from app.db_writer import save_fahrzeug, patch_luecken
 from app.database import get_conn, invalidate_referenzdaten_cache
@@ -180,7 +180,7 @@ def _llm_error(exc: Exception) -> HTTPException:
 
 @router.post("/entwurf", summary="LLM erstellt Schema-Entwurf — vollständig (non-streaming)")
 async def entwurf(body: EntwurfRequest, request: Request):
-    verify_api_key(request)
+    verify_admin_key(request)
     try:
         data = await entwurf_erstellen(body.marke, body.modell, body.generation)
     except Exception as e:
@@ -196,7 +196,7 @@ async def _sse_entwurf(marke: str, modell: str, generation: str):
 
 @router.post("/entwurf-stream", summary="LLM erstellt Schema-Entwurf — SSE-Streaming")
 async def entwurf_stream_endpoint(body: EntwurfRequest, request: Request):
-    verify_api_key(request)
+    verify_admin_key(request)
     return StreamingResponse(
         _sse_entwurf(body.marke, body.modell, body.generation),
         media_type="text/event-stream",
@@ -206,7 +206,7 @@ async def entwurf_stream_endpoint(body: EntwurfRequest, request: Request):
 
 @router.post("/batch", summary="LLM listet Generationen auf (Batch-Vorbereitung)")
 async def batch(body: BatchRequest, request: Request):
-    verify_api_key(request)
+    verify_admin_key(request)
     try:
         generationen = await generationen_auflisten(body.anfrage)
     except Exception as e:
@@ -216,7 +216,7 @@ async def batch(body: BatchRequest, request: Request):
 
 @router.post("/speichern", summary="Geprüftes JSON in SQLite + ChromaDB schreiben")
 async def speichern(body: SpeichernRequest, request: Request):
-    verify_api_key(request)
+    verify_admin_key(request)
 
     daten = body.daten
     if not all(k in daten for k in ("marke", "modell", "generation")):
@@ -257,7 +257,7 @@ async def luecken_entwurf(body: LueckenEntwurfRequest, request: Request):
     3. Lässt Gemini nur diese Felder als Entwurf generieren — keine bestehenden Daten berührt.
     4. Gibt Entwurf zurück zur Prüfung. Speichern erst via /admin/luecken-speichern.
     """
-    verify_api_key(request)
+    verify_admin_key(request)
 
     # Baureihe aus DB lesen — tolerante Suche (VW=Volkswagen, 8=VIII, Groß/Klein egal)
     with get_conn() as conn:
@@ -335,7 +335,7 @@ async def luecken_speichern(body: LueckenSpeichernRequest, request: Request):
 
     Erlaubte Felder in `daten`: kaufberatung, schwachstellen_baureihe, rueckrufe.
     """
-    verify_api_key(request)
+    verify_admin_key(request)
 
     # Sicherstellen, dass die Baureihe existiert
     with get_conn() as conn:

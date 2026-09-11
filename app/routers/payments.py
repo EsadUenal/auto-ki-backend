@@ -23,13 +23,9 @@ from app import plus as plus_modul
 from app.check_gate import gutschrift, kontingente
 from app.config import (
     FRONTEND_URL,
-    STRIPE_PRICE_EINZELKAUF,
     STRIPE_PRICE_KAUFCHECK,
     STRIPE_PRICE_PLUS,
     STRIPE_PRICE_VERKAUFSCHECK,
-    STRIPE_PRICE_LIGHT,
-    STRIPE_PRICE_MAX,
-    STRIPE_PRICE_PRO,
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
 )
@@ -60,12 +56,15 @@ _CHECK_PRICE = {
     "verkaufscheck": lambda: STRIPE_PRICE_VERKAUFSCHECK,
 }
 
-_ABO_PRICE = {
-    "light": lambda: STRIPE_PRICE_LIGHT,
-    "pro":   lambda: STRIPE_PRICE_PRO,
-    "max":   lambda: STRIPE_PRICE_MAX,
-}
+# Einzige Checkout-Typen, fuer die NEUE Sessions angelegt werden: das aktuelle
+# Consumer-Angebot (KaufCheck, VerkaufsCheck, Plus). Die Legacy-Produkte
+# light/pro/max ("abo") und der generische "einzelkauf" werden nicht mehr
+# verkauft — auch nicht per direktem API-Aufruf. Bestehende Legacy-Kunden
+# behalten ihre Rechte: Renewal, Kuendigung und Webhook-Verarbeitung ihrer
+# laufenden Abos bleiben unveraendert (siehe _verarbeite_event).
+_NEU_KAUFBAR = ("check", "plus")
 
+# Legacy light/pro: monatliche Kontingente laufender Bestandsabos (invoice.paid).
 _ABO_CHECKS = {
     "light": 3,
     "pro":   10,
@@ -82,9 +81,9 @@ _ABO_ERSATZTEIL_SUCHEN = {
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class CheckoutBody(BaseModel):
-    typ: str                        # "check" | "plus" | "abo" | "einzelkauf"
+    typ: str                        # "check" | "plus" (siehe _NEU_KAUFBAR)
     produkt: str | None = None      # "kaufcheck" | "verkaufscheck" (nur bei typ=="check")
-    abo_typ: str | None = None      # "light" | "pro" | "max" (nur bei typ=="abo")
+    abo_typ: str | None = None      # Legacy-Feld, wird ignoriert (Abos light/pro/max nicht mehr kaufbar)
     agb_akzeptiert: bool = False    # AGB + Datenschutz — Pflicht bei jedem Kauf
     widerruf_verzicht: bool = False # Zustimmung zur sofortigen Ausführung (digitaler Kauf)
 
@@ -218,6 +217,15 @@ def create_checkout_session(
     # AGB/Datenschutz bei jedem Kauf, Widerrufs-Verzicht bei jedem digitalen Kauf.
     require_agb(body.agb_akzeptiert)
     require_widerruf_verzicht(body.widerruf_verzicht)
+    # Nur das aktuelle Angebot ist neu kaufbar. Die Pruefung steht VOR jedem
+    # Stripe-Aufruf: fuer ein nicht verkauftes Produkt wird weder ein Kunde noch
+    # eine Session angelegt noch eine Einwilligung protokolliert.
+    if body.typ not in _NEU_KAUFBAR:
+        raise HTTPException(
+            status_code=400,
+            detail={"fehler": {"code": "produkt_nicht_verfuegbar",
+                               "nachricht": "Dieses Produkt ist nicht erhältlich."}},
+        )
     customer_id = _get_or_create_customer(user_id)
     # Nach dem Kauf kehrt der Kunde dorthin zurueck, wo er den Kauf begonnen hat:
     # bei einem Check auf die jeweilige Check-Seite (der Kontext dort ist noch
@@ -229,44 +237,7 @@ def create_checkout_session(
     success_url = f"{FRONTEND_URL}{ziel}?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url  = f"{FRONTEND_URL}{ziel}?payment=cancelled"
 
-    if body.typ == "abo":
-        if not body.abo_typ or body.abo_typ not in _ABO_PRICE:
-            raise HTTPException(
-                status_code=400,
-                detail={"fehler": {"code": "bad_request", "nachricht": "Unbekanntes Abo-Typ."}},
-            )
-        price_id = _ABO_PRICE[body.abo_typ]()
-        if not price_id:
-            raise HTTPException(
-                status_code=500,
-                detail={"fehler": {"code": "konfiguration", "nachricht": "Stripe-Preis nicht konfiguriert."}},
-            )
-
-        # ── Launch-Sicherung gegen parallele Abos ───────────────────────────────
-        # Besitzt der Kunde bereits ein laufendes Abo (active/trialing, inkl. per
-        # cancel_at_period_end gekündigt aber noch aktiv), wird KEINE weitere
-        # Checkout-Session erstellt und KEIN zweites Stripe-Abo erzeugt.
-        # Bewusst KEINE Upgrade-/Downgrade-/Proration-Logik — nur die sichere
-        # Verhinderung mehrerer gleichzeitiger Abonnements.
-        if _hat_laufendes_abo(customer_id):
-            raise HTTPException(
-                status_code=409,
-                detail={"fehler": {"code": "abo_bereits_aktiv",
-                                   "nachricht": "Du besitzt bereits ein aktives Abonnement. "
-                                                "Bitte verwalte oder kündige dieses zuerst."}},
-            )
-
-        session = stripe.checkout.Session.create(
-            customer=customer_id,
-            payment_method_types=["card"],
-            mode="subscription",
-            line_items=[{"price": price_id, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata={"user_id": str(user_id), "typ": "abo", "abo_typ": body.abo_typ},
-        )
-
-    elif body.typ == "check":
+    if body.typ == "check":
         # Consumer V1: getrennte Einmalprodukte. Nur bekannte Schluessel sind
         # kaufbar; alles andere wird abgelehnt, statt auf irgendein Produkt
         # zurueckzufallen.
@@ -324,23 +295,6 @@ def create_checkout_session(
             subscription_data={"metadata": {"user_id": str(user_id), "typ": "plus"}},
         )
 
-    elif body.typ == "einzelkauf":
-        if not STRIPE_PRICE_EINZELKAUF:
-            raise HTTPException(
-                status_code=500,
-                detail={"fehler": {"code": "konfiguration", "nachricht": "Stripe-Preis nicht konfiguriert."}},
-            )
-
-        session = stripe.checkout.Session.create(
-            customer=customer_id,
-            payment_method_types=["card"],
-            mode="payment",
-            line_items=[{"price": STRIPE_PRICE_EINZELKAUF, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata={"user_id": str(user_id), "typ": "einzelkauf"},
-        )
-
     else:
         raise HTTPException(
             status_code=400,
@@ -348,14 +302,7 @@ def create_checkout_session(
         )
 
     # Nachweis der Zustimmungen für diesen Kauf festhalten.
-    if body.typ == "abo":
-        kontext = f"abo:{body.abo_typ}"
-    elif body.typ == "check":
-        kontext = f"check:{body.produkt}"
-    elif body.typ == "plus":
-        kontext = "plus"
-    else:
-        kontext = "einzelkauf"
+    kontext = f"check:{body.produkt}" if body.typ == "check" else "plus"
     record_einwilligung(user_id, ART_AGB, kontext)
     record_einwilligung(user_id, ART_WIDERRUF, kontext)
 
@@ -370,11 +317,25 @@ async def stripe_webhook(request: Request):
     Stripe-Webhook — einziger Weg zur Freischaltung.
     Verarbeitet: checkout.session.completed, invoice.paid, customer.subscription.deleted
     """
+    # Fail-closed: Stripe prueft die Signatur mit HMAC-SHA256 ueber das Secret.
+    # Bei leerem Secret kann JEDER eine "gueltige" Signatur selbst berechnen und
+    # damit Zahlungen vortaeuschen. Ohne Secret wird deshalb gar nichts
+    # verarbeitet. 503 statt 400: Stripe stellt das Event spaeter erneut zu,
+    # sobald das Secret konfiguriert ist — echte Zahlungen gehen nicht verloren.
+    webhook_secret = (STRIPE_WEBHOOK_SECRET or "").strip()
+    if not webhook_secret:
+        log.error("Stripe-Webhook abgelehnt: STRIPE_WEBHOOK_SECRET ist nicht gesetzt.")
+        raise HTTPException(
+            status_code=503,
+            detail={"fehler": {"code": "webhook_nicht_konfiguriert",
+                               "nachricht": "Webhook nicht konfiguriert."}},
+        )
+
     payload    = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
     except Exception:
         raise HTTPException(status_code=400, detail="Ungültige Webhook-Signatur")
 

@@ -30,8 +30,12 @@ RUN useradd -m -u 10001 appuser \
     && chown -R appuser:appuser /app /data
 USER appuser
 
+# AUTO_KI_ENV=production: Startpruefung der Secrets (app/config.py
+# validiere_produktion) + Secure-Auth-Cookie. Fest im Image, damit ein
+# vergessener Railway-Wert nie zu den lockeren Entwicklungsregeln fuehrt.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    AUTO_KI_ENV=production \
     AUTO_KI_DB_PATH=/data/auto_ki.db \
     AUTO_KI_CHROMA_PATH=/data/chroma \
     AUTO_KI_DB_BACKUP_DIR=/data/backups

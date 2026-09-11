@@ -17,7 +17,7 @@ operativ noch nicht gesetzt ist. Der Code liest alle Stripe-Werte aus Env
 |---|---|
 | Secret Key | `sk_test_…` → **Testmodus** |
 | Webhook-Secret | `whsec_…` aus lokalem `stripe listen` (kein Prod-Endpoint-Secret) |
-| Price-IDs LIGHT/PRO/MAX/EINZELKAUF | Test-Mode-Preise (`price_…`, im Testmodus erzeugt) |
+| Price-IDs LIGHT/PRO/MAX/EINZELKAUF | **nicht mehr verkauft** — `/payments/checkout-session` lehnt `abo`/`einzelkauf` ab (Security Fix Block 1). Keine Live-Price-IDs anlegen. |
 | Price-IDs KAUFCHECK/VERKAUFSCHECK | Test-Mode-Preise (Consumer V1 FINAL: 5,99 € / 8,99 €, je einmalig) |
 | Price-ID PLUS | Test-Mode-Preis (Consumer V1 FINAL: 16,99 €, **recurring monatlich**) |
 | `FRONTEND_URL` | `http://localhost:3000` → Success/Cancel-Redirects zeigen auf localhost |
@@ -48,7 +48,10 @@ nicht mehr nötig und muss auch nicht wieder eingebaut werden.
 - **Freischaltung ausschließlich per signaturgeprüftem Webhook** — nie über die
   Redirect-URL (`payments.py`, `checkout.session.completed`).
 - **Webhook-Signatur** via `stripe.Webhook.construct_event` gegen
-  `STRIPE_WEBHOOK_SECRET`.
+  `STRIPE_WEBHOOK_SECRET`. **Fail-closed:** ist das Secret leer oder nur
+  Leerzeichen, lehnt der Webhook jedes Event mit 503 ab (sonst liesse sich eine
+  Signatur mit leerem Schluessel selbst berechnen). In Produktion
+  (`AUTO_KI_ENV=production`) startet die App ohne Secret gar nicht.
 - **Idempotenz race-sicher**: `INSERT OR IGNORE INTO stripe_events` beansprucht
   das Event atomar; bei Verarbeitungsfehler wird der Claim zurückgerollt, damit
   Stripes Retry das Event tatsächlich erneut verarbeitet (keine doppelten
@@ -63,7 +66,11 @@ nicht mehr nötig und muss auch nicht wieder eingebaut werden.
 ## Go-Live-Blocker (operativ — nur der Betreiber kann sie setzen)
 
 1. **Live-Keys**: `STRIPE_SECRET_KEY=sk_live_…` + im Stripe-Live-Modus erzeugte
-   **Live-Price-IDs** für LIGHT/PRO/MAX/EINZELKAUF.
+   **Live-Price-IDs** ausschliesslich für das aktuelle Angebot:
+   `STRIPE_PRICE_KAUFCHECK` (5,99 €, einmalig), `STRIPE_PRICE_VERKAUFSCHECK`
+   (8,99 €, einmalig), `STRIPE_PRICE_PLUS` (16,99 €, recurring monatlich).
+   LIGHT/PRO/MAX/EINZELKAUF werden **nicht** mehr verkauft — dafür keine
+   Live-Preise anlegen und keine Price-IDs setzen.
 2. **Prod-Webhook**: Endpoint im Live-Dashboard anlegen
    (`https://<domain>/api/v1/payments/webhook`), Events
    `checkout.session.completed`, `invoice.paid`,
@@ -76,7 +83,10 @@ nicht mehr nötig und muss auch nicht wieder eingebaut werden.
 ## Code-Level-Risiken (vor/mit Go-Live prüfen — bewusst NICHT im Rahmen dieses
 Audits geändert, da Feature-/Verhaltensänderung mit Regressionsrisiko)
 
-1. **Upgrade/Downgrade erzeugt eine zweite Subscription (Doppelabbuchung).**
+1. ~~**Upgrade/Downgrade erzeugt eine zweite Subscription (Doppelabbuchung).**~~
+   **Erledigt:** Legacy-Abos (`typ="abo"`) sind nicht mehr kaufbar; Plus
+   blockiert per `_hat_laufendes_abo` jeden zweiten Abschluss (409). Historischer
+   Befund zur Einordnung:
    `create_checkout_session` legt für `typ="abo"` immer eine **neue**
    Subscription an (`mode="subscription"`) und kündigt eine bestehende **nicht**.
    Wechselt ein Nutzer mit aktivem Abo den Plan (die Pricing-UI lässt jeden
@@ -120,18 +130,18 @@ Audits geändert, da Feature-/Verhaltensänderung mit Regressionsrisiko)
 | Go-Live-Check | Status |
 |---|---|
 | Stripe Live Keys (`sk_live_…`) | ❌ noch `sk_test_…` |
-| Live-Price-IDs (LIGHT/PRO/MAX/EINZELKAUF) | ❌ Test-Preise |
+| Live-Price-IDs (LIGHT/PRO/MAX/EINZELKAUF) | ✅ entfällt — nicht mehr verkauft |
 | Live-Price-IDs (KAUFCHECK/VERKAUFSCHECK) | ❌ Test-Preise |
 | Live-Price-ID (PLUS, recurring monatlich) | ❌ Test-Preis |
 | Prod-Webhook-Endpoint + `whsec_…` | ❌ lokales `stripe listen`-Secret |
 | `FRONTEND_URL` = echte Domain | ❌ `http://localhost:3000` |
 | Frontend „Testmodus"-Hinweis | ✅ entfällt (Stripe-Sandbox-Kennzeichnung genügt) |
-| Checkout-Session (Abo + Einzelkauf) | ✅ korrekt |
+| Checkout-Session (Legacy Abo + Einzelkauf) | ✅ geschlossen (400 `produkt_nicht_verfuegbar`) |
 | Checkout-Session (KaufCheck/VerkaufsCheck, typgebunden) | ✅ korrekt |
-| Webhook-Signaturprüfung | ✅ korrekt |
+| Webhook-Signaturprüfung | ✅ korrekt, fail-closed ohne Secret |
 | Webhook-Idempotenz / keine Doppel-Credits | ✅ korrekt (race-sicher, retry-fähig) |
 | Credits-Vergabe + Monatsreset | ✅ korrekt |
 | Kündigung (period-end) | ✅ korrekt |
-| Upgrade/Downgrade ohne Doppelabo | ❌ offen (siehe Risiko 1) |
+| Upgrade/Downgrade ohne Doppelabo | ✅ kein Planwechsel mehr möglich; Plus-Doppelabo blockiert |
 | Refund/Dispute/Zahlungsausfall-Handling | ❌ nicht implementiert (bewusste Entscheidung) |
 | **Live Ready** | **❌ NEIN — Testmodus, operative Live-Config offen** |

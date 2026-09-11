@@ -12,7 +12,12 @@ Daten vor Zahlungen vor Traffic).
       sind SQLite + ChromaDB + Backups nach jedem Redeploy weg).
 - [ ] Environment-Variablen setzen:
   - [ ] `AUTO_KI_JWT_SECRET` — `openssl rand -hex 32`
-  - [ ] `AUTO_KI_API_KEY` — `openssl rand -hex 32` (anderer Wert als JWT-Secret)
+  - [ ] `AUTO_KI_API_KEY` — `openssl rand -hex 32` (anderer Wert als JWT-Secret;
+        öffentlich, landet als `VITE_API_KEY` im Frontend)
+  - [ ] `AUTO_KI_ADMIN_API_KEY` — nur falls Admin-Endpunkte gebraucht werden:
+        eigenes `openssl rand -hex 32`, NIE ins Frontend. Ohne Wert: Admin geschlossen.
+  - [ ] `AUTO_KI_ENV=production` bleibt aus dem Dockerfile aktiv (Startprüfung +
+        `Secure`-Cookie) — nicht überschreiben.
   - [ ] `AUTO_KI_CORS_ORIGINS` — echte Frontend-Domain(s), z. B.
         `https://vira.de,https://www.vira.de`
   - [ ] `AUTO_KI_DB_PATH=/data/auto_ki.db` (im Dockerfile bereits Default)
@@ -67,12 +72,14 @@ Daten vor Zahlungen vor Traffic).
 ## 6. Stripe Live
 
 - [ ] Stripe-Dashboard auf **Live-Modus** umschalten.
-- [ ] Live-Produkte + -Preise anlegen (LIGHT/PRO/MAX/Einzelkauf) — Live-
-      Price-IDs unterscheiden sich von den Test-IDs.
+- [ ] Live-Produkte + -Preise anlegen: KaufCheck 5,99 € (einmalig),
+      VerkaufsCheck 8,99 € (einmalig), Plus 16,99 € (monatlich) — Live-
+      Price-IDs unterscheiden sich von den Test-IDs. LIGHT/PRO/MAX/Einzelkauf
+      werden nicht mehr verkauft und bekommen KEINE Live-Preise.
 - [ ] Env-Variablen in Railway auf Live-Werte umstellen:
   - [ ] `STRIPE_SECRET_KEY` = `sk_live_...`
-  - [ ] `STRIPE_PRICE_LIGHT` / `STRIPE_PRICE_PRO` / `STRIPE_PRICE_MAX` /
-        `STRIPE_PRICE_EINZELKAUF` = Live-Price-IDs
+  - [ ] `STRIPE_PRICE_KAUFCHECK` / `STRIPE_PRICE_VERKAUFSCHECK` /
+        `STRIPE_PRICE_PLUS` = Live-Price-IDs
 - [ ] **Stripe-Webhook (Live)**:
   - [ ] Stripe-Dashboard (Live-Modus) → Entwickler → Webhooks → Endpoint
         hinzufügen: `https://<backend-domain>/api/v1/payments/webhook`
