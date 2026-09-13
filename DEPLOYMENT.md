@@ -38,6 +38,7 @@ Unter **Variables** setzen (siehe `.env.example` für die vollständige Liste).
 | `AUTO_KI_API_KEY` | langer Zufalls-String (anderer als JWT). **Öffentlich:** steht als `VITE_API_KEY` im Frontend-Bundle, schützt nur Consumer-Routen |
 | `AUTO_KI_ADMIN_API_KEY` | optional; eigener Zufalls-String ≥ 32 Zeichen, NIE im Frontend. Ohne ihn sind die Admin-Endpunkte geschlossen |
 | `AUTO_KI_CORS_ORIGINS` | echte Frontend-Domain, z.B. `https://vira.de` |
+| `AUTO_KI_TRUSTED_PROXY_HOPS` | `0` bis zur Live-Verifikation (siehe 1.6), danach die belegte Hop-Zahl |
 | `GEMINI_API_KEY` | Google-Gemini-Key |
 | `TAVILY_API_KEY` | Tavily-Key |
 | `STRIPE_SECRET_KEY` | **Live**-Key `sk_live_...` |
@@ -51,6 +52,48 @@ Mit `AUTO_KI_ENV=production` **verweigert die App den Start** (`app/config.py`
 `STRIPE_WEBHOOK_SECRET` fehlt oder ein gesetzter `AUTO_KI_ADMIN_API_KEY` schwach
 oder gleich dem Consumer-Key ist. Das Auth-Cookie ist in Produktion `Secure`.
 LIGHT/PRO/MAX/EINZELKAUF werden nicht mehr verkauft — keine Price-IDs dafür setzen.
+
+### 1.6 Client-IP hinter dem Railway-Proxy (PFLICHT nach dem ersten Deploy)
+
+Rate-Limits, Login-Drosselung und die anonyme AutoFinder-Demo haengen an der
+Client-IP. Hinter einem Proxy ist `request.client.host` dessen Adresse — dann
+teilen sich **alle** Nutzer einen Zaehler und ein Einzelner kann die Limits fuer
+alle verbrauchen.
+
+Die Header-Auswertung ist **standardmaessig aus** (`AUTO_KI_TRUSTED_PROXY_HOPS=0`),
+weil ein frei gesetzter `X-Forwarded-For` sonst jedes Limit aushebeln wuerde.
+Railways offizielle Dokumentation beschreibt Header-Behandlung und Hop-Zahl
+nicht; im Support-Forum widersprechen sich die Angaben (Edge strippt XFF und
+setzt `X-Real-IP` vs. Edge haengt nur an). Deshalb wird hier nichts geraten,
+sondern **einmal live gemessen**:
+
+1. Deployen, Admin-Key setzen (`AUTO_KI_ADMIN_API_KEY`).
+2. Von zwei Geraeten mit verschiedenen oeffentlichen IPs aufrufen:
+   `curl -H "Authorization: Bearer $AUTO_KI_ADMIN_API_KEY" https://<domain>/api/v1/admin/client-ip`
+3. Die Antwort zeigt `gegenstelle`, die eingehenden Header und den aktuell
+   verwendeten `verwendeter_limit_schluessel`.
+   - Steht die echte Client-IP in `x-real-ip`:
+     `AUTO_KI_CLIENT_IP_HEADER=x-real-ip` + `AUTO_KI_TRUSTED_PROXY_HOPS=1`.
+   - Steht sie als letzter Eintrag in `x-forwarded-for`:
+     `AUTO_KI_TRUSTED_PROXY_HOPS=<Anzahl der eigenen Proxys>` (meist 1).
+   - Liegt `gegenstelle` nicht in einem Vertrauensnetz
+     (`gegenstelle_ist_vertrauenswuerdiger_proxy: false`), zuerst
+     `AUTO_KI_TRUSTED_PROXY_NETS` auf das tatsaechliche Proxy-Netz setzen.
+4. Danach den Aufruf wiederholen: `verwendeter_limit_schluessel` muss die echte
+   Client-IP zeigen und sich zwischen den beiden Geraeten unterscheiden.
+5. Gegenprobe gegen Spoofing: mit `-H "X-Forwarded-For: 1.2.3.4"` darf sich der
+   Schluessel **nicht** auf 1.2.3.4 aendern.
+
+Der Server laeuft dafuer bewusst mit `uvicorn --no-proxy-headers` (siehe
+Dockerfile): uvicorn wuerde `X-Forwarded-For` sonst selbst auswerten und
+`request.client` ueberschreiben, sobald die Gegenstelle in seiner eigenen
+Trust-Liste steht — die Entscheidung gehoert an EINE Stelle
+(`AUTO_KI_TRUSTED_PROXY_*`). Wird der Start-Befehl geaendert, muss dieses Flag
+erhalten bleiben.
+
+Solange Schritt 4 nicht bestaetigt ist, bleibt `AUTO_KI_TRUSTED_PROXY_HOPS=0`:
+dann zaehlt weiterhin nur die Proxy-Adresse (geteiltes Limit), aber niemand kann
+seine IP faelschen.
 
 ### 1.4 ⚠️ Daten-Seeding (PFLICHT — sonst leere Wissensdatenbank)
 Ein frisches Volume ist leer. `ensure_tables()` legt beim Start nur die **leeren**

@@ -21,6 +21,10 @@ Daten vor Zahlungen vor Traffic).
   - [ ] `AUTO_KI_CORS_ORIGINS` — echte Frontend-Domain(s), z. B.
         `https://vira.de,https://www.vira.de`
   - [ ] `AUTO_KI_DB_PATH=/data/auto_ki.db` (im Dockerfile bereits Default)
+  - [ ] `AUTO_KI_TRUSTED_PROXY_HOPS` bleibt `0`, bis die Client-IP live gemessen
+        wurde (DEPLOYMENT.md §1.6) — sonst teilen sich alle Nutzer ein Limit.
+- [ ] **Nach dem ersten Deploy**: Client-IP verifizieren (DEPLOYMENT.md §1.6),
+      Hops setzen, Spoofing-Gegenprobe machen.
   - [ ] `AUTO_KI_CHROMA_PATH=/data/chroma` (im Dockerfile bereits Default)
   - [ ] `AUTO_KI_DB_BACKUP_DIR=/data/backups` (im Dockerfile bereits Default)
   - [ ] `AUTO_KI_DB_BACKUP_INTERVAL_SECONDS` — Default 21600 (6h) i.d.R. ok

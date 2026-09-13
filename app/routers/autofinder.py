@@ -54,7 +54,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.client_ip import limit_schluessel
 
 from app.auth import verify_api_key
 from app.usage_limit import require_autofinder_kontingent
@@ -122,7 +122,7 @@ router = APIRouter(default_response_class=UTF8JSONResponse)
 # eigene Decorator bleibt trotzdem stehen (Konsistenz mit dem bestehenden
 # Muster bei KaufCheck/VerkaufsCheck: der Endpunkt dokumentiert sein Limit
 # selbst, statt sich implizit auf die App-weite Middleware zu verlassen).
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=limit_schluessel)
 _AUTOFINDER_RATE_LIMIT = "20/minute"   # bewusst == app.rate_limit.RATE_LIMIT, siehe oben
 
 # §7: Pflicht-Transparenzhinweis — der aktuelle Bestand ist eine VIRA-Vor-

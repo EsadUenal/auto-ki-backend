@@ -36,7 +36,7 @@ import app.verkaufscheck as vc
 import app.routers.kaufcheck as r_kauf
 import app.routers.verkaufscheck as r_verk
 from app.database import get_conn, ensure_tables
-from app.check_gate import CheckZugriff, refund_check_credit
+from app.check_gate import refund_check_credit
 from app.models import KaufCheckRequest, VerkaufsCheckRequest
 
 _FEHLER: list[str] = []
@@ -70,20 +70,11 @@ def credits() -> int:
                             (USER_ID,)).fetchone()["checks_verbleibend"]
 
 
-def dekrementiere() -> None:
-    """Simuliert, was das Check-Gate vor dem Handler bereits getan hat."""
-    with get_conn() as conn:
-        conn.execute("UPDATE users SET checks_verbleibend = checks_verbleibend - 1 "
-                     "WHERE id=?", (USER_ID,))
-
-
-def zugriff(typ: str) -> CheckZugriff:
-    """Das Zugriffsobjekt, das die Dependency an den Handler uebergeben haette.
-
-    `quelle` ist hier der generische Legacy-Topf, weil `dekrementiere()` genau
-    aus diesem abzieht — die Rueckerstattung muss also auch dorthin zurueck.
-    """
-    return CheckZugriff(user_id=USER_ID, typ=typ, quelle="checks_verbleibend")
+# Security Block 2 (P1-6): Der Handler entnimmt das Kontingent selbst — erst nach
+# Body-Validierung, Auth und API-Key-Pruefung. Frueher tat das eine Dependency und
+# der Test musste den Abzug vortaeuschen (`dekrementiere()` + `zugriff=...`).
+# Der Testnutzer hat nur den generischen Legacy-Topf gefuellt; dort zieht das Gate
+# ab, und dorthin muss die Rueckerstattung zurueck.
 
 
 # Backoff neutralisieren — sonst laeuft der Test minutenlang.
@@ -179,10 +170,9 @@ zaehler_k = _Aufrufzaehler()
 r_kauf.refund_check_credit = zaehler_k
 orig = _umgebung(kc)
 vorher = credits()
-dekrementiere()
 exc_k = None
 try:
-    asyncio.run(r_kauf.kaufcheck_endpunkt(REQ_K, FakeRequest(), retry=False, zugriff=zugriff('kauf')))
+    asyncio.run(r_kauf.kaufcheck_endpunkt(REQ_K, FakeRequest(), retry=False, user_id=USER_ID))
 except HTTPException as e:
     exc_k = e
 except Exception as e:  # pragma: no cover
@@ -208,10 +198,9 @@ zaehler_v = _Aufrufzaehler()
 r_verk.refund_check_credit = zaehler_v
 orig = _umgebung(vc)
 vorher = credits()
-dekrementiere()
 exc_v = None
 try:
-    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, zugriff=zugriff('verkauf')))
+    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, user_id=USER_ID))
 except HTTPException as e:
     exc_v = e
 except Exception as e:  # pragma: no cover
@@ -250,16 +239,15 @@ async def _gemini_ok(system_prompt, user_msg):
 
 orig = _umgebung(vc)
 vc.call_gemini_json = _gemini_ok
-dekrementiere()
-nach_abzug = credits()
+vor_erfolg = credits()
 ok_erg = None
 try:
     ok_erg = asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False,
-                                                       zugriff=zugriff('verkauf')))
+                                                       user_id=USER_ID))
 finally:
     _zurueck(vc, orig)
 check("G4 erfolgreicher Check loest KEINEN Refund aus", zaehler_ok.n == 0)
-check("G5 Credit bleibt abgezogen (Leistung wurde erbracht)", credits() == nach_abzug)
+check("G5 Credit bleibt abgezogen (Leistung wurde erbracht)", credits() == vor_erfolg - 1)
 check("G6 Erfolgreicher Check liefert eine Antwort", ok_erg is not None)
 
 
@@ -275,17 +263,22 @@ zaehler_500 = _Aufrufzaehler()
 r_verk.refund_check_credit = zaehler_500
 orig = _umgebung(vc)
 vc.call_gemini_json = _gemini_500
+vor_500 = credits()
 exc_500 = None
 try:
-    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, zugriff=zugriff('verkauf')))
+    asyncio.run(r_verk.verkaufscheck_endpunkt(REQ_V, FakeRequest(), retry=False, user_id=USER_ID))
 except Exception as e:
     exc_500 = e
 finally:
     _zurueck(vc, orig)
 check("H1 500 wird NICHT als transienter Providerfehler maskiert",
       isinstance(exc_500, ServerError))
-check("H2 500 loest keinen Refund aus (unveraendertes Bestandsverhalten)",
-      zaehler_500.n == 0)
+# GEAENDERT mit Security Block 2 (P1-6): Frueher blieb ein unerwarteter Fehler
+# ohne Rueckerstattung — der Nutzer verlor ein bezahltes Kontingent fuer eine
+# Analyse, die er nie bekommen hat. Der Fehler selbst wird weiterhin unveraendert
+# nach oben gereicht (H1), nur das Kontingent kommt jetzt zurueck.
+check("H2 500 erstattet das Kontingent genau einmal", zaehler_500.n == 1)
+check("H3 Credit nach unerwartetem 500 unveraendert", credits() == vor_500)
 
 
 gr.asyncio.sleep = _ECHT_ASYNC_SLEEP

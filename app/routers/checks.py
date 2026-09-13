@@ -12,6 +12,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.check_lauf import einloese as einloese_lauf_nachweis
 from app.database import get_conn
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.inserat import run_inserat_optimierung
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/checks", tags=["checks"])
 
 def _get_own_check(conn, check_id: int, user_id: int) -> dict:
     row = conn.execute(
-        "SELECT id, user_id, typ, titel, eingabe, ergebnis, created_at FROM checks WHERE id = ?",
+        "SELECT id, user_id, typ, titel, eingabe, ergebnis, created_at, lauf_id FROM checks WHERE id = ?",
         (check_id,),
     ).fetchone()
     if row is None:
@@ -62,6 +63,12 @@ class SaveCheckBody(BaseModel):
     titel:   str
     eingabe: dict   # Formulardaten
     ergebnis: dict  # Ergebnisdaten
+    # Security Block 2 (P1-4): Nachweis aus der Antwort des Check-Laufs. Alles
+    # andere in diesem Body ist Client-Angabe und belegt gar nichts — nur diese
+    # ID wird serverseitig gegen `check_lauf` geprueft und genau einmal
+    # eingeloest. Fehlt sie oder passt sie nicht, wird der Check trotzdem
+    # gespeichert (Verlauf bleibt), aber ohne Herkunftsnachweis.
+    lauf_id: str | None = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -85,10 +92,14 @@ def save_check(body: SaveCheckBody, user_id: int = Depends(get_current_user_id))
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"fehler": {"code": "invalid_typ", "nachricht": "typ muss 'kauf' oder 'verkauf' sein."}},
         )
+    # Nachweis VOR dem Schreiben einloesen: nur ein serverseitig ausgestellter,
+    # noch unverbrauchter Lauf desselben Nutzers und Typs zaehlt.
+    nachweis = einloese_lauf_nachweis(body.lauf_id, user_id, body.typ)
     with get_conn() as conn:
         cursor = conn.execute(
-            "INSERT INTO checks (user_id, typ, titel, eingabe, ergebnis) VALUES (?, ?, ?, ?, ?)",
-            (user_id, body.typ, body.titel.strip(), json.dumps(body.eingabe), json.dumps(body.ergebnis)),
+            "INSERT INTO checks (user_id, typ, titel, eingabe, ergebnis, lauf_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, body.typ, body.titel.strip(), json.dumps(body.eingabe),
+             json.dumps(body.ergebnis), nachweis),
         )
         conn.commit()
         check_id: int = cursor.lastrowid  # type: ignore[assignment]
@@ -170,6 +181,23 @@ async def optimiere_inserat(
     """
     with get_conn() as conn:
         row = _get_own_check(conn, check_id, user_id)   # Existenz + Ownership (403/404)
+        # Security Block 2 (P1-4): Nur ein Check aus einem echten, bezahlten
+        # VerkaufsCheck-Lauf. `POST /checks` nimmt beliebige Daten an — Titel,
+        # Typ und Ergebnis eines gespeicherten Checks sind also Client-Angaben
+        # und beweisen nichts. Ohne serverseitigen Nachweis bleibt dieses
+        # Folgewerkzeug (ein LLM-Aufruf) zu.
+        #
+        # Betrifft auch Checks, die vor dieser Aenderung gespeichert wurden: sie
+        # haben keinen Nachweis und bekommen bewusst keinen nachtraeglich
+        # erfundenen. Ansehen, Loeschen und Rueckfragen bleiben moeglich; fuer
+        # die Optimierung ist ein neuer VerkaufsCheck noetig.
+        if not row.get("lauf_id"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"fehler": {"code": "kein_echter_verkaufscheck",
+                                   "nachricht": "Die Inserats-Optimierung gibt es nur für einen "
+                                                "durchgeführten VerkaufsCheck."}},
+            )
         if row["typ"] != "verkauf":
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

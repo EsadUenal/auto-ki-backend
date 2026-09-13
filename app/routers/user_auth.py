@@ -15,7 +15,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
 from pydantic import BaseModel, field_validator
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.client_ip import limit_schluessel
 
 from app.config import COOKIE_SECURE, JWT_EXPIRE_DAYS, JWT_SECRET
 from app.database import get_conn
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Eigene Limiter-Instanz wie in chat.py/kaufcheck.py/verkaufscheck.py — dediziertes,
 # strengeres Limit für Login/Registrierung (Brute-Force- bzw. Spam-Schutz) zusätzlich
 # zum globalen Default-Limit (siehe app/main.py SlowAPIMiddleware).
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=limit_schluessel)
 
 _BCRYPT_ROUNDS = 12
 

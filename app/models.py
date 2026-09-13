@@ -780,6 +780,10 @@ class KaufCheckResponse(BaseModel):
     # Verkaufscheck nutzt es weiterhin — dort IST der Marktpreis das Produkt).
     # Default für Alt-Checks: completed_high.
     research_status: str = "completed_high"
+    # Security Block 2 (P1-4): serverseitig ausgestellter Nachweis, dass DIESER
+    # Lauf wirklich stattgefunden hat. Das Frontend reicht ihn beim Speichern an
+    # POST /checks zurueck; nur damit gilt ein gespeicherter Check als echt.
+    lauf_id: str | None = None
 
 
 # ---------- Verkaufs-Check ----------
@@ -912,6 +916,10 @@ class VerkaufsCheckResponse(BaseModel):
     # verdict = "unbekannt"; KEIN Fehler, KEINE Kontingent-Rückerstattung).
     # "research_failed" wird weiterhin nicht als fertiger Check geliefert.
     research_status: str = "completed_high"
+    # Security Block 2 (P1-4): serverseitig ausgestellter Nachweis, dass DIESER
+    # Lauf wirklich stattgefunden hat. Das Frontend reicht ihn beim Speichern an
+    # POST /checks zurueck; nur damit gilt ein gespeicherter Check als echt.
+    lauf_id: str | None = None
     # P1 #1: Verlässlichkeit der Fahrzeug-Zuordnung (analog KaufCheckResponse).
     #   "hoch"    — exakter Modell-/Motor-/Generationstreffer oder Substring mit
     #               ausschließlich bekannten Aufbauwörtern ("3er Touring"). Voller

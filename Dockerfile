@@ -51,4 +51,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # Ein einzelner uvicorn-Worker: SQLite + der In-Memory-Cache (60s TTL) sind
 # prozesslokal — mehrere Worker hätten je einen eigenen Cache und würden die
 # SQLite-Schreiblast erhöhen. Skalierung erfolgt über Replicas, nicht Worker.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# --no-proxy-headers: uvicorn wuerde X-Forwarded-For SELBST auswerten und
+# request.client ueberschreiben, sobald die Gegenstelle in --forwarded-allow-ips
+# steht (Default: 127.0.0.1). Damit haette ein Request von loopback seine IP frei
+# faelschen koennen, BEVOR app/client_ip.py ueberhaupt gefragt wird. Die
+# Entscheidung, welchem Proxy zu trauen ist, gehoert an EINE Stelle
+# (AUTO_KI_TRUSTED_PROXY_*) — deshalb hier abgeschaltet.
+CMD ["sh", "-c", "uvicorn app.main:app --no-proxy-headers --host 0.0.0.0 --port ${PORT:-8000}"]

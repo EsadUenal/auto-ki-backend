@@ -247,10 +247,55 @@ getattr_namen = {n.args[1].value for n in ast.walk(baum)
                  and n.func.id == "getattr" and len(n.args) >= 2
                  and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str)}
 zugriffe = attribute | getattr_namen
-check("L: der anonyme Anker ist die Client-Adresse (client.host)",
-      "client" in zugriffe and "host" in getattr_namen, str(sorted(getattr_namen)))
-check("L: das Modul fasst KEINE Request-Header an",
+
+# GEAENDERT mit Security Block 2 (P1-7): Der anonyme Anker ist weiterhin die
+# Adresse des Clients — er wird nur nicht mehr direkt hier gelesen, sondern
+# zentral in app/client_ip.py bestimmt (dieselbe Quelle wie alle Rate-Limits).
+# Hinter einem KONFIGURIERTEN, vertrauenswuerdigen Proxy ist das die echte
+# Client-IP statt der Proxy-Adresse; ohne Konfiguration bleibt es exakt das
+# bisherige `client.host`.
+check("L: der anonyme Anker kommt aus der zentralen Adressbestimmung",
+      "klient_ip" in {n.func.id for n in ast.walk(baum)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)},
+      "usage_limit ruft klient_ip() nicht auf")
+check("L: das Modul fasst selbst KEINE Request-Header an",
       "headers" not in zugriffe)
+
+# Und die zentrale Bestimmung selbst: Header zaehlen NUR hinter einem
+# konfigurierten Proxy, sonst gilt allein die direkte Gegenstelle.
+cip_quelle = pathlib.Path("app/client_ip.py").read_text(encoding="utf-8")
+cip_baum = ast.parse(cip_quelle)
+cip_code = _ohne_doku(cip_quelle).lower()
+cip_treffer = [w for w in verboten if w in cip_code and w != "x-forwarded"]
+check("L: auch die Adressbestimmung liest kein Fingerprinting-Merkmal",
+      not cip_treffer, str(cip_treffer))
+cip_getattr = {n.args[1].value for n in ast.walk(cip_baum)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id == "getattr" and len(n.args) >= 2
+               and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str)}
+check("L: die Adressbestimmung liest weiterhin client.host", "host" in cip_getattr, str(sorted(cip_getattr)))
+
+import app.client_ip as cip   # noqa: E402
+from starlette.requests import Request as _StarletteRequest   # noqa: E402
+
+
+def _roh_request(peer, headers=None):
+    roh = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return _StarletteRequest({"type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
+                 "path": "/x", "raw_path": b"/x", "query_string": b"", "root_path": "",
+                 "headers": roh, "client": (peer, 1234), "server": ("testserver", 80), "app": None})
+
+
+_hops_vorher = cip.TRUSTED_PROXY_HOPS
+cip.TRUSTED_PROXY_HOPS = 0
+check("L: ohne Proxy-Konfiguration entscheidet allein die direkte Gegenstelle",
+      ul._schluessel(_roh_request("203.0.113.5", {"x-forwarded-for": "1.2.3.4"}), None) == "ip:203.0.113.5")
+cip.TRUSTED_PROXY_HOPS = 1
+check("L: ein direkt gesetzter Header aendert den Anker nicht",
+      ul._schluessel(_roh_request("203.0.113.5", {"x-forwarded-for": "1.2.3.4"}), None) == "ip:203.0.113.5")
+check("L: hinter einem vertrauenswuerdigen Proxy zaehlt die echte Client-IP",
+      ul._schluessel(_roh_request("100.64.0.1", {"x-forwarded-for": "198.51.100.9"}), None) == "ip:198.51.100.9")
+cip.TRUSTED_PROXY_HOPS = _hops_vorher
 
 # ── M) Keine clientseitige Autoritaet ────────────────────────────────────────
 # Ein selbst gesetztes Cookie ohne gueltige Signatur darf nicht zum Konto-Topf

@@ -373,3 +373,32 @@ async def luecken_speichern(body: LueckenSpeichernRequest, request: Request):
         "gespeicherte_felder": gespeicherte_felder,
         "nachricht": f"Lücken erfolgreich nachgefüllt: {', '.join(gespeicherte_felder)}.",
     }
+
+
+# ---------- Diagnose: Client-IP hinter dem Proxy (Security Block 2, P1-7) ----------
+
+@router.get("/client-ip", summary="Zeigt, wie der Server die Client-IP bestimmt (Admin-Key)")
+def client_ip_diagnose(request: Request):
+    """Belegt fuer die konkrete Umgebung, welche Adresse als Rate-Limit-Schluessel dient.
+
+    Ohne diese Auskunft liesse sich `AUTO_KI_TRUSTED_PROXY_HOPS` nur raten — die
+    Hop-Zahl hinter einer Plattform ist nirgends verlaesslich dokumentiert.
+    Absichtlich admin-geschuetzt: die Antwort enthaelt Adressen aus dem Request.
+    Keine Nutzer- oder Kontodaten.
+    """
+    verify_admin_key(request)
+    from app.client_ip import ist_vertrauenswuerdiger_proxy, klient_ip
+    from app.config import CLIENT_IP_HEADER, TRUSTED_PROXY_HOPS
+
+    gegenstelle = getattr(getattr(request, "client", None), "host", None)
+    return {
+        "gegenstelle": gegenstelle,
+        "gegenstelle_ist_vertrauenswuerdiger_proxy": ist_vertrauenswuerdiger_proxy(gegenstelle),
+        "konfiguration": {"hops": TRUSTED_PROXY_HOPS, "header": CLIENT_IP_HEADER},
+        "header": {
+            "x-forwarded-for": request.headers.get("x-forwarded-for"),
+            "x-real-ip": request.headers.get("x-real-ip"),
+            "forwarded": request.headers.get("forwarded"),
+        },
+        "verwendeter_limit_schluessel": klient_ip(request),
+    }

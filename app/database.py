@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS idx_checks_user_id ON checks(user_id);
 
+-- Nachweis eines TATSAECHLICH serverseitig gelaufenen Checks (Security Block 2,
+-- P1-4). POST /checks speichert, was der Client schickt — daraus allein laesst
+-- sich nicht ableiten, ob je ein bezahlter Check-Lauf stattgefunden hat. Der
+-- Check-Router legt deshalb nach jedem erfolgreichen Lauf hier eine Zeile an und
+-- gibt ihre ID zurueck; beim Speichern wird sie GENAU EINMAL eingeloest und am
+-- Check vermerkt (checks.lauf_id). Folgewerkzeuge wie die Inserats-Optimierung
+-- verlangen diesen Nachweis.
+CREATE TABLE IF NOT EXISTS check_lauf (
+    lauf_id      TEXT    PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    typ          TEXT    NOT NULL CHECK(typ IN ('kauf','verkauf')),
+    erstellt_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    eingeloest_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_check_lauf_user ON check_lauf(user_id);
+
 -- Kontextgebundene Analyse-Rückfragen (Q&A) pro gespeichertem Check. Bleibt an
 -- den Check gekoppelt und wird beim erneuten Öffnen wiederhergestellt. Löscht der
 -- Nutzer den Check, verschwinden die Fragen mit (ON DELETE CASCADE).
@@ -327,6 +343,19 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         # DEFAULT 0 -> alle Bestandsnutzer bleiben normale Kunden; Freischaltung
         # erfolgt gezielt (z.B. Admin/Stripe-Händlertarif später).
         conn.execute("ALTER TABLE users ADD COLUMN ist_haendler INTEGER NOT NULL DEFAULT 0")
+    # Security Block 2 (P1-4): Herkunftsnachweis am gespeicherten Check.
+    # NULL = kein Nachweis (historische Checks und alles, was der Client selbst
+    # angelegt hat). Bewusst KEIN Backfill: ein nachtraeglich gesetzter Wert waere
+    # eine erfundene Herkunft.
+    # `_migrate_schema` laeuft auch auf Teil-Schemata (Migrationstests, aeltere
+    # Datenbanken) — die Existenz der Tabelle ist nicht garantiert.
+    hat_checks = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='checks'"
+    ).fetchone() is not None
+    if hat_checks:
+        checks_spalten = {r[1] for r in conn.execute("PRAGMA table_info(checks)").fetchall()}
+        if "lauf_id" not in checks_spalten:
+            conn.execute("ALTER TABLE checks ADD COLUMN lauf_id TEXT")
     if "ersatzteil_suchen_verbleibend" not in existing:
         # DEFAULT 1 gilt auch für bestehende Zeilen → 1 Gratis-Suche für alle Bestandsnutzer.
         # Bestehende Abo-Kunden (light/pro) werden unten per Backfill auf ihr echtes Kontingent gehoben,

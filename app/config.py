@@ -99,6 +99,35 @@ MIN_SECRET_LEN = 32
 RATE_LIMIT = os.environ.get("AUTO_KI_RATE_LIMIT", "20/minute")
 
 # ---------------------------------------------------------------------------
+# Client-IP hinter einem Reverse-Proxy (Security Block 2, P1-7)
+# ---------------------------------------------------------------------------
+# Rate-Limits und die anonymen Kontingente haengen an der Client-IP. Steht ein
+# Proxy davor (Railway), ist `request.client.host` dessen Adresse — dann teilen
+# sich ALLE Nutzer einen Zaehler, und ein Einzelner kann die Limits fuer alle
+# verbrauchen.
+#
+# Die Header-Auswertung ist BEWUSST standardmaessig AUS (0 Hops): ein frei
+# gesetzter X-Forwarded-For waere sonst ein Freifahrtschein an jedem Limit
+# vorbei. Eingeschaltet wird sie erst, wenn fuer die konkrete Umgebung belegt
+# ist, wie viele vertrauenswuerdige Proxys davorstehen.
+#
+#   AUTO_KI_TRUSTED_PROXY_HOPS=1        Anzahl eigener/vorgelagerter Proxys.
+#   AUTO_KI_CLIENT_IP_HEADER=x-real-ip  Header mit der echten Client-IP
+#                                       (Default x-forwarded-for).
+#   AUTO_KI_TRUSTED_PROXY_NETS=...      Netze, aus denen ein Proxy sprechen darf.
+#
+# Header werden NUR ausgewertet, wenn die direkte Gegenstelle in einem dieser
+# Netze liegt. Ein Angreifer, der die App direkt erreicht, kann seine IP damit
+# nicht faelschen. Default sind die privaten Netze plus der CGNAT-Bereich
+# 100.64.0.0/10, aus dem interne Plattform-Proxys ueblicherweise sprechen.
+TRUSTED_PROXY_HOPS = int(os.environ.get("AUTO_KI_TRUSTED_PROXY_HOPS", "0"))
+CLIENT_IP_HEADER = os.environ.get("AUTO_KI_CLIENT_IP_HEADER", "x-forwarded-for").strip().lower()
+_PROXY_NETS_DEFAULT = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,100.64.0.0/10,::1/128,fc00::/7"
+TRUSTED_PROXY_NETS: list[str] = [
+    n.strip() for n in os.environ.get("AUTO_KI_TRUSTED_PROXY_NETS", _PROXY_NETS_DEFAULT).split(",") if n.strip()
+]
+
+# ---------------------------------------------------------------------------
 # Kostenloses KI-Chat-Kontingent (Consumer V1)
 # ---------------------------------------------------------------------------
 # EINZIGE Stelle, an der die Free-Grenze steht — Router und Gate lesen nur von

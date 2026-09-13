@@ -35,11 +35,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 
 from app import plus
 from app.database import get_conn
-from app.routers.user_auth import get_current_user_id
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +62,7 @@ _LEGACY_SPALTE = "checks_verbleibend"
 QUELLE_UNBEGRENZT = "unbegrenzt"
 
 
-@dataclass(frozen=True)
+@dataclass
 class CheckZugriff:
     """Ergebnis eines erfolgreichen Gate-Durchlaufs.
 
@@ -74,6 +73,10 @@ class CheckZugriff:
     user_id: int
     typ: str      # "kauf" | "verkauf"
     quelle: str   # Spaltenname oder QUELLE_UNBEGRENZT
+    # Security Block 2 (P1-6): Eine Entnahme wird hoechstens EINMAL erstattet.
+    # Mehrere Fehlerpfade (Provider-Ausfall + uebergreifendes except) duerfen
+    # zusammen kein zweites Kontingent erzeugen.
+    erstattet: bool = False
 
 
 def _nachricht(typ: str) -> str:
@@ -141,13 +144,20 @@ def _entnehme(user_id: int, typ: str) -> CheckZugriff:
     )
 
 
-def require_kaufcheck_access(user_id: int = Depends(get_current_user_id)) -> CheckZugriff:
-    """Dependency für POST /kaufcheck — entnimmt genau eine KaufCheck-Berechtigung."""
+def entnehme_kaufcheck(user_id: int) -> CheckZugriff:
+    """Entnimmt genau eine KaufCheck-Berechtigung. Wirft 402, wenn keine da ist.
+
+    BEWUSST KEINE FastAPI-Dependency mehr (Security Block 2, P1-6): Dependencies
+    laufen, bevor FastAPI den Request-Body validiert und bevor der Router den
+    API-Key prueft. Ein 422 wegen eines zu langen Freitextfeldes hat dadurch ein
+    bezahltes Kontingent vernichtet. Der Router ruft das hier erst auf, wenn
+    Body, Auth, API-Key und Rate-Limit durch sind.
+    """
     return _entnehme(user_id, "kauf")
 
 
-def require_verkaufscheck_access(user_id: int = Depends(get_current_user_id)) -> CheckZugriff:
-    """Dependency für POST /verkaufscheck — entnimmt genau eine VerkaufsCheck-Berechtigung."""
+def entnehme_verkaufscheck(user_id: int) -> CheckZugriff:
+    """Entnimmt genau eine VerkaufsCheck-Berechtigung (siehe entnehme_kaufcheck)."""
     return _entnehme(user_id, "verkauf")
 
 
@@ -167,6 +177,11 @@ def refund_check_credit(zugriff: CheckZugriff) -> None:
     """
     if zugriff.quelle == QUELLE_UNBEGRENZT:
         return
+    if zugriff.erstattet:
+        # Schon erstattet — ein zweiter Aufruf (z.B. spezifischer Fehlerpfad UND
+        # uebergreifendes except) darf kein zusaetzliches Kontingent schaffen.
+        log.debug("Rueckerstattung uebersprungen: bereits erstattet (user_id=%s)", zugriff.user_id)
+        return
     if zugriff.quelle not in (*_SPALTE.values(), *_PLUS_SPALTE.values(), _LEGACY_SPALTE):
         log.error("Unbekannte Kontingent-Quelle %r — keine Rückerstattung", zugriff.quelle)
         return
@@ -177,6 +192,7 @@ def refund_check_credit(zugriff: CheckZugriff) -> None:
                 (zugriff.user_id,),
             )
             conn.commit()
+        zugriff.erstattet = True
     except Exception:
         log.exception(
             "Rückerstattung (%s) für user_id=%s fehlgeschlagen",

@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+from app.client_ip import limit_schluessel
 
 from app.models import ChatRequest, ChatResponse, FehlerResponse
 from app.auth import verify_api_key
@@ -14,7 +14,7 @@ from app.usage_limit import require_chat_kontingent
 from app.utf8 import UTF8JSONResponse
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=limit_schluessel)
 
 
 async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: str | None = None):

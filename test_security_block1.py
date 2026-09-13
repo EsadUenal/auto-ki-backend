@@ -134,8 +134,11 @@ _ohne_admin = [f.name for f in _routen
                if not any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "verify_admin_key"
                           for n in ast.walk(f))]
 check("P0-1 Struktur: admin.py ruft verify_api_key nirgends auf", "verify_api_key" not in _aufrufe)
+# GET-Routen im Admin-Router (Security Block 2: Client-IP-Diagnose).
+ADMIN_GET = ("/api/v1/admin/client-ip",)
 check("P0-1 Struktur: alle Admin-Routen rufen verify_admin_key auf",
-      len(_routen) == len(ADMIN_ROUTEN) and not _ohne_admin, f"Routen={len(_routen)}, ohne={_ohne_admin}")
+      len(_routen) == len(ADMIN_ROUTEN) + len(ADMIN_GET) and not _ohne_admin,
+      f"Routen={len(_routen)}, erwartet={len(ADMIN_ROUTEN) + len(ADMIN_GET)}, ohne={_ohne_admin}")
 
 auth.ADMIN_API_KEY = S_ADMIN   # Admin in diesem Prozess "konfiguriert"
 c = client()
@@ -159,6 +162,12 @@ for pfad, body in ADMIN_ROUTEN.items():
     check(f"P0-1 C: falscher Admin-Key auf {pfad} -> 403", r.status_code == 403, f"HTTP {r.status_code}")
 r = c.post("/api/v1/admin/speichern", json={"daten": {}})
 check("P0-1 C: Admin ohne Authorization-Header -> 401", r.status_code == 401)
+for pfad in ADMIN_GET:
+    check(f"P0-1 B: Consumer-Key auf {pfad} -> 403", c.get(pfad, headers=CONSUMER).status_code == 403)
+    check(f"P0-1 C: falscher Admin-Key auf {pfad} -> 403",
+          c.get(pfad, headers={"Authorization": "Bearer " + "a" * 47 + "b"}).status_code == 403)
+    check(f"P0-1 D: richtiger Admin-Key auf {pfad} -> 200",
+          c.get(pfad, headers={"Authorization": f"Bearer {S_ADMIN}"}).status_code == 200)
 
 # D) richtiger Admin-Key -> Auth bestanden (scheitert erst an der Fachvalidierung)
 r = c.post("/api/v1/admin/speichern", json={"daten": {}}, headers={"Authorization": f"Bearer {S_ADMIN}"})
@@ -172,6 +181,8 @@ for pfad, body in ADMIN_ROUTEN.items():
     check(f"P0-1 E: ohne Admin-Key ist {pfad} geschlossen", r.status_code == 403, f"HTTP {r.status_code}")
 r = c.post("/api/v1/admin/speichern", json={"daten": {}}, headers={"Authorization": "Bearer "})
 check("P0-1 E: leerer Bearer-Token oeffnet geschlossenes Admin nicht", r.status_code in (401, 403))
+for pfad in ADMIN_GET:
+    check(f"P0-1 E: ohne Admin-Key ist {pfad} geschlossen", c.get(pfad, headers=CONSUMER).status_code == 403)
 
 # E2) Admin-Key versehentlich = Consumer-Key -> trotzdem geschlossen
 auth.ADMIN_API_KEY = auth.API_KEY

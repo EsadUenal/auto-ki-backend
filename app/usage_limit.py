@@ -68,6 +68,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 
 from app import plus
+from app.client_ip import klient_ip
 from app.config import (
     AUTOFINDER_ANONYM_DEMO_PRO_TAG,
     AUTOFINDER_FREE_LIMIT_MONATLICH,
@@ -117,8 +118,11 @@ def _user_id_aus_cookie(request: Request) -> int | None:
 def _schluessel(request: Request, user_id: int | None) -> str:
     if user_id is not None:
         return f"user:{user_id}"
-    client = getattr(request, "client", None)
-    return f"ip:{getattr(client, 'host', None) or 'unbekannt'}"
+    # Security Block 2 (P1-7): dieselbe Adressbestimmung wie bei den Rate-Limits
+    # (app/client_ip.py). Hinter einem vertrauenswuerdigen Proxy ist das die echte
+    # Client-IP statt der Proxy-Adresse — sonst teilten sich alle anonymen Nutzer
+    # einen einzigen Demo-Zaehler.
+    return f"ip:{klient_ip(request)}"
 
 
 def _nutzer_zustand(user_id: int | None) -> tuple[bool, bool]:
