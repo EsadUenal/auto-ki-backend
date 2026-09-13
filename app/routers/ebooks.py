@@ -3,7 +3,7 @@ E-Book-Router — digitale Produkte, kein physischer Versand
 
 Endpoints:
   GET  /ebooks                      → Katalog mit abo-rabattiertem Preis
-  POST /ebooks/checkout             → Stripe-Checkout-Session (kein Adressfeld nötig)
+  POST /ebooks/checkout             → Stripe-Checkout-Session (nur E-Books mit vorhandener PDF)
   GET  /ebooks/bestellungen         → Kaufhistorie des Nutzers
   GET  /ebooks/{ebook_id}/download  → PDF-Download nach Kaufnachweis
 """
@@ -50,6 +50,22 @@ def _user_abo(user_id: int) -> str:
     if not row:
         raise HTTPException(status_code=401)
     return row["abo_typ"]
+
+
+def _pdf_pfad(ebook_id: str) -> Path | None:
+    """Liefert die auslieferbare PDF eines E-Books oder None, wenn es keine gibt.
+
+    Einzige Quelle für Checkout UND Download: ein E-Book ohne Datei (z. B. ein
+    angekündigter Titel) darf nicht verkauft werden — sonst zahlt der Kunde für
+    einen Download, der nie funktioniert.
+    """
+    ebook_dir = _STATIC_DIR / "ebooks"
+    pdf_path = ebook_dir / f"{ebook_id}.pdf"
+    if not pdf_path.exists():
+        candidates = sorted(ebook_dir.glob(f"*{ebook_id}*.pdf"))
+        if candidates:
+            pdf_path = candidates[0]
+    return pdf_path if pdf_path.exists() else None
 
 
 @router.get("")
@@ -103,6 +119,12 @@ def create_ebook_checkout(
             status_code=404,
             detail={"fehler": {"code": "nicht_gefunden", "nachricht": "E-Book nicht gefunden."}},
         )
+    if _pdf_pfad(body.ebook_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"fehler": {"code": "nicht_erhaeltlich",
+                               "nachricht": "Dieses E-Book ist noch nicht erhältlich."}},
+        )
 
     preis = ebook["preis_abo"] if hat_rabatt else ebook["preis_normal"]
     betrag_cents = round(preis * 100)
@@ -116,7 +138,7 @@ def create_ebook_checkout(
                 "unit_amount": betrag_cents,
                 "product_data": {
                     "name": ebook["titel"],
-                    "description": "Digitales E-Book — Lieferung per E-Mail",
+                    "description": "Digitales E-Book — PDF-Download in deinem ENFAL-Konto",
                 },
             },
             "quantity": 1,
@@ -174,13 +196,8 @@ def download_ebook(ebook_id: str, user_id: int = Depends(get_current_user_id)):
     if not ebook:
         raise HTTPException(status_code=404)
 
-    ebook_dir = _STATIC_DIR / "ebooks"
-    pdf_path = ebook_dir / f"{ebook_id}.pdf"
-    if not pdf_path.exists():
-        candidates = sorted(ebook_dir.glob(f"*{ebook_id}*.pdf"))
-        if candidates:
-            pdf_path = candidates[0]
-    if not pdf_path.exists():
+    pdf_path = _pdf_pfad(ebook_id)
+    if pdf_path is None:
         raise HTTPException(
             status_code=503,
             detail={"fehler": {"code": "datei_fehlt", "nachricht": "Datei wird gerade vorbereitet. Bitte versuche es in wenigen Minuten erneut."}},
