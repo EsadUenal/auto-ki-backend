@@ -189,6 +189,44 @@ LOG_LEVEL = os.environ.get("AUTO_KI_LOG_LEVEL", "INFO").upper()
 JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", DEV_JWT_SECRET).strip()
 JWT_EXPIRE_DAYS = int(os.environ.get("AUTO_KI_JWT_EXPIRE_DAYS", "7"))
 
+# ---------------------------------------------------------------------------
+# Eingabegrenzen und Abuse-Schutz (Security Block 3)
+# ---------------------------------------------------------------------------
+# P2-4: bcrypt hasht hoechstens 72 BYTES. Alles darueber wirft in bcrypt 5 einen
+# Fehler (vorher: HTTP 500). Die Grenze ist deshalb eine Eingabepruefung, kein
+# Wechsel des Hash-Verfahrens.
+PASSWORT_MAX_BYTES = 72
+PASSWORT_MIN_ZEICHEN = 8
+# RFC 5321: 254 Zeichen sind die maximale Laenge einer E-Mail-Adresse.
+EMAIL_MAX_ZEICHEN = 254
+
+# P2-8: Serverseitige Groessengrenzen fuer gespeicherte Inhalte. Grosszuegig
+# gewaehlt — ein echter Check-Bericht liegt bei wenigen zehntausend Zeichen —,
+# aber endlich, damit die 8-MB-Request-Grenze nicht zur Speichergrenze wird.
+CHECK_TITEL_MAX = 200
+CHECK_EINGABE_MAX_ZEICHEN = int(os.environ.get("AUTO_KI_CHECK_EINGABE_MAX", "100000"))
+CHECK_ERGEBNIS_MAX_ZEICHEN = int(os.environ.get("AUTO_KI_CHECK_ERGEBNIS_MAX", "400000"))
+NACHRICHT_MAX_ZEICHEN = int(os.environ.get("AUTO_KI_NACHRICHT_MAX", "20000"))
+CONVERSATION_TITEL_MAX = 200
+
+# P2-7: Fehlgeschlagene Check-Laeufe kosten Provider-Geld, auch wenn das
+# Kontingent korrekt zurueckerstattet wird. Ein eigener TAGESZAEHLER begrenzt
+# deshalb die VERSUCHE — unabhaengig vom Guthaben und ohne Rueckerstattung.
+# Grosszuegig: ein normaler Nutzer kommt hier nie an.
+CHECK_VERSUCHE_PRO_TAG = int(os.environ.get("AUTO_KI_CHECK_VERSUCHE_PRO_TAG", "25"))
+
+# P2-5: Gratis-Kontingente (Chat, AutoFinder, Analyse-Rueckfragen) erst nach
+# bestaetigter E-Mail. Bezahlte Leistungen bleiben unberuehrt.
+EMAIL_VERIFIKATION_AKTIV = os.environ.get("AUTO_KI_EMAIL_VERIFIKATION", "1").strip() not in ("0", "false", "no")
+EMAIL_VERIFIKATION_GUELTIG_STUNDEN = int(os.environ.get("AUTO_KI_EMAIL_VERIFIKATION_STUNDEN", "48"))
+
+# ---------------------------------------------------------------------------
+# API-Dokumentation (P2-2)
+# ---------------------------------------------------------------------------
+# In Produktion aus: /docs, /redoc und /openapi.json listen sonst oeffentlich
+# jede Route inklusive der Admin-Endpunkte. Lokal bleibt sie eingeschaltet.
+DOCS_AKTIV = not IS_PRODUCTION
+
 # Auth-Cookie nur ueber HTTPS senden. Lokal (http://localhost) wuerde der Browser
 # ein Secure-Cookie verwerfen — deshalb folgt das Flag der Umgebung, nicht einer
 # eigenen Einstellung.

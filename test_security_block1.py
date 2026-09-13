@@ -205,9 +205,12 @@ def signiert(payload: str, secret: str) -> dict:
     return {"stripe-signature": f"t={t},v1={sig}", "content-type": "application/json"}
 
 
-def fake_checkout(uid, eid, produkt="kaufcheck", typ="check"):
+def fake_checkout(uid, eid, produkt="kaufcheck", typ="check", payment_status="paid"):
+    # payment_status gehoert seit Security Block 3 (P2-9) zum Vertrag: nur eine
+    # tatsaechlich bezahlte Session erzeugt Anspruch.
     return json.dumps({"id": eid, "object": "event", "type": "checkout.session.completed",
                        "data": {"object": {"id": "cs_" + eid, "object": "checkout.session",
+                                           "payment_status": payment_status,
                                            "metadata": {"user_id": str(uid), "typ": typ, "produkt": produkt}}}})
 
 
@@ -430,7 +433,8 @@ pay.stripe.Subscription.modify = staticmethod(lambda sid, **kw: _Obj(id=sid, can
 antwort = pay.cancel_subscription(user_id=uid_pro)
 check("P1-5 Bestand: laufendes Legacy-Abo bleibt kuendbar", antwort["ok"] and antwort["plus"] is False)
 uid_ek = neuer_user("einzel@test.de")
-pay._verarbeite_checkout_session(_Obj(id="cs_alt_einzel", metadata={"user_id": str(uid_ek), "typ": "einzelkauf"}))
+pay._verarbeite_checkout_session(_Obj(id="cs_alt_einzel", payment_status="paid",
+                                      metadata={"user_id": str(uid_ek), "typ": "einzelkauf"}))
 check("P1-5 Bestand: bereits bezahlte Alt-Einzelkauf-Session wird weiter gutgeschrieben",
       spalte(uid_ek, "checks_verbleibend") == 1)
 

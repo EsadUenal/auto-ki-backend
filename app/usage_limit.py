@@ -71,6 +71,8 @@ from app import plus
 from app.client_ip import klient_ip
 from app.config import (
     AUTOFINDER_ANONYM_DEMO_PRO_TAG,
+    CHECK_VERSUCHE_PRO_TAG,
+    EMAIL_VERIFIKATION_AKTIV,
     AUTOFINDER_FREE_LIMIT_MONATLICH,
     AUTOFINDER_PLUS_LIMIT_MONATLICH,
     CHAT_FREE_LIMIT_MONATLICH,
@@ -91,6 +93,12 @@ ART_ANALYSE_FRAGE = "analyse_frage"
 # seine anonyme Demo verbraucht hat und sich danach registriert, startet mit
 # vollen 5 Suchen — die Demo war kein Vorschuss darauf.
 ART_AUTOFINDER_DEMO = "autofinder_demo"
+# Security Block 3 (P2-7): technische VERSUCHE eines Check-Laufs, gezaehlt je
+# UTC-Tag. Bewusst getrennt vom Guthaben: ein fehlgeschlagener Lauf erstattet
+# das Kontingent zurueck (richtig — der Nutzer hat nichts bekommen), kostet aber
+# trotzdem Tavily-/Gemini-Aufrufe. Ohne eigenen Zaehler liesse sich mit EINEM
+# gekauften Check beliebig oft Recherche ausloesen.
+ART_CHECK_VERSUCH = "check_versuch"
 
 
 def monat_utc() -> str:
@@ -104,13 +112,18 @@ def tag_utc() -> str:
 
 
 def _user_id_aus_cookie(request: Request) -> int | None:
-    """Liest die user_id aus dem Auth-Cookie — ohne Login zu erzwingen."""
+    """Liest die user_id aus dem Auth-Cookie — ohne Login zu erzwingen.
+
+    Security Block 3 (P2-3): geprueft wird ueber `user_id_aus_token`, also
+    inklusive `deleted_at` und Token-Version. Ein entwerteter Token zaehlt damit
+    auf den anonymen Topf und nicht mehr auf das Konto.
+    """
     token = request.cookies.get("auth_token")
     if not token:
         return None
     try:
-        from app.routers.user_auth import _decode_token
-        return int(_decode_token(token)["sub"])
+        from app.routers.user_auth import user_id_aus_token
+        return user_id_aus_token(token)
     except Exception:
         return None
 
@@ -142,6 +155,34 @@ def _nutzer_zustand(user_id: int | None) -> tuple[bool, bool]:
         return False, False
 
 
+def _ist_verifiziert(user_id: int) -> bool:
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT email_verified FROM users WHERE id=?", (user_id,)).fetchone()
+        return bool(row and row["email_verified"])
+    except Exception:
+        log.exception("Verifikationsstatus nicht lesbar (user_id=%s)", user_id)
+        return False
+
+
+def _wirf_unbestaetigt() -> None:
+    """P2-5: Gratis-LLM-Kontingente erst nach bestaetigter E-Mail.
+
+    Ohne diese Huerde kostet ein Wegwerfkonto nichts und bringt je 5 AutoFinder-
+    Suchen und 20 Chats — beliebig oft wiederholbar. Bezahlte Leistungen sind
+    NICHT betroffen: wer einen Check kauft oder Plus hat, kommt hier nie an.
+    """
+    raise HTTPException(
+        status_code=403,
+        detail={"fehler": {
+            "code": "email_nicht_bestaetigt",
+            "nachricht": "Bitte bestätige zuerst deine E-Mail-Adresse.",
+            "hinweis": "Wir haben dir einen Bestätigungslink geschickt.",
+            "bestaetigung_noetig": True,
+        }},
+    )
+
+
 def verbrauche(schluessel: str, art: str, limit: int, monat: str | None = None) -> bool:
     """Zählt eine Nutzung. True = erlaubt, False = Monatsgrenze erreicht.
 
@@ -159,6 +200,35 @@ def verbrauche(schluessel: str, art: str, limit: int, monat: str | None = None) 
         )
         conn.commit()
     return cur.rowcount == 1
+
+
+def verbrauche_check_versuch(request: Request) -> None:
+    """P2-7: Zaehlt EINEN technischen Check-Versuch und deckelt sie pro Tag.
+
+    Laeuft VOR der Kontingent-Entnahme und wird NIE zurueckgenommen — auch dann
+    nicht, wenn der Lauf scheitert und das Guthaben zurueckgeht. Genau das ist
+    der Sinn: die Rueckerstattung schuetzt den Kunden, dieser Zaehler schuetzt
+    die Provider-Rechnung. Anker ist das Konto, sonst die Client-Adresse.
+
+    Grosszuegig bemessen (siehe AUTO_KI_CHECK_VERSUCHE_PRO_TAG): eine normale
+    Nutzung mit ein paar Wiederholungsversuchen bleibt weit darunter.
+    """
+    if CHECK_VERSUCHE_PRO_TAG <= 0:
+        return
+    user_id = _user_id_aus_cookie(request)
+    schluessel = _schluessel(request, user_id)
+    if verbrauche_tag(schluessel, ART_CHECK_VERSUCH, CHECK_VERSUCHE_PRO_TAG):
+        return
+    log.warning("Check-Versuchsgrenze erreicht (%s)", schluessel)
+    raise HTTPException(
+        status_code=429,
+        detail={"fehler": {
+            "code": "zu_viele_versuche",
+            "nachricht": "Du hast heute sehr viele Analysen gestartet. "
+                         "Bitte versuche es morgen wieder.",
+            "plus_hilft": False,
+        }},
+    )
 
 
 def verbrauche_tag(schluessel: str, art: str, limit: int, tag: str | None = None) -> bool:
@@ -291,6 +361,13 @@ def _pruefe(request: Request, art: str) -> None:
     if hat_legacy_abo:
         return
 
+    # P2-5: Kostenlose, LLM-gestuetzte Kontingente erst nach bestaetigter
+    # E-Mail. Plus-Kunden und Bestandsabos sind oben/unten ausgenommen — sie
+    # haben bezahlt und sind keine Wegwerfkonten.
+    if (EMAIL_VERIFIKATION_AKTIV and user_id is not None and not plus_aktiv
+            and not _ist_verifiziert(user_id)):
+        _wirf_unbestaetigt()
+
     # AutoFinder OHNE Login ist eine Demo, kein Tarif: ein Zaehler am IP-Anker
     # kann kein Monatskontingent abbilden, weil sich hinter einer geteilten
     # Adresse (Buero-NAT, Schul-/Hotel-WLAN, Mobilfunk-CGNAT) beliebig viele
@@ -344,6 +421,9 @@ def require_analyse_frage_kontingent(request: Request) -> None:
     hat_legacy_abo, plus_aktiv = _nutzer_zustand(user_id)
     if hat_legacy_abo or plus_aktiv:
         return
+    if (EMAIL_VERIFIKATION_AKTIV and user_id is not None
+            and not _ist_verifiziert(user_id)):
+        _wirf_unbestaetigt()
     limit = CHAT_PLUS_LIMIT_MONATLICH   # großzügig: Teil des gekauften Produkts
     if verbrauche(_schluessel(request, user_id), ART_ANALYSE_FRAGE, limit):
         return

@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import (
     RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL,
     DB_BACKUP_INTERVAL_SECONDS, DEV_API_KEY, DEV_JWT_SECRET, ADMIN_API_KEY,
-    STRIPE_WEBHOOK_SECRET, validiere_produktion,
+    STRIPE_WEBHOOK_SECRET, validiere_produktion, DOCS_AKTIV,
 )
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
@@ -121,11 +121,18 @@ def _utf8_json(status_code: int, content: dict) -> UTF8JSONResponse:
 # @limiter.exempt ohne Zirkelimport ueber main.py nutzen koennen.
 from app.rate_limit import limiter
 
+# P2-2: In Produktion gibt es keine oeffentliche API-Dokumentation. /docs,
+# /redoc und /openapi.json listen sonst jede Route — inklusive der
+# Admin-Endpunkte — und liefern einem Angreifer die vollstaendige Angriffskarte.
+# Lokal bleibt alles verfuegbar (DOCS_AKTIV folgt AUTO_KI_ENV).
 app = FastAPI(
     title="Vira Backend",
     description="Vira — KI-Autoberatung. Kauf, Verkauf, technisches Wissen.",
     version="0.1.0",
     default_response_class=UTF8JSONResponse,
+    docs_url="/docs" if DOCS_AKTIV else None,
+    redoc_url="/redoc" if DOCS_AKTIV else None,
+    openapi_url="/openapi.json" if DOCS_AKTIV else None,
 )
 
 app.add_middleware(
@@ -302,16 +309,21 @@ app.include_router(autofinder.router,    prefix="/api/v1")
 
 @app.get("/health")
 def health():
+    """Healthcheck fuer Railway/Docker — bewusst ohne jede interne Information.
+
+    P2-1: Frueher lieferte dieser oeffentliche Endpunkt den absoluten DB-Pfad und
+    die Namen aller Tabellen. Das ist fuer einen Healthcheck nicht noetig und
+    verraet einem Angreifer die Struktur. Zurueck kommt nur noch, ob die App
+    laeuft und ob die Datenbank antwortet — ohne Pfad, ohne Tabellen, ohne
+    Fehlertext (der Grund steht im Log, nicht in der Antwort).
+    """
     import sqlite3
-    db_path = str(DB_PATH)
     try:
-        conn = sqlite3.connect(db_path)
-        tables = sorted(
-            r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        )
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("SELECT 1").fetchone()
         conn.close()
-    except Exception as e:
-        tables = [f"FEHLER: {e}"]
-    return {"status": "ok", "db_path": db_path, "tables": tables}
+        db_ok = True
+    except Exception:
+        log.exception("Healthcheck: Datenbank nicht erreichbar")
+        db_ok = False
+    return {"status": "ok" if db_ok else "degraded", "db": "ok" if db_ok else "fehler"}

@@ -25,6 +25,11 @@ Daten vor Zahlungen vor Traffic).
         wurde (DEPLOYMENT.md §1.6) — sonst teilen sich alle Nutzer ein Limit.
 - [ ] **Nach dem ersten Deploy**: Client-IP verifizieren (DEPLOYMENT.md §1.6),
       Hops setzen, Spoofing-Gegenprobe machen.
+- [ ] **E-Mail-Versand anschliessen** (Provider-Block): ohne ihn koennen neue
+      Konten ihre Adresse nicht bestaetigen und erhalten keine kostenlosen
+      LLM-Kontingente (DEPLOYMENT.md §1.7). Bezahlte Checks sind nicht betroffen.
+- [ ] Pruefen, dass `/docs`, `/redoc` und `/openapi.json` unter der echten Domain
+      404 liefern (in Produktion abgeschaltet).
   - [ ] `AUTO_KI_CHROMA_PATH=/data/chroma` (im Dockerfile bereits Default)
   - [ ] `AUTO_KI_DB_BACKUP_DIR=/data/backups` (im Dockerfile bereits Default)
   - [ ] `AUTO_KI_DB_BACKUP_INTERVAL_SECONDS` — Default 21600 (6h) i.d.R. ok

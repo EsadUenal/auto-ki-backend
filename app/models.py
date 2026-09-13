@@ -43,16 +43,20 @@ class ChatRequest(BaseModel):
 
 
 class AnalyseFrageRequest(BaseModel):
-    """Kontextgebundene Rückfrage zu einer bereits erstellten Check-Analyse.
+    """Kontextgebundene Rückfrage zu einem gespeicherten, bezahlten Check.
 
-    Der Analysetext (Bericht + Verdikt) wird direkt vom Frontend mitgeschickt —
-    Checks werden nicht serverseitig persistiert, es gibt also keine analysis_id.
-    Multi-Turn laeuft zustandslos ueber ``verlauf`` (bisherige Frage/Antwort-Paare).
+    Security Block 3 (P2-6): Der Client schickt KEINEN Analysetext mehr, sondern
+    nur die ID seines Checks. Der Server prueft Eigentum und Lauf-Nachweis und
+    baut den Kontext aus dem gespeicherten Ergebnis — frueher war das Feld
+    `analyse_kontext` ein freier Texteingang und damit ein zweiter, faktisch
+    kostenloser LLM-Kanal. `check_typ` entfaellt aus demselben Grund: er steht
+    am Check.
+
+    Multi-Turn laeuft weiterhin zustandslos ueber ``verlauf``.
     """
-    analyse_kontext: str = Field(max_length=_MAX_TEXT_LEN)   # Analysetext als Kontext
+    check_id: int = Field(ge=1)
     frage: str = Field(max_length=2_000)
     verlauf: list[ChatMessage] = Field(default_factory=list, max_length=_MAX_VERLAUF_LEN)
-    check_typ: str = Field(default="kauf", max_length=20)     # "kauf" | "verkauf" | "ersatzteil"
 
 
 # ---------- Response ----------

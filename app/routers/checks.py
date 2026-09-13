@@ -10,9 +10,11 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.check_lauf import einloese as einloese_lauf_nachweis
+from app.config import (CHECK_EINGABE_MAX_ZEICHEN, CHECK_ERGEBNIS_MAX_ZEICHEN,
+                        CHECK_TITEL_MAX)
 from app.database import get_conn
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.inserat import run_inserat_optimierung
@@ -58,9 +60,27 @@ def _serialize(row: dict) -> dict:
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
+def _groesse_pruefen(wert: dict, grenze: int, feld: str) -> dict:
+    """P2-8: Serverseitige Groessengrenze fuer gespeicherte JSON-Felder.
+
+    Geprueft wird die LAENGE DER GESPEICHERTEN FORM (json.dumps) — genau das
+    landet in der Datenbank. Ohne diese Pruefung reichte erst die globale
+    8-MB-Request-Grenze; ein Konto konnte die Datenbank damit beliebig
+    aufblaehen. Die Grenzen liegen weit ueber einem echten Check-Ergebnis.
+    Abgelehnt wird VOR jedem Schreibvorgang (422, nichts landet in der DB).
+    """
+    if len(json.dumps(wert, ensure_ascii=False)) > grenze:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"fehler": {"code": "zu_gross",
+                               "nachricht": f"{feld} ist zu groß (Grenze: {grenze} Zeichen)."}},
+        )
+    return wert
+
+
 class SaveCheckBody(BaseModel):
     typ:     str    # 'kauf' | 'verkauf'
-    titel:   str
+    titel:   str = Field(max_length=CHECK_TITEL_MAX)
     eingabe: dict   # Formulardaten
     ergebnis: dict  # Ergebnisdaten
     # Security Block 2 (P1-4): Nachweis aus der Antwort des Check-Laufs. Alles
@@ -95,6 +115,8 @@ def save_check(body: SaveCheckBody, user_id: int = Depends(get_current_user_id))
     # Nachweis VOR dem Schreiben einloesen: nur ein serverseitig ausgestellter,
     # noch unverbrauchter Lauf desselben Nutzers und Typs zaehlt.
     nachweis = einloese_lauf_nachweis(body.lauf_id, user_id, body.typ)
+    _groesse_pruefen(body.eingabe, CHECK_EINGABE_MAX_ZEICHEN, "Die Eingabe")
+    _groesse_pruefen(body.ergebnis, CHECK_ERGEBNIS_MAX_ZEICHEN, "Das Ergebnis")
     with get_conn() as conn:
         cursor = conn.execute(
             "INSERT INTO checks (user_id, typ, titel, eingabe, ergebnis, lauf_id) VALUES (?, ?, ?, ?, ?, ?)",

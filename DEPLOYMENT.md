@@ -53,6 +53,16 @@ Mit `AUTO_KI_ENV=production` **verweigert die App den Start** (`app/config.py`
 oder gleich dem Consumer-Key ist. Das Auth-Cookie ist in Produktion `Secure`.
 LIGHT/PRO/MAX/EINZELKAUF werden nicht mehr verkauft — keine Price-IDs dafür setzen.
 
+### 1.7 Offene Punkte aus dem Security-Audit
+
+- **E-Mail-Zustellung**: Die Bestaetigung (`/api/v1/auth/verify-email`) ist
+  serverseitig fertig — Token, Ablauf, Einmal-Einloesung. Der VERSAND haengt am
+  spaeteren Provider-Block. Bis dahin bekommen neue Konten keine Mail und damit
+  keine kostenlosen LLM-Kontingente; Kaeufe und bezahlte Checks funktionieren
+  unabhaengig davon. In der Entwicklung liefert die Registrierung den Token
+  direkt in der Antwort (`verifikationstoken_dev`), in Produktion nie.
+  `AUTO_KI_EMAIL_VERIFIKATION=0` schaltet die Huerde ab — nur fuer Tests.
+
 ### 1.6 Client-IP hinter dem Railway-Proxy (PFLICHT nach dem ersten Deploy)
 
 Rate-Limits, Login-Drosselung und die anonyme AutoFinder-Demo haengen an der

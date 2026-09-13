@@ -7,8 +7,9 @@ Nutzer gehört (user_id-Abgleich aus dem JWT). Fremde IDs → 403.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.config import CONVERSATION_TITEL_MAX, NACHRICHT_MAX_ZEICHEN
 from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
 
@@ -38,17 +39,22 @@ def _get_own_conversation(conn, conv_id: int, user_id: int) -> dict:
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
+# P2-8: Serverseitige Laengengrenzen. Ohne sie reichte erst die globale
+# 8-MB-Request-Grenze — ein Konto konnte den Verlauf beliebig aufblaehen.
+# Grosszuegig bemessen: eine lange Chat-Antwort liegt bei wenigen tausend
+# Zeichen. Pydantic lehnt Ueberlaenge mit 422 ab, bevor irgendetwas geschrieben
+# wird.
 class CreateConversationBody(BaseModel):
-    title: str = "Neuer Chat"
+    title: str = Field(default="Neuer Chat", max_length=CONVERSATION_TITEL_MAX)
 
 
 class PatchConversationBody(BaseModel):
-    title: str
+    title: str = Field(max_length=CONVERSATION_TITEL_MAX)
 
 
 class AddMessageBody(BaseModel):
     role: str   # 'user' | 'assistant'
-    content: str
+    content: str = Field(max_length=NACHRICHT_MAX_ZEICHEN)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

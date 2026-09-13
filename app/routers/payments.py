@@ -205,6 +205,125 @@ def _hat_laufendes_abo(customer_id: str) -> bool:
     return any(getattr(s, "status", None) in _LAUFENDE_STATUS for s in subs.data)
 
 
+# ── Zahlung -> Berechtigung (Security Block 3, P2-9) ─────────────────────────
+#
+# Ohne diese Zuordnung laesst sich bei einer Rueckerstattung oder einem
+# Chargeback nicht sagen, WELCHE Berechtigung zurueckzunehmen ist: der Webhook
+# kennt nur eine Charge/PaymentIntent, die Gutschrift landete aber anonym in
+# einer Zaehlspalte. `status` sorgt zusaetzlich dafuer, dass eine rueckgaengig
+# gemachte Zahlung nie erneut Anspruch erzeugen kann.
+
+_SPALTE_JE_PRODUKT = {
+    "kaufcheck": "kaufchecks_verbleibend",
+    "verkaufscheck": "verkaufschecks_verbleibend",
+    "einzelkauf": "checks_verbleibend",
+}
+
+
+def _zahlung_id(obj) -> str | None:
+    """PaymentIntent bevorzugt — er verbindet Checkout, Refund und Dispute."""
+    pi = getattr(obj, "payment_intent", None)
+    if isinstance(pi, str) and pi:
+        return pi
+    pi_id = getattr(pi, "id", None)
+    if isinstance(pi_id, str) and pi_id:
+        return pi_id
+    sid = getattr(obj, "id", None)
+    return sid if isinstance(sid, str) and sid else None
+
+
+def _merke_zahlung(zahlung_id: str | None, *, session_id: str | None, user_id: int,
+                   produkt: str, spalte: str | None, anzahl: int = 1,
+                   subscription_id: str | None = None) -> None:
+    if not zahlung_id or not user_id:
+        return
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO kauf_zahlung "
+                "(zahlung_id, session_id, user_id, produkt, spalte, anzahl, subscription_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (zahlung_id, session_id, user_id, produkt, spalte, anzahl, subscription_id),
+            )
+            conn.commit()
+    except Exception:
+        log.exception("Zahlung konnte nicht zugeordnet werden (zahlung_id=%s)", zahlung_id)
+
+
+def _ist_bezahlt(obj) -> bool:
+    """Nur eine tatsaechlich bezahlte Session erzeugt Anspruch (P2-9).
+
+    `checkout.session.completed` feuert auch fuer Sessions, die (noch) nicht
+    bezahlt sind — bei asynchronen Zahlarten etwa mit `payment_status=unpaid`.
+    Fuer Abos ohne sofortige Zahlung meldet Stripe `no_payment_required`; das
+    ist hier kein bezahlter Kauf.
+    """
+    status_ = getattr(obj, "payment_status", None)
+    if status_ is None:
+        # Aeltere/gemockte Objekte ohne Feld: auf den Session-Status zurueckfallen.
+        return getattr(obj, "status", None) == "complete"
+    return status_ == "paid"
+
+
+def _entziehe(zahlung_id: str | None, grund: str) -> None:
+    """Nimmt die Berechtigung einer rueckabgewickelten Zahlung zurueck.
+
+    Policy (bewusst klein und vorhersehbar):
+      - noch nicht verbrauchtes Guthaben wird entzogen,
+      - bereits verbrauchtes wird NICHT ins Minus gezogen (die Leistung wurde
+        erbracht; ein negativer Zaehler wuerde spaetere, ehrliche Kaeufe
+        auffressen),
+      - die Zahlung wird als rueckabgewickelt markiert und kann nie wieder
+        Anspruch erzeugen,
+      - bei Plus endet die Berechtigung aus GENAU dieser Zahlung; andere
+        laufende Abos bleiben unberuehrt.
+    """
+    if not zahlung_id:
+        return
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, produkt, spalte, anzahl, status, subscription_id "
+            "FROM kauf_zahlung WHERE zahlung_id=?", (zahlung_id,)
+        ).fetchone()
+    if row is None:
+        # Unbekannte/fremde Zahlung: nichts anfassen. Ein Webhook darf keine
+        # Rechte veraendern, deren Herkunft der Server nicht kennt.
+        log.info("Rueckabwicklung fuer unbekannte Zahlung %s ignoriert (%s)", zahlung_id, grund)
+        return
+    if row["status"] != "bezahlt":
+        return   # bereits rueckabgewickelt — idempotent
+
+    spalte, anzahl, user_id = row["spalte"], int(row["anzahl"] or 1), int(row["user_id"])
+    if spalte in _SPALTE_JE_PRODUKT.values():
+        with get_conn() as conn:
+            # MAX(0, ...) statt blindem Dekrement: kein negatives Guthaben.
+            conn.execute(
+                f"UPDATE users SET {spalte} = MAX(0, {spalte} - ?) WHERE id=?",
+                (anzahl, user_id),
+            )
+            conn.commit()
+    if row["produkt"] == "plus" and row["subscription_id"]:
+        plus_modul.beende(row["subscription_id"])
+    elif row["produkt"] == "abo" and row["subscription_id"]:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET abo_typ='none', checks_verbleibend=0, "
+                "ersatzteil_suchen_verbleibend=0, stripe_subscription_id=NULL, "
+                "abo_kuendigt_zum=NULL WHERE id=? AND stripe_subscription_id=?",
+                (user_id, row["subscription_id"]),
+            )
+            conn.commit()
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE kauf_zahlung SET status=?, beendet_at=CURRENT_TIMESTAMP WHERE zahlung_id=?",
+            (grund, zahlung_id),
+        )
+        conn.commit()
+    log.warning("Zahlung %s rueckabgewickelt (%s) — Berechtigung entzogen (user_id=%s)",
+                zahlung_id, grund, user_id)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/checkout-session")
@@ -389,12 +508,22 @@ def _verarbeite_event(event_type: str, obj) -> None:
     anhand dessen, ob der Idempotenz-Claim bestehen bleibt oder zurückgerollt wird."""
     # ── checkout.session.completed ─────────────────────────────────────────────
     if event_type == "checkout.session.completed":
+        # P2-9: Nur eine BEZAHLTE Session erzeugt Anspruch. Ohne diese Pruefung
+        # haette eine abgeschlossene, aber unbezahlte Session (asynchrone
+        # Zahlart, kein Zahlungsbedarf) Credits oder Plus freigeschaltet.
+        if not _ist_bezahlt(obj):
+            log.info("Checkout-Session ohne Zahlung ignoriert (payment_status=%s)",
+                     getattr(obj, "payment_status", None))
+            return
         # obj.metadata ist StripeObject (Stripe 15.x) — kein .get(), kein dict().
         # Sicher über getattr() zugreifen; _data-Dict als Fallback.
         meta    = obj.metadata or {}
         _m      = meta._data if hasattr(meta, "_data") else (meta if isinstance(meta, dict) else {})
         user_id = int(_m.get("user_id", 0) or 0)
         typ     = _m.get("typ", "")
+
+        zahlung = _zahlung_id(obj)
+        session_id_ = getattr(obj, "id", None)
 
         if typ == "abo":
             abo_typ   = _m.get("abo_typ", "")
@@ -416,6 +545,8 @@ def _verarbeite_event(event_type: str, obj) -> None:
                 except Exception:
                     pass
                 conn.commit()
+            _merke_zahlung(zahlung, session_id=session_id_, user_id=user_id, produkt="abo",
+                           spalte=None, subscription_id=sub_id)
 
         elif typ == "plus":
             # Erste Periode. Zeitraum kommt aus der Subscription bei Stripe —
@@ -426,6 +557,8 @@ def _verarbeite_event(event_type: str, obj) -> None:
             sub = stripe.Subscription.retrieve(sub_id)
             plus_modul.grant_periode(user_id, sub_id,
                                      _period_start_ts(sub), _period_end_ts(sub))
+            _merke_zahlung(zahlung, session_id=session_id_, user_id=user_id, produkt="plus",
+                           spalte=None, subscription_id=sub_id)
 
         elif typ == "check":
             # Produkt kommt aus der Session-Metadata, die der Server beim
@@ -437,6 +570,8 @@ def _verarbeite_event(event_type: str, obj) -> None:
             if not user_id:
                 raise ValueError("checkout.session.completed ohne user_id")
             gutschrift(user_id, produkt)
+            _merke_zahlung(zahlung, session_id=session_id_, user_id=user_id, produkt=produkt,
+                           spalte=_SPALTE_JE_PRODUKT.get(produkt))
 
         elif typ == "einzelkauf":
             with get_conn() as conn:
@@ -445,6 +580,8 @@ def _verarbeite_event(event_type: str, obj) -> None:
                     (user_id,),
                 )
                 conn.commit()
+            _merke_zahlung(zahlung, session_id=session_id_, user_id=user_id, produkt="einzelkauf",
+                           spalte=_SPALTE_JE_PRODUKT["einzelkauf"])
 
         elif typ == "ebook":
             ebook_id       = _m.get("ebook_id", "")
@@ -534,6 +671,27 @@ def _verarbeite_event(event_type: str, obj) -> None:
                     (checks, ersatzteil_suchen, user["id"]),
                 )
                 conn.commit()
+
+    # ── Rueckerstattung / Chargeback (P2-9) ───────────────────────────────────
+    # Eine zurueckgezahlte oder angefochtene Zahlung darf keine dauerhafte
+    # Berechtigung hinterlassen. `charge.refunded` feuert auch bei TEIL-
+    # erstattungen; zurueckgenommen wird nur bei vollstaendiger Rueckzahlung —
+    # eine Teilerstattung (z.B. Kulanz) laesst die Leistung bestehen.
+    elif event_type == "charge.refunded":
+        vollstaendig = bool(getattr(obj, "refunded", False))
+        if not vollstaendig:
+            betrag = getattr(obj, "amount", 0) or 0
+            erstattet = getattr(obj, "amount_refunded", 0) or 0
+            vollstaendig = betrag > 0 and erstattet >= betrag
+        if vollstaendig:
+            _entziehe(_zahlung_id(obj), "erstattet")
+
+    elif event_type in ("charge.dispute.created", "charge.dispute.funds_withdrawn"):
+        # Chargeback: das Geld ist (vorlaeufig) weg. Die Berechtigung wird sofort
+        # zurueckgenommen; gewinnt der Haendler den Fall spaeter, kann sie manuell
+        # wieder erteilt werden — das ist der sicherere Weg herum.
+        zahlung = getattr(obj, "payment_intent", None) or getattr(obj, "charge", None)
+        _entziehe(zahlung if isinstance(zahlung, str) else _zahlung_id(obj), "angefochten")
 
     # ── customer.subscription.deleted — Abo gekündigt ─────────────────────────
     elif event_type == "customer.subscription.deleted":

@@ -58,7 +58,10 @@ class _Req:
 
 def neuer_user(email, plus_aktiv=False, abo="none"):
     with db.get_conn() as conn:
-        cur = conn.execute("INSERT INTO users (email, password_hash, abo_typ) VALUES (?,?,?)",
+        # email_verified=1: Security Block 3 (P2-5) knuepft die GRATIS-Kontingente
+        # an eine bestaetigte Adresse. Hier geht es um die Kontingente selbst —
+        # der Verifikationspfad hat eigene Tests (test_security_block3.py).
+        cur = conn.execute("INSERT INTO users (email, password_hash, abo_typ, email_verified) VALUES (?,?,?,1)",
                            (email, "x", abo))
         conn.commit()
         uid = cur.lastrowid

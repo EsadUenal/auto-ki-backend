@@ -78,6 +78,37 @@ CREATE TABLE IF NOT EXISTS check_lauf (
 );
 CREATE INDEX IF NOT EXISTS idx_check_lauf_user ON check_lauf(user_id);
 
+-- E-Mail-Verifikation (Security Block 3, P2-5). Gespeichert wird NUR der
+-- SHA-256-Hash des Tokens: wer die Datenbank liest, kann damit kein Konto
+-- verifizieren. Einmalig einloesbar (eingeloest_at) und zeitlich begrenzt.
+CREATE TABLE IF NOT EXISTS email_verifikation (
+    token_hash   TEXT    PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    erstellt_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    laeuft_ab_at DATETIME NOT NULL,
+    eingeloest_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifikation_user ON email_verifikation(user_id);
+
+-- Zuordnung Stripe-Zahlung -> erteilte Berechtigung (Security Block 3, P2-9).
+-- Ohne sie laesst sich bei einer Rueckerstattung/Chargeback nicht sagen, WELCHE
+-- Berechtigung zurueckzunehmen ist. `status` verhindert ausserdem, dass eine
+-- bereits rueckabgewickelte Zahlung jemals erneut Anspruch erzeugt.
+CREATE TABLE IF NOT EXISTS kauf_zahlung (
+    zahlung_id   TEXT    PRIMARY KEY,   -- payment_intent (Fallback: Session-ID)
+    session_id   TEXT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    produkt      TEXT    NOT NULL,      -- kaufcheck | verkaufscheck | einzelkauf | plus | abo
+    spalte       TEXT,                  -- gutgeschriebene Kontingent-Spalte (NULL bei Abos)
+    anzahl       INTEGER NOT NULL DEFAULT 1,
+    subscription_id TEXT,
+    status       TEXT    NOT NULL DEFAULT 'bezahlt',  -- bezahlt | erstattet | angefochten
+    erstellt_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    beendet_at   DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_kauf_zahlung_user ON kauf_zahlung(user_id);
+CREATE INDEX IF NOT EXISTS idx_kauf_zahlung_sub ON kauf_zahlung(subscription_id);
+
 -- Kontextgebundene Analyse-Rückfragen (Q&A) pro gespeichertem Check. Bleibt an
 -- den Check gekoppelt und wird beim erneuten Öffnen wiederhergestellt. Löscht der
 -- Nutzer den Check, verschwinden die Fragen mit (ON DELETE CASCADE).
@@ -356,6 +387,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         checks_spalten = {r[1] for r in conn.execute("PRAGMA table_info(checks)").fetchall()}
         if "lauf_id" not in checks_spalten:
             conn.execute("ALTER TABLE checks ADD COLUMN lauf_id TEXT")
+    # Security Block 3 (P2-3): Token-Version. Jede Erhoehung entwertet alle
+    # ausgestellten JWTs dieses Kontos sofort (Logout, Passwortwechsel, Loeschung).
+    if "auth_version" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
+    # Security Block 3 (P2-5): E-Mail-Verifikation. Bestandskonten gelten als
+    # verifiziert — sie sind vor der Einfuehrung entstanden und sollen nicht
+    # nachtraeglich ausgesperrt werden; die Abuse-Luecke betrifft NEUE Konten.
+    if "email_verified" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE users SET email_verified=1")
     if "ersatzteil_suchen_verbleibend" not in existing:
         # DEFAULT 1 gilt auch für bestehende Zeilen → 1 Gratis-Suche für alle Bestandsnutzer.
         # Bestehende Abo-Kunden (light/pro) werden unten per Backfill auf ihr echtes Kontingent gehoben,

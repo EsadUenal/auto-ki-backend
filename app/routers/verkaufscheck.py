@@ -11,6 +11,7 @@ from app.auth import verify_api_key
 from app.routers.user_auth import get_current_user_id
 from app.check_gate import entnehme_verkaufscheck, refund_check_credit
 from app.check_lauf import erzeuge as erzeuge_lauf_nachweis
+from app.usage_limit import verbrauche_check_versuch
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.verkaufscheck import run_verkaufscheck
 from app.marktrecherche import RechercheUnzureichend
@@ -44,6 +45,10 @@ async def verkaufscheck_endpunkt(
 ):
     verify_api_key(request)
     # P1-6: siehe kaufcheck.py — Entnahme erst nach Validierung, Auth und API-Key.
+    # P2-7: Technischer Versuchszaehler VOR der Entnahme. Er wird bei einem
+    # Fehlschlag NICHT zurueckgesetzt — sonst liesse sich mit einem einzigen
+    # Guthaben beliebig oft Recherche ausloesen (Rueckerstattungs-Schleife).
+    verbrauche_check_versuch(request)
     zugriff = entnehme_verkaufscheck(user_id)
     try:
         # §22: "Erneut versuchen" nach research_failed erzwingt frische Tavily-Calls
