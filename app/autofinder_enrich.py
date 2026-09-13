@@ -133,7 +133,7 @@ def _kandidat_block(k: Any, req: Any) -> str:
     if bs and bs != "UNKNOWN":
         zeilen.append(f"  Budget-Einschätzung: {bs}")
     if getattr(k, "source_type", "") == "web_discovered":
-        zeilen.append("  Herkunft: Web-Recherche (Angaben belegt, nicht VIRA-geprüft)")
+        zeilen.append("  Herkunft: Web-Recherche (Angaben belegt, nicht ENFAL-geprüft)")
     return "\n".join(zeilen)
 
 

@@ -484,7 +484,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # BERICHTSTEXT zurueck. Im No-Market-Pfad waere genau das ein Einfallstor:
         # haelt sich das Modell nicht an den No-Market-Block und schreibt doch eine
         # Spanne in den Fliesstext, wuerde sie hier in die strukturierten Felder
-        # gehoben und damit zur offiziellen VIRA-Aussage. Ohne belastbaren Markt
+        # gehoben und damit zur offiziellen ENFAL-Aussage. Ohne belastbaren Markt
         # bleiben diese Felder deshalb unantastbar leer — die Empfehlungs-
         # Rekonstruktion oben (rein technisch) bleibt davon unberuehrt.
         if markt_verfuegbar:

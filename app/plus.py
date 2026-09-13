@@ -1,5 +1,5 @@
 """
-VIRA Plus — monatliches Abo (Consumer Pricing V1 FINAL)
+ENFAL Plus — monatliches Abo (Consumer Pricing V1 FINAL)
 
 16,99 €/Monat, monatlich kündbar. Enthalten je bezahltem Abrechnungszeitraum:
 5 KaufChecks, 1 VerkaufsCheck, 50 AutoFinder-Suchen, 100 KI-Chat-Nachrichten.

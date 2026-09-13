@@ -38,8 +38,8 @@ Daraus folgt die zentrale Regel dieses Moduls, und sie gilt ausnahmslos:
 Ein Intervall sagt, in welchem Abstand eine Arbeit vorgesehen ist. Ob sie
 gemacht wurde, sagt es nicht. Ein Fahrzeug mit 118.000 km und einem
 Zahnriemen-Intervall von 120.000 km kann den Riemen gerade neu haben oder nie
-gewechselt bekommen haben — VIRA kann das nicht unterscheiden und behauptet es
-deshalb nicht. Was VIRA leisten kann und hier auch leistet: dem Käufer sagen,
+gewechselt bekommen haben — ENFAL kann das nicht unterscheiden und behauptet es
+deshalb nicht. Was ENFAL leisten kann und hier auch leistet: dem Käufer sagen,
 DASS dieser Punkt bei dieser Laufleistung relevant ist und dass er sich den
 Nachweis zeigen lassen soll.
 

@@ -142,7 +142,7 @@ def build_insights(
         zaehler["n"] += 1
         return f"{prefix}-{zaehler['n']}"
 
-    # ── 1) Schwachstellen der Baureihe (VIRA-DB) ───────────────────────────────
+    # ── 1) Schwachstellen der Baureihe (ENFAL-DB) ───────────────────────────────
     # DATA-SAFETY-RUNTIME-GATE: `gefilterte_schwachstellen` entfernt vorher alle
     # Sätze, deren Freitext sie auf eine nachweislich ANDERE Motorisierung
     # eingrenzt (z.B. "Steuerkette (N47 Dieselmotoren)" an einem Benziner). Diese
@@ -157,7 +157,7 @@ def build_insights(
         # Schwachstelle zieht die ungeprüften derselben Baureihe nicht mehr mit.
         trust_schwachstelle = _trust_des_fakts(s, baureihe, "schwachstellen")
         quellen = [EvidenceQuelle(typ="datenbank", ref=s.get("bauteil"),
-                                  titel=_db_quellentitel("VIRA-Fahrzeugdatenbank",
+                                  titel=_db_quellentitel("ENFAL-Fahrzeugdatenbank",
                                                          trust_schwachstelle))]
         insights.append(Insight(
             id=_id("schwachstelle"),
@@ -213,7 +213,7 @@ def build_insights(
             quellen_titel = ("KBA-Rückrufdatenbank" if kba_anzeige
                              else "Amtlich belegter Rückruf (keine KBA-Referenz hinterlegt)")
         else:
-            quellen_titel = ("Rückrufhinweis aus der VIRA-Fahrzeugdatenbank — "
+            quellen_titel = ("Rückrufhinweis aus der ENFAL-Fahrzeugdatenbank — "
                              "nicht amtlich bestätigt")
             kba_anzeige = None      # keine scheinbar amtliche Nummer anzeigen
         quellen = [EvidenceQuelle(typ="rueckruf_kba", ref=kba_anzeige, titel=quellen_titel)]
@@ -282,7 +282,7 @@ def build_insights(
             # VERIFICATION-PILOT: PRO MOTORPROBLEM.
             trust_motorproblem = _trust_des_fakts(s, baureihe, "motorprobleme")
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=motor_match.get("bezeichnung"),
-                                      titel=_db_quellentitel("VIRA-Motorvariantendaten",
+                                      titel=_db_quellentitel("ENFAL-Motorvariantendaten",
                                                              trust_motorproblem))]
             kosten = s.get("kosten_ca")
             if check_typ == "verkauf":
@@ -340,7 +340,7 @@ def build_insights(
             # verifizierter Eintrag darf spaeter auch so genannt werden (siehe unten).
             trust_wartung = _trust_des_fakts(w, baureihe, "wartung")
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=bauteil,
-                                      titel=_db_quellentitel("VIRA-Wartungsdaten",
+                                      titel=_db_quellentitel("ENFAL-Wartungsdaten",
                                                              trust_wartung))]
             teile = [(w.get("hinweis") or "").strip()]
             if w.get("intervall"):

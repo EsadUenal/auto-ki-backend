@@ -335,7 +335,7 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
         findings.append(KeyFinding(
             id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
             titel="Keine schweren bekannten Motorprobleme gefunden",
-            beschreibung=f"In der vorhandenen VIRA-Datenbasis sind für die erkannte "
+            beschreibung=f"In der vorhandenen ENFAL-Datenbasis sind für die erkannte "
                          f"Motorvariante ({motor_match.get('bezeichnung', 'Motor')}) keine schweren "
                          f"Probleme hinterlegt. Das bedeutet nicht, dass keine Defekte auftreten können.",
             prioritaet=_P_MOTOR_OK))

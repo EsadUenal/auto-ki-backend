@@ -1067,7 +1067,7 @@ async def chat_stream(
 # Kosten/Latenz; das Request-Modell begrenzt zusätzlich auf _MAX_TEXT_LEN).
 _ANALYSE_KONTEXT_MAX = 8_000
 
-_ANALYSE_SYSTEM = """Du bist Viras Analyse-Assistent. Der Nutzer hat gerade das Ergebnis eines {check_label} zu einem konkreten Fahrzeug erhalten (siehe unten). Deine EINZIGE Aufgabe: Fragen zu GENAU DIESER Analyse und den darin behandelten Themen beantworten.
+_ANALYSE_SYSTEM = """Du bist ENFALs Analyse-Assistent. Der Nutzer hat gerade das Ergebnis eines {check_label} zu einem konkreten Fahrzeug erhalten (siehe unten). Deine EINZIGE Aufgabe: Fragen zu GENAU DIESER Analyse und den darin behandelten Themen beantworten.
 
 — WAS DU BEANTWORTEST (großzügig auslegen) —
 - Fragen zur Analyse selbst ("Warum wurde Punkt X als Risiko eingestuft?", "Was bedeutet die Empfehlung?").

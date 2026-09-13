@@ -14,7 +14,7 @@ Zwei Bausteine, strikt getrennt:
    LLM ist AUSSCHLIESSLICH Textersteller. `pruefe_fakten` prüft das Ergebnis danach
    gegen die Eingangsdaten und entfernt/neutralisiert unbelegte Positiv-Behauptungen
    (unfallfrei, Scheckheft, TÜV neu, Vorbesitzer, nicht genannte Ausstattung). Bekannte
-   Mängel bleiben ehrlich erhalten. Grundsatz: VIRA fügt NIE eine positive Aussage
+   Mängel bleiben ehrlich erhalten. Grundsatz: ENFAL fügt NIE eine positive Aussage
    hinzu, die der Nutzer nicht angegeben hat.
 """
 
@@ -369,7 +369,7 @@ def _claim_rules(req: VerkaufsCheckRequest) -> list[tuple[str, re.Pattern, bool]
          tuev_ok),
         ("Garantie",
          re.compile(r"\bgarantie\b|\bgewährleistung\b", re.IGNORECASE),
-         False),   # VIRA hat keine Garantie-Daten -> nie behaupten
+         False),   # ENFAL hat keine Garantie-Daten -> nie behaupten
     ]
 
 
@@ -461,7 +461,7 @@ def pruefe_fakten(titel: str, beschreibung: str, req: VerkaufsCheckRequest) -> t
     """Fakten-Schutz: gibt (titel, beschreibung, entfernte_behauptungen) zurück.
 
     Entfernt unbelegte Positiv-Behauptungen und erfundene Ausstattung; garantiert,
-    dass angegebene Mängel ehrlich enthalten bleiben. VIRA fügt NIE eine positive
+    dass angegebene Mängel ehrlich enthalten bleiben. ENFAL fügt NIE eine positive
     Aussage hinzu, die der Nutzer nicht angegeben hat.
     """
     entfernt: list[str] = []

@@ -237,16 +237,16 @@ def titel_von(insights, kategorie):
     return treffer[0].quellen[0].titel if treffer and treffer[0].quellen else ""
 
 check("F1 unverifiziert: Schwachstellen-Quelle ohne '(geprueft)'",
-      titel_von(ins_u, "schwachstelle") == "VIRA-Fahrzeugdatenbank")
+      titel_von(ins_u, "schwachstelle") == "ENFAL-Fahrzeugdatenbank")
 check("F2 unverifiziert: Motorvarianten-Quelle ohne '(geprueft)'",
-      titel_von(ins_u, "motorproblem") == "VIRA-Motorvariantendaten")
+      titel_von(ins_u, "motorproblem") == "ENFAL-Motorvariantendaten")
 check("F3 unverifiziert: Wartungs-Quelle ohne '(geprueft)'",
-      titel_von(ins_u, "wartung") == "VIRA-Wartungsdaten")
+      titel_von(ins_u, "wartung") == "ENFAL-Wartungsdaten")
 check("F4 in KEINEM unverifizierten Quellentitel steht 'geprueft'",
       not any("geprüft" in (q.titel or "").lower()
               for i in ins_u for q in i.quellen))
 check("F5 verifiziert: '(geprueft)' kommt zurueck",
-      titel_von(ins_v, "schwachstelle") == "VIRA-Fahrzeugdatenbank (geprüft)")
+      titel_von(ins_v, "schwachstelle") == "ENFAL-Fahrzeugdatenbank (geprüft)")
 
 rr_u = [i for i in ins_u if i.kategorie == "rueckruf"][0]
 rr_v = [i for i in ins_v if i.kategorie == "rueckruf"][0]

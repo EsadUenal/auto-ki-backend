@@ -126,8 +126,8 @@ from app.rate_limit import limiter
 # Admin-Endpunkte — und liefern einem Angreifer die vollstaendige Angriffskarte.
 # Lokal bleibt alles verfuegbar (DOCS_AKTIV folgt AUTO_KI_ENV).
 app = FastAPI(
-    title="Vira Backend",
-    description="Vira — KI-Autoberatung. Kauf, Verkauf, technisches Wissen.",
+    title="ENFAL Backend",
+    description="ENFAL — KI-Autoberatung. Kauf, Verkauf, technisches Wissen.",
     version="0.1.0",
     default_response_class=UTF8JSONResponse,
     docs_url="/docs" if DOCS_AKTIV else None,

@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Kanonisches Preisurteil (Reliability-Sprint §6/§7/§13).
 
-Ein VIRA-Check hatte gleichzeitig widersprüchliche Preisaussagen ("Marktgerecht"
+Ein ENFAL-Check hatte gleichzeitig widersprüchliche Preisaussagen ("Marktgerecht"
 UND "Deutlich über Marktpreis" UND "21,5 % über Median" UND "innerhalb der
 Marktspanne"). Ursache: mehrere Stellen (LLM-Bericht, strukturiertes Feld, Key
 Findings) bewerteten dieselben Zahlen JEWEILS EIGENSTÄNDIG.

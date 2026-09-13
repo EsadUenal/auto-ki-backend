@@ -37,7 +37,7 @@ Unter **Variables** setzen (siehe `.env.example` für die vollständige Liste).
 | `AUTO_KI_ENV` | `production` (im Dockerfile bereits gesetzt — nicht überschreiben) |
 | `AUTO_KI_API_KEY` | langer Zufalls-String (anderer als JWT). **Öffentlich:** steht als `VITE_API_KEY` im Frontend-Bundle, schützt nur Consumer-Routen |
 | `AUTO_KI_ADMIN_API_KEY` | optional; eigener Zufalls-String ≥ 32 Zeichen, NIE im Frontend. Ohne ihn sind die Admin-Endpunkte geschlossen |
-| `AUTO_KI_CORS_ORIGINS` | echte Frontend-Domain, z.B. `https://vira.de` |
+| `AUTO_KI_CORS_ORIGINS` | echte Frontend-Domain, z.B. `https://app.getenfal.de` |
 | `AUTO_KI_TRUSTED_PROXY_HOPS` | `0` bis zur Live-Verifikation (siehe 1.6), danach die belegte Hop-Zahl |
 | `GEMINI_API_KEY` | Google-Gemini-Key |
 | `TAVILY_API_KEY` | Tavily-Key |

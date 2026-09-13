@@ -19,7 +19,7 @@ Daten vor Zahlungen vor Traffic).
   - [ ] `AUTO_KI_ENV=production` bleibt aus dem Dockerfile aktiv (Startprüfung +
         `Secure`-Cookie) — nicht überschreiben.
   - [ ] `AUTO_KI_CORS_ORIGINS` — echte Frontend-Domain(s), z. B.
-        `https://vira.de,https://www.vira.de`
+        `https://getenfal.de,https://app.getenfal.de`
   - [ ] `AUTO_KI_DB_PATH=/data/auto_ki.db` (im Dockerfile bereits Default)
   - [ ] `AUTO_KI_TRUSTED_PROXY_HOPS` bleibt `0`, bis die Client-IP live gemessen
         wurde (DEPLOYMENT.md §1.6) — sonst teilen sich alle Nutzer ein Limit.
@@ -46,7 +46,7 @@ Daten vor Zahlungen vor Traffic).
       Dockerfile + railway.json).
 - [ ] **Build Args** setzen (Service → Settings → Build — NICHT normale
       Runtime-Variablen, Vite bettet sie zur Build-Zeit ins Bundle ein):
-  - [ ] `VITE_API_BASE_URL` = echte Backend-Domain (`https://api.vira.de` o.ä.)
+  - [ ] `VITE_API_BASE_URL` = echte Backend-Domain (`https://api.getenfal.de` o.ä.)
   - [ ] `VITE_API_KEY` = identisch zu `AUTO_KI_API_KEY` oben
 - [ ] Nach dem Deploy: Backend-`AUTO_KI_CORS_ORIGINS`/`FRONTEND_URL` mit der
       finalen Frontend-Domain abgleichen, Backend redeployen falls nötig.

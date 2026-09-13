@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 """
-Phase 5 — VIRA Dealer: Berechtigung + deterministische Ableitungen.
+Phase 5 — ENFAL Dealer: Berechtigung + deterministische Ableitungen.
 
-Kein LLM, keine neue Analyse-Engine: die VIRA-Signale (Empfehlung, Preisbewertung,
+Kein LLM, keine neue Analyse-Engine: die ENFAL-Signale (Empfehlung, Preisbewertung,
 Marktmedian, Risiken, Key Findings) werden AUS DEN BEREITS GESPEICHERTEN Kauf-/
 Verkaufscheck-Ergebnissen gelesen. Der Margenrechner ist reine Zahlenlogik; fehlende
 Grundwerte -> None (nie eine erfundene 0-€-Marge).
@@ -40,7 +40,7 @@ def require_dealer(user_id: int = Depends(get_current_user_id)) -> int:
         raise HTTPException(
             status_code=403,
             detail={"fehler": {"code": "dealer_required",
-                               "nachricht": "Dieser Bereich ist nur für VIRA-Dealer-Konten (MAX-Tarif) verfügbar."}},
+                               "nachricht": "Dieser Bereich ist nur für ENFAL-Dealer-Konten (MAX-Tarif) verfügbar."}},
         )
     return user_id
 
@@ -82,7 +82,7 @@ def berechne_finanzen(v: dict) -> DealerFinance:
     )
 
 
-# ── VIRA-Signale aus verknüpften Checks lesen (nichts neu berechnen) ─────────
+# ── ENFAL-Signale aus verknüpften Checks lesen (nichts neu berechnen) ─────────
 
 def _marktanalyse(ergebnis: dict) -> dict | None:
     for i in ergebnis.get("insights") or []:

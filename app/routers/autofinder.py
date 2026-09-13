@@ -125,11 +125,11 @@ router = APIRouter(default_response_class=UTF8JSONResponse)
 limiter = Limiter(key_func=limit_schluessel)
 _AUTOFINDER_RATE_LIMIT = "20/minute"   # bewusst == app.rate_limit.RATE_LIMIT, siehe oben
 
-# §7: Pflicht-Transparenzhinweis — der aktuelle Bestand ist eine VIRA-Vor-
+# §7: Pflicht-Transparenzhinweis — der aktuelle Bestand ist eine ENFAL-Vor-
 # auswahl, kein vollständiger Marktüberblick. Zahl synchron mit dem
 # kanonischen Bestand halten (siehe test_autofinder_norm.py Abschnitt 18).
 _DATA_SCOPE_HINT = (
-    "Die interne Vorauswahl basiert aktuell auf 416 von VIRA gepflegten "
+    "Die interne Vorauswahl basiert aktuell auf 416 von ENFAL gepflegten "
     "Baureihen. Weitere Modelle können in einer späteren Web-Ergänzung "
     "berücksichtigt werden."
 )
@@ -152,7 +152,7 @@ _BUDGET_SHORTLIST_K = 15
 
 
 def _bekannte_marken() -> set[str]:
-    """Alle Marken, die VIRA intern überhaupt führt (kleingeschrieben).
+    """Alle Marken, die ENFAL intern überhaupt führt (kleingeschrieben).
 
     Nutzt die bereits gecachte Baureihen-Kurzliste (`database._cached_alle`,
     60s TTL) — kein zusätzlicher Full-Table-Scan pro Request. Grundlage für
@@ -194,7 +194,7 @@ def _kilometer_hinweis(body: AutoFinderRequest) -> str | None:
     if body.kilometer_max is None:
         return None
     return (
-        "Kilometerangaben fließen aktuell nicht in die Auswahl ein — VIRA hat "
+        "Kilometerangaben fließen aktuell nicht in die Auswahl ein — ENFAL hat "
         "dafür noch keinen belastbaren Marktpreis-/Gebrauchtwagen-Datenbestand. "
         "Sie dienen nur zur Orientierung."
     )
@@ -609,7 +609,7 @@ def _filters_applied(body: AutoFinderRequest) -> dict:
 @router.post(
     "/autofinder",
     response_model=AutoFinderResponse,
-    summary="AutoFinder: kostenlose Fahrzeugempfehlung aus der VIRA-Datenbank",
+    summary="AutoFinder: kostenlose Fahrzeugempfehlung aus der ENFAL-Datenbank",
 )
 @limiter.limit(_AUTOFINDER_RATE_LIMIT)
 async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
@@ -651,9 +651,9 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
         if web_kandidaten:
             warnungen.append(
                 f"{len(web_kandidaten)} Vorschlag/Vorschläge stammen aus einer "
-                "Web-Recherche zu Fahrzeugmodellen, die VIRA intern noch nicht "
+                "Web-Recherche zu Fahrzeugmodellen, die ENFAL intern noch nicht "
                 "pflegt — technische Angaben dort sind belegt, aber nicht "
-                "VIRA-geprüft."
+                "ENFAL-geprüft."
             )
 
     # Interne und Web-Kandidaten in EINE Rangliste (§11) — ohne pauschalen
@@ -711,7 +711,7 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
 # BILD-ON-DEMAND — PRODUKTENTSCHEIDUNG: CONSUMER-SEITIG ABGESCHALTET
 # ══════════════════════════════════════════════════════════════════════════
 # AutoFinder zeigt keine modellgenauen Fahrzeugbilder mehr. Die Karten tragen
-# stattdessen ein gestaltetes VIRA Vehicle Identity Panel (Frontend).
+# stattdessen ein gestaltetes ENFAL Vehicle Identity Panel (Frontend).
 #
 # WARUM DER ENSURE-ENDPUNKT KOMPLETT WEG IST — und nicht nur ungenutzt bleibt:
 # er war der EINZIGE Pfad, über den ein oeffentlicher Consumer-Request eine

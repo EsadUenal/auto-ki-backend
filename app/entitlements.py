@@ -9,7 +9,7 @@ Dealer-Gate diese Regeln nutzen können, ohne Zirkelimport.
 
 
 def has_dealer_access(abo_typ: str | None, ist_haendler: object) -> bool:
-    """Effektive VIRA-Dealer-Berechtigung.
+    """Effektive ENFAL-Dealer-Berechtigung.
 
     Der MAX-Tarif IST der Händlertarif -> abo_typ == "max" schaltet Dealer frei.
     `ist_haendler` bleibt als MANUELLER DB-Override (Testaccounts/Support/Sonder-

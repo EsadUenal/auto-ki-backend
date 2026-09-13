@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 P1-4 — Fahrzeugkontext: vorhandene DB-Felder kontrolliert nutzbar machen.
 
-Der VIRA-Datenbestand enthält pro Baureihe mehrere Felder, die der Kaufcheck
+Der ENFAL-Datenbestand enthält pro Baureihe mehrere Felder, die der Kaufcheck
 bislang GAR NICHT gelesen hat (gemessen: sie tauchen weder in `build_db_context`
 noch in `build_insights` noch in den Kaufaktionen auf — geschrieben werden sie nur
 von `admin_llm`/`db_writer`). Dieses Modul holt sie kontrolliert herein.

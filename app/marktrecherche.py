@@ -58,7 +58,7 @@ class RechercheUnzureichend(Exception):
 
 
 NACHRICHT_TECHNISCH = (
-    "VIRA konnte die externe Marktrecherche gerade technisch nicht zuverlässig "
+    "ENFAL konnte die externe Marktrecherche gerade technisch nicht zuverlässig "
     "abschließen (Suchdienst nicht erreichbar). Dieser Check wurde deshalb NICHT "
     "abgeschlossen und NICHT von deinem Kontingent abgezogen. Bitte versuche es "
     "gleich erneut."
@@ -83,7 +83,7 @@ def nachricht_unzureichend(identity: "VehicleIdentity | None", grund: str) -> st
             fehlende_hinweise.append("Kilometerstand")
 
     basis = (
-        "VIRA konnte für dieses Fahrzeug aktuell keine belastbare Marktdatenbasis finden — "
+        "ENFAL konnte für dieses Fahrzeug aktuell keine belastbare Marktdatenbasis finden — "
         "es liegen zu wenige wirklich vergleichbare Angebote vor, um einen zuverlässigen "
         "Marktwert und eine belastbare Preisbewertung zu erstellen. Dieser Check wurde "
         "deshalb NICHT abgeschlossen und NICHT von deinem Kontingent abgezogen. Du kannst "

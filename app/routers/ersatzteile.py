@@ -103,7 +103,7 @@ REGELN:
 3. Der aktuelle Suchpfad besitzt keine autoritative OE/OEM- oder Herstellerquelle.
    Setze deshalb "marke_typ" immer auf "unbekannt" und "qualitaetsstufe" auf
    "Typ nicht verifiziert". Händlerbehauptungen wie "Original" oder "OEM" sind
-   keine von VIRA bestätigte Herkunft.
+   keine von ENFAL bestätigte Herkunft.
 4. Maximal 8 Einträge, sortiert nach Preis aufsteigend.
 5. Wenn KEINE brauchbaren Treffer in den Web-Ergebnissen stehen, gib "ergebnisse": [] zurück und erkläre in "empfehlung" ehrlich, dass keine Angebote gefunden wurden.
 6. Die Empfehlung soll dem Nutzer Sicherheit geben: worauf er beim gewählten Teil achten sollte (Qualität vs. Preis), nicht nur "das billigste".
@@ -265,7 +265,7 @@ def _mindestnutzen(fahrzeug: str, bauteil: str) -> str:
 
 
 def _parts_identity_context(fahrzeug: str) -> dict:
-    """Verpflichtendes Parts-Identity-Gate aus der vorhandenen VIRA-Infrastruktur.
+    """Verpflichtendes Parts-Identity-Gate aus der vorhandenen ENFAL-Infrastruktur.
 
     Ein belastbarer Fahrzeugtreffer erlaubt nur die weitere Prüfung; er bestätigt
     noch kein Teil. Ein Motor gilt nur dann als belastbar, wenn der Nutzer einen
@@ -449,7 +449,7 @@ async def ersatzteil_suche(
         anbieter_teil = f" von {gewaehlt['anbieter']}" if gewaehlt.get("anbieter") else ""
         preis_teil = f" für {gewaehlt['preis_eur']:.0f} €".replace(".", ",") if gewaehlt.get("preis_eur") else ""
         empfehlung = (
-            f"VIRA empfiehlt aktuell **{gewaehlt.get('teilename', 'dieses Teil')}**"
+            f"ENFAL empfiehlt aktuell **{gewaehlt.get('teilename', 'dieses Teil')}**"
             f"{anbieter_teil}{preis_teil}, "
             f"da die Kompatibilität mit dem erkannten Fahrzeug am besten bestätigt ist "
             f"({gewaehlt.get('kompat_grund', 'Kompatibilität bestätigt')})."

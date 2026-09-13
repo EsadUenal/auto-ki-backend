@@ -34,7 +34,7 @@ keine neu erfundenen Schwellen):
   3. `rueckruf`-Insight mit `applicability` in RUECKRUF_WERKSTATT_APPLICABILITY.
      `recall_filter.rueckruf_applicability` vergibt "variant_match" NUR, wenn der
      amtliche Datensatz den Rückruf ausdrücklich auf einen Antrieb/eine Variante
-     eingrenzt, VIRA diese Bedingung auflösen kann und sie auf das Fahrzeug passt
+     eingrenzt, ENFAL diese Bedingung auflösen kann und sie auf das Fahrzeug passt
      — zusätzlich zu Baujahr-Deckung und belegter KBA-Referenz.
 
      FLOOR-SAFETY-AUDIT (BATCH A): bis dahin genügte Baujahr-Deckung + belegte

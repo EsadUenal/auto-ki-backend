@@ -187,7 +187,7 @@ def download_ebook(ebook_id: str, user_id: int = Depends(get_current_user_id)):
         )
 
     sicherer_titel = "".join(c if c.isalnum() or c in "-_ " else "_" for c in ebook["titel"])
-    filename = f"Vira_{sicherer_titel}.pdf"
+    filename = f"ENFAL_{sicherer_titel}.pdf"
     return FileResponse(
         path=str(pdf_path),
         media_type="application/pdf",

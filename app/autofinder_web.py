@@ -185,7 +185,7 @@ def braucht_web_fallback(interne_kandidaten: list, request: Any,
 
       1. gar kein interner Treffer,
       2. weniger als `COVERAGE_MIN_INTERNE_KANDIDATEN` interne Treffer,
-      3. der Nutzer verlangt ausdruecklich eine Marke, die VIRA gar nicht fuehrt
+      3. der Nutzer verlangt ausdruecklich eine Marke, die ENFAL gar nicht fuehrt
          (dann bringt auch eine gefuellte Trefferliste anderer Marken nichts).
     """
     if not interne_kandidaten:
