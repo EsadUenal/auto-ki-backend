@@ -213,7 +213,64 @@ CONVERSATION_TITEL_MAX = 200
 # Kontingent korrekt zurueckerstattet wird. Ein eigener TAGESZAEHLER begrenzt
 # deshalb die VERSUCHE — unabhaengig vom Guthaben und ohne Rueckerstattung.
 # Grosszuegig: ein normaler Nutzer kommt hier nie an.
-CHECK_VERSUCHE_PRO_TAG = int(os.environ.get("AUTO_KI_CHECK_VERSUCHE_PRO_TAG", "25"))
+CHECK_VERSUCHE_PRO_TAG = int(os.environ.get("AUTO_KI_CHECK_VERSUCHE_PRO_TAG", "8"))
+
+# ---------------------------------------------------------------------------
+# Externe Provider: Reliability- und Kostenbudgets
+# ---------------------------------------------------------------------------
+# Alle Werte beschreiben REALE HTTP-Aufrufe; Wiederholungen zählen mit. Die
+# Feature-Budgets sind bewusst großzügiger als der Normalpfad, aber endlich.
+# Damit können weder adaptive Suchleitern noch verschachtelte Fallbacks aus
+# einer einzelnen Nutzeraktion unkontrolliert Provider-Kosten erzeugen.
+GEMINI_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_GEMINI_TIMEOUT_SECONDS", "45"))
+GEMINI_TOTAL_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_GEMINI_TOTAL_TIMEOUT_SECONDS", "75"))
+GEMINI_STREAM_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_GEMINI_STREAM_TIMEOUT_SECONDS", "75"))
+GEMINI_MAX_ATTEMPTS = int(os.environ.get("AUTO_KI_GEMINI_MAX_ATTEMPTS", "3"))
+GEMINI_RETRY_BASE_SECONDS = float(os.environ.get("AUTO_KI_GEMINI_RETRY_BASE_SECONDS", "1"))
+GEMINI_RETRY_CAP_SECONDS = float(os.environ.get("AUTO_KI_GEMINI_RETRY_CAP_SECONDS", "8"))
+
+TAVILY_CONNECT_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_TAVILY_CONNECT_TIMEOUT_SECONDS", "5"))
+TAVILY_READ_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_TAVILY_READ_TIMEOUT_SECONDS", "15"))
+TAVILY_TOTAL_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_TAVILY_TOTAL_TIMEOUT_SECONDS", "20"))
+TAVILY_MAX_ATTEMPTS = int(os.environ.get("AUTO_KI_TAVILY_MAX_ATTEMPTS", "3"))
+TAVILY_RETRY_BASE_SECONDS = float(os.environ.get("AUTO_KI_TAVILY_RETRY_BASE_SECONDS", "1"))
+TAVILY_MAX_RESULTS = int(os.environ.get("AUTO_KI_TAVILY_MAX_RESULTS", "20"))
+
+PROVIDER_GLOBAL_MAX_CONCURRENT = int(os.environ.get("AUTO_KI_PROVIDER_GLOBAL_MAX_CONCURRENT", "32"))
+PROVIDER_USER_MAX_CONCURRENT = int(os.environ.get("AUTO_KI_PROVIDER_USER_MAX_CONCURRENT", "2"))
+PROVIDER_ADMIN_IMAGE_BATCH_MAX = int(os.environ.get("AUTO_KI_PROVIDER_ADMIN_IMAGE_BATCH_MAX", "20"))
+
+# Maximale echte Provider-Aufrufe pro Aktion (inklusive Retries und Tavily
+# Extract). Werte sind per ENV überschreibbar, die Namen werden in
+# PROVIDER_RELIABILITY.md dokumentiert.
+PROVIDER_FEATURE_LIMITS: dict[str, dict[str, int]] = {
+    "chat": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_CHAT_GEMINI_MAX", "3")),
+             "tavily": int(os.environ.get("AUTO_KI_PROVIDER_CHAT_TAVILY_MAX", "9"))},
+    "autofinder": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_AUTOFINDER_GEMINI_MAX", "6")),
+                    "tavily": int(os.environ.get("AUTO_KI_PROVIDER_AUTOFINDER_TAVILY_MAX", "6"))},
+    "kaufcheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_GEMINI_MAX", "4")),
+                   "tavily": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_TAVILY_MAX", "16"))},
+    "verkaufscheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_GEMINI_MAX", "4")),
+                       "tavily": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_TAVILY_MAX", "16"))},
+    "inseratsoptimierung": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_INSERAT_GEMINI_MAX", "3")),
+                            "tavily": 0},
+    "analyse_frage": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_ANALYSE_FRAGE_GEMINI_MAX", "3")),
+                       "tavily": 0},
+    "ersatzteile": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_ERSATZTEILE_GEMINI_MAX", "3")),
+                     "tavily": int(os.environ.get("AUTO_KI_PROVIDER_ERSATZTEILE_TAVILY_MAX", "6"))},
+    "admin": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_ADMIN_GEMINI_MAX", "8")),
+              "tavily": 0},
+    "admin_image_batch": {"gemini": PROVIDER_ADMIN_IMAGE_BATCH_MAX,
+                          "tavily": 0},
+    "unscoped": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_UNSCOPED_GEMINI_MAX", "3")),
+                 "tavily": int(os.environ.get("AUTO_KI_PROVIDER_UNSCOPED_TAVILY_MAX", "3"))},
+}
+
+GEMINI_CHAT_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_CHAT_MAX_OUTPUT_TOKENS", "2048"))
+GEMINI_ANALYSE_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_ANALYSE_MAX_OUTPUT_TOKENS", "2048"))
+GEMINI_JSON_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_JSON_MAX_OUTPUT_TOKENS", "16384"))
+GEMINI_AUX_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_AUX_MAX_OUTPUT_TOKENS", "4096"))
+GEMINI_MAX_INPUT_CHARS = int(os.environ.get("AUTO_KI_GEMINI_MAX_INPUT_CHARS", "120000"))
 
 # P2-5: Gratis-Kontingente (Chat, AutoFinder, Analyse-Rueckfragen) erst nach
 # bestaetigter E-Mail. Bezahlte Leistungen bleiben unberuehrt.

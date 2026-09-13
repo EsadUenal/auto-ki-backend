@@ -239,7 +239,7 @@ def _call_sync(client, prompt: str, system: str) -> str:
     for versuch in range(1, 3):
         resp = with_retry_sync(lambda: client.models.generate_content(
             model=LLM_MODEL, contents=contents, config=cfg,
-        ))
+        ), model=LLM_MODEL)
         text = resp.text or ""
         if text.strip():
             return text
@@ -287,7 +287,7 @@ def _call_stream_collect(
         stream = with_retry_sync(
             lambda m=model, c=cfg, ct=contents: client.models.generate_content_stream(
                 model=m, contents=ct, config=c,
-            )
+            ), model=model,
         )
         for chunk in stream:
             last_chunk = chunk
@@ -337,7 +337,7 @@ def _call_sync_fallback(client, prompt: str, system: str) -> str:
     for versuch in range(1, 3):
         resp = with_retry_sync(lambda: client.models.generate_content(
             model=FAST_LLM_MODEL, contents=contents, config=cfg,
-        ))
+        ), model=FAST_LLM_MODEL)
         text = resp.text or ""
         stripped = text.strip()
         if not stripped:
@@ -369,7 +369,7 @@ def _call_motoren(client, prompt: str) -> str:
     Motoren-Call mit automatischem Fallback auf FAST_LLM_MODEL.
 
     Strategie:
-      1. Primär: LLM_MODEL (gemini-3.7-flash) via Streaming + with_retry_sync (5×15s)
+      1. Primär: LLM_MODEL via Streaming + zentrales Retry-Budget
          Streaming übersteht 503-Überlast besser als non-streaming.
       2. Fallback bei 503 ODER leerem/ungültigem JSON:
          FAST_LLM_MODEL (gemini-2.5-flash-lite) non-streaming, thinking_budget=0.
@@ -470,15 +470,14 @@ async def entwurf_erstellen(marke: str, modell: str, generation: str) -> dict:
             raise ValueError(f"Motorenliste ist kein Array: {type(result)}")
     except Exception as e:
         last_err = e
-        motoren_err = str(e)
+        motoren_err = type(e).__name__
         log.warning("Motoren-Call fehlgeschlagen (inkl. Fallback): %s", e)
 
     # Zusammenführen — Motorenfehler als eigenes Feld mitgeben (nicht still verwerfen)
     ebene1["motoren"] = motoren
     if motoren_err and not motoren:
         ebene1["_motorenfehler"] = (
-            "Motorvarianten konnten nicht geladen werden, bitte Entwurf neu versuchen. "
-            f"(Details: {motoren_err})"
+            "Motorvarianten konnten nicht geladen werden, bitte Entwurf neu versuchen."
         )
     ebene1.setdefault("marke", marke)
     ebene1.setdefault("modell", modell)
@@ -527,7 +526,7 @@ async def entwurf_stream(
         try:
             stream = with_retry_sync(lambda: client.models.generate_content_stream(
                 model=LLM_MODEL, contents=contents_e1, config=cfg_e1,
-            ))
+            ), model=LLM_MODEL)
             for chunk in stream:
                 if chunk.text:
                     buffer.append(chunk.text)
@@ -543,8 +542,8 @@ async def entwurf_stream(
             ebene1 = _extract_json(full)
             break
 
-        except RateLimitExhausted as e:
-            yield json.dumps({"error": str(e)})
+        except RateLimitExhausted:
+            yield json.dumps({"error": "KI-Kontingent derzeit nicht verfügbar."})
             return
         except json.JSONDecodeError as e:
             log.warning("Stream E1 Versuch %d/2: JSON-Fehler – %s", versuch, e)
@@ -558,13 +557,13 @@ async def entwurf_stream(
         log.warning(
             "Stream E1 %s erschöpft — Fallback auf %s (non-streaming).", LLM_MODEL, FAST_LLM_MODEL
         )
-        yield json.dumps({"status": "fallback", "modell": FAST_LLM_MODEL})
+        yield json.dumps({"status": "fallback"})
         try:
             text = _call_sync_fallback(client, prompt_e1, _SYS_EBENE1)
             ebene1 = _extract_json(text)
         except Exception as e:
             log.warning("Stream E1 Fallback fehlgeschlagen: %s", e)
-            yield json.dumps({"error": f"Antwort unvollständig, bitte erneut versuchen. ({e})"})
+            yield json.dumps({"error": "Antwort unvollständig, bitte erneut versuchen."})
             return
 
     # ---- Phase 2: Motoren — Streaming + Fallback-Modell bei 503 ----
@@ -580,7 +579,7 @@ async def entwurf_stream(
         else:
             raise ValueError(f"Kein Array: {type(result)}")
     except Exception as e:
-        motoren_err = str(e)
+        motoren_err = type(e).__name__
         log.warning("Stream Motoren-Call fehlgeschlagen (inkl. Fallback): %s", e)
 
     # ---- Zusammenführen und done senden ----
@@ -635,7 +634,7 @@ async def generationen_auflisten(anfrage: str) -> list[dict]:
                 resp = with_retry_sync(
                     lambda m=model, c=cfg: client.models.generate_content(
                         model=m, contents=contents, config=c,
-                    )
+                    ), model=model,
                 )
                 text = resp.text or ""
                 stripped = text.strip()

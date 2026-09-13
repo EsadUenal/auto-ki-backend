@@ -32,6 +32,8 @@ import app.database as _db  # noqa: E402
 from app.autofinder_norm import normalisiere_karosserie  # noqa: E402
 from app.autofinder_generation import fuehre_job_aus, lade_jobs, neuer_job, speichere_jobs  # noqa: E402
 from app.autofinder_visual import UNBEKANNTE_KAROSSERIE, lade_manifest_datei  # noqa: E402
+from app.config import PROVIDER_ADMIN_IMAGE_BATCH_MAX  # noqa: E402
+from app.provider_control import provider_scope  # noqa: E402
 
 
 def build_generation_jobs(*, visual_key: str | None = None, only_missing: bool = False,
@@ -70,15 +72,16 @@ def build_generation_jobs(*, visual_key: str | None = None, only_missing: bool =
 
 async def _fuehre_aus(jobs: list, ziel_ordner: Path) -> list:
     ergebnis = []
-    for job in jobs:
-        print(f"  generiere {job.visual_key} ...", flush=True)
-        job = await fuehre_job_aus(job, ziel_ordner)
-        print(f"    -> {job.status}" + (f" ({job.error})" if job.error else f" ({job.output_path})"))
-        ergebnis.append(job)
-        if job.status == "failed" and job.error and ("503" in job.error or "UNAVAILABLE" in job.error):
-            print("  Provider vorübergehend nicht erreichbar (503) — breche Batch ab, "
-                  "kein Retry-Loop.")
-            break
+    async with provider_scope("admin_image_batch", key="offline-admin"):
+        for job in jobs:
+            print(f"  generiere {job.visual_key} ...", flush=True)
+            job = await fuehre_job_aus(job, ziel_ordner)
+            print(f"    -> {job.status}" + (f" ({job.error})" if job.error else f" ({job.output_path})"))
+            ergebnis.append(job)
+            if job.status == "failed" and job.error and "provider_5xx" in job.error:
+                print("  Provider vorübergehend nicht erreichbar — breche Batch ab, "
+                      "kein Retry-Loop.")
+                break
     return ergebnis
 
 
@@ -112,6 +115,14 @@ def main() -> None:
     if not args.execute:
         print("\nDRY-RUN (Default) — 0 Provider-Calls. Für echte Generierung --execute setzen.")
         return
+
+    if len(jobs) > PROVIDER_ADMIN_IMAGE_BATCH_MAX:
+        print(
+            f"Kostenlimit: {len(jobs)} Jobs ueberschreiten das technische Maximum "
+            f"von {PROVIDER_ADMIN_IMAGE_BATCH_MAX}. Mit --limit in kleinere, "
+            "explizit freigegebene Batches teilen."
+        )
+        sys.exit(2)
 
     print(f"\nEXECUTE — starte {len(jobs)} echte Generierungsversuche nach {os_temp} ...")
     ausgefuehrt = asyncio.run(_fuehre_aus(jobs, os_temp))

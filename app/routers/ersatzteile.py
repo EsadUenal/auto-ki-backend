@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, field_validator
 
 from app.car_lookup import call_gemini_json, find_baureihe_mit_vertrauen, find_motor
@@ -24,6 +24,7 @@ from app.gemini_retry import RateLimitExhausted
 from app.utf8 import UTF8JSONResponse
 from app.vehicle_identity import VehicleIdentity
 from app.web_search import results_to_belege, tavily_search
+from app.provider_control import provider_action
 
 log = logging.getLogger(__name__)
 
@@ -377,8 +378,10 @@ def _bewerte_kompatibilitaet(
 
 
 @router.post("/suche")
+@provider_action("ersatzteile")
 async def ersatzteil_suche(
     body: SucheBody,
+    request: Request,
     _user_id: int = Depends(require_ersatzteil_access),
 ):
     identity_context = await asyncio.to_thread(_parts_identity_context, body.fahrzeug)

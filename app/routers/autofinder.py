@@ -58,6 +58,7 @@ from app.client_ip import limit_schluessel
 
 from app.auth import verify_api_key
 from app.usage_limit import require_autofinder_kontingent
+from app.provider_control import provider_action
 from app.autofinder import AutoFinderRequest as _EngineRequest
 from app.autofinder import finde_fahrzeuge
 from app.autofinder_budget import (
@@ -612,6 +613,7 @@ def _filters_applied(body: AutoFinderRequest) -> dict:
     summary="AutoFinder: kostenlose Fahrzeugempfehlung aus der ENFAL-Datenbank",
 )
 @limiter.limit(_AUTOFINDER_RATE_LIMIT)
+@provider_action("autofinder")
 async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     verify_api_key(request)
     # Monatliches Kontingent (Free 5 / Plus 50) VOR jeder Datenbank- und

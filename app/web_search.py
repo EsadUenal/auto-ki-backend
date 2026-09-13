@@ -23,7 +23,15 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.config import ALLOWED_MARKET_SOURCES, TAVILY_API_KEY
+from app.config import (
+    ALLOWED_MARKET_SOURCES, TAVILY_API_KEY,
+    TAVILY_CONNECT_TIMEOUT_SECONDS, TAVILY_READ_TIMEOUT_SECONDS,
+    TAVILY_TOTAL_TIMEOUT_SECONDS, TAVILY_MAX_ATTEMPTS,
+    TAVILY_RETRY_BASE_SECONDS, TAVILY_MAX_RESULTS,
+)
+from app.provider_control import (
+    ProviderCallLimitExceeded, claim_call, log_provider_event,
+)
 
 log = logging.getLogger(__name__)
 
@@ -554,8 +562,8 @@ def curate_results(
 # Retry mit Exponential Backoff — nur für transiente Fehler (429 Rate-Limit, 5xx
 # Server-Fehler). Andere Fehler (400 ungültige Anfrage, 401 falscher Key etc.)
 # werden sofort aufgegeben, ein Retry würde dort ohnehin nie erfolgreich sein.
-_MAX_RETRIES = 3
-_BACKOFF_BASIS_S = 1.0  # 1s, 2s, 4s
+_MAX_RETRIES = TAVILY_MAX_ATTEMPTS
+_BACKOFF_BASIS_S = TAVILY_RETRY_BASE_SECONDS
 
 # Kurzlebiger In-Memory-Cache für IDENTISCHE Suchanfragen (gleicher Query-String +
 # Domain-Filter). Fängt den häufigen Fall ab, dass dieselbe Baureihe innerhalb
@@ -623,9 +631,10 @@ async def _tavily_search_intern(
     if not bypass_cache:
         cached = _cache.get(key)
         if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
-            log.debug("Tavily Cache-Treffer für %r", query[:80])
+            log.debug("provider_event provider=tavily feature=cache status=hit")
             return cached[1], False
 
+    count = max(1, min(int(count), TAVILY_MAX_RESULTS))
     body: dict[str, Any] = {
         "api_key":      TAVILY_API_KEY,
         "query":        query,
@@ -663,37 +672,83 @@ async def _tavily_search_intern(
 
     results: list[dict[str, Any]] = []
     hatte_fehler = False
+    timeout = httpx.Timeout(
+        connect=TAVILY_CONNECT_TIMEOUT_SECONDS,
+        read=TAVILY_READ_TIMEOUT_SECONDS,
+        write=TAVILY_CONNECT_TIMEOUT_SECONDS,
+        pool=TAVILY_CONNECT_TIMEOUT_SECONDS,
+    )
     for versuch in range(_MAX_RETRIES):
+        call_started = time.monotonic()
         try:
             # 20s (statt vorheriger 10s): search_depth="advanced" mit raw_content
             # braucht real gemessen bis zu ~10s (siehe scripts/diagnose_provider_
             # matrix.py) — 10s war zu knapp und riskierte einen unfairen Timeout
             # allein durch das Zeitlimit, nicht durch einen echten Tavily-Fehler.
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(_ENDPOINT, json=body)
+            claim_call("tavily", retry=versuch > 0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await asyncio.wait_for(
+                    client.post(_ENDPOINT, json=body),
+                    timeout=TAVILY_TOTAL_TIMEOUT_SECONDS,
+                )
                 resp.raise_for_status()
                 data = resp.json()
+                if not isinstance(data, dict) or not isinstance(data.get("results", []), list):
+                    raise ValueError("ungueltige_provider_antwort")
                 results = data.get("results", [])
-                log.info("Tavily Search: %d Ergebnisse für %r", len(results), query[:80])
+                log_provider_event("tavily", status="success", attempt=versuch + 1,
+                                   started=call_started)
                 hatte_fehler = False
                 break
 
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
-            transient = status_code == 429 or status_code >= 500
+            response_hint = (exc.response.text or "").lower()
+            quota = status_code == 429 and any(
+                marker in response_hint for marker in ("quota", "credit", "usage limit", "monthly")
+            )
+            transient = (status_code == 429 and not quota) or status_code >= 500
             hatte_fehler = True
+            error_class = "quota_exhausted" if quota else (
+                "rate_limit" if status_code == 429 else (
+                    "provider_5xx" if status_code >= 500 else "permanent_http"
+                )
+            )
+            log_provider_event("tavily", status="error", error_class=error_class,
+                               attempt=versuch + 1, started=call_started)
             if transient and versuch < _MAX_RETRIES - 1:
                 delay = _BACKOFF_BASIS_S * (2 ** versuch)
-                log.warning("Tavily %s (Versuch %d/%d) für %r — warte %.0fs",
-                            status_code, versuch + 1, _MAX_RETRIES, query[:60], delay)
+                log.warning("provider_retry provider=tavily class=%s attempt=%d/%d delay_s=%.2f",
+                            error_class, versuch + 1, _MAX_RETRIES, delay)
                 await asyncio.sleep(delay)
                 continue
-            log.warning("Tavily HTTP-Fehler %s für %r: %s",
-                        status_code, query[:60], exc.response.text[:200])
+            break
+        except (httpx.RequestError, asyncio.TimeoutError) as exc:
+            hatte_fehler = True
+            error_class = "timeout" if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)) else "network"
+            log_provider_event("tavily", status="error", error_class=error_class,
+                               attempt=versuch + 1, started=call_started)
+            if versuch < _MAX_RETRIES - 1:
+                delay = _BACKOFF_BASIS_S * (2 ** versuch)
+                log.warning("provider_retry provider=tavily class=%s attempt=%d/%d delay_s=%.2f",
+                            error_class, versuch + 1, _MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+                continue
+            break
+        except ProviderCallLimitExceeded:
+            hatte_fehler = True
+            break
+        except (ValueError, TypeError, KeyError) as exc:
+            hatte_fehler = True
+            log_provider_event("tavily", status="error", error_class="invalid_response",
+                               attempt=versuch + 1, started=call_started)
+            log.warning("Tavily lieferte eine ungueltige Antwort (%s).", type(exc).__name__)
             break
         except Exception as exc:
             hatte_fehler = True
-            log.warning("Tavily Fehler (%s): %s", type(exc).__name__, exc)
+            log_provider_event("tavily", status="error", error_class="internal",
+                               attempt=versuch + 1, started=call_started)
+            log.warning("Tavily interner Aufruffehler (%s).", type(exc).__name__)
             break
 
     if results:
@@ -877,13 +932,59 @@ async def tavily_extract(urls: list[str], *, advanced: bool = False) -> list[dic
         "urls":          urls,
         "extract_depth": "advanced" if advanced else "basic",
     }
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(_ENDPOINT_EXTRACT, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as exc:
-        log.warning("Tavily Extract Fehler (%s): %s", type(exc).__name__, exc)
+    data: dict[str, Any] | None = None
+    timeout = httpx.Timeout(
+        connect=TAVILY_CONNECT_TIMEOUT_SECONDS,
+        read=TAVILY_READ_TIMEOUT_SECONDS,
+        write=TAVILY_CONNECT_TIMEOUT_SECONDS,
+        pool=TAVILY_CONNECT_TIMEOUT_SECONDS,
+    )
+    for versuch in range(_MAX_RETRIES):
+        call_started = time.monotonic()
+        try:
+            claim_call("tavily", retry=versuch > 0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await asyncio.wait_for(
+                    client.post(_ENDPOINT_EXTRACT, json=body),
+                    timeout=TAVILY_TOTAL_TIMEOUT_SECONDS,
+                )
+                resp.raise_for_status()
+                parsed = resp.json()
+                if not isinstance(parsed, dict):
+                    raise ValueError("ungueltige_provider_antwort")
+                data = parsed
+            log_provider_event("tavily", status="success", attempt=versuch + 1,
+                               started=call_started)
+            break
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            hint = (exc.response.text or "").lower()
+            quota = status_code == 429 and any(m in hint for m in ("quota", "credit", "usage limit", "monthly"))
+            retryable = (status_code == 429 and not quota) or status_code >= 500
+            klass = "quota_exhausted" if quota else ("rate_limit" if status_code == 429 else
+                    ("provider_5xx" if status_code >= 500 else "permanent_http"))
+            log_provider_event("tavily", status="error", error_class=klass,
+                               attempt=versuch + 1, started=call_started)
+            if retryable and versuch < _MAX_RETRIES - 1:
+                await asyncio.sleep(_BACKOFF_BASIS_S * (2 ** versuch))
+                continue
+            break
+        except (httpx.RequestError, asyncio.TimeoutError) as exc:
+            klass = "timeout" if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)) else "network"
+            log_provider_event("tavily", status="error", error_class=klass,
+                               attempt=versuch + 1, started=call_started)
+            if versuch < _MAX_RETRIES - 1:
+                await asyncio.sleep(_BACKOFF_BASIS_S * (2 ** versuch))
+                continue
+            break
+        except ProviderCallLimitExceeded:
+            break
+        except Exception as exc:
+            log_provider_event("tavily", status="error", error_class="invalid_response",
+                               attempt=versuch + 1, started=call_started)
+            log.warning("Tavily Extract ungueltige Antwort (%s).", type(exc).__name__)
+            break
+    if data is None:
         return [{"url": u, "raw_content": None, "erfolg": False} for u in urls]
 
     ok = {r.get("url"): r.get("raw_content") for r in data.get("results", [])}

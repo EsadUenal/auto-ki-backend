@@ -17,6 +17,7 @@ from app.config import (CHECK_EINGABE_MAX_ZEICHEN, CHECK_ERGEBNIS_MAX_ZEICHEN,
                         CHECK_TITEL_MAX)
 from app.database import get_conn
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
+from app.provider_control import provider_action
 from app.inserat import run_inserat_optimierung
 from app.models import InseratOptimierung, VerkaufsCheckRequest
 from app.routers.user_auth import get_current_user_id
@@ -190,6 +191,7 @@ def add_check_frage(check_id: int, body: SaveFrageBody, user_id: int = Depends(g
 # Auth + Ownership schützen vor Fremdzugriff, das globale Rate-Limit vor Missbrauch.
 
 @router.post("/{check_id}/inserat-optimierung", response_model=InseratOptimierung)
+@provider_action("inseratsoptimierung")
 async def optimiere_inserat(
     check_id: int,
     body: VerkaufsCheckRequest,

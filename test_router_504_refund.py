@@ -252,7 +252,7 @@ check("G6 Erfolgreicher Check liefert eine Antwort", ok_erg is not None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-print("\n=== H) Nicht-transiente Fehler bleiben unveraendert ===")
+print("\n=== H) Gemini 500 wird begrenzt retryt und sauber behandelt ===")
 
 
 async def _gemini_500(system_prompt, user_msg):
@@ -271,14 +271,40 @@ except Exception as e:
     exc_500 = e
 finally:
     _zurueck(vc, orig)
-check("H1 500 wird NICHT als transienter Providerfehler maskiert",
-      isinstance(exc_500, ServerError))
-# GEAENDERT mit Security Block 2 (P1-6): Frueher blieb ein unerwarteter Fehler
-# ohne Rueckerstattung — der Nutzer verlor ein bezahltes Kontingent fuer eine
-# Analyse, die er nie bekommen hat. Der Fehler selbst wird weiterhin unveraendert
-# nach oben gereicht (H1), nur das Kontingent kommt jetzt zurueck.
+check("H1 500 endet als kontrollierter HTTP 503",
+      isinstance(exc_500, HTTPException) and exc_500.status_code == 503)
 check("H2 500 erstattet das Kontingent genau einmal", zaehler_500.n == 1)
-check("H3 Credit nach unerwartetem 500 unveraendert", credits() == vor_500)
+check("H3 Credit nach Provider-500 unveraendert", credits() == vor_500)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== I) Weitere Provider-Klassen erstatten genau einmal ===")
+
+provider_faelle = [
+    ("Timeout", gr.GeminiVoruebergehendNichtErreichbar("timeout")),
+    ("Tagesquota", gr.GeminiQuotaErschoepft("quota")),
+    ("ungueltige Antwort", gr.GeminiAntwortUngueltig("invalid")),
+]
+for label, provider_exc in provider_faelle:
+    async def _failure(system_prompt, user_msg, _exc=provider_exc):
+        raise _exc
+
+    zaehler = _Aufrufzaehler()
+    r_kauf.refund_check_credit = zaehler
+    orig = _umgebung(kc)
+    kc.call_gemini_json = _failure
+    vorher = credits()
+    caught = None
+    try:
+        asyncio.run(r_kauf.kaufcheck_endpunkt(REQ_K, FakeRequest(), retry=False, user_id=USER_ID))
+    except Exception as exc:
+        caught = exc
+    finally:
+        _zurueck(kc, orig)
+    check(f"I {label}: kontrollierter HTTP 503",
+          isinstance(caught, HTTPException) and caught.status_code == 503)
+    check(f"I {label}: Refund genau einmal", zaehler.n == 1)
+    check(f"I {label}: Credit unveraendert", credits() == vorher)
 
 
 gr.asyncio.sleep = _ECHT_ASYNC_SLEEP

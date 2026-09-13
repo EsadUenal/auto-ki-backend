@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
-import traceback
 
 from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel
@@ -15,7 +15,8 @@ from app.admin_llm import entwurf_erstellen, entwurf_stream, generationen_auflis
 from app.db_writer import save_fahrzeug, patch_luecken
 from app.database import get_conn, invalidate_referenzdaten_cache
 from app.utf8 import UTF8JSONResponse
-from app.gemini_retry import RateLimitExhausted
+from app.gemini_retry import KI_UEBERLASTET_NACHRICHT, RateLimitExhausted, GeminiFehlgeschlagen
+from app.provider_control import ProviderCapacityExceeded, provider_action, provider_scope
 
 # Römische ↔ arabische Ziffern (Generationsbezeichnungen)
 _ROM_TO_ARA: dict[str, str] = {
@@ -150,35 +151,41 @@ class LueckenSpeichernRequest(BaseModel):
 # ---------- Endpunkte ----------
 
 def _llm_error(exc: Exception) -> HTTPException:
-    """Wandelt LLM-Fehler in passende HTTP-Fehler um. Loggt immer den vollen Traceback."""
-    log.error(
-        "Admin-LLM-Fehler [%s]: %s\n%s",
-        type(exc).__name__, exc, traceback.format_exc(),
-    )
+    """Wandelt LLM-Fehler ohne Providerdetails in stabile HTTP-Fehler um."""
+    log.error("Admin-LLM-Fehler error_class=%s", type(exc).__name__)
 
     if isinstance(exc, RateLimitExhausted):
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={"fehler": {"code": "rate_limit", "nachricht": str(exc)}},
+            detail={"fehler": {"code": "rate_limit", "nachricht": "KI-Kontingent derzeit nicht verfügbar."}},
+        )
+    if isinstance(exc, GeminiFehlgeschlagen):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"fehler": {"code": "llm_nicht_erreichbar",
+                               "nachricht": "KI-Dienst momentan nicht erreichbar."}},
         )
     if isinstance(exc, ValueError) and "unvollständig" in str(exc):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"fehler": {"code": "antwort_unvollstaendig", "nachricht": str(exc)}},
+            detail={"fehler": {"code": "antwort_unvollstaendig",
+                               "nachricht": "Die KI-Antwort war unvollständig. Bitte erneut versuchen."}},
         )
     if isinstance(exc, ServerError):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"fehler": {"code": "llm_nicht_erreichbar",
-                               "nachricht": f"Gemini nicht erreichbar: {exc}"}},
+                               "nachricht": "KI-Dienst momentan nicht erreichbar."}},
         )
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
-        detail={"fehler": {"code": "llm_fehler", "nachricht": str(exc)}},
+        detail={"fehler": {"code": "llm_fehler",
+                           "nachricht": "Die KI-Antwort konnte nicht verarbeitet werden."}},
     )
 
 
 @router.post("/entwurf", summary="LLM erstellt Schema-Entwurf — vollständig (non-streaming)")
+@provider_action("admin")
 async def entwurf(body: EntwurfRequest, request: Request):
     verify_admin_key(request)
     try:
@@ -189,8 +196,15 @@ async def entwurf(body: EntwurfRequest, request: Request):
 
 
 async def _sse_entwurf(marke: str, modell: str, generation: str):
-    async for fragment in entwurf_stream(marke, modell, generation):
-        yield f"data: {fragment}\n\n"
+    try:
+        async with provider_scope("admin", key="admin"):
+            async for fragment in entwurf_stream(marke, modell, generation):
+                yield f"data: {fragment}\n\n"
+    except ProviderCapacityExceeded:
+        yield f"data: {json.dumps({'error': KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)}\n\n"
+    except Exception as exc:
+        log.error("Admin-LLM-Stream error_class=%s", type(exc).__name__)
+        yield f"data: {json.dumps({'error': KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -205,6 +219,7 @@ async def entwurf_stream_endpoint(body: EntwurfRequest, request: Request):
 
 
 @router.post("/batch", summary="LLM listet Generationen auf (Batch-Vorbereitung)")
+@provider_action("admin")
 async def batch(body: BatchRequest, request: Request):
     verify_admin_key(request)
     try:
@@ -250,6 +265,7 @@ _LUECKEN_FELDER = ("kaufberatung", "schwachstellen_baureihe", "rueckrufe")
 
 
 @router.post("/luecken-entwurf", summary="Nur fehlende Felder einer bestehenden Baureihe per Gemini nachgenerieren")
+@provider_action("admin")
 async def luecken_entwurf(body: LueckenEntwurfRequest, request: Request):
     """
     1. Liest die bestehende Baureihe aus der DB.

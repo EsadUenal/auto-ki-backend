@@ -4,14 +4,15 @@ transienten Fehlerklassen, die bei einem Gemini-Aufruf auftreten können:
 
   429 RESOURCE_EXHAUSTED  → warte retryDelay aus dem Fehler (oder exponentiell
                             wachsend, falls Google keinen Wert mitliefert)
-  503 UNAVAILABLE         → exponentielles Backoff (kurze Überlast-Spitzen)
-  504 DEADLINE_EXCEEDED   → dasselbe Backoff wie 503 (Generierung lief noch,
+  5xx Providerfehler      → exponentielles Backoff (kurze Überlast-Spitzen)
+  504 DEADLINE_EXCEEDED   → dasselbe Backoff (Generierung lief noch,
                             riss aber die Server-Deadline) — siehe
                             _ist_transienter_serverfehler
   Netzwerkfehler/Timeouts → exponentielles Backoff (httpx.TransportError:
                             Verbindungsabbruch, Timeout, DNS-Fehler, ...)
 
-Alle drei enden nach Ausschöpfen ihrer Versuche in EINER gemeinsamen Exception-
+Alle retrybaren Klassen teilen EIN gemeinsames, kleines Versuchsbudget und enden
+nach dessen Ausschoepfung in EINER gemeinsamen Exception-
 Basisklasse (GeminiFehlgeschlagen), damit Aufrufer (Chat, Kauf-/Verkaufscheck)
 nicht drei verschiedene Fehlerarten einzeln behandeln müssen — ein einziges
 `except GeminiFehlgeschlagen` genügt, um dem Nutzer zuverlässig eine
@@ -24,12 +25,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 from typing import Callable, Awaitable, TypeVar
 
 import httpx
 from google.genai.errors import ClientError, ServerError
+
+from app.config import (
+    GEMINI_MAX_ATTEMPTS,
+    GEMINI_RETRY_BASE_SECONDS,
+    GEMINI_RETRY_CAP_SECONDS,
+    GEMINI_TIMEOUT_SECONDS,
+    GEMINI_TOTAL_TIMEOUT_SECONDS,
+    LLM_MODEL,
+)
+from app.provider_control import (
+    ProviderCallLimitExceeded,
+    claim_call,
+    log_provider_event,
+)
 
 log = logging.getLogger(__name__)
 
@@ -41,15 +57,15 @@ KI_UEBERLASTET_NACHRICHT = (
     "Sekunden erneut."
 )
 
-MAX_RETRIES_429         = 3     # 429: 1 original + 2 Wiederholungen
-MAX_RETRIES_503         = 5     # 503: bis zu 5 Versuche (robuster bei Überlast)
-MAX_RETRIES_NETWORK     = 3     # Verbindungsabbruch/Timeout: meist sehr kurzlebig
+MAX_RETRIES_429         = GEMINI_MAX_ATTEMPTS  # Kompatibilitaetsalias: Gesamtversuche
+MAX_RETRIES_503         = GEMINI_MAX_ATTEMPTS
+MAX_RETRIES_NETWORK     = GEMINI_MAX_ATTEMPTS
 DAILY_LIMIT_THRESHOLD_S = 3600  # retryDelay > 1 h → Tageslimit
-DEFAULT_RETRY_S_429     = 60    # Fallback-Basis wenn keine retryDelay im Fehler (siehe unten)
-RETRY_DELAY_503_S       = 2     # 503: Exponential-Backoff-Basis (2s, 4s, 8s, 16s, 20s-Cap)
-RETRY_DELAY_503_CAP_S   = 20    # Obergrenze pro Versuch, damit MAX_RETRIES_503 nicht zu lang wird
-RETRY_DELAY_NETWORK_S   = 1     # Netzwerkfehler: Basis 1s (1s, 2s, 4s)
-RETRY_DELAY_NETWORK_CAP_S = 5
+DEFAULT_RETRY_S_429     = GEMINI_RETRY_BASE_SECONDS
+RETRY_DELAY_503_S       = GEMINI_RETRY_BASE_SECONDS
+RETRY_DELAY_503_CAP_S   = GEMINI_RETRY_CAP_SECONDS
+RETRY_DELAY_NETWORK_S   = GEMINI_RETRY_BASE_SECONDS
+RETRY_DELAY_NETWORK_CAP_S = GEMINI_RETRY_CAP_SECONDS
 
 
 def _exponential_delay(basis_s: float, versuch: int, cap_s: float) -> float:
@@ -73,6 +89,18 @@ class RateLimitExhausted(GeminiFehlgeschlagen):
     """429 Rate-Limit: entweder Tageslimit (Google meldet retryDelay > 1h) oder
     alle 429-Retries ausgeschöpft."""
     pass
+
+
+class GeminiQuotaErschoepft(RateLimitExhausted):
+    """Laengerfristige/taegliche Quote: absichtlich ohne Retry."""
+
+
+class GeminiPermanentFehler(GeminiFehlgeschlagen):
+    """Auth, ungueltige Anfrage oder andere nicht retrybare Provider-Antwort."""
+
+
+class GeminiAntwortUngueltig(GeminiPermanentFehler):
+    """Provider-Antwort ist leer, unparsebar oder strukturell unbrauchbar."""
 
 
 class GeminiVoruebergehendNichtErreichbar(GeminiFehlgeschlagen):
@@ -110,10 +138,9 @@ def _is_429(exc: Exception) -> bool:
 # mangels `retry_options` deaktiviert (retry_args(None) -> stop_after_attempt(1)),
 # obwohl der SDK-Default 504 sehr wohl als retrybar führt.
 #
-# Bewusst NICHT als transient gewertet: 500, 502 und sonstige 5xx. Ein
-# pauschales "alle 5xx sind transient" würde echte, dauerhafte Fehler hinter
-# minutenlangen Retries verstecken.
-_TRANSIENTE_SERVER_CODES = (503, 504)
+# Nur die ueblichen Gateway-/Provider-5xx sind kurz retrybar; das gemeinsame
+# Drei-Versuchs-Budget verhindert minutenlange oder multiplizierte Schleifen.
+_TRANSIENTE_SERVER_CODES = (500, 502, 503, 504)
 
 
 def _ist_transienter_serverfehler(exc: Exception) -> bool:
@@ -145,6 +172,23 @@ def _extract_retry_delay(exc: ClientError) -> float | None:
     return None
 
 
+def _ist_quota_erschoepft(exc: ClientError) -> bool:
+    """Erkennt taegliche/langfristige Quota anhand strukturierter Details/Text."""
+    delay = _extract_retry_delay(exc)
+    if delay is not None and delay > DAILY_LIMIT_THRESHOLD_S:
+        return True
+    try:
+        text = f"{exc} {exc.details}".lower()
+    except Exception:
+        text = str(exc).lower()
+    marker = (
+        "per day", "per_day", "daily", "tageslimit", "day quota",
+        "requestsperday", "request per day", "quota exhausted",
+        "check your plan and billing", "billing details",
+    )
+    return any(m in text for m in marker)
+
+
 def _fallback_429_delay(versuch: int) -> float:
     """Exponentielles Backoff für den seltenen Fall, dass Google KEINE retryDelay im
     Fehler mitliefert — vorher fixe DEFAULT_RETRY_S_429 (60s) bei JEDEM Versuch,
@@ -152,7 +196,49 @@ def _fallback_429_delay(versuch: int) -> float:
     zur Erholung geben. Ist im Fehler ein Wert angegeben, ist DIESER weiterhin
     maßgeblich (Google kennt seine eigene Rate-Limit-Situation am besten) —
     dieser Fallback greift nur, wenn kein Wert vorhanden ist."""
-    return DEFAULT_RETRY_S_429 * (2 ** versuch)
+    return _exponential_delay(DEFAULT_RETRY_S_429, versuch, GEMINI_RETRY_CAP_SECONDS)
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    if isinstance(exc, ClientError):
+        supplied = _extract_retry_delay(exc)
+        if supplied is not None:
+            return min(supplied, GEMINI_RETRY_CAP_SECONDS)
+    basis = _exponential_delay(GEMINI_RETRY_BASE_SECONDS, attempt - 1, GEMINI_RETRY_CAP_SECONDS)
+    return basis + random.uniform(0.0, min(0.25, basis * 0.1))
+
+
+def classify_gemini_error(exc: Exception) -> tuple[str, bool]:
+    """(Klasse, retrybar). Keine Stringvergleiche in den Aufrufern."""
+    if isinstance(exc, ProviderCallLimitExceeded):
+        return "call_limit", False
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return "timeout", True
+    if isinstance(exc, httpx.TransportError):
+        return "network", True
+    if isinstance(exc, ClientError):
+        if exc.code == 429:
+            return ("quota_exhausted", False) if _ist_quota_erschoepft(exc) else ("rate_limit", True)
+        if exc.code in (401, 403):
+            return "auth", False
+        return "invalid_request", False
+    if isinstance(exc, ServerError):
+        return ("provider_5xx", True) if exc.code in _TRANSIENTE_SERVER_CODES else ("provider_error", False)
+    return "internal", False
+
+
+def _final_exception(kind: str, attempts: int, exc: Exception) -> GeminiFehlgeschlagen:
+    if kind == "quota_exhausted":
+        return GeminiQuotaErschoepft("Provider-Kontingent ist laengerfristig erschoepft.")
+    if kind == "rate_limit":
+        return RateLimitExhausted(f"Rate-Limit nach {attempts} Versuchen weiterhin aktiv.")
+    if kind in ("timeout", "network", "provider_5xx"):
+        return GeminiVoruebergehendNichtErreichbar(
+            f"Provider voruebergehend nicht erreichbar ({kind}, {attempts} Versuch(e))."
+        )
+    if kind == "call_limit":
+        return GeminiVoruebergehendNichtErreichbar("Provider-Aufrufbudget der Aktion erschoepft.")
+    return GeminiPermanentFehler(f"Nicht retrybarer Provider-Fehler ({kind}).")
 
 
 T = TypeVar("T")
@@ -162,132 +248,60 @@ T = TypeVar("T")
 #  Sync (für generate_content und generate_content_stream)           #
 # ------------------------------------------------------------------ #
 
-def with_retry_sync(fn: Callable[[], T]) -> T:
+def with_retry_sync(fn: Callable[[], T], *, model: str | None = None) -> T:
     """
     Synchroner Retry für 429 (Rate-Limit), 503 (Transient Overload) und
     Netzwerkfehler (Timeout/Verbindungsabbruch). Andere Fehler werden sofort
     weitergegeben.
     """
-    attempts_429 = 0
-    attempts_503 = 0
-    attempts_network = 0
-
-    while True:
+    started_total = time.monotonic()
+    model_name = model or LLM_MODEL
+    for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
         try:
-            return fn()
-
-        except ClientError as exc:
-            if not _is_429(exc):
-                raise  # 401, 400, 403 … sofort weiterwerfen
-
-            attempts_429 += 1
-            delay = _extract_retry_delay(exc)
-
-            if delay is not None and delay > DAILY_LIMIT_THRESHOLD_S:
-                raise RateLimitExhausted("Tageslimit erreicht, morgen weiter.") from exc
-
-            if attempts_429 >= MAX_RETRIES_429:
-                raise RateLimitExhausted(
-                    f"Tageslimit erreicht, morgen weiter. "
-                    f"(429 nach {MAX_RETRIES_429} Versuchen)"
-                ) from exc
-
-            if delay is None:
-                delay = _fallback_429_delay(attempts_429 - 1)
-            log.warning("Gemini 429 (Versuch %d/%d). Warte %.0f s …",
-                        attempts_429, MAX_RETRIES_429, delay)
+            claim_call("gemini", retry=attempt > 1)
+            call_started = time.monotonic()
+            result = fn()
+            log_provider_event("gemini", status="success", attempt=attempt, started=call_started, model=model_name)
+            return result
+        except Exception as exc:
+            kind, retryable = classify_gemini_error(exc)
+            log_provider_event("gemini", status="error", error_class=kind,
+                               attempt=attempt, started=locals().get("call_started", started_total), model=model_name)
+            elapsed = time.monotonic() - started_total
+            if not retryable or attempt >= GEMINI_MAX_ATTEMPTS or elapsed >= GEMINI_TOTAL_TIMEOUT_SECONDS:
+                raise _final_exception(kind, attempt, exc) from exc
+            delay = min(_retry_delay(exc, attempt), max(0.0, GEMINI_TOTAL_TIMEOUT_SECONDS - elapsed))
+            log.warning("provider_retry provider=gemini class=%s attempt=%d/%d delay_s=%.2f",
+                        kind, attempt, GEMINI_MAX_ATTEMPTS, delay)
             time.sleep(delay)
-
-        except ServerError as exc:
-            if not _ist_transienter_serverfehler(exc):
-                raise  # andere 5xx (500, 502, …) sofort
-
-            attempts_503 += 1
-            if attempts_503 >= MAX_RETRIES_503:
-                raise GeminiVoruebergehendNichtErreichbar(
-                    f"Gemini {exc.code} nach {MAX_RETRIES_503} Versuchen weiterhin nicht lieferbar."
-                ) from exc
-
-            delay = _exponential_delay(RETRY_DELAY_503_S, attempts_503 - 1, RETRY_DELAY_503_CAP_S)
-            log.warning("Gemini %s transient (Versuch %d/%d). Warte %.0f s …",
-                        exc.code, attempts_503, MAX_RETRIES_503, delay)
-            time.sleep(delay)
-
-        except httpx.TransportError as exc:
-            # Verbindungsabbruch, Timeout, DNS-Fehler o.ä. — bisher komplett
-            # ungefangen und sofort nach oben durchgereicht. Meist sehr
-            # kurzlebig, daher kurzer Retry mit wenigen Versuchen.
-            attempts_network += 1
-            if attempts_network >= MAX_RETRIES_NETWORK:
-                raise GeminiVoruebergehendNichtErreichbar(
-                    f"Netzwerkfehler nach {MAX_RETRIES_NETWORK} Versuchen: {exc}"
-                ) from exc
-
-            delay = _exponential_delay(RETRY_DELAY_NETWORK_S, attempts_network - 1, RETRY_DELAY_NETWORK_CAP_S)
-            log.warning("Gemini Netzwerkfehler (Versuch %d/%d): %s. Warte %.0f s …",
-                        attempts_network, MAX_RETRIES_NETWORK, exc, delay)
-            time.sleep(delay)
+    raise GeminiVoruebergehendNichtErreichbar("Gemini-Aufrufbudget erschoepft.")
 
 
 # ------------------------------------------------------------------ #
 #  Async (für async generate_content)                                #
 # ------------------------------------------------------------------ #
 
-async def with_retry(fn: Callable[[], Awaitable[T]]) -> T:
+async def with_retry(fn: Callable[[], Awaitable[T]], *, model: str | None = None) -> T:
     """Asynchroner Retry für 429, 503 und Netzwerkfehler — siehe with_retry_sync."""
-    attempts_429 = 0
-    attempts_503 = 0
-    attempts_network = 0
-
-    while True:
+    started_total = time.monotonic()
+    model_name = model or LLM_MODEL
+    for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
         try:
-            return await fn()
-
-        except ClientError as exc:
-            if not _is_429(exc):
-                raise
-
-            attempts_429 += 1
-            delay = _extract_retry_delay(exc)
-
-            if delay is not None and delay > DAILY_LIMIT_THRESHOLD_S:
-                raise RateLimitExhausted("Tageslimit erreicht, morgen weiter.") from exc
-
-            if attempts_429 >= MAX_RETRIES_429:
-                raise RateLimitExhausted(
-                    f"Tageslimit erreicht, morgen weiter. "
-                    f"(429 nach {MAX_RETRIES_429} Versuchen)"
-                ) from exc
-
-            if delay is None:
-                delay = _fallback_429_delay(attempts_429 - 1)
-            log.warning("Gemini 429 async (Versuch %d/%d). Warte %.0f s …",
-                        attempts_429, MAX_RETRIES_429, delay)
+            claim_call("gemini", retry=attempt > 1)
+            call_started = time.monotonic()
+            remaining = max(0.1, GEMINI_TOTAL_TIMEOUT_SECONDS - (call_started - started_total))
+            result = await asyncio.wait_for(fn(), timeout=min(GEMINI_TIMEOUT_SECONDS, remaining))
+            log_provider_event("gemini", status="success", attempt=attempt, started=call_started, model=model_name)
+            return result
+        except Exception as exc:
+            kind, retryable = classify_gemini_error(exc)
+            log_provider_event("gemini", status="error", error_class=kind,
+                               attempt=attempt, started=locals().get("call_started", started_total), model=model_name)
+            elapsed = time.monotonic() - started_total
+            if not retryable or attempt >= GEMINI_MAX_ATTEMPTS or elapsed >= GEMINI_TOTAL_TIMEOUT_SECONDS:
+                raise _final_exception(kind, attempt, exc) from exc
+            delay = min(_retry_delay(exc, attempt), max(0.0, GEMINI_TOTAL_TIMEOUT_SECONDS - elapsed))
+            log.warning("provider_retry provider=gemini class=%s attempt=%d/%d delay_s=%.2f",
+                        kind, attempt, GEMINI_MAX_ATTEMPTS, delay)
             await asyncio.sleep(delay)
-
-        except ServerError as exc:
-            if not _ist_transienter_serverfehler(exc):
-                raise  # andere 5xx (500, 502, …) sofort
-
-            attempts_503 += 1
-            if attempts_503 >= MAX_RETRIES_503:
-                raise GeminiVoruebergehendNichtErreichbar(
-                    f"Gemini {exc.code} nach {MAX_RETRIES_503} Versuchen weiterhin nicht lieferbar."
-                ) from exc
-
-            delay = _exponential_delay(RETRY_DELAY_503_S, attempts_503 - 1, RETRY_DELAY_503_CAP_S)
-            log.warning("Gemini %s async transient (Versuch %d/%d). Warte %.0f s …",
-                        exc.code, attempts_503, MAX_RETRIES_503, delay)
-            await asyncio.sleep(delay)
-
-        except httpx.TransportError as exc:
-            attempts_network += 1
-            if attempts_network >= MAX_RETRIES_NETWORK:
-                raise GeminiVoruebergehendNichtErreichbar(
-                    f"Netzwerkfehler nach {MAX_RETRIES_NETWORK} Versuchen: {exc}"
-                ) from exc
-
-            delay = _exponential_delay(RETRY_DELAY_NETWORK_S, attempts_network - 1, RETRY_DELAY_NETWORK_CAP_S)
-            log.warning("Gemini Netzwerkfehler async (Versuch %d/%d): %s. Warte %.0f s …",
-                        attempts_network, MAX_RETRIES_NETWORK, exc, delay)
-            await asyncio.sleep(delay)
+    raise GeminiVoruebergehendNichtErreichbar("Gemini-Aufrufbudget erschoepft.")

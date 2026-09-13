@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
+from app.provider_control import ProviderCapacityExceeded
 
 from app.config import (
     RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL,
@@ -238,6 +239,14 @@ def _warn_if_insecure_defaults() -> None:
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return _utf8_json(429, {"fehler": {"code": "rate_limit", "nachricht": "Zu viele Anfragen, bitte kurz warten."}})
+
+
+@app.exception_handler(ProviderCapacityExceeded)
+async def provider_capacity_handler(request: Request, exc: ProviderCapacityExceeded):
+    return _utf8_json(503, {"fehler": {
+        "code": "dienst_ausgelastet",
+        "nachricht": "Der Dienst ist momentan ausgelastet. Bitte versuche es gleich erneut.",
+    }})
 
 
 @app.exception_handler(Exception)

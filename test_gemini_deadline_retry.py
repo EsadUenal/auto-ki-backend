@@ -90,12 +90,12 @@ check("0.1 503 UNAVAILABLE gilt als transient",
       gr._ist_transienter_serverfehler(server_error(503, "UNAVAILABLE")))
 check("0.2 504 DEADLINE_EXCEEDED gilt als transient",
       gr._ist_transienter_serverfehler(server_error(504, "DEADLINE_EXCEEDED")))
-check("0.3 500 INTERNAL gilt NICHT als transient",
-      not gr._ist_transienter_serverfehler(server_error(500, "INTERNAL")))
-check("0.4 502 BAD_GATEWAY gilt NICHT als transient",
-      not gr._ist_transienter_serverfehler(server_error(502, "BAD_GATEWAY")))
-check("0.5 Retry-Budget unveraendert (keine zweite Architektur)",
-      gr.MAX_RETRIES_503 == 5)
+check("0.3 500 INTERNAL gilt als transient",
+      gr._ist_transienter_serverfehler(server_error(500, "INTERNAL")))
+check("0.4 502 BAD_GATEWAY gilt als transient",
+      gr._ist_transienter_serverfehler(server_error(502, "BAD_GATEWAY")))
+check("0.5 Ein gemeinsames kleines Retry-Budget",
+      gr.MAX_RETRIES_503 == 3)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,11 +154,11 @@ check("D2 ist ein GeminiFehlgeschlagen (Router faengt es)",
       isinstance(fehler, GeminiFehlgeschlagen))
 check("D3 KEIN roher ServerError mehr", not isinstance(fehler, ServerError))
 check("D4 Versuche gedeckelt", z.aufrufe == gr.MAX_RETRIES_503)
-check("D5 Fehlertext nennt den echten Code", "504" in str(fehler))
+check("D5 Fehlertext leakt keinen rohen Provider-Status", "DEADLINE_EXCEEDED" not in str(fehler))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-print("\n=== H) Andere 5xx werden NICHT blind als transient behandelt ===")
+print("\n=== H) 5xx werden begrenzt retryt, permanente 4xx nicht ===")
 
 for code, status in ((500, "INTERNAL"), (502, "BAD_GATEWAY")):
     z = Zaehler([server_error(code, status)] * 99)
@@ -167,9 +167,9 @@ for code, status in ((500, "INTERNAL"), (502, "BAD_GATEWAY")):
         asyncio.run(with_retry(z.acall))
     except Exception as e:
         roh = e
-    check(f"H1 {code} wird sofort durchgereicht (kein Retry)", z.aufrufe == 1)
-    check(f"H2 {code} bleibt ServerError, wird NICHT als transient maskiert",
-          isinstance(roh, ServerError) and not isinstance(roh, GeminiFehlgeschlagen))
+    check(f"H1 {code} wird bis zum gemeinsamen Maximum retryt", z.aufrufe == gr.GEMINI_MAX_ATTEMPTS)
+    check(f"H2 {code} endet kontrolliert als Providerfehler",
+          isinstance(roh, GeminiVoruebergehendNichtErreichbar))
 
 z = Zaehler([client_error(429, "RESOURCE_EXHAUSTED")] * 99)
 r429 = None
@@ -186,7 +186,8 @@ try:
     asyncio.run(with_retry(z.acall))
 except Exception as e:
     r400 = e
-check("H4 400 sofort durchgereicht", z.aufrufe == 1 and isinstance(r400, ClientError))
+check("H4 400 ohne Retry kontrolliert klassifiziert",
+      z.aufrufe == 1 and isinstance(r400, gr.GeminiPermanentFehler))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

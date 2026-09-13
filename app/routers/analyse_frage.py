@@ -28,6 +28,7 @@ Sicherheit/Kosten (Security Block 3, P2-6):
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -36,14 +37,17 @@ from app.client_ip import limit_schluessel
 
 from app.models import AnalyseFrageRequest, FehlerResponse
 from app.auth import verify_api_key
+from app.gemini_retry import KI_UEBERLASTET_NACHRICHT
 from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
 from app.usage_limit import require_analyse_frage_kontingent
+from app.provider_control import ProviderCapacityExceeded, provider_scope, request_cost_key
 from app.llm import analyse_frage_stream
 from app.utf8 import UTF8JSONResponse
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
 limiter = Limiter(key_func=limit_schluessel)
+log = logging.getLogger(__name__)
 
 # Felder aus dem gespeicherten Ergebnis, die als Kurzfassung vor den Bericht
 # gestellt werden. Bewusst eine feste Liste: es geht nur in den Kontext, was der
@@ -116,12 +120,23 @@ def _kontext_aus_check(typ: str, ergebnis_json: str) -> str:
     return kontext[:_MAX_KONTEXT]
 
 
-async def _sse_generator(analyse_kontext: str, frage: str, verlauf: list[dict], check_typ: str):
+async def _sse_generator(analyse_kontext: str, frage: str, verlauf: list[dict], check_typ: str,
+                         cost_key: str = "anonymous"):
     """SSE-Stream: reine Textfragmente + abschließendes [DONE]."""
-    async for event in analyse_frage_stream(analyse_kontext, frage, verlauf, check_typ):
-        if event["type"] == "text":
-            data = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
-            yield f"data: {data}\n\n"
+    try:
+        async with provider_scope("analyse_frage", key=cost_key):
+            async for event in analyse_frage_stream(analyse_kontext, frage, verlauf, check_typ):
+                if event["type"] == "text":
+                    data = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+    except ProviderCapacityExceeded:
+        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
+        yield f"data: {data}\n\n"
+    except Exception as exc:
+        # Kein abgerissener Stream und keine internen Details im SSE-Text.
+        log.error("Analyse-Frage-Stream error_class=%s", type(exc).__name__)
+        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
+        yield f"data: {data}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -148,7 +163,7 @@ async def analyse_frage_endpunkt(
     require_analyse_frage_kontingent(request)
     verlauf = [m.model_dump() for m in body.verlauf]
     return StreamingResponse(
-        _sse_generator(kontext, body.frage, verlauf, typ),
+        _sse_generator(kontext, body.frage, verlauf, typ, request_cost_key(request, user_id)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

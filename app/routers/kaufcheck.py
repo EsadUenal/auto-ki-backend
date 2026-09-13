@@ -13,6 +13,7 @@ from app.check_gate import entnehme_kaufcheck, refund_check_credit
 from app.check_lauf import erzeuge as erzeuge_lauf_nachweis
 from app.usage_limit import verbrauche_check_versuch
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
+from app.provider_control import provider_action
 from app.kaufcheck import run_kaufcheck
 from app.marktrecherche import RechercheUnzureichend
 from app.utf8 import UTF8JSONResponse
@@ -37,6 +38,7 @@ limiter = Limiter(key_func=limit_schluessel)
     },
 )
 @limiter.limit("10/minute")
+@provider_action("kaufcheck")
 async def kaufcheck_endpunkt(
     body: KaufCheckRequest,
     request: Request,

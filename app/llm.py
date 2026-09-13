@@ -25,7 +25,12 @@ log = logging.getLogger(__name__)
 from google import genai
 from google.genai import types as genai_types
 
-from app.config import GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY
+from app.config import (
+    GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY,
+    GEMINI_TIMEOUT_SECONDS, GEMINI_STREAM_TIMEOUT_SECONDS,
+    GEMINI_CHAT_MAX_OUTPUT_TOKENS, GEMINI_ANALYSE_MAX_OUTPUT_TOKENS,
+    GEMINI_MAX_INPUT_CHARS,
+)
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.recall_filter import gefilterte_rueckrufe
@@ -93,11 +98,11 @@ def _get_client() -> genai.Client:
             raise RuntimeError("GEMINI_API_KEY nicht gesetzt.")
         # Ohne expliziten Timeout kann eine gestörte Verbindung den Request unbegrenzt
         # hängen lassen (weder Retry noch Fehlermeldung würden je greifen). HttpOptions.
-        # timeout ist in Millisekunden (SDK-intern verifiziert) — 60s reichen für eine
-        # normale Chat-Streaming-Antwort deutlich.
+        # timeout ist in Millisekunden (SDK-intern verifiziert); der zentrale Wert
+        # gilt konsistent fuer alle Consumer-Aufrufe.
         _client = genai.Client(
             api_key=GEMINI_API_KEY,
-            http_options=genai_types.HttpOptions(timeout=60_000),
+            http_options=genai_types.HttpOptions(timeout=int(GEMINI_TIMEOUT_SECONDS * 1000)),
         )
     return _client
 
@@ -981,14 +986,26 @@ async def chat_stream(
 
     # ── 4. Gemini-Aufruf (Streaming) ────────────────────────────────────────
     history = []
-    for msg in verlauf:
+    # Neueste Historie behalten, aber das serverseitig erzeugte Tokenvolumen
+    # unabhängig von der Zahl maximal langer Einzelnachrichten hart deckeln.
+    rest = max(0, GEMINI_MAX_INPUT_CHARS - len(system) - len(message))
+    ausgewaehlt = []
+    for msg in reversed(verlauf):
+        text = msg.get("text", "")
+        if rest <= 0:
+            break
+        text = text[-rest:]
+        ausgewaehlt.append((msg, text))
+        rest -= len(text)
+    for msg, text in reversed(ausgewaehlt):
         role = "user" if msg.get("rolle") == "user" else "model"
-        history.append({"role": role, "parts": [{"text": msg.get("text", "")}]})
+        history.append({"role": role, "parts": [{"text": text}]})
 
     client = _get_client()
     contents = history + [{"role": "user", "parts": [{"text": message}]}]
     cfg = genai_types.GenerateContentConfig(
-        system_instruction=system, temperature=0.3
+        system_instruction=system, temperature=0.3,
+        max_output_tokens=GEMINI_CHAT_MAX_OUTPUT_TOKENS,
     )
 
     t_gemini_init = time.perf_counter()
@@ -1028,17 +1045,18 @@ async def chat_stream(
     _FLUSH_TAIL = 24
     scrub_buf = ""
     try:
-        async for chunk in response:
-            if chunk.text:
-                if first_token:
-                    print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
-                    first_token = False
-                token_count += 1
-                scrub_buf += chunk.text
-                if len(scrub_buf) > _FLUSH_TAIL * 2:
-                    safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
-                    yield {"type": "text", "delta": _scrub_jargon(safe)}
-                    await asyncio.sleep(0)
+        async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
+            async for chunk in response:
+                if chunk.text:
+                    if first_token:
+                        print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
+                        first_token = False
+                    token_count += 1
+                    scrub_buf += chunk.text
+                    if len(scrub_buf) > _FLUSH_TAIL * 2:
+                        safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
+                        yield {"type": "text", "delta": _scrub_jargon(safe)}
+                        await asyncio.sleep(0)
     except Exception as exc:
         # Fehler MITTEN im Stream (503, Netzwerkabbruch, o.ä.) — der bereits
         # gesendete Teiltext bleibt für den Nutzer sichtbar (bessere UX als ihn
@@ -1127,13 +1145,25 @@ async def analyse_frage_stream(
     )
 
     history = []
-    for msg in verlauf:
+    rest = max(0, GEMINI_MAX_INPUT_CHARS - len(system) - len(frage))
+    ausgewaehlt = []
+    for msg in reversed(verlauf):
+        text = msg.get("text", "")
+        if rest <= 0:
+            break
+        text = text[-rest:]
+        ausgewaehlt.append((msg, text))
+        rest -= len(text)
+    for msg, text in reversed(ausgewaehlt):
         role = "user" if msg.get("rolle") == "user" else "model"
-        history.append({"role": role, "parts": [{"text": msg.get("text", "")}]})
+        history.append({"role": role, "parts": [{"text": text}]})
 
     client = _get_client()
     contents = history + [{"role": "user", "parts": [{"text": frage}]}]
-    cfg = genai_types.GenerateContentConfig(system_instruction=system, temperature=0.3)
+    cfg = genai_types.GenerateContentConfig(
+        system_instruction=system, temperature=0.3,
+        max_output_tokens=GEMINI_ANALYSE_MAX_OUTPUT_TOKENS,
+    )
 
     try:
         response = await with_retry(lambda: client.aio.models.generate_content_stream(
@@ -1151,13 +1181,14 @@ async def analyse_frage_stream(
     _FLUSH_TAIL = 24
     scrub_buf = ""
     try:
-        async for chunk in response:
-            if chunk.text:
-                scrub_buf += chunk.text
-                if len(scrub_buf) > _FLUSH_TAIL * 2:
-                    safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
-                    yield {"type": "text", "delta": _scrub_jargon(safe)}
-                    await asyncio.sleep(0)
+        async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
+            async for chunk in response:
+                if chunk.text:
+                    scrub_buf += chunk.text
+                    if len(scrub_buf) > _FLUSH_TAIL * 2:
+                        safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
+                        yield {"type": "text", "delta": _scrub_jargon(safe)}
+                        await asyncio.sleep(0)
     except Exception as exc:
         log.warning("Analyse-Frage: Fehler während des Streamens: %s", exc)
         scrub_buf += f"\n\n*{KI_UEBERLASTET_NACHRICHT}*"

@@ -33,11 +33,13 @@ weitergehen, nicht minutenlang blockieren. Genau EIN Versuch pro Bild; ein
 Fehler markiert den Job als `failed` und wird geloggt, nie erneut versucht.
 """
 
+import asyncio
 import base64
 import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +50,9 @@ from google.genai import types as genai_types
 from app.autofinder_norm import KAROSSERIE_KLASSEN
 from app.autofinder_visual import UNBEKANNTE_KAROSSERIE, visual_key_v2
 from app.car_lookup import get_gemini_client
-from app.config import GEMINI_API_KEY
+from app.config import GEMINI_API_KEY, GEMINI_TIMEOUT_SECONDS
+from app.gemini_retry import classify_gemini_error
+from app.provider_control import claim_call, log_provider_event
 
 log = logging.getLogger(__name__)
 
@@ -197,12 +201,26 @@ async def generiere_bild(job: GenerationJob) -> tuple[bytes | None, str | None, 
         response_modalities=["IMAGE"],
         image_config=genai_types.ImageConfig(aspect_ratio="16:9", image_size="1K"),
     )
+    started = time.monotonic()
     try:
+        claim_call("gemini")
         client = get_gemini_client()
-        response = await client.aio.models.generate_content(
-            model=job.model, contents=prompt, config=cfg)
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=job.model, contents=prompt, config=cfg,
+            ),
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+        log_provider_event(
+            "gemini", status="success", attempt=1, started=started, model=job.model,
+        )
     except Exception as exc:
-        return None, None, f"{type(exc).__name__}: {exc}"
+        error_class, _ = classify_gemini_error(exc)
+        log_provider_event(
+            "gemini", status="error", error_class=error_class,
+            attempt=1, started=started, model=job.model,
+        )
+        return None, None, f"Provider-Aufruf fehlgeschlagen ({error_class})"
 
     try:
         kandidaten = response.candidates or []

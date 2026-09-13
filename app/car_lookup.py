@@ -14,7 +14,12 @@ import re
 from google import genai
 from google.genai import types as genai_types
 
-from app.config import GEMINI_API_KEY, LLM_MODEL
+from app.config import (
+    GEMINI_API_KEY, LLM_MODEL, GEMINI_TIMEOUT_SECONDS,
+    GEMINI_JSON_MAX_OUTPUT_TOKENS, GEMINI_AUX_MAX_OUTPUT_TOKENS,
+    GEMINI_MAX_INPUT_CHARS,
+)
+from app.provider_control import current_scope
 from app.database import get_baureihe, get_conn, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen
 from app.recall_filter import gefilterte_rueckrufe, _baujahr_passt
@@ -767,11 +772,10 @@ def get_gemini_client() -> genai.Client:
             raise RuntimeError("GEMINI_API_KEY nicht gesetzt.")
         # Ohne expliziten Timeout kann eine gestörte Verbindung den Request unbegrenzt
         # hängen lassen. HttpOptions.timeout ist in Millisekunden (SDK-intern
-        # verifiziert) — 90s statt 60s wie im Chat, da max_output_tokens=16384 für
-        # Kauf-/Verkaufscheck-Berichte spürbar länger dauern kann.
+        # verifiziert). Der zentrale Wert deckelt auch lange Check-Berichte.
         _client = genai.Client(
             api_key=GEMINI_API_KEY,
-            http_options=genai_types.HttpOptions(timeout=90_000),
+            http_options=genai_types.HttpOptions(timeout=int(GEMINI_TIMEOUT_SECONDS * 1000)),
         )
     return _client
 
@@ -970,10 +974,16 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
     Zwei-Stufen-Parsing: erst normal, dann mit Newline-Repair für
     den häufigen Fall dass Gemini literal \\n in Stringwerten ausgibt.
     """
+    scope = current_scope()
+    output_limit = (
+        GEMINI_JSON_MAX_OUTPUT_TOKENS
+        if scope is None or scope.feature in ("kaufcheck", "verkaufscheck")
+        else GEMINI_AUX_MAX_OUTPUT_TOKENS
+    )
     cfg = genai_types.GenerateContentConfig(
         system_instruction=system_prompt,
         temperature=0.2,
-        max_output_tokens=16384,
+        max_output_tokens=output_limit,
         response_mime_type="application/json",
         # Gemini 2.5 Flash "denkt" per Default dynamisch und praktisch unbegrenzt;
         # diese Thinking-Tokens zählen gegen max_output_tokens. Bei einem langen
@@ -986,6 +996,11 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
     client = get_gemini_client()
+    if len(user_msg) > GEMINI_MAX_INPUT_CHARS:
+        # Anfang (Fahrzeugidentitaet) und Ende (Evidence/Anweisungen) erhalten;
+        # dazwischen keine stillschweigend riesigen Promptkosten zulassen.
+        halb = max(1, (GEMINI_MAX_INPUT_CHARS - 80) // 2)
+        user_msg = user_msg[:halb] + "\n\n[Kontext aus Laengengruenden gekuerzt]\n\n" + user_msg[-halb:]
 
     async def _ein_versuch():
         return await with_retry(lambda: client.aio.models.generate_content(
@@ -1040,5 +1055,5 @@ async def call_gemini_json(system_prompt: str, user_msg: str) -> dict:
                 # _repariere_fehlendes_komma), danach erst die Anführungszeichen-Reparatur.
                 return json.loads(_escape_json_strings(_repariere_fehlendes_komma(raw)))
             except json.JSONDecodeError:
-                log.warning("Gemini JSON-Parsing fehlgeschlagen (alle Versuche). Raw[:300]: %s", raw[:300])
+                log.warning("Gemini JSON-Parsing fehlgeschlagen (alle Reparaturversuche; chars=%d).", len(raw))
                 return _notfall_extraktion(raw)
