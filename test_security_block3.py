@@ -102,7 +102,8 @@ def subprozess(py_code, env_extra, timeout=180):
 
 
 PROD = {"AUTO_KI_ENV": "production", "AUTO_KI_JWT_SECRET": "j" * 64,
-        "AUTO_KI_API_KEY": "c" * 48, "STRIPE_WEBHOOK_SECRET": "whsec_" + "w" * 32}
+        "AUTO_KI_API_KEY": "c" * 48, "STRIPE_WEBHOOK_SECRET": "whsec_" + "w" * 32,
+        "AUTO_KI_CORS_ORIGINS": "https://app.getenfal.de", "FRONTEND_URL": "https://app.getenfal.de"}
 
 
 # ============================================================================

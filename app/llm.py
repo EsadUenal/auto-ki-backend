@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import AsyncGenerator
@@ -112,6 +113,19 @@ def _get_client() -> genai.Client:
 _chroma: chromadb.PersistentClient | None = None
 _chroma_cols: dict[str, chromadb.Collection] = {}
 
+# Gesetzt, solange der Start-Bootstrap (app.main) die Vektordatenbank auf einem
+# frischen Volume aufbaut. Solange oeffnet NIEMAND den Chroma-Pfad: ein Client
+# legte dort sonst eine leere chroma.sqlite3 an und hielte den Index danach
+# veraltet im Prozess-Cache. Die Vektorsuche liefert bis dahin schlicht nichts.
+CHROMA_AUFBAU = threading.Event()
+
+
+def chroma_neu_laden() -> None:
+    """Verwirft den gecachten Client (nach einem Neuaufbau am selben Pfad)."""
+    global _chroma
+    _chroma = None
+    _chroma_cols.clear()
+
 
 def _get_chroma():
     global _chroma
@@ -122,6 +136,8 @@ def _get_chroma():
 
 def _get_col(name: str) -> chromadb.Collection:
     """Collection-Objekt einmalig laden und danach aus Cache holen."""
+    if CHROMA_AUFBAU.is_set():
+        raise RuntimeError("Vektordatenbank wird gerade aufgebaut")
     if name not in _chroma_cols:
         _chroma_cols[name] = _get_chroma().get_collection(name)
     return _chroma_cols[name]

@@ -327,6 +327,29 @@ STRIPE_PRICE_VERKAUFSCHECK = os.environ.get("STRIPE_PRICE_VERKAUFSCHECK", "")  #
 STRIPE_PRICE_PLUS = os.environ.get("STRIPE_PRICE_PLUS", "")  # price_xxx (recurring monthly, 16,99 EUR)
 FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
+# Stripe-LIVE ist ein eigener Release-Schritt. Bis dahin verweigert Produktion
+# den Start mit einem Live-Key (siehe deployment_fehler) — ein versehentlich
+# eingetragener sk_live_... loest so keine echten Zahlungen aus.
+STRIPE_LIVE_ERLAUBT = os.environ.get("AUTO_KI_STRIPE_LIVE_ERLAUBT", "0").strip() == "1"
+
+# ---------------------------------------------------------------------------
+# E-Mail-Versand (Bestaetigungslinks) — anbieterneutral per SMTP
+# ---------------------------------------------------------------------------
+# Kein fest verdrahteter Anbieter: jeder Mailanbieter mit SMTP-Zugang passt
+# (Postfach der eigenen Domain oder ein Versanddienst). Ohne AUTO_KI_SMTP_HOST
+# wird nichts verschickt — die App laeuft weiter, meldet das beim Start aber
+# laut (siehe app.main._warn_if_insecure_defaults).
+#   Port 465 = implizites TLS (SMTPS), jeder andere Port = STARTTLS (Pflicht,
+#   kein Klartext-Fallback).
+SMTP_HOST     = os.environ.get("AUTO_KI_SMTP_HOST", "").strip()
+SMTP_PORT     = int(os.environ.get("AUTO_KI_SMTP_PORT", "587"))
+SMTP_USER     = os.environ.get("AUTO_KI_SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("AUTO_KI_SMTP_PASSWORD", "")
+SMTP_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_SMTP_TIMEOUT_SECONDS", "15"))
+# Absender, z.B. "ENFAL <noreply@getenfal.de>". Ohne Angabe: SMTP_USER.
+MAIL_FROM     = os.environ.get("AUTO_KI_MAIL_FROM", "").strip() or SMTP_USER
+MAIL_AKTIV    = bool(SMTP_HOST and MAIL_FROM)
+
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 # Migration Gemini 2.5 Flash -> 3.7 Flash (Consumer-Bake-off + Retest bestanden:
 # Empfehlungs-Floor, Report-Sync, Wartungs-Guard — siehe Commits 7cc9b95/dbbb660
@@ -417,9 +440,52 @@ def produktions_fehler(
     return fehler
 
 
+def deployment_fehler(
+    *,
+    is_production: bool | None = None,
+    cors_origins: list[str] | None = None,
+    frontend_url: str | None = None,
+    stripe_secret_key: str | None = None,
+    stripe_live_erlaubt: bool | None = None,
+) -> list[str]:
+    """Konfigurationsfehler der Produktions-INFRASTRUKTUR (Domains, Stripe-Modus).
+
+    Getrennt von produktions_fehler() (Secrets), damit beide einzeln testbar
+    bleiben. In Entwicklung immer leer. Meldungen nennen nie Secret-Werte.
+    """
+    is_production = IS_PRODUCTION if is_production is None else is_production
+    if not is_production:
+        return []
+    cors_origins = CORS_ORIGINS if cors_origins is None else cors_origins
+    frontend_url = FRONTEND_URL if frontend_url is None else frontend_url
+    stripe_secret_key = STRIPE_SECRET_KEY if stripe_secret_key is None else stripe_secret_key
+    stripe_live_erlaubt = STRIPE_LIVE_ERLAUBT if stripe_live_erlaubt is None else stripe_live_erlaubt
+
+    fehler: list[str] = []
+    # CORS mit allow_credentials=True: jede erlaubte Origin darf mit dem
+    # Nutzer-Cookie Anfragen stellen. In Produktion deshalb nur echte
+    # HTTPS-Domains — kein "*", kein "null", kein http://, kein localhost.
+    if not cors_origins:
+        fehler.append("AUTO_KI_CORS_ORIGINS ist leer.")
+    for origin in cors_origins:
+        o = origin.strip().lower()
+        if o in ("*", "null") or not o.startswith("https://") or "localhost" in o or "127.0.0.1" in o:
+            fehler.append(f"AUTO_KI_CORS_ORIGINS enthaelt eine in Produktion unzulaessige Origin: {origin!r}")
+    # FRONTEND_URL landet in Stripe-Redirects und Bestaetigungslinks.
+    fu = (frontend_url or "").strip().lower()
+    if not fu.startswith("https://") or "localhost" in fu or "127.0.0.1" in fu:
+        fehler.append("FRONTEND_URL muss in Produktion eine https://-Adresse der echten Domain sein.")
+    # Bis zur ausdruecklichen Freigabe (Release-Schritt "Stripe LIVE") bleibt
+    # Stripe im Testmodus. Ein versehentlich eingetragener Live-Key darf nicht
+    # still echte Zahlungen ausloesen.
+    if (stripe_secret_key or "").strip().startswith(("sk_live_", "rk_live_")) and not stripe_live_erlaubt:
+        fehler.append("STRIPE_SECRET_KEY ist ein Live-Key, aber AUTO_KI_STRIPE_LIVE_ERLAUBT ist nicht 1.")
+    return fehler
+
+
 def validiere_produktion() -> None:
     """Bricht den Start ab, wenn Produktion unsicher konfiguriert ist."""
-    fehler = produktions_fehler()
+    fehler = produktions_fehler() + deployment_fehler()
     if fehler:
         raise RuntimeError(
             "Unsichere Produktionskonfiguration (AUTO_KI_ENV=%s) — Start verweigert:\n  - %s"

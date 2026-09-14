@@ -106,7 +106,10 @@ S_API = "c" * 48
 S_ADMIN = "a" * 48
 S_WH = "whsec_" + "w" * 32
 PROD_OK = {"AUTO_KI_ENV": "production", "AUTO_KI_JWT_SECRET": S_JWT, "AUTO_KI_API_KEY": S_API,
-           "AUTO_KI_ADMIN_API_KEY": S_ADMIN, "STRIPE_WEBHOOK_SECRET": S_WH}
+           "AUTO_KI_ADMIN_API_KEY": S_ADMIN, "STRIPE_WEBHOOK_SECRET": S_WH,
+           # Seit dem Deployment-Block Teil jeder vollstaendigen Produktions-
+           # konfiguration (app.config.deployment_fehler): echte HTTPS-Domains.
+           "AUTO_KI_CORS_ORIGINS": "https://app.getenfal.de", "FRONTEND_URL": "https://app.getenfal.de"}
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,2 @@
+# Shell-Skripte laufen im Linux-Container: immer LF, auch bei core.autocrlf=true.
+*.sh text eol=lf

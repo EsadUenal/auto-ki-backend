@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt
@@ -27,6 +28,7 @@ from app.config import (
 from app.database import get_conn
 from app.einwilligung import require_agb, record as record_einwilligung, ART_AGB
 from app.entitlements import has_dealer_access
+from app.mailer import sende_bestaetigungsmail
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 # Eigene Limiter-Instanz wie in chat.py/kaufcheck.py/verkaufscheck.py — dediziertes,
@@ -129,9 +131,17 @@ def _auth_version(user_id: int) -> int:
 # kann damit kein Konto freischalten. Der Token ist zeitlich begrenzt und genau
 # einmal einloesbar.
 #
-# Der Mailversand selbst gehoert in den spaeteren Provider-/Deployment-Block.
-# Bis dahin gilt: in der Entwicklung wird der Token in der Antwort
-# zurueckgegeben (bequemer Testweg), in PRODUKTION niemals.
+# Versand: app/mailer.py (SMTP, anbieterneutral). In der Entwicklung wird der
+# Token zusaetzlich in der Antwort zurueckgegeben (Testweg), in PRODUKTION nie.
+
+def _mail_im_hintergrund(email: str, token: str, user_id: int) -> None:
+    """Versand in einem eigenen Thread: ein langsamer SMTP-Server verzoegert die
+    Antwort nicht, ein Mailfehler bricht Registrierung/Resend nicht ab (der
+    Mailer wirft nie). Bewusst ohne FastAPI-BackgroundTasks, damit die
+    Endpunkt-Signaturen unveraendert bleiben."""
+    threading.Thread(target=sende_bestaetigungsmail, args=(email, token),
+                     kwargs={"user_id": user_id}, name="bestaetigungsmail", daemon=True).start()
+
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -354,9 +364,9 @@ def register(body: RegisterBody, response: Response, request: Request):
 
     # P2-5: Das Konto startet UNBESTAETIGT. Anmelden, Kaufen und alles Bezahlte
     # funktioniert sofort; nur die kostenlosen LLM-Kontingente warten auf die
-    # bestaetigte Adresse (siehe app/usage_limit.py). Der Mailversand kommt im
-    # spaeteren Provider-Block — bis dahin gibt NUR die Entwicklung den Token
-    # direkt zurueck, damit der Weg testbar bleibt.
+    # bestaetigte Adresse (siehe app/usage_limit.py). Der Link geht per Mail
+    # raus (app/mailer.py); zusaetzlich gibt NUR die Entwicklung den Token
+    # direkt zurueck, damit der Weg ohne SMTP testbar bleibt.
     token = erzeuge_verifikationstoken(user_id) if EMAIL_VERIFIKATION_AKTIV else None
     antwort = {
         "id": user_id, "email": body.email, "abo_typ": "none",
@@ -366,8 +376,10 @@ def register(body: RegisterBody, response: Response, request: Request):
         "dealer_access": has_dealer_access("none", False),
         "email_verified": not EMAIL_VERIFIKATION_AKTIV,
     }
-    if token and not IS_PRODUCTION:
-        antwort["verifikationstoken_dev"] = token
+    if token:
+        _mail_im_hintergrund(body.email, token, user_id)
+        if not IS_PRODUCTION:
+            antwort["verifikationstoken_dev"] = token
     return antwort
 
 
@@ -577,14 +589,15 @@ def verify_email(body: VerifyEmailBody, request: Request):
 def resend_verification(request: Request, user_id: int = Depends(get_current_user_id)):
     """Stellt einen neuen Bestaetigungs-Token aus (der alte verfaellt dabei)."""
     with get_conn() as conn:
-        row = conn.execute("SELECT email_verified FROM users WHERE id=?", (user_id,)).fetchone()
+        row = conn.execute("SELECT email, email_verified FROM users WHERE id=?", (user_id,)).fetchone()
     if row and row["email_verified"]:
         return {"ok": True, "email_verified": True}
     token = erzeuge_verifikationstoken(user_id)
+    if row:
+        _mail_im_hintergrund(row["email"], token, user_id)
     antwort = {"ok": True, "email_verified": False}
-    # Nur in der Entwicklung: ohne angeschlossenen Mailversand waere der Weg
-    # sonst nicht testbar. In Produktion verlaesst der Token den Server nur
-    # per Mail (Provider-Block).
+    # Nur in der Entwicklung: ohne SMTP waere der Weg sonst nicht testbar.
+    # In Produktion verlaesst der Token den Server nur per Mail (app/mailer.py).
     if not IS_PRODUCTION:
         antwort["verifikationstoken_dev"] = token
     return antwort

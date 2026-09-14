@@ -38,3 +38,10 @@ tests/
 
 # ── Doku ───────────────────────────────────────────────────────────────────
 *.md
+
+# ── Weitere lokale Geheimnisse / Rohdaten ────────────────────────────────────
+# Railway baut aus dem Git-Klon (gitignorierte Dateien fehlen dort ohnehin);
+# ein lokales `docker build` saehe sie aber im Build-Kontext.
+wiederherstellungspasswort.txt
+diagnose_runs/
+.autofinder_generation_scratch/

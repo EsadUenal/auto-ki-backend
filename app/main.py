@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+import sqlite3
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
@@ -15,11 +18,12 @@ from app.config import (
     RATE_LIMIT, CORS_ORIGINS, CORS_IS_DEFAULT, DB_PATH, API_KEY, JWT_SECRET, LOG_LEVEL,
     DB_BACKUP_INTERVAL_SECONDS, DEV_API_KEY, DEV_JWT_SECRET, ADMIN_API_KEY,
     STRIPE_WEBHOOK_SECRET, validiere_produktion, DOCS_AKTIV,
+    CHROMA_PATH, EMAIL_VERIFIKATION_AKTIV, MAIL_AKTIV,
 )
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
 from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage, dealer, autofinder
-from app.llm import warmup_chroma
+from app.llm import CHROMA_AUFBAU, chroma_neu_laden, warmup_chroma
 from app.utf8 import UTF8JSONResponse
 
 # App-Logging konfigurieren, bevor irgendein Logger benutzt wird. Ohne dies bleibt
@@ -183,7 +187,13 @@ def on_startup() -> None:
     # Wirft RuntimeError -> uvicorn bricht mit "Application startup failed" ab.
     validiere_produktion()
     ensure_tables()
-    warmup_chroma()
+    if _chroma_bootstrap_noetig():
+        # Frisches Volume: Aufbau im Hintergrund (Minuten), die App ist sofort
+        # bereit. Bis zum Ende bleibt die Vektorsuche gesperrt (llm.CHROMA_AUFBAU).
+        CHROMA_AUFBAU.set()
+        threading.Thread(target=_chroma_bootstrap_hintergrund, name="chroma-bootstrap", daemon=True).start()
+    else:
+        warmup_chroma()
     _warn_if_insecure_defaults()
     app.state.backup_task = asyncio.create_task(_periodic_backup_loop())
 
@@ -198,6 +208,83 @@ async def on_shutdown() -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+
+# ── Chroma-Bootstrap (frisches Produktions-Volume) ──────────────────────────
+# Ein frisches Railway-Volume enthaelt nach ensure_tables() den kompletten
+# Fahrzeugbestand in SQLite, aber KEINE Vektordatenbank — ohne Aufbau liefe die
+# App dauerhaft ohne Fliesstext-Wissen.
+#
+# Gemessen: ~21.000 Eintraege x ~40 ms lokales ONNX-Embedding = rund 10-15 min.
+# Das passt in kein Healthcheck-Fenster (Railway: 300 s) — deshalb im
+# Hintergrund, und in ein Nachbarverzeichnis, das erst nach Erfolg umbenannt
+# wird: wird der Container mittendrin beendet, liegt am echten Pfad nie ein
+# halber Index, und der naechste Start beginnt einfach neu.
+#
+# Geprueft wird bewusst nur, ob die Chroma-Datei existiert (kein Chroma-Client
+# vorab: der wuerde den Pfad prozessweit cachen). Ein bestehender Index wird
+# nie angefasst. Fehler sind nie fatal.
+
+def _chroma_bootstrap_noetig() -> int:
+    """Anzahl Baureihen, wenn ein Aufbau noetig ist, sonst 0."""
+    if (CHROMA_PATH / "chroma.sqlite3").exists():
+        return 0
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            anzahl = conn.execute("SELECT COUNT(*) FROM baureihe").fetchone()[0]
+    except Exception:
+        log.exception("Chroma-Bootstrap: Fahrzeugbestand nicht lesbar — uebersprungen.")
+        return 0
+    if not anzahl:
+        log.warning("Chroma-Bootstrap: kein Fahrzeugbestand in SQLite — uebersprungen.")
+    return anzahl
+
+
+def _chroma_aufbau_ausfuehren(ziel) -> None:
+    """Neuaufbau in einem EIGENEN Prozess.
+
+    ChromaDB (Rust-Kern) haelt Dateien offen, solange der Prozess lebt — auch
+    nach dem Leeren seines Client-Caches. Ein Umbenennen des fertigen Index
+    scheitert dann (unter Windows nachgewiesen). Endet der Kindprozess, sind
+    garantiert alle Handles zu. Ausgaben landen im selben Log (stdout/stderr).
+    """
+    import subprocess
+    import sys
+    subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from app.db_writer import _rebuild_chroma_from_sqlite as r; r(sys.argv[1])",
+         str(ziel)],
+        cwd=str(Path(__file__).resolve().parent.parent), check=True, timeout=3 * 3600,
+    )
+
+
+def _chroma_bootstrap() -> None:
+    """Baut die Vektordatenbank auf, falls noetig (synchron; Kern fuer Thread + Tests)."""
+    anzahl = _chroma_bootstrap_noetig()
+    if not anzahl:
+        return
+    log.warning("Chroma-Bootstrap: keine Vektordatenbank unter %s — Neuaufbau aus %d Baureihen "
+                "(dauert mehrere Minuten, die App laeuft solange ohne Vektorwissen).", CHROMA_PATH, anzahl)
+    import shutil
+
+    baustelle = CHROMA_PATH.with_name(CHROMA_PATH.name + ".bootstrap")
+    try:
+        _chroma_aufbau_ausfuehren(baustelle)
+        shutil.rmtree(CHROMA_PATH, ignore_errors=True)   # ggf. leeres Restverzeichnis
+        baustelle.rename(CHROMA_PATH)
+        chroma_neu_laden()
+        log.warning("Chroma-Bootstrap abgeschlossen: %s", CHROMA_PATH)
+    except Exception:
+        log.exception("Chroma-Bootstrap fehlgeschlagen — App laeuft ohne Vektorwissen weiter.")
+        shutil.rmtree(baustelle, ignore_errors=True)
+
+
+def _chroma_bootstrap_hintergrund() -> None:
+    try:
+        _chroma_bootstrap()
+    finally:
+        CHROMA_AUFBAU.clear()
+        warmup_chroma()
 
 
 def _warn_if_insecure_defaults() -> None:
@@ -226,6 +313,12 @@ def _warn_if_insecure_defaults() -> None:
             "den öffentlich bekannten Dev-Default und können von JEDEM gefälscht "
             "werden. Vor Launch per Umgebungsvariable AUTO_KI_JWT_SECRET setzen "
             "(z.B. `openssl rand -hex 32`). !!!"
+        )
+    if EMAIL_VERIFIKATION_AKTIV and not MAIL_AKTIV:
+        log.warning(
+            "!!! Kein E-Mail-Versand konfiguriert (AUTO_KI_SMTP_HOST / AUTO_KI_MAIL_FROM) — "
+            "neue Konten erhalten KEINEN Bestaetigungslink und damit keine "
+            "kostenlosen Kontingente. !!!"
         )
     if CORS_IS_DEFAULT:
         log.warning(
@@ -326,7 +419,6 @@ def health():
     laeuft und ob die Datenbank antwortet — ohne Pfad, ohne Tabellen, ohne
     Fehlertext (der Grund steht im Log, nicht in der Antwort).
     """
-    import sqlite3
     try:
         conn = sqlite3.connect(str(DB_PATH))
         conn.execute("SELECT 1").fetchone()
@@ -335,4 +427,9 @@ def health():
     except Exception:
         log.exception("Healthcheck: Datenbank nicht erreichbar")
         db_ok = False
-    return {"status": "ok" if db_ok else "degraded", "db": "ok" if db_ok else "fehler"}
+    # 503 statt 200 bei DB-Fehler: Railway gated den Deploy ueber diesen
+    # Endpunkt — ein Container ohne erreichbare Datenbank darf nicht live gehen.
+    return JSONResponse(
+        status_code=200 if db_ok else 503,
+        content={"status": "ok" if db_ok else "degraded", "db": "ok" if db_ok else "fehler"},
+    )

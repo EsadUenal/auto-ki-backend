@@ -3,7 +3,9 @@
 # Build:  docker build -t vira-backend .
 # Run:    docker run -p 8000:8000 --env-file .env -v vira-data:/data vira-backend
 # ---------------------------------------------------------------------------
-FROM python:3.11-slim
+# Debian-Release fest gepinnt (reproduzierbar); das Entrypoint-Skript nutzt
+# setpriv aus util-linux (Essential-Paket, in bookworm /usr/bin/setpriv).
+FROM python:3.11-slim-bookworm
 
 # Laufzeit-Systempakete:
 #   libgomp1 — von chromadb/onnxruntime (lokales Embedding) zur Laufzeit benötigt
@@ -22,13 +24,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App-Code kopieren (.dockerignore hält .env, lokale DB, Tests etc. draußen).
 COPY . .
 
-# Non-root-Benutzer + persistentes Datenverzeichnis. Wird /data als frisches
-# Named Volume gemountet, erbt es die hier gesetzte Eigentümerschaft (Docker-
-# Semantik für leere Volumes) — appuser kann also schreiben.
+# Non-root-Benutzer + persistentes Datenverzeichnis.
+# Railway haengt Volumes root-eigen ein (offizielle Doku: Images mit Non-root-
+# UID bekommen dort Rechteprobleme). Deshalb startet der Container als root,
+# docker-entrypoint.sh korrigiert die Eigentuemerschaft von /data und wechselt
+# DANN per setpriv auf appuser — die App selbst laeuft nie als root.
 RUN useradd -m -u 10001 appuser \
     && mkdir -p /data \
-    && chown -R appuser:appuser /app /data
+    && chown -R appuser:appuser /app /data \
+    && chmod 0755 /app/docker-entrypoint.sh
+
+# Embedding-Modell (ChromaDB, ONNX all-MiniLM-L6-v2) schon beim Build laden:
+# sonst laedt jeder Containerstart es erneut aus dem Internet, bevor die App
+# bereit ist. Liegt im Home von appuser (Path.home() zur Importzeit).
+ENV HOME=/home/appuser
 USER appuser
+RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction as E; E()(['warmup'])"
+USER root
 
 # AUTO_KI_ENV=production: Startpruefung der Secrets (app/config.py
 # validiere_produktion) + Secure-Auth-Cookie. Fest im Image, damit ein
@@ -57,4 +69,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # faelschen koennen, BEVOR app/client_ip.py ueberhaupt gefragt wird. Die
 # Entscheidung, welchem Proxy zu trauen ist, gehoert an EINE Stelle
 # (AUTO_KI_TRUSTED_PROXY_*) — deshalb hier abgeschaltet.
-CMD ["sh", "-c", "uvicorn app.main:app --no-proxy-headers --host 0.0.0.0 --port ${PORT:-8000}"]
+# exec: uvicorn ersetzt die Shell und bekommt SIGTERM direkt (laufende
+# Requests enden sauber innerhalb von drainingSeconds, siehe railway.json).
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --no-proxy-headers --host 0.0.0.0 --port ${PORT:-8000}"]

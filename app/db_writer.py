@@ -459,9 +459,14 @@ def _is_chroma_index_error(exc: Exception) -> bool:
     ])
 
 
-def _rebuild_chroma_from_sqlite() -> dict:
+def _rebuild_chroma_from_sqlite(ziel: Path | None = None) -> dict:
     """
     Vollständiger Neuaufbau der ChromaDB aus SQLite-Daten.
+
+    ziel: Zielverzeichnis (Default CHROMA_PATH). Der Start-Bootstrap
+    (app.main._chroma_bootstrap) baut in ein Nachbarverzeichnis und benennt es
+    erst nach Erfolg um — ein abgebrochener Aufbau hinterlaesst so nie einen
+    halben Index am echten Pfad.
 
     Löscht das komplette chroma/-Verzeichnis und befüllt beide Collections
     (optisches_wissen, technisches_wissen) neu aus allen Baureihen in SQLite.
@@ -470,11 +475,12 @@ def _rebuild_chroma_from_sqlite() -> dict:
     Gibt Statistik zurück: {"baureihen": K, "optisch": N, "technisch": M}
     Sicher bei laufendem Server — SQLite bleibt unangetastet.
     """
-    log.warning("ChromaDB-Neuaufbau gestartet — lösche: %s", CHROMA_PATH)
-    shutil.rmtree(CHROMA_PATH, ignore_errors=True)
-    CHROMA_PATH.mkdir(parents=True, exist_ok=True)
+    ziel = CHROMA_PATH if ziel is None else Path(ziel)
+    log.warning("ChromaDB-Neuaufbau gestartet — lösche: %s", ziel)
+    shutil.rmtree(ziel, ignore_errors=True)
+    ziel.mkdir(parents=True, exist_ok=True)
 
-    chroma  = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    chroma  = chromadb.PersistentClient(path=str(ziel))
     optik   = chroma.get_or_create_collection("optisches_wissen",   metadata={"hnsw:space": "cosine"})
     technik = chroma.get_or_create_collection("technisches_wissen", metadata={"hnsw:space": "cosine"})
 

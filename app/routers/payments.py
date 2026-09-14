@@ -455,7 +455,10 @@ async def stripe_webhook(request: Request):
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-    except Exception:
+    except Exception as exc:
+        # Sichtbar im Log: nach einem Deploy ist ein falsches/altes
+        # STRIPE_WEBHOOK_SECRET sonst nur an ausbleibenden Freischaltungen erkennbar.
+        log.warning("Stripe-Webhook abgelehnt: ungueltige Signatur (%s).", type(exc).__name__)
         raise HTTPException(status_code=400, detail="Ungültige Webhook-Signatur")
 
     event_id   = event.id
