@@ -11,13 +11,43 @@ nicht behauptet, sondern **live gemessen** (siehe Abschnitt 8).
 
 ---
 
+## 0. Live-Stand (gemessen 2026-09-15)
+
+| | Wert |
+|---|---|
+| Backend | Railway-Projekt `successful-prosperity`, Service **`auto-ki-backend`**, Region `europe-west4-drams3a`, Volume `auto-ki-backend-volume` → `/data`, Port 8080 |
+| Frontend | Railway-Projekt `delightful-prosperity`, Services **`auto-ki-web`** (→ `getenfal.de`) und **`auto-ki-app`** (→ `app.getenfal.de`), gleicher Build, Region `europe-west4-drams3a`, Port 8080 |
+| Railway-Plan | „HOBBY", laut API-Limits: **1 Custom Domain pro Service**, **Volume max. 500 MB**, **Volume-Backups: 0** (nicht verfügbar), Logs 7 Tage, 1 GB RAM / 2 vCPU pro Container, 2 Projekte |
+| Modus | `AUTO_KI_ENV` **nicht** in Railway gesetzt → Image-Default `production` (Startprüfung aktiv, `/docs` 404) |
+| Client-IP | `AUTO_KI_CLIENT_IP_HEADER=x-real-ip`, `AUTO_KI_TRUSTED_PROXY_HOPS=1` (gemessen, siehe 8) |
+| Stripe | Testmodus; genau ein Test-Webhook-Endpoint auf `/api/v1/payments/webhook` |
+
+**Zwei Fallen, die live aufgetreten sind:**
+1. `AUTO_KI_ENV=development` war in Railway gesetzt → API-Doku öffentlich,
+   Bestätigungs-Token in der Registrierungsantwort, Cookie ohne `Secure`,
+   keine Startprüfung. **Die Variable darf in Railway nicht existieren.** Der
+   Uptime-Workflow (`auto-ki-web/.github/workflows/uptime.yml`) prüft deshalb,
+   dass `/docs` 404 liefert.
+2. Ein Variablenwert enthielt seinen eigenen Namen
+   (`AUTO_KI_CORS_ORIGINS=AUTO_KI_CORS_ORIGINS=https://…`). Im Raw-Editor nur
+   den **Wert** eintragen. Die Produktions-Startprüfung verweigert so einen Wert.
+
+**Config-as-Code:** Railway übernimmt aus `railway.json` nicht alle Werte
+(Frontend-Healthcheck, Backend-Draining fehlten im Manifest) und kündigt
+`railway.json` zum **2026-12-01** ab (`railway config migrate` →
+`.railway/railway.ts`). Healthcheck, Timeout, Draining und Region sind deshalb
+zusätzlich direkt als Service-Einstellungen gesetzt (Railway-API
+`serviceInstanceUpdate`). Die Migration ist ein offener Punkt vor Dezember.
+
+---
+
 ## 1. Zielarchitektur
 
 | Adresse | Railway-Service | Inhalt |
 |---|---|---|
-| `https://getenfal.de` | `enfal-web` (Frontend) | öffentliche Website — vorgerenderte Seiten `/`, `/autofinder`, `/autokosten`, `/pricing` |
-| `https://app.getenfal.de` | `enfal-web` (derselbe Service) | dieselbe App; Antworten tragen `X-Robots-Tag: noindex` |
-| `https://api.getenfal.de` | `enfal-api` (Backend) | FastAPI, Volume `/data` |
+| `https://getenfal.de` | `auto-ki-web` (Frontend) | öffentliche Website — vorgerenderte Seiten `/`, `/autofinder`, `/autokosten`, `/pricing` |
+| `https://app.getenfal.de` | `auto-ki-app` (zweiter Service, gleicher Build — Domain-Limit, siehe 0) | dieselbe App; Antworten tragen `X-Robots-Tag: noindex` |
+| `https://api.getenfal.de` | `auto-ki-backend` (Backend) | FastAPI, Volume `/data` |
 | `https://www.getenfal.de` | — | nur Weiterleitung auf `getenfal.de` (DNS-Ebene, siehe 6) |
 
 **Ein** Frontend-Build für Website und App: Landingpage und App sind heute
@@ -44,9 +74,10 @@ ein Prozess, eine Replica. Keine PostgreSQL-Migration. Grenze: Railway erlaubt
 
 ## 2. Voraussetzungen (einmalige Nutzeraktionen)
 
-1. Railway-Konto + Plan. **Hobby reicht** für diese Architektur:
-   2 Custom Domains pro Service (Frontend: `getenfal.de` + `app.getenfal.de`,
-   Backend: `api.getenfal.de`), Volume bis 5 GB (belegt: ~0,1 GB).
+1. Railway-Konto + Plan. Die Doku nennt für Hobby 2 Custom Domains pro
+   Service; **das Konto meldet per API aber 1** (Abschnitt 0). Deshalb bedient
+   ein zweiter, identischer Frontend-Service `auto-ki-app` die App-Domain.
+   Volume max. 500 MB (belegt: ~0,1 GB), Volume-Backups im Plan nicht enthalten.
 2. Railway mit GitHub verbinden (Zugriff auf `EsadUenal/auto-ki-backend` und
    `EsadUenal/auto-ki-web`).
 3. DNS-Entscheidung für die Hauptdomain treffen (Abschnitt 6).
@@ -230,20 +261,32 @@ Cloudflare zu verlegen. Für `getenfal.de` selbst gibt es deshalb zwei Wege —
 | Kosten | Cloudflare Free | keine |
 | Wichtig | Proxy (orange Wolke) **aus** lassen oder SSL/TLS = **Full** (sonst `ERR_TOO_MANY_REDIRECTS`, Railway-Doku) — und: ein Cloudflare-Proxy verändert die Client-IP-Header, die Messung in 8 muss dann **mit** Proxy erfolgen | — |
 
-### 6.3 Einträge (Weg A; bei B entfällt Zeile 1, Zeile 4 wird Hauptadresse)
+### 6.3 Einträge — echte Railway-Zielwerte (angelegt 2026-09-15, Weg A)
 
-| Typ | Host | Ziel | Zweck |
-|---|---|---|---|
-| CNAME | `@` (geflattet) | Railway-Ziel von `enfal-web` für `getenfal.de` | Website |
-| TXT | laut Railway-Dashboard | laut Railway-Dashboard | Besitzprüfung `getenfal.de` |
-| CNAME | `app` | Railway-Ziel von `enfal-web` für `app.getenfal.de` | App |
-| TXT | laut Railway-Dashboard | laut Railway-Dashboard | Besitzprüfung `app.getenfal.de` |
-| CNAME | `api` | Railway-Ziel von `enfal-api` für `api.getenfal.de` | Backend |
-| TXT | laut Railway-Dashboard | laut Railway-Dashboard | Besitzprüfung `api.getenfal.de` |
-| CNAME | `www` | `getenfal.de` + Redirect-Regel `www` → `https://getenfal.de` (301) | nur Weiterleitung |
+Entscheidung: **Weg A (Cloudflare Free als DNS, STRATO bleibt Registrar).**
+Die Werte stammen aus `railway domain … --json` (Railway-API), nicht erfunden.
+Die TXT-Werte sind öffentliche Besitznachweise, kein Geheimnis.
 
-`www` wird **nicht** als dritte Domain am Frontend-Service angelegt (Hobby:
-2 Domains/Service); die Weiterleitung passiert auf DNS-/Cloudflare-Ebene.
+| Typ | Name (Cloudflare) | Inhalt | Proxy | Zweck |
+|---|---|---|---|---|
+| CNAME | `@` | `w5l4oemj.up.railway.app` | DNS only (grau) | `getenfal.de` → `auto-ki-web` |
+| TXT | `_railway-verify` | `railway-verify=827b5f91072d1e9f41a03ee83b16e41ba242c97c3293e579512a18b195c10629` | — | Besitzprüfung `getenfal.de` |
+| CNAME | `app` | `cvebhlcq.up.railway.app` | DNS only (grau) | `app.getenfal.de` → `auto-ki-app` |
+| TXT | `_railway-verify.app` | `railway-verify=80801b5838dbe0648cb6932941c81384da1680d041b48cf823fa7b9ae9488a56` | — | Besitzprüfung `app.getenfal.de` |
+| CNAME | `api` | `iuwffquf.up.railway.app` | DNS only (grau) | `api.getenfal.de` → `auto-ki-backend` |
+| TXT | `_railway-verify.api` | `railway-verify=6d54b7476cc0a8cfaaf6cc54102c822b958261e4bb078c2c8b9d79239176dc22` | — | Besitzprüfung `api.getenfal.de` |
+| CNAME | `www` | `getenfal.de` | **Proxied (orange)** | nur Weiterleitung (Redirect-Regel unten) |
+
+„DNS only" für `@`, `app`, `api`: Railway stellt dann selbst das
+Let's-Encrypt-Zertifikat aus, und die gemessene Client-IP-Kette (Abschnitt 8)
+bleibt gültig. Ein Cloudflare-Proxy davor würde `X-Real-IP` verändern.
+
+`www` → Cloudflare-Redirect-Regel (Rules → Redirect Rules): Hostname gleich
+`www.getenfal.de` → dynamisch `concat("https://getenfal.de", http.request.uri.path)`,
+301, Query-String erhalten. `www` wird nicht bei Railway angelegt
+(1 Custom Domain pro Service) und erzeugt keinen doppelten SEO-Inhalt.
+
+Status prüfen: `railway domain status <domain> --service <service>`.
 
 Bestehende MX-/Mail-Einträge bei STRATO nicht anfassen (und bei Weg A zu
 Cloudflare mitnehmen), sonst bricht E-Mail der Domain.
@@ -313,6 +356,23 @@ Deshalb wird **gemessen**, nicht geraten:
 Der Server läuft mit `uvicorn --no-proxy-headers`, damit diese Entscheidung an
 genau einer Stelle fällt (`app/client_ip.py`). Das Flag muss bleiben.
 
+**Messergebnis 2026-09-15** (Admin-Diagnose, Key nur per `railway run` bzw. im
+Container eingespielt, nie ausgegeben):
+
+| Client | Gegenstelle | `X-Forwarded-For` | `X-Real-IP` | Limit-Schlüssel (nach Umstellung) |
+|---|---|---|---|---|
+| Heimanschluss (IPv4) | `100.64.0.x` (wechselnd, Vertrauensnetz) | `[Client, Railway-Edge 152.233.x.x]` | Client | Client |
+| Railway-Container (Egress 152.55.x.x) | `100.64.0.x` | `[Client, Edge]` | Client | Client |
+
+- Gefälschter `X-Forwarded-For` wird vom Edge **entfernt**, gefälschter
+  `X-Real-IP` **überschrieben** — in beiden Fällen blieb der Schlüssel die
+  echte Client-IP (4 Varianten × 2 Clients).
+- Die Railway-Domain ist nur per IPv4 erreichbar.
+- Railway-CDN ist **aus**. Wird es je eingeschaltet, muss neu gemessen werden
+  (laut Forum steht dann die CDN-Adresse in `X-Real-IP`).
+- Gesetzt: `AUTO_KI_CLIENT_IP_HEADER=x-real-ip`, `AUTO_KI_TRUSTED_PROXY_HOPS=1`,
+  `AUTO_KI_TRUSTED_PROXY_NETS` bleibt Default (enthält `100.64.0.0/10`).
+
 ---
 
 ## 9. E-Mail-Bestätigung
@@ -347,17 +407,29 @@ letzten **10** bleiben. Fehler erscheinen im Log (`SQLite-Backup fehlgeschlagen`
 Diese Backups liegen **auf demselben Volume** — sie schützen gegen Bedien- und
 Softwarefehler, nicht gegen Volumenverlust.
 
-**Stufe 2 — Railway Volume Backups (Dashboard, einmalig einschalten):**
-Service → Volume → Backups: Zeitplan **täglich** (6 Tage) + **wöchentlich**
-(27 Tage). Inkrementell, Kosten nach Volumen. Restore per Klick (legt ein neues
-Volume an, das alte bleibt ungemountet). Einschränkungen laut Doku: nur
-Wiederherstellung ins selbe Projekt/Environment; **„Wiping a volume deletes all
-backups"** — also kein Offsite-Backup.
+**Stufe 2 — Railway Volume Backups: im aktuellen Plan NICHT verfügbar**
+(API-Limit `maxBackupsCount: 0`). Mit einem Plan, der sie enthält: Service →
+Volume → Backups, **täglich** + **wöchentlich**. Auch dann gilt laut Doku:
+nur Restore ins selbe Projekt, „Wiping a volume deletes all backups" — kein
+Offsite-Ersatz.
 
-**Stufe 3 — Offsite (FEHLT, Go-Live-Punkt):** regelmäßige Kopie eines
-Backups aus `/data/backups` an einen Speicher außerhalb von Railway. Braucht
-eine Anbieter-/Kostenentscheidung (z. B. S3-kompatibler Speicher) — hier
-bewusst nicht eingebaut.
+**Stufe 3 — Offsite auf den Entwickler-PC (vorhanden):**
+`scripts/offsite_backup.ps1` lädt das jeweils neueste
+`/backups/auto_ki_backup_*.db` über Railways offizielles Volume-Werkzeug
+(`railway volume files download`), prüft Größe und `PRAGMA integrity_check`
+**vor** dem Ablegen, legt nach `%USERPROFILE%\ENFAL-Backups` ab und behält die
+letzten 30. Kein Backend-Code, keine Secrets im Skript. Voraussetzungen:
+Railway-CLI angemeldet + SSH-Schlüssel bei Railway registriert (beides auf dem
+PC vorhanden). Automatik: Windows-Aufgabe „ENFAL Offsite-Backup" (täglich,
+nach Freigabe eingerichtet — siehe Abschlussbericht). Grenzen: läuft nur, wenn der PC an ist; die Kopien enthalten personenbezogene
+Daten und liegen unverschlüsselt auf dem PC — vor dem öffentlichen Launch eine
+zweite, verschlüsselte Ablage außerhalb des PCs festlegen.
+
+Manuell:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\offsite_backup.ps1
+```
+Log: `%USERPROFILE%\ENFAL-Backups\offsite_backup.log` (`OK …` / `FEHLER …`).
 
 **Restore aus Stufe 1:**
 1. Service stoppen (oder Wartung ankündigen).
@@ -386,6 +458,18 @@ bewusst nicht eingebaut.
   Idempotenz über `stripe_events` (event_id PRIMARY KEY, Claim nur bei Erfolg).
 - Live-Keys werden in dieser Phase **vom Start abgelehnt**
   (`AUTO_KI_STRIPE_LIVE_ERLAUBT` ungesetzt).
+- **Live-Stand 2026-09-15:** Das zuvor gesetzte `STRIPE_WEBHOOK_SECRET` gehörte
+  zu keinem existierenden Endpoint (Stripe hatte 0 Endpoints). Neu angelegt:
+  genau ein Test-Endpoint mit den 6 Events; sein Secret wurde direkt per
+  `railway variable set --stdin` übernommen (nie ausgegeben). Solange
+  `api.getenfal.de` nicht auflöst, zeigt er auf die Railway-Adresse; danach
+  nur die URL ändern (`stripe webhook_endpoints update <id> --url …`), das
+  Secret bleibt.
+- Live geprüft: signiertes `checkout.session.completed` → Gutschrift 1
+  KaufCheck; erneute Zustellung desselben Events → bleibt 1 (Idempotenz);
+  falsche Signatur → 400 + Logzeile; vom Backend erzeugte Checkout-Sessions:
+  5,99 € / 8,99 € / 16,99 € mtl., Preis im Request-Body wird ignoriert,
+  unbekanntes Produkt → 400.
 
 ---
 
@@ -399,6 +483,12 @@ Parallelitätsgrenzen (32 global / 2 pro Konto). Produktion braucht:
 - **Budget-/Nutzungsgrenzen beim Anbieter** (Google Cloud Billing-Budget mit
   Alarm + ggf. Quota-Limit für die Gemini-API; Tavily-Plan-/Nutzungslimit) —
   nicht programmatisch einrichtbar, **Go-Live-Punkt**.
+- **Live-Befund 2026-09-15:** Der Produktions-Gemini-Key antwortet mit 429
+  „Your prepayment credits are depleted" (beide Modelle) — das Prepaid-Guthaben
+  im AI-Studio-Projekt ist aufgebraucht. Chat, Checks und AutoFinder-Anreicherung
+  laufen bis zum Aufladen nicht bzw. nur im deterministischen Fallback. Die App
+  wertet diesen Fehler heute als Rate-Limit (3 Versuche, kostenlos) statt als
+  Kontingent-Ende; die Nutzermeldung ist dadurch „überlastet" statt „Kontingent".
 
 ---
 
@@ -423,9 +513,17 @@ Parallelitätsgrenzen (32 global / 2 pro Konto). Produktion braucht:
   sofort SIGKILL); uvicorn bekommt SIGTERM direkt (`exec`), beendet laufende
   Requests (Gemini-Gesamtbudget 75 s). Mit Volume gibt es bei jedem Redeploy
   trotzdem eine kurze Downtime.
-- **Lücke:** ein hängender, aber nicht abgestürzter Prozess wird nicht erkannt.
-  Ein externer Uptime-Monitor auf `/health` (z. B. ein kostenloser Dienst) wäre
-  die Ergänzung — Nutzerentscheidung, nicht eingebaut.
+- **Uptime-Monitor (vorhanden):** GitHub-Workflow
+  `auto-ki-web/.github/workflows/uptime.yml`, alle 15 min: Backend `/health`
+  (200 + `db: ok`), `/docs` `/redoc` `/openapi.json` = 404 (Produktionsmodus),
+  Frontend `/healthz` + Startseite + Security-Header. Fehlschlag → GitHub-
+  Benachrichtigung an das Konto, das den Workflow zuletzt geändert hat.
+  Erkennt damit auch einen hängenden Prozess, den Railway nicht bemerkt
+  (Healthcheck nur beim Deploy). Grenzen: GitHub-Zeitpläne laufen nicht
+  sekundengenau und pausieren in öffentlichen Repos nach 60 Tagen ohne
+  Aktivität.
+- **Kostenschutz Railway:** `railway usage` zeigt Verbrauch; Soft/Hard-Limit
+  sind derzeit **nicht** gesetzt (Dashboard → Usage).
 
 ---
 
