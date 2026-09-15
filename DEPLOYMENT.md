@@ -420,8 +420,12 @@ Offsite-Ersatz.
 **vor** dem Ablegen, legt nach `%USERPROFILE%\ENFAL-Backups` ab und behält die
 letzten 30. Kein Backend-Code, keine Secrets im Skript. Voraussetzungen:
 Railway-CLI angemeldet + SSH-Schlüssel bei Railway registriert (beides auf dem
-PC vorhanden). Automatik: Windows-Aufgabe „ENFAL Offsite-Backup" (täglich,
-nach Freigabe eingerichtet — siehe Abschlussbericht). Grenzen: läuft nur, wenn der PC an ist; die Kopien enthalten personenbezogene
+PC vorhanden). Automatik: Windows-Aufgabe **„ENFAL Offsite-Backup"**, täglich
+21:15, nur bei angemeldetem Benutzer, verpasste Läufe werden nachgeholt
+(`StartWhenAvailable`); im Aufgaben-Kontext erfolgreich getestet (Download,
+Größe, `integrity_check`). Das Skript nutzt `%USERPROFILE%\.enfal\bin\railway.exe`
+(Kopie der offiziellen CLI-Binärdatei): die npm-Installation unter AppData war in
+der Aufgaben-Umgebung nicht sichtbar. Grenzen: läuft nur, wenn der PC an ist; die Kopien enthalten personenbezogene
 Daten und liegen unverschlüsselt auf dem PC — vor dem öffentlichen Launch eine
 zweite, verschlüsselte Ablage außerhalb des PCs festlegen.
 

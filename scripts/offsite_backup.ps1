@@ -1,4 +1,4 @@
-# ENFAL — Offsite-Kopie der SQLite-Backups vom Railway-Volume auf diesen PC.
+﻿# ENFAL — Offsite-Kopie der SQLite-Backups vom Railway-Volume auf diesen PC.
 #
 # Warum: Die App sichert alle 6 h nach /data/backups — aber auf DEMSELBEN
 # Volume. Railway-Volume-Backups sind im aktuellen Plan nicht verfuegbar
@@ -30,12 +30,20 @@ $Log = Join-Path $Ziel "offsite_backup.log"
 # Railway-CLI schreibt Statuszeilen nach stderr; PowerShell 5.1 wuerde das mit
 # ErrorActionPreference=Stop als Fehler werten. Deshalb eigener Aufruf mit
 # Pruefung des Exitcodes.
-$RailwayExe = (Get-Command railway -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$RailwayExe = $null
 function Invoke-RailwayCli([string[]]$argumente) {
     $alt = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     try { $out = & $RailwayExe @argumente 2>$null; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $alt }
     if ($code -ne 0) { throw "railway $($argumente[5..($argumente.Length-1)] -join ' ') -> Exitcode $code" }
     return $out
+}
+function Find-Programm([string]$name, [string]$fest) {
+    if ($fest -and (Test-Path -LiteralPath $fest)) { return $fest }
+    foreach ($k in @(Get-Command $name -CommandType Application -ErrorAction SilentlyContinue)) {
+        $pfad = $k.Source.Trim().Trim([char]34)
+        if ($pfad -and (Test-Path -LiteralPath $pfad)) { return $pfad }
+    }
+    throw "$name nicht gefunden."
 }
 function Log([string]$m) {
     $z = "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $m
@@ -44,6 +52,14 @@ function Log([string]$m) {
 }
 
 try {
+    # Innerhalb von try: auch ein fehlendes CLI (z. B. andere PATH-Umgebung
+    # der geplanten Aufgabe) landet im Log statt still mit Exitcode 1 zu enden.
+    # Feste Pfade zuerst: in der Umgebung der geplanten Aufgabe findet
+    # Get-Command die Programme nicht zuverlaessig. Das Railway-CLI liegt als
+    # eigenstaendige railway.exe unter %USERPROFILE%\.enfal\bin (Kopie aus dem
+    # npm-Paket @railway/cli), sonst ueber den PATH.
+    $RailwayExe = Find-Programm "railway" (Join-Path $env:USERPROFILE ".enfal\bin\railway.exe")
+    $PythonExe = Find-Programm "python" (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")
     $basis = @("volume", "-p", $Projekt, "-e", $Umgebung, "-s", $Service, "files", "--volume", $Volume)
     $roh = Invoke-RailwayCli ($basis + @("list", "/backups", "--json"))
     $json = ($roh | Out-String)
@@ -64,7 +80,7 @@ try {
         if (-not (Test-Path $tmp)) { throw "Download fehlgeschlagen: $($neu.path)" }
         $groesse = (Get-Item $tmp).Length
         if ($groesse -ne [int64]$neu.size) { throw "Groesse weicht ab ($groesse statt $($neu.size))." }
-        $pruef = & python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('PRAGMA integrity_check').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM users').fetchone()[0])" $tmp
+        $pruef = & $PythonExe -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('PRAGMA integrity_check').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM users').fetchone()[0])" $tmp
         if ($pruef[0] -ne "ok") { Remove-Item $tmp -Force; throw "integrity_check: $($pruef[0])" }
         Move-Item $tmp $zielDatei -Force
         Log ("OK geladen: {0} ({1:N0} KB, integrity=ok, Konten={2})" -f $neu.name, ($groesse / 1KB), $pruef[1])
@@ -74,6 +90,6 @@ try {
     $alle | Select-Object -Skip $Behalten | ForEach-Object { Remove-Item $_.FullName -Force; Log "Rotation: $($_.Name) entfernt" }
     exit 0
 } catch {
-    Log "FEHLER: $($_.Exception.Message)"
+    Log ("FEHLER: {0} (Zeile {1}: {2})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber, $_.InvocationInfo.Line.Trim())
     exit 1
 }
