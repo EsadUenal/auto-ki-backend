@@ -128,18 +128,25 @@ check("D-1: Produktion mit Stripe-Live-Key -> verweigert (Testmode-Phase)",
       "VERWEIGERT" in r.stdout and "sk_live_zzz" not in r.stdout, r.stdout + r.stderr[-300:])
 
 # ════════════════════════════════════════════════════════════════════════════
-# D-2  Mailer
+# D-2  Mailer (Brevo-API per HTTPS — Railway blockiert SMTP-Ports, siehe
+#      app/mailer.py)
 # ════════════════════════════════════════════════════════════════════════════
-import smtplib  # noqa: E402
+import httpx  # noqa: E402
 
-PROTOKOLL = []
+AUFRUFE = []
 
 
-class FakeSMTP:
-    starttls_fehler = False
+class FakeResponse:
+    status_code = 201
 
-    def __init__(self, host, port, timeout=None, context=None):
-        PROTOKOLL.append(("connect", type(self).__name__, host, port, timeout))
+    def raise_for_status(self):
+        if FakeResponse.status_code >= 400:
+            raise httpx.HTTPStatusError("Brevo-Fehler", request=None, response=self)
+
+
+class FakeClient:
+    def __init__(self, timeout=None):
+        AUFRUFE.append(("init", timeout))
 
     def __enter__(self):
         return self
@@ -147,71 +154,58 @@ class FakeSMTP:
     def __exit__(self, *a):
         return False
 
-    def ehlo(self):
-        PROTOKOLL.append(("ehlo",))
-
-    def starttls(self, context=None):
-        if FakeSMTP.starttls_fehler:
-            raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
-        PROTOKOLL.append(("starttls", context is not None))
-
-    def login(self, user, pw):
-        PROTOKOLL.append(("login", user))
-
-    def send_message(self, msg):
-        PROTOKOLL.append(("send", msg))
+    def post(self, url, headers=None, json=None):
+        AUFRUFE.append(("post", url, headers, json))
+        return FakeResponse()
 
 
-class FakeSMTPSSL(FakeSMTP):
-    pass
+class FailingClient(FakeClient):
+    def post(self, *a, **kw):
+        raise httpx.ConnectError("Netzwerkfehler")
 
 
-_orig = (smtplib.SMTP, smtplib.SMTP_SSL)
-smtplib.SMTP, smtplib.SMTP_SSL = FakeSMTP, FakeSMTPSSL
-_cfg_alt = {k: getattr(config, k) for k in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD",
+_orig_client = httpx.Client
+httpx.Client = FakeClient
+_cfg_alt = {k: getattr(config, k) for k in ("BREVO_API_KEY", "BREVO_TIMEOUT_SECONDS",
                                             "MAIL_FROM", "MAIL_AKTIV", "FRONTEND_URL")}
 try:
     logs = fange_logs("app.mailer")
     config.MAIL_AKTIV = False
-    ok = mailer.sende_bestaetigungsmail("kunde@example.com", "TOKEN_OHNE_SMTP_123", user_id=7)
-    check("D-2: ohne SMTP -> kein Versand, Rueckgabe False", ok is False and not PROTOKOLL)
-    check("D-2: ohne SMTP -> Fehler im Log (mit user_id)", any("NICHT versendet" in z and "7" in z for z in logs.zeilen))
+    ok = mailer.sende_bestaetigungsmail("kunde@example.com", "TOKEN_OHNE_KEY_123", user_id=7)
+    check("D-2: ohne Brevo-Key -> kein Versand, Rueckgabe False", ok is False and not AUFRUFE)
+    check("D-2: ohne Brevo-Key -> Fehler im Log (mit user_id)", any("NICHT versendet" in z and "7" in z for z in logs.zeilen))
 
-    config.SMTP_HOST, config.SMTP_PORT, config.SMTP_USER = "smtp.example.test", 587, "noreply@getenfal.de"
-    config.SMTP_PASSWORD, config.MAIL_FROM, config.MAIL_AKTIV = "pw", "ENFAL <noreply@getenfal.de>", True
+    config.BREVO_API_KEY, config.MAIL_FROM, config.MAIL_AKTIV = "xkeysib-test", "ENFAL <noreply@getenfal.de>", True
+    config.BREVO_TIMEOUT_SECONDS = 10.0
     config.FRONTEND_URL = "https://app.getenfal.de/"
     token = "TOKEN_" + "k" * 40
     ok = mailer.sende_bestaetigungsmail("kunde@example.com", token, user_id=8)
-    schritte = [s[0] for s in PROTOKOLL]
-    check("D-2: Port 587 -> STARTTLS vor Login und Versand",
-          ok and schritte.index("starttls") < schritte.index("login") < schritte.index("send"), str(schritte))
-    check("D-2: STARTTLS mit Zertifikatspruefung (SSL-Kontext)", ("starttls", True) in PROTOKOLL)
-    msg = [s[1] for s in PROTOKOLL if s[0] == "send"][0]
-    text = msg.get_content()
+    check("D-2: Versand -> HTTPS-Aufruf, kein SMTP-Socket", ok and len(AUFRUFE) == 2, str(AUFRUFE))
+    _, url, headers, body = AUFRUFE[1]
+    check("D-2: Ziel ist die Brevo-Transaktionsmail-API", url == mailer.BREVO_API_URL)
+    check("D-2: API-Key nur im Header, nicht im Body", headers["api-key"] == "xkeysib-test" and "xkeysib-test" not in json.dumps(body))
     check("D-2: Link zeigt auf FRONTEND_URL mit Token im Fragment",
-          f"https://app.getenfal.de/email-bestaetigen#token={token}" in text, text)
-    check("D-2: Empfaenger/Absender korrekt", msg["To"] == "kunde@example.com" and "getenfal.de" in msg["From"])
-    check("D-2: Timeout gesetzt", any(s[0] == "connect" and s[4] for s in PROTOKOLL))
+          f"https://app.getenfal.de/email-bestaetigen#token={token}" in body["textContent"], body["textContent"])
+    check("D-2: Empfaenger/Absender korrekt",
+          body["to"] == [{"email": "kunde@example.com"}] and body["sender"] == {"email": "noreply@getenfal.de", "name": "ENFAL"},
+          str(body))
+    check("D-2: Timeout gesetzt", AUFRUFE[0] == ("init", 10.0))
     check("D-2: Token und Adresse NIE im Log",
           not any(token in z or "kunde@example.com" in z for z in logs.zeilen), str(logs.zeilen))
 
-    PROTOKOLL.clear()
-    config.SMTP_PORT = 465
+    AUFRUFE.clear()
+    FakeResponse.status_code = 400
     ok = mailer.sende_bestaetigungsmail("kunde@example.com", token, user_id=9)
-    check("D-2: Port 465 -> implizites TLS (SMTP_SSL), kein STARTTLS",
-          ok and PROTOKOLL[0][1] == "FakeSMTPSSL" and not any(s[0] == "starttls" for s in PROTOKOLL), str(PROTOKOLL[:2]))
+    check("D-2: Brevo lehnt ab (4xx) -> False, kein Crash", ok is False)
+    FakeResponse.status_code = 201
 
-    PROTOKOLL.clear()
-    config.SMTP_PORT = 587
-    FakeSMTP.starttls_fehler = True
+    AUFRUFE.clear()
+    httpx.Client = FailingClient
     ok = mailer.sende_bestaetigungsmail("kunde@example.com", token, user_id=10)
-    check("D-2: Server ohne STARTTLS -> KEIN Klartextversand, False, kein Crash",
-          ok is False and not any(s[0] in ("send", "login") for s in PROTOKOLL), str(PROTOKOLL))
-    FakeSMTP.starttls_fehler = False
-    check("D-2: Header-Injection ueber Empfaenger unmoeglich",
-          mailer.sende_bestaetigungsmail("a@b.de\nBcc: x@y.de", token, user_id=11) is False)
+    check("D-2: Netzwerkfehler (Brevo nicht erreichbar) -> False, kein Crash", ok is False)
+    httpx.Client = FakeClient
 finally:
-    smtplib.SMTP, smtplib.SMTP_SSL = _orig
+    httpx.Client = _orig_client
     for k, v in _cfg_alt.items():
         setattr(config, k, v)
 

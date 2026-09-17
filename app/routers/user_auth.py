@@ -131,7 +131,7 @@ def _auth_version(user_id: int) -> int:
 # kann damit kein Konto freischalten. Der Token ist zeitlich begrenzt und genau
 # einmal einloesbar.
 #
-# Versand: app/mailer.py (SMTP, anbieterneutral). In der Entwicklung wird der
+# Versand: app/mailer.py (Brevo-API per HTTPS). In der Entwicklung wird der
 # Token zusaetzlich in der Antwort zurueckgegeben (Testweg), in PRODUKTION nie.
 
 def _mail_im_hintergrund(email: str, token: str, user_id: int) -> None:

@@ -156,11 +156,8 @@ Produktion in Ordnung. Werte hier sind **Beispiele**, nie echte Keys.
 | `AUTO_KI_STRIPE_LIVE_ERLAUBT` | – | – | **nicht setzen** (= 0) | ✔ | erst im Schritt „Stripe LIVE" auf `1` |
 | `GEMINI_API_KEY` | ✔ | ✔ | – | – | eigener Produktions-Key mit Budgetgrenze (Abschnitt 12) |
 | `TAVILY_API_KEY` | ✔ | ✔ | `tvly-…` | – | dito |
-| `AUTO_KI_SMTP_HOST` | ✔ für RC1 | – | `smtp.<anbieter>` | leer = kein Versand | siehe Abschnitt 9 |
-| `AUTO_KI_SMTP_PORT` | – | – | `587` (STARTTLS) oder `465` (TLS) | 587 | nie Klartext |
-| `AUTO_KI_SMTP_USER` | ✔ für RC1 | – | `noreply@getenfal.de` | – | |
-| `AUTO_KI_SMTP_PASSWORD` | ✔ für RC1 | ✔ | – | – | |
-| `AUTO_KI_MAIL_FROM` | – | – | `ENFAL <noreply@getenfal.de>` | = SMTP_USER | |
+| `AUTO_KI_BREVO_API_KEY` | ✔ für RC1 | ✔ | Brevo „API Key" (nicht der SMTP-Key) | leer = kein Versand | siehe Abschnitt 9 — Railway (Hobby-Plan) blockiert jeden SMTP-Port, daher HTTPS-API statt SMTP |
+| `AUTO_KI_MAIL_FROM` | ✔ für RC1 | – | `ENFAL <noreply@getenfal.de>` | – | muss bei Brevo verifizierter Absender/Domain sein |
 | `AUTO_KI_TRUSTED_PROXY_HOPS` | ✔ | – | `0` bis zur Messung | 0 | Abschnitt 8 |
 | `AUTO_KI_CLIENT_IP_HEADER` | nach Messung | – | `x-real-ip` | `x-forwarded-for` | Abschnitt 8 |
 | `AUTO_KI_TRUSTED_PROXY_NETS` | nach Messung | – | gemessenes Proxy-Netz | private Netze + 100.64.0.0/10 | Abschnitt 8 |
@@ -180,7 +177,7 @@ Produktion in Ordnung. Werte hier sind **Beispiele**, nie echte Keys.
 `AUTO_KI_LOG_LEVEL` (INFO) · `AUTO_KI_RATE_LIMIT` (20/minute) ·
 `AUTO_KI_DB_BACKUP_INTERVAL_SECONDS` (21600 = 6 h) · `AUTO_KI_JWT_EXPIRE_DAYS` (7) ·
 `AUTO_KI_EMAIL_VERIFIKATION` (1 — **nie 0 in Produktion**) ·
-`AUTO_KI_EMAIL_VERIFIKATION_STUNDEN` (48) · `AUTO_KI_SMTP_TIMEOUT_SECONDS` (15) ·
+`AUTO_KI_EMAIL_VERIFIKATION_STUNDEN` (48) · `AUTO_KI_BREVO_TIMEOUT_SECONDS` (10) ·
 `AUTO_KI_CHECK_VERSUCHE_PRO_TAG` (8) · `AUTO_KI_CHECK_EINGABE_MAX` /
 `_ERGEBNIS_MAX` / `AUTO_KI_NACHRICHT_MAX` · Monatskontingente
 `AUTO_KI_CHAT_FREE_LIMIT_MONATLICH` (20), `_PLUS_` (100),
@@ -388,12 +385,15 @@ AutoFinder, Rückfragen) gibt es erst nach Bestätigung. Bezahltes ist nie betro
   keinem Server-Log auf. Frontend-Seite `/email-bestaetigen` löst ihn ein und
   bietet angemeldet „Neuen Link senden".
 - Produktion gibt den Token **nie** in einer API-Antwort zurück (Test D-3).
-- **Offen (RC1-Blocker):** Anbieterentscheidung + SMTP-Zugang. Ohne
-  `AUTO_KI_SMTP_HOST` warnt der Start laut, und neue Nutzer bekommen keine Mail.
-  Möglich ist jedes Postfach mit SMTP-Zugang (z. B. eine Adresse der eigenen
-  Domain beim Mailanbieter) oder ein Versanddienst. Vor RC1 außerdem: SPF/DKIM
-  (ggf. DMARC) für `getenfal.de` beim Mailanbieter einrichten, sonst landen die
-  Mails im Spam.
+- **Versand läuft über die Brevo-Transaktionsmail-API per HTTPS, nicht per
+  SMTP:** Railway blockiert auf dem laufenden Plan (Hobby) jeden ausgehenden
+  SMTP-Port (25/465/587/2525) netzwerkseitig — gemessen per Direktverbindung
+  aus dem Container (DNS ok, jeder SMTP-Port TimeoutError, HTTPS sofort
+  erreichbar). Ohne `AUTO_KI_BREVO_API_KEY` warnt der Start laut, und neue
+  Nutzer bekommen keine Mail. Ein Upgrade auf den Railway-Pro-Plan würde SMTP
+  wieder freischalten, ist aber eine eigene (kostenpflichtige) Entscheidung.
+  Vor RC1 außerdem: SPF/DKIM (ggf. DMARC) für `getenfal.de` bei Brevo
+  einrichten, sonst landen die Mails im Spam.
 
 ---
 

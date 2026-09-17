@@ -333,22 +333,21 @@ FRONTEND_URL            = os.environ.get("FRONTEND_URL", "http://localhost:3000"
 STRIPE_LIVE_ERLAUBT = os.environ.get("AUTO_KI_STRIPE_LIVE_ERLAUBT", "0").strip() == "1"
 
 # ---------------------------------------------------------------------------
-# E-Mail-Versand (Bestaetigungslinks) — anbieterneutral per SMTP
+# E-Mail-Versand (Bestaetigungslinks) — Brevo-API per HTTPS
 # ---------------------------------------------------------------------------
-# Kein fest verdrahteter Anbieter: jeder Mailanbieter mit SMTP-Zugang passt
-# (Postfach der eigenen Domain oder ein Versanddienst). Ohne AUTO_KI_SMTP_HOST
-# wird nichts verschickt — die App laeuft weiter, meldet das beim Start aber
-# laut (siehe app.main._warn_if_insecure_defaults).
-#   Port 465 = implizites TLS (SMTPS), jeder andere Port = STARTTLS (Pflicht,
-#   kein Klartext-Fallback).
-SMTP_HOST     = os.environ.get("AUTO_KI_SMTP_HOST", "").strip()
-SMTP_PORT     = int(os.environ.get("AUTO_KI_SMTP_PORT", "587"))
-SMTP_USER     = os.environ.get("AUTO_KI_SMTP_USER", "").strip()
-SMTP_PASSWORD = os.environ.get("AUTO_KI_SMTP_PASSWORD", "")
-SMTP_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_SMTP_TIMEOUT_SECONDS", "15"))
-# Absender, z.B. "ENFAL <noreply@getenfal.de>". Ohne Angabe: SMTP_USER.
-MAIL_FROM     = os.environ.get("AUTO_KI_MAIL_FROM", "").strip() or SMTP_USER
-MAIL_AKTIV    = bool(SMTP_HOST and MAIL_FROM)
+# Kein SMTP: Railway blockiert auf dem laufenden Plan (Hobby) jeden
+# ausgehenden SMTP-Port (25/465/587/2525) netzwerkseitig, HTTPS (443) ist
+# dagegen offen — daher die Transaktionsmail-API des ohnehin eingerichteten
+# Anbieters Brevo statt eines SMTP-Sockets (siehe app/mailer.py). Ohne
+# AUTO_KI_BREVO_API_KEY wird nichts verschickt — die App laeuft weiter,
+# meldet das beim Start aber laut (siehe app.main._warn_if_insecure_defaults).
+BREVO_API_KEY = os.environ.get("AUTO_KI_BREVO_API_KEY", "").strip()
+BREVO_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_BREVO_TIMEOUT_SECONDS", "10"))
+# Absender, z.B. "ENFAL <noreply@getenfal.de>" — muss ein bei Brevo
+# verifizierter Absender/eine verifizierte Domain sein, sonst weist Brevo die
+# Mail zurueck.
+MAIL_FROM     = os.environ.get("AUTO_KI_MAIL_FROM", "").strip()
+MAIL_AKTIV    = bool(BREVO_API_KEY and MAIL_FROM)
 
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 # Migration Gemini 2.5 Flash -> 3.7 Flash (Consumer-Bake-off + Retest bestanden:

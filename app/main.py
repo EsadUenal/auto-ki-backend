@@ -316,7 +316,7 @@ def _warn_if_insecure_defaults() -> None:
         )
     if EMAIL_VERIFIKATION_AKTIV and not MAIL_AKTIV:
         log.warning(
-            "!!! Kein E-Mail-Versand konfiguriert (AUTO_KI_SMTP_HOST / AUTO_KI_MAIL_FROM) — "
+            "!!! Kein E-Mail-Versand konfiguriert (AUTO_KI_BREVO_API_KEY / AUTO_KI_MAIL_FROM) — "
             "neue Konten erhalten KEINEN Bestaetigungslink und damit keine "
             "kostenlosen Kontingente. !!!"
         )
