@@ -21,6 +21,20 @@ nicht behauptet, sondern **live gemessen** (siehe Abschnitt 8).
 | Modus | `AUTO_KI_ENV` **nicht** in Railway gesetzt → Image-Default `production` (Startprüfung aktiv, `/docs` 404) |
 | Client-IP | `AUTO_KI_CLIENT_IP_HEADER=x-real-ip`, `AUTO_KI_TRUSTED_PROXY_HOPS=1` (gemessen, siehe 8) |
 | Stripe | Testmodus; genau ein Test-Webhook-Endpoint auf `/api/v1/payments/webhook` |
+| Mail | Brevo-HTTP-API statt SMTP (siehe Abschnitt 9) — Railway/Hobby blockiert jeden SMTP-Port; live verifiziert (Testversand über den echten Mailer kam an) |
+
+**Update 2026-09-17 (domainunabhängiger Teil von Schritt 8, ohne STRATO/Cloudflare):**
+Mailversand auf Brevo-API umgestellt und live verifiziert · Test-Account
+(`enfal-deploytest-…@example.com`, `user_id 1`) inkl. aller abhängigen
+Zeilen (Cascade) aus der Produktions-DB entfernt · Gemini-Produktions-Key
+nach Aufladen mit einem einzelnen Minimal-Request erneut bestätigt · Backend-
+Production-Mode, `/docs`-Sperre, Client-IP-Proxy-Konfiguration, interne
+6h-Backups, tägliches Offsite-Backup und der Uptime-Workflow laufen
+unverändert gesund (per Railway-SSH bzw. den jeweiligen `*.up.railway.app`-
+Adressen gegengeprüft, da `getenfal.de` erst nach der STRATO/Cloudflare-
+Aktivierung erreichbar ist). `auto-ki-app` (→ `app.getenfal.de`) hat **keine**
+eigene `*.up.railway.app`-Fallback-Domain — vor der DNS-Umstellung nur per
+Deployment-Status, nicht per HTTP, prüfbar.
 
 **Zwei Fallen, die live aufgetreten sind:**
 1. `AUTO_KI_ENV=development` war in Railway gesetzt → API-Doku öffentlich,
