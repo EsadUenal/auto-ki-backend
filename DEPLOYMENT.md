@@ -36,6 +36,25 @@ Aktivierung erreichbar ist). `auto-ki-app` (→ `app.getenfal.de`) hat **keine**
 eigene `*.up.railway.app`-Fallback-Domain — vor der DNS-Umstellung nur per
 Deployment-Status, nicht per HTTP, prüfbar.
 
+**Update 2026-09-19 (Domain-Umzug, Schritt 8 abgeschlossen):** Nameserver auf
+Cloudflare umgestellt, alle drei Domains (`getenfal.de`, `app.getenfal.de`,
+`api.getenfal.de`) live mit gültigem Zertifikat (Details Abschnitt 6) ·
+`VITE_API_BASE_URL` auf `auto-ki-app` final auf `https://api.getenfal.de`
+gesetzt und neu gebaut (Bundle geprüft: keine `*.up.railway.app`-Reste mehr) ·
+`AUTO_KI_CORS_ORIGINS` auf die zwei echten Origins reduziert, live mit
+Fremd-Origin und der alten Railway-Origin gegengeprüft (beide bekommen kein
+`Access-Control-Allow-Origin` mehr) · Stripe-Test-Webhook auf
+`https://api.getenfal.de/api/v1/payments/webhook` umgestellt, live mit
+gültiger Signatur, Idempotenz-Zweitzustellung und ungültiger Signatur (400 +
+Logzeile) getestet · Brevo-Domain `getenfal.de` vollständig authentifiziert
+(DKIM + vorhandene DMARC-Policy von Brevo als ausreichend erkannt) ·
+E2E-Rauchtest auf der finalen Domain bestanden: Registrierung, Login,
+`/auth/me`, Logout, Bestätigungsmail-Versand, Security-Header, `/docs` +
+`/openapi.json` weiterhin 404 — Test-Account danach wieder gelöscht ·
+GitHub-Uptime-Workflow auf die echten Domains umgestellt. **Offen:** nur noch
+`www.getenfal.de` (siehe Abschnitt 6, zwei mögliche Fixes, keiner davon
+DNS-Arbeit).
+
 **Zwei Fallen, die live aufgetreten sind:**
 1. `AUTO_KI_ENV=development` war in Railway gesetzt → API-Doku öffentlich,
    Bestätigungs-Token in der Registrierungsantwort, Cookie ohne `Secure`,
@@ -272,35 +291,69 @@ Cloudflare zu verlegen. Für `getenfal.de` selbst gibt es deshalb zwei Wege —
 | Kosten | Cloudflare Free | keine |
 | Wichtig | Proxy (orange Wolke) **aus** lassen oder SSL/TLS = **Full** (sonst `ERR_TOO_MANY_REDIRECTS`, Railway-Doku) — und: ein Cloudflare-Proxy verändert die Client-IP-Header, die Messung in 8 muss dann **mit** Proxy erfolgen | — |
 
-### 6.3 Einträge — echte Railway-Zielwerte (angelegt 2026-09-15, Weg A)
+### 6.3 Einträge — echte Railway-Zielwerte (live seit 2026-09-19, Weg A)
 
-Entscheidung: **Weg A (Cloudflare Free als DNS, STRATO bleibt Registrar).**
-Die Werte stammen aus `railway domain … --json` (Railway-API), nicht erfunden.
-Die TXT-Werte sind öffentliche Besitznachweise, kein Geheimnis.
+Entscheidung: **Weg A (Cloudflare Free als DNS, STRATO bleibt Registrar)** —
+Nameserver seit 2026-09-19 auf Cloudflare umgestellt, Zone `active`. Die
+Werte stammen aus `railway domain … ` (Railway-API), nicht erfunden.
 
 | Typ | Name (Cloudflare) | Inhalt | Proxy | Zweck |
 |---|---|---|---|---|
-| CNAME | `@` | `w5l4oemj.up.railway.app` | DNS only (grau) | `getenfal.de` → `auto-ki-web` |
-| TXT | `_railway-verify` | `railway-verify=827b5f91072d1e9f41a03ee83b16e41ba242c97c3293e579512a18b195c10629` | — | Besitzprüfung `getenfal.de` |
-| CNAME | `app` | `cvebhlcq.up.railway.app` | DNS only (grau) | `app.getenfal.de` → `auto-ki-app` |
-| TXT | `_railway-verify.app` | `railway-verify=80801b5838dbe0648cb6932941c81384da1680d041b48cf823fa7b9ae9488a56` | — | Besitzprüfung `app.getenfal.de` |
-| CNAME | `api` | `iuwffquf.up.railway.app` | DNS only (grau) | `api.getenfal.de` → `auto-ki-backend` |
-| TXT | `_railway-verify.api` | `railway-verify=6d54b7476cc0a8cfaaf6cc54102c822b958261e4bb078c2c8b9d79239176dc22` | — | Besitzprüfung `api.getenfal.de` |
-| CNAME | `www` | `getenfal.de` | **Proxied (orange)** | nur Weiterleitung (Redirect-Regel unten) |
+| CNAME | `@` | `g77tnlns.up.railway.app` | DNS only (grau) | `getenfal.de` → `auto-ki-web` |
+| CNAME | `app` | `qs57u9i1.up.railway.app` | DNS only (grau) | `app.getenfal.de` → `auto-ki-app` |
+| CNAME | `api` | `eletr14f.up.railway.app` | DNS only (grau) | `api.getenfal.de` → `auto-ki-backend` |
+| CNAME | `www` | `getenfal.de` | Proxied (orange) | siehe „www" unten — **liefert aktuell 404** |
+| CNAME | `brevo1._domainkey` | `b1.getenfal-de.dkim.brevo.com` | DNS only | Brevo-DKIM (Abschnitt 9) |
+| CNAME | `brevo2._domainkey` | `b2.getenfal-de.dkim.brevo.com` | DNS only | Brevo-DKIM (Abschnitt 9) |
+| TXT | `@` | `brevo-code:518dc4ba2e83c2a89e594ad287210e61` | — | Brevo-Domainverifizierung |
 
-„DNS only" für `@`, `app`, `api`: Railway stellt dann selbst das
-Let's-Encrypt-Zertifikat aus, und die gemessene Client-IP-Kette (Abschnitt 8)
-bleibt gültig. Ein Cloudflare-Proxy davor würde `X-Real-IP` verändern.
+Diese CNAME-Ziele sind die **zweite** Generation (siehe Falle unten) — kein
+`_railway-verify`-TXT mehr nötig, Railway hat beim Neuanlegen sofort
+`Verified: yes` geliefert. „DNS only" für `@`/`app`/`api`: Railway stellt
+selbst das Zertifikat aus, die gemessene Client-IP-Kette (Abschnitt 8) bleibt
+gültig — ein Cloudflare-Proxy davor würde `X-Real-IP` verändern.
 
-`www` → Cloudflare-Redirect-Regel (Rules → Redirect Rules): Hostname gleich
-`www.getenfal.de` → dynamisch `concat("https://getenfal.de", http.request.uri.path)`,
-301, Query-String erhalten. `www` wird nicht bei Railway angelegt
-(1 Custom Domain pro Service) und erzeugt keinen doppelten SEO-Inhalt.
+**Neue Falle (2026-09-19): Railway-Domainverifizierung blieb bei allen drei
+Domains > 20 Minuten auf `Verified: no` / `VALIDATING_OWNERSHIP` hängen,
+obwohl CNAME **und** TXT laut Cloudflare-, Google- und Quad9-Resolver längst
+korrekt und weltweit sichtbar waren. Bekannter Railway-Bug (mehrere offene
+Threads auf station.railway.com, teils >72 h hängend). Fix: Domain bei
+Railway **löschen und neu anlegen** (CLI: `railway domain delete` →
+`railway domain <name>`) — danach sofort `Verified: yes` und gültiges
+Zertifikat. Jedes Neuanlegen vergibt ein **neues** CNAME-Ziel; die Cloudflare-
+Einträge müssen entsprechend nachgezogen werden. Alte `_railway-verify`-TXT-
+Einträge sind danach überflüssig und wurden gelöscht.
+
+**Bestehende STRATO-Einträge bewusst unverändert gelassen** (beim
+Nameserver-Umzug automatisch nach Cloudflare importiert): `MX` (`smtpin.rzone.de`,
+Haupt- und Wildcard-Eintrag), `CNAME autoconfig` + `SRV _autodiscover`
+(Mail-Client-Autokonfiguration), `TXT _dmarc` (`p=reject`, strenger als
+Brevos Vorschlag `p=none` — bewusst **nicht** heruntergestuft, siehe
+Abschnitt 9) und `TXT _domainkey` (STRATO-eigener Legacy-Eintrag, andere
+Selector-Namen als Brevo, keine Kollision).
+
+**`www.getenfal.de` — noch NICHT sauber weitergeleitet.** Ziel wäre ein
+301 auf `https://getenfal.de$request_uri`. Zwei unabhängige Blocker, keiner
+davon durch DNS-Arbeit lösbar:
+1. Der Cloudflare-Token hat nur `Zone → DNS → Edit`. Redirect Rules
+   (`/zones/.../rulesets/phases/http_request_dynamic_redirect/...`) verlangen
+   eine zusätzliche Berechtigung (Error 10000); Page Rules sind für
+   Account-Tokens laut Cloudflare-API grundsätzlich gesperrt (Error 1011),
+   unabhängig von Berechtigungen.
+2. `auto-ki-web` hat mit `getenfal.de` bereits die **eine** erlaubte Custom
+   Domain des Hobby-Plans belegt — `www` als eigene Railway-Domain (für einen
+   origin-seitigen nginx-Redirect) würde einen zweiten Slot brauchen
+   (`railway domain www.getenfal.de` → „limit for custom domains … upgrade").
+
+Aktuell: `http://www…` → Cloudflare leitet automatisch auf `https://www…`
+um, `https://www…` erreicht danach über den bestehenden (unveränderten)
+Proxied-CNAME `auto-ki-web`, das die Custom Domain nicht kennt → **404**
+(kein Absturz, keine Schleife, aber auch keine Weiterleitung). Behebbar durch
+**eine** von zwei Aktionen: (a) dem Cloudflare-Token zusätzlich
+`Zone → Single Redirect/Rulesets → Edit` geben, oder (b) Railway-Plan mit
+mehr Custom Domains pro Service.
 
 Status prüfen: `railway domain status <domain> --service <service>`.
-
-Bestehende MX-/Mail-Einträge bei STRATO nicht anfassen (und bei Weg A zu
-Cloudflare mitnehmen), sonst bricht E-Mail der Domain.
 
 ### 6.4 HTTPS-Kette
 Railway terminiert TLS (TLS 1.2/1.3), leitet HTTP→HTTPS um, setzt
