@@ -1114,13 +1114,19 @@ def _validiere_enum_liste(werte: list[str], erlaubt: tuple[str, ...], feldname: 
 class AutoFinderRequest(BaseModel):
     """Nutzereingaben für den AutoFinder — kostenlos, kein Check-Credit."""
 
-    # ---- BASIS ---- Budget/Kilometer: kein Marktpreis-/Gebrauchtwagen-
-    # Datenbestand vorhanden, deshalb aktuell KEIN harter Filter (§4/§13).
+    # ---- BASIS ---- Budget: kein Marktpreis-/Gebrauchtwagen-Datenbestand
+    # vorhanden, deshalb KEIN harter Filter (§4/§13) — es steuert nur
+    # Reihenfolge und Preisorientierung.
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
     baujahr_von: int | None = Field(default=None, ge=1900, le=2100)
     baujahr_bis: int | None = Field(default=None, ge=1900, le=2100)
-    kilometer_max: int | None = Field(default=None, ge=0)
+    # ABGESCHALTET: ENFAL hat keine Datenquelle für einen fahrzeugbezogenen
+    # Kilometerfilter. Das Feld wird von alten Clients noch angenommen, aber
+    # nirgends ausgewertet — es wirkt weder als Filter noch im Score, es zählt
+    # nicht als Suchkriterium und erscheint nicht in `filters_applied`. Das
+    # Suchformular bietet es nicht mehr an.
+    kilometer_max: int | None = Field(default=None, ge=0, deprecated=True)
 
     # ---- FAHRZEUG (harte Filter) ----
     marken_bevorzugt: list[str] = Field(default_factory=list, max_length=_AUTOFINDER_MAX_LISTE)
@@ -1220,15 +1226,51 @@ class AutoFinderKandidatOut(BaseModel):
     variante_id: str | None = None
     marke: str
     modell: str
+    # Werkscode passend zur empfohlenen Karosserie, sofern geprüft hinterlegt
+    # (app/chassis_codes.py) — sonst die Generation der Baureihe.
     generation: str | None = None
+    # Motor-/Ausführungsbezeichnung. Sagt die gepflegte Bezeichnung nichts aus
+    # (sie wiederholt nur die Leistung, z.B. "245 PS"), steht hier eine aus
+    # Hubraum und Kraftstoff HERGELEITETE Beschreibung und
+    # `motor_hergeleitet` ist True — nie ein erfundener Handelsname. Ohne
+    # verwertbare Daten bleibt das Feld leer.
     motor: str
+    motor_hergeleitet: bool = False
+    # Der für die ANFRAGE relevante Ausschnitt der Bauzeit. Die Bauzeit der
+    # ganzen Generation steht getrennt in `generation_baujahr_*` und wird nie
+    # als Bauzeit der einzelnen Motorisierung ausgegeben.
     baujahr_von: int | None = None
     baujahr_bis: int | None = None
+    generation_baujahr_von: int | None = None
+    generation_baujahr_bis: int | None = None
     leistung_ps: int | None = None
     kraftstoff: str
+
+    # -- KONKRETE EMPFOHLENE VARIANTE (app/autofinder_variante.py) --
+    # `getriebe`/`karosserie` tragen die EMPFOHLENE Ausprägung: genau EIN
+    # Eintrag, sobald sie belegbar ist (`*_konkret == True`). Bleibt sie
+    # mehrdeutig, steht dort die belegbare Menge und `*_konkret` ist False —
+    # dann behauptet die Antwort bewusst keine konkrete Ausprägung.
+    # `*_verfuegbar` ist reiner Kontext (was die Baureihe bzw. die Motorisierung
+    # darüber hinaus anbietet) und gehört NICHT zur Empfehlung.
     getriebe: list[str] = Field(default_factory=list)
+    getriebe_verfuegbar: list[str] = Field(default_factory=list)
+    getriebe_konkret: bool = False
     antrieb: str | None = None
     karosserie: list[str] = Field(default_factory=list)
+    karosserie_verfuegbar: list[str] = Field(default_factory=list)
+    karosserie_konkret: bool = False
+    # WORAUF die gezeigte Karosserie beruht — entscheidend für die Ehrlichkeit
+    # der Aussage, denn die Datenbank führt die Karosserie an der BAUREIHE,
+    # nicht an der Motorisierung:
+    #   bezeichnung         die Variante nennt sie selbst ("GTD Variant") — belegt
+    #   baureihe_eindeutig  die Baureihe hat nur diese eine — belegt
+    #   nutzerwunsch        die Baureihe bietet sie an und der Nutzer hat sie
+    #                       gesucht; ob GENAU DIESE Motorisierung in dieser
+    #                       Karosserie lieferbar war, ist NICHT belegt
+    #   mehrdeutig          nicht auflösbar — dann steht in `karosserie` die
+    #                       belegbare Menge und `karosserie_konkret` ist False
+    karosserie_quelle: str = "mehrdeutig"
 
     # -- Ranking --
     # `match_score` ist der FINALE Score, der die Reihenfolge bestimmt — also

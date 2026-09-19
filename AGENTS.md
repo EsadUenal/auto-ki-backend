@@ -33,6 +33,22 @@ Repository arbeiten. Sie beschreibt verbindliche Regeln, keine Empfehlungen.
 - Keine Captcha-Umgehung. Keine unerlaubten Scraper bauen.
 - Marktpreise dürfen bei fehlenden Live-Daten nicht erfunden werden;
   fehlende Daten führen zu `research_failed`, nicht zu einem Schein-Median.
+- **AutoFinder: Baureihe ≠ Variante.** `baureihe.karosserie` und
+  `baureihe.bauzeitraum_*` gehören der GENERATION, nicht der Motorisierung.
+  Eine Empfehlung wird aber als konkrete Variante dargestellt — sie darf
+  deshalb nie die Sammelmenge der Baureihe übernehmen ("Cabrio/Kompakt/
+  Limousine", "Automatik/Schaltgetriebe", Bauzeit der ganzen Generation).
+  Aufgelöst wird ausschließlich über `app/autofinder_variante.py`; was sich
+  nicht belegen lässt, bleibt mehrdeutig und wird als solches ausgewiesen
+  (`karosserie_quelle`). Nichts raten.
+- **Ein Filter, der die Auswahl nicht einschränkt, gehört nicht ins
+  Formular.** Kein "wird aktuell nicht berücksichtigt"-Hinweis unter einem
+  scheinbar wirksamen Feld (so entstand der entfernte Kilometerfilter).
+- **Eine Suche ohne verwertbares Kriterium kostet nichts.** Prüfung vor
+  Kontingentverbrauch und vor jedem Provider-Aufruf.
+- Ein Sprachmodell liefert keine Fahrzeugmängel. "Bekannte Punkte" kommen
+  ausschließlich aus geprüften DB-Fakten; der Enrichment-Prompt verbietet
+  Defekt-Behauptungen und bekommt die DB-Fakten gar nicht erst zu sehen.
 
 ## Secrets
 - Niemals API-Keys ausgeben, in Logs schreiben oder in Testmeldungen einbetten.
@@ -105,6 +121,7 @@ pytest-Konfigurationsdatei; pytest wird aus dem Repo-Root aufgerufen.
 | Fahrzeugdaten-Seed | `app/fahrzeug_seed.py`, `db/seed_fahrzeugdaten.sql`, `db/README_bootstrap.md` |
 | DB-Zugriff / Schema | `app/database.py`, `app/models.py`, `db/schema.sql` |
 | Markt / Preis | `app/marktvergleich.py`, `app/marktrecherche.py`, `app/preisurteil.py`, `app/market_data_provider.py` |
+| AutoFinder | `app/autofinder.py` (Engine), `app/autofinder_variante.py` (konkrete Variante, leere Suche, Endvalidierung), `app/autofinder_norm.py`, `app/autofinder_fit.py`, `app/autofinder_enrich.py`, `app/autofinder_budget.py`, `app/routers/autofinder.py` |
 | LLM | `app/llm.py`, `app/gemini_retry.py` |
 | Auth / Abo | `app/auth.py`, `app/entitlements.py`, `app/dealer.py` |
 | Tests | `test_*.py` im Repo-Root; `tests/golden_questions.py` |

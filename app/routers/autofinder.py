@@ -52,7 +52,7 @@ weiterhin keine Marktpreise, keine Preisspannen, keine Inserate, keine Bilder.
 import logging
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from slowapi import Limiter
 from app.client_ip import limit_schluessel
 
@@ -89,6 +89,15 @@ from app.autofinder_visual import (
     resolve_image,
     visual_key_v2,
     waehle_karosserie,
+)
+from app.autofinder_variante import (
+    LEERE_SUCHE_MELDUNG,
+    Q_MEHRDEUTIG,
+    hat_verwertbares_kriterium,
+    loese_baujahre,
+    loese_getriebe,
+    loese_karosserie,
+    pruefe_hardfilter_einhaltung,
 )
 from app.database import get_alle_baureihen_kurz
 from app.models import (
@@ -188,17 +197,20 @@ def _diesel_stadt_kurzstrecke_warnung(body: AutoFinderRequest) -> str | None:
     )
 
 
-def _kilometer_hinweis(body: AutoFinderRequest) -> str | None:
-    """§4 Runde 3: `kilometer_max` bleibt weiterhin KEIN harter Filter (die DB
-    hat keine Kilometerangabe je Baureihe) — das muss sichtbar bleiben, auch
-    wenn Budget jetzt (Runde 3) das Ranking beeinflussen darf."""
-    if body.kilometer_max is None:
-        return None
-    return (
-        "Kilometerangaben fließen aktuell nicht in die Auswahl ein — ENFAL hat "
-        "dafür noch keinen belastbaren Marktpreis-/Gebrauchtwagen-Datenbestand. "
-        "Sie dienen nur zur Orientierung."
-    )
+# KILOMETERFILTER — BEWUSST ENTFERNT STATT ERKLÄRT
+# -------------------------------------------------
+# Früher nahm das Suchformular einen "Gesamtkilometer max."-Wert entgegen, den
+# nichts auswertete; die Antwort trug dafür einen Hinweistext. Ein Filter, der
+# im Formular steht, aber die Auswahl nicht einschränkt, ist irreführend —
+# auch mit Erklärung darunter. ENFAL hat für einen fahrzeugbezogenen
+# Kilometer-Filter keine Datenquelle: die Datenbank führt keine Kilometer je
+# Baureihe, und es werden bewusst keine Gebrauchtwagen-Angebote abgerufen.
+#
+# Deshalb: das Feld ist aus dem Formular raus, wird nicht mehr an die Engine
+# durchgereicht, taucht nicht in `filters_applied` auf, geht nicht in den
+# Score ein und wird auch dem Budget-Prompt nicht mehr mitgegeben. Die
+# HTTP-Schicht nimmt einen mitgeschickten Wert weiter entgegen (alte Clients),
+# ignoriert ihn aber vollständig.
 
 
 def _budget_ergebnis_hinweis(body: AutoFinderRequest, *, gemini_aufgerufen: bool,
@@ -225,7 +237,6 @@ def _zu_engine_request(body: AutoFinderRequest) -> _EngineRequest:
         budget_max=body.budget_max,
         baujahr_von=body.baujahr_von,
         baujahr_bis=body.baujahr_bis,
-        kilometer_max=body.kilometer_max,
         marken_bevorzugt=list(body.marken_bevorzugt),
         marken_ausschliessen=list(body.marken_ausschliessen),
         karosserie=list(body.karosserie),
@@ -245,30 +256,89 @@ def _zu_engine_request(body: AutoFinderRequest) -> _EngineRequest:
     )
 
 
-def _karosserie_ausgabe(k, bevorzugte_karosserie: str | None) -> list[str]:
-    """Consumer-Karosserie-Liste. Bei EINDEUTIGER Karosserie-Anfrage steht die
-    gewünschte (Hard-Filter-garantiert vorhandene) Klasse ZUERST — ein
-    Multi-Body-Kandidat wird dann nicht mit einer irreführenden Fremdklasse
-    vorne angezeigt (§Multi-Body). Sonst wie gehabt (sortiert)."""
-    klassen = list(k.karosserie_klassen or [])
-    if bevorzugte_karosserie and bevorzugte_karosserie in klassen:
-        return [bevorzugte_karosserie] + [c for c in klassen if c != bevorzugte_karosserie]
-    return klassen
+@dataclass
+class _Variante:
+    """Die KONKRETE empfohlene Ausprägung eines Kandidaten.
+
+    Interne DB-Kandidaten bringen die Auflösung schon aus der Engine mit
+    (app/autofinder.py -> app/autofinder_variante.py). Web-Kandidaten haben
+    keine Baureihenzeile; für sie wird hier aus denselben Regeln aufgelöst,
+    damit BEIDE Herkünfte exakt dieselbe Ausgabeform haben.
+    """
+    karosserie: list[str]              # genau EIN Eintrag, wenn auflösbar
+    karosserie_konkret: bool
+    karosserie_quelle: str             # siehe AutoFinderKandidatOut.karosserie_quelle
+    karosserie_baureihe: list[str]     # was die Baureihe insgesamt anbietet
+    getriebe: list[str]                # genau EIN Eintrag, wenn auflösbar
+    getriebe_konkret: bool
+    getriebe_verfuegbar: list[str]
+    generation: str | None
+    baujahr_von: int | None
+    baujahr_bis: int | None
+    generation_baujahr_von: int | None
+    generation_baujahr_bis: int | None
 
 
-def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
+def _konkrete_variante(k, body: AutoFinderRequest) -> _Variante:
+    belegbar = sorted(k.karosserie_klassen or [])
+    konkret = getattr(k, "karosserie_konkret", None)
+    quelle = getattr(k, "karosserie_quelle", Q_MEHRDEUTIG)
+    baureihe_karo = sorted(getattr(k, "karosserie_baureihe", None) or belegbar)
+    if konkret is None and quelle == Q_MEHRDEUTIG and belegbar:
+        # Web-Kandidat (oder sonst nicht vorab aufgelöst): dieselben Regeln,
+        # nur ohne Baureihen-Kontext — es gibt keine Schwestervarianten.
+        auf = loese_karosserie(frozenset(belegbar), getattr(k, "motor_bezeichnung", None),
+                               frozenset(), gewuenscht=list(body.karosserie))
+        konkret, quelle = auf.konkret, auf.quelle
+
+    getr_verfuegbar = sorted(k.getriebe_klassen or [])
+    getr_konkret = getattr(k, "getriebe_konkret", None)
+    if getr_konkret is None:
+        getr_konkret = loese_getriebe(getr_verfuegbar, gewuenscht=list(body.getriebe)).konkret
+
+    gen_von = getattr(k, "generation_baujahr_von", None)
+    gen_bis = getattr(k, "generation_baujahr_bis", None)
+    bj_von, bj_bis = k.baujahr_von, k.baujahr_bis
+    if gen_von is None and gen_bis is None:
+        # Web-Kandidat: Bauzeit ist dort bereits die belegte Angabe.
+        bj = loese_baujahre(k.baujahr_von, k.baujahr_bis, body.baujahr_von, body.baujahr_bis)
+        bj_von, bj_bis = bj.von, bj.bis
+        gen_von, gen_bis = bj.generation_von, bj.generation_bis
+
+    return _Variante(
+        karosserie=[konkret] if konkret else belegbar,
+        karosserie_konkret=konkret is not None,
+        karosserie_quelle=quelle,
+        karosserie_baureihe=baureihe_karo,
+        getriebe=[getr_konkret] if getr_konkret else getr_verfuegbar,
+        getriebe_konkret=getr_konkret is not None,
+        getriebe_verfuegbar=getr_verfuegbar,
+        generation=getattr(k, "generation_label", None) or k.generation,
+        baujahr_von=bj_von, baujahr_bis=bj_bis,
+        generation_baujahr_von=gen_von, generation_baujahr_bis=gen_bis,
+    )
+
+
+def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
                       budget_confidence: str = CONF_UNKNOWN,
                       budget_adjustment: float = 0.0,
                       bevorzugte_karosserie: str | None = None,
                       user_fit: int = 0, user_fit_gruende: list[str] | None = None,
                       enrichment: Enrichment | None = None,
-                      enrichment_status: str = "unavailable") -> AutoFinderKandidatOut:
+                      enrichment_status: str = "unavailable",
+                      known_points: list[str] | None = None) -> AutoFinderKandidatOut:
     """Übersetzung des Engine-Kandidaten inkl. Fit-Score (deterministisch) und
-    Gemini-Enrichment (why_fits / trade_offs / known_points / Preisorientierung).
+    Gemini-Enrichment (why_fits / trade_offs / Preisorientierung).
     `k.match_score` bleibt der INTERNE Ranking-Score (`base_match_score`);
-    `user_fit` ist die nutzer-verständliche Passung."""
+    `user_fit` ist die nutzer-verständliche Passung.
+
+    `karosserie`/`getriebe`/`baujahr_*` tragen die KONKRETE empfohlene
+    Ausprägung (siehe `_konkrete_variante`), nicht mehr die Sammelangaben der
+    Baureihe. Was die Baureihe darüber hinaus anbietet, steht getrennt in
+    `karosserie_verfuegbar`/`getriebe_verfuegbar` — sichtbar als Kontext,
+    nie als Bestandteil der Empfehlung."""
     enr = enrichment or Enrichment()
-    karosserie_out = _karosserie_ausgabe(k, bevorzugte_karosserie)
+    karosserie_out = list(var.karosserie)
     # §Multi-Body: ein kombinierter Modellname ("S60/V60") beschreibt zwei
     # Karosserievarianten derselben Baureihe — als Kombi-Empfehlung ausgegeben
     # behauptet er ein Modell, das es nicht gibt. Ist die angezeigte Karosserie
@@ -284,15 +354,23 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         variante_id=k.variante_id,
         marke=k.marke,
         modell=modell_out,
-        generation=k.generation,
+        generation=var.generation,
         motor=k.motor_bezeichnung,
-        baujahr_von=k.baujahr_von,
-        baujahr_bis=k.baujahr_bis,
+        motor_hergeleitet=bool(getattr(k, "motor_hergeleitet", False)),
+        baujahr_von=var.baujahr_von,
+        baujahr_bis=var.baujahr_bis,
+        generation_baujahr_von=var.generation_baujahr_von,
+        generation_baujahr_bis=var.generation_baujahr_bis,
         leistung_ps=k.leistung_ps,
         kraftstoff=k.kraftstoff,
-        getriebe=list(k.getriebe_klassen),
+        getriebe=list(var.getriebe),
+        getriebe_verfuegbar=list(var.getriebe_verfuegbar),
+        getriebe_konkret=var.getriebe_konkret,
         antrieb=k.antrieb,
         karosserie=karosserie_out,
+        karosserie_verfuegbar=list(var.karosserie_baureihe),
+        karosserie_konkret=var.karosserie_konkret,
+        karosserie_quelle=var.karosserie_quelle,
         match_score=k.match_score + budget_adjustment,
         datenqualitaet=k.datenqualitaet,
         match_gruende=[strip_pruef_label(g) for g in k.match_gruende],
@@ -300,7 +378,7 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         user_fit=user_fit,
         user_fit_gruende=list(user_fit_gruende or []),
         why_fits=list(enr.why_fits),
-        known_points=list(enr.known_points),
+        known_points=list(known_points or []),
         enrichment_status=enrichment_status,
         estimated_price_min=enr.estimated_price_min,
         estimated_price_max=enr.estimated_price_max,
@@ -323,7 +401,8 @@ def _zu_kandidat_out(k, *, budget_status: str = BUDGET_UNKNOWN,
         market_data_quality=k.market_data_quality,
         market_sample_size=k.market_sample_size,
         such_filter_hinweis=None,   # §5/§14: Struktur vorbereitet, weiterhin nicht befüllt
-        **_bild_felder(k, bevorzugte_karosserie=bevorzugte_karosserie),
+        **_bild_felder(k, bevorzugte_karosserie=(
+            karosserie_out[0] if var.karosserie_konkret else bevorzugte_karosserie)),
     )
 
 
@@ -422,6 +501,82 @@ _MAX_AUSGABE = 5
 _KANDIDATEN_POOL = _MAX_AUSGABE
 
 
+# §Bekannte Punkte: Gemini liefert sie NICHT mehr. Ein Sprachmodell kann eine
+# modelltypische Schwäche nicht an Generation/Motor/Baujahr binden — real
+# beobachtet: ein "Nockenwellenversteller/Kettentrieb"-Hinweis stand unter
+# einer konkreten 220-PS-Variante, ohne dass irgendetwas ihn dieser Variante
+# zuordnete. Deshalb sind "bekannte Punkte" jetzt ausschließlich die bereits
+# geprüften DB-Fakten des Kandidaten (Schwachstellen/Rückrufe aus
+# `get_baureihe()`, siehe app/autofinder._trade_offs_fuer). Ein Fakt, der nur
+# an der BAUREIHE hängt, wird auch als solcher gekennzeichnet — er ist nicht
+# automatisch eine Eigenschaft genau dieser Motorisierung.
+_BAUREIHE_PRAEFIX = "Bekannte Schwachstelle"
+
+
+def _bekannte_punkte(k) -> list[str]:
+    punkte: list[str] = []
+    for roh in (getattr(k, "trade_offs", None) or []):
+        text = strip_pruef_label(roh)
+        if not text:
+            continue
+        if roh.startswith(_BAUREIHE_PRAEFIX):
+            text += " — für die Baureihe dokumentiert, nicht zwingend für genau diese Motorisierung"
+        punkte.append(text)
+    return punkte
+
+
+# §Fahranfänger: bei spürbarer Leistung darf keine absolute Eignungsaussage
+# stehen. Der Prompt fordert die differenzierte Formulierung bereits an —
+# dieser Filter ist die deterministische Absicherung dahinter, denn eine
+# Prompt-Regel ist keine Garantie.
+_EINSTEIGER_PS_SCHWELLE = 150
+_ABSOLUTE_EINSTEIGER_MUSTER = (
+    "ideal für fahranfänger", "ideal für einsteiger", "perfekt für fahranfänger",
+    "perfekt für einsteiger", "ohne überforderung", "fahrsicher für einsteiger",
+    "problemlos für fahranfänger", "bestens für fahranfänger",
+    "gut für fahranfänger geeignet", "ideal für den fahranfänger",
+)
+
+
+def _ist_absolute_einsteigeraussage(text: str) -> bool:
+    s = text.lower()
+    return any(m in s for m in _ABSOLUTE_EINSTEIGER_MUSTER)
+
+
+def _bereinige_einsteigeraussagen(texte: list[str], leistung_ps: int | None) -> list[str]:
+    if leistung_ps is None or leistung_ps < _EINSTEIGER_PS_SCHWELLE:
+        return texte
+    return [t for t in texte if not _ist_absolute_einsteigeraussage(t)]
+
+
+def _einsteiger_hinweis(k, body: AutoFinderRequest) -> str | None:
+    """Deterministischer Trade-off, wenn jemand als Fahranfänger sucht und die
+    Empfehlung spürbar Leistung hat. Kein Werturteil über den Fahrer — die
+    Zahl steht so in der Datenbank, die Folgen (Versicherung, Fahrverhalten)
+    sind sachlich benannt."""
+    if not body.fahranfaenger:
+        return None
+    ps = getattr(k, "leistung_ps", None)
+    if ps is None or ps < _EINSTEIGER_PS_SCHWELLE:
+        return None
+    return (
+        f"{ps} PS sind für den Einstieg viel Leistung: Versicherungseinstufung, "
+        "Unterhalt und das Fahrverhalten bei Nässe gehören hier ausdrücklich mit "
+        "in die Entscheidung."
+    )
+
+
+# §Budget: eine Überschreitung muss in der angezeigten Passung sichtbar sein
+# und nicht nur in einem Nebenlabel. Abzug in Prozentpunkten auf `user_fit` —
+# deterministisch aus dem bereits konsolidierten Budget-Status abgeleitet,
+# nicht aus einer zweiten Schätzung.
+_BUDGET_FIT_ABZUG = {"OUT_OF_BUDGET": 12, "NEAR_BUDGET": 4}
+
+
+def _fit_nach_budget(fit: int, budget_status: str) -> int:
+    return max(0, fit - _BUDGET_FIT_ABZUG.get(budget_status, 0))
+
+
 @dataclass
 class _FinalErgebnis:
     outs: list[AutoFinderKandidatOut]
@@ -501,7 +656,6 @@ async def _finalisiere(
             final_kands,
             budget_min=body.budget_min, budget_max=body.budget_max,
             baujahr_von=body.baujahr_von, baujahr_bis=body.baujahr_bis,
-            kilometer_max=body.kilometer_max,
         )
 
     def _b(kand) -> tuple[str, str, float]:
@@ -551,6 +705,13 @@ async def _finalisiere(
             e_status = "fallback"
             fallback_genutzt = True
 
+        ps = getattr(kand, "leistung_ps", None)
+        enr.why_fits = _bereinige_einsteigeraussagen(list(enr.why_fits), ps)
+        enr.trade_offs = _bereinige_einsteigeraussagen(list(enr.trade_offs), ps)
+        einsteiger = _einsteiger_hinweis(kand, body)
+        if einsteiger and einsteiger not in enr.trade_offs:
+            enr.trade_offs = [einsteiger] + list(enr.trade_offs)
+
         # §Budget/Preis-Konsistenz: Budget-Kategorie und Preisorientierung
         # kommen aus zwei getrennten Gemini-Calls und konnten sich bisher
         # widersprechen ("Im Budget" neben "ca. 27.000–39.000 €" bei 25.000 €
@@ -568,11 +729,34 @@ async def _finalisiere(
         )
 
         outs.append(_zu_kandidat_out(
-            kand, budget_status=b_status, budget_confidence=b_conf,
+            kand, _konkrete_variante(kand, body),
+            budget_status=b_status, budget_confidence=b_conf,
             budget_adjustment=b_anp, bevorzugte_karosserie=bevorzugte_karosserie,
-            user_fit=score, user_fit_gruende=gruende,
+            user_fit=_fit_nach_budget(score, b_status), user_fit_gruende=gruende,
             enrichment=enr, enrichment_status=e_status,
+            known_points=_bekannte_punkte(kand),
         ))
+
+    # §Finale Validierung: die fertige Antwort noch einmal gegen die harten
+    # Filter halten. Zwischen Hard-Filter und hier liegen Merge, Dedupe,
+    # Budget-Umsortierung, Enrichment und die Variantenauflösung — ein
+    # Kandidat, der danach den Wunsch verletzt, wird ausgeliefert statt
+    # bemerkt. Das darf nicht passieren, auch nicht bei einem Fehler in einer
+    # dieser Stufen.
+    geprueft: list[AutoFinderKandidatOut] = []
+    for out in outs:
+        verstoesse = pruefe_hardfilter_einhaltung(out, engine_request)
+        if verstoesse:
+            log.error("AutoFinder: Kandidat %s verletzt Hard-Filter und wird verworfen: %s",
+                      out.candidate_id,
+                      "; ".join(f"{v.feld}: erwartet {v.erwartet}, ist {v.tatsaechlich}"
+                                for v in verstoesse))
+            continue
+        geprueft.append(out)
+    outs = geprueft
+    if not outs:
+        return _FinalErgebnis([], "no_strong_match", warnungen, None,
+                              budget_ausgefallen, budget_aufgerufen)
 
     enrichment_notice = None
     if enr_ausgefallen or fallback_genutzt:
@@ -616,6 +800,16 @@ def _filters_applied(body: AutoFinderRequest) -> dict:
 @provider_action("autofinder")
 async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     verify_api_key(request)
+
+    # LEERE SUCHE — vor allem anderen, was Geld oder Kontingent kostet.
+    # Eine Anfrage ohne ein einziges auswertbares Kriterium ist keine Suche:
+    # sie darf weder das Monatskontingent belasten noch Gemini oder Tavily
+    # anfassen. Die Pruefung steht deshalb VOR `require_autofinder_kontingent`
+    # und vor jedem Datenbankzugriff. Bewusst nicht strenger als noetig — EIN
+    # Kriterium genuegt, niemand muss das Formular ausfuellen.
+    if not hat_verwertbares_kriterium(body):
+        raise HTTPException(status_code=422, detail=LEERE_SUCHE_MELDUNG)
+
     # Monatliches Kontingent (Free 5 / Plus 50) VOR jeder Datenbank- und
     # Provider-Arbeit: eine ueberschrittene Grenze soll keine Kosten mehr
     # verursachen. Ergaenzt das bestehende Rate-Limit (20/min), ersetzt es nicht.
@@ -634,10 +828,6 @@ async def autofinder_endpunkt(body: AutoFinderRequest, request: Request):
     diesel_warnung = _diesel_stadt_kurzstrecke_warnung(body)
     if diesel_warnung:
         warnungen.append(diesel_warnung)
-
-    kilometer_hinweis = _kilometer_hinweis(body)
-    if kilometer_hinweis:
-        warnungen.append(kilometer_hinweis)
 
     # ── Runde 4: kontrollierter Web-Fallback ────────────────────────────────
     # Läuft NUR bei nachweislichem Coverage-Mangel. Schlägt er fehl (Tavily

@@ -116,9 +116,15 @@ def _reset_limiters() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 # A) gültige Standardsuche -> 200 + qualifizierter Kandidaten-Pool (<= 8;
 #    Frontend trimmt auf die <=5 bild-fertigen Empfehlungen, Image-Guarantee)
+#
+#    GEÄNDERT (RC1): ein LEERER Body ist keine gültige Suche mehr — er wird
+#    mit 422 abgewiesen, bevor Kontingent oder Provider angefasst werden
+#    (siehe Abschnitt LEER weiter unten). Der Vertragstest hier braucht eine
+#    Suche mit genau einem Kriterium; "gemischt" ist die neutralste Wahl und
+#    schränkt den Pool nicht ein.
 # ══════════════════════════════════════════════════════════════════════════
-r_a = post({})
-check("A: leerer Body -> 200", r_a.status_code == 200)
+r_a = post({"nutzung": "gemischt"})
+check("A: minimale gültige Suche -> 200", r_a.status_code == 200)
 data_a = r_a.json()
 check("A: qualifizierter Pool <= 8 Kandidaten", len(data_a["kandidaten"]) <= 8)
 check("A: status ist 'ok' (416 Baureihen -> garantiert Treffer ohne Filter)",
@@ -236,7 +242,7 @@ check("J: Router importiert app.check_gate NICHT (kein Depends-Auth-Gate ueberha
       "from app.check_gate import" not in _router_quelle
       and "import app.check_gate" not in _router_quelle)
 check("J: Anfrage OHNE Cookie/Login-Session liefert trotzdem 200 (nur API-Key)",
-      post({}).status_code == 200)
+      post({"nutzung": "gemischt"}).status_code == 200)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -271,7 +277,7 @@ check("M: ungueltiger Enum-Wert bei karosserie -> 422",
 check("M: ungueltiger Enum-Wert bei antrieb -> 422",
       post({"antrieb": ["Antigravitation"]}).status_code == 422)
 check("M: leere optionale Listen sind gueltig (200)",
-      post({"karosserie": [], "kraftstoff": []}).status_code == 200)
+      post({"karosserie": [], "kraftstoff": [], "nutzung": "gemischt"}).status_code == 200)
 check("M: unbekannte Marke crasht nicht (200, einfach 0 Zusatzwirkung/kein Treffer)",
       post({"marken_bevorzugt": ["Trabant-Deluxe-Werke"]}).status_code == 200)
 check("M: Umlaute/Unicode im Markenfeld werden sauber verarbeitet (200)",
@@ -343,7 +349,7 @@ check("Q: auch match_score bleibt stabil identisch",
 # R) Data-Scope-Hinweis vorhanden
 # ══════════════════════════════════════════════════════════════════════════
 check("R: data_scope_hint ist gesetzt und nennt die 416 Baureihen",
-      "416" in data_a["data_scope_hint"] and "VIRA" in data_a["data_scope_hint"])
+      "416" in data_a["data_scope_hint"] and "ENFAL" in data_a["data_scope_hint"])
 check("R: data_scope_hint behauptet NICHT, die beste Marktauswahl zu sein",
       "beste" not in data_a["data_scope_hint"].lower()
       and "gesamten markt" not in data_a["data_scope_hint"].lower())
@@ -464,7 +470,7 @@ check("L: routereigener Rate-Limit-Wert ist konsistent mit dem tatsaechlich "
       "wirksamen globalen Default (20/minute) — keine irreführende Konfiguration",
       "_AUTOFINDER_RATE_LIMIT = \"20/minute\"" in _router_quelle)
 _reset_limiters()
-_codes = [post({}).status_code for _ in range(25)]
+_codes = [post({"nutzung": "gemischt"}).status_code for _ in range(25)]
 check("L: bei 25 Anfragen in Folge (Limit 20/min) greift das Rate-Limit "
       "(mind. ein 429)", 429 in _codes)
 check("L: die ERSTEN 20 Anfragen sind NICHT limitiert (kein zu aggressives "

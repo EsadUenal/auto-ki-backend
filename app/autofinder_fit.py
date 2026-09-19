@@ -43,6 +43,17 @@ FIT_SCHWELLE = 80
 _FIT_BASIS = 35
 _FIT_SPANNE = 63
 
+# Prioritäten sind Geschmacksfragen über das AUTO — mit einer Ausnahme:
+# "Für Fahranfänger" ist eine Aussage über den FAHRER und hat eine Sicherheits-
+# und Versicherungsdimension. Gleich gewichtet hoben sich "sportlich" und
+# "fahranfaenger" rechnerisch exakt auf, und ein 306-PS-AMG stand mit derselben
+# Passung da wie ein 150-PS-Kombi. Die Folgen der beiden Fehlentscheidungen
+# sind aber nicht symmetrisch: einem Einsteiger ein zu starkes Auto zu
+# empfehlen wiegt schwerer, als ein sportliches zu übersehen. Deshalb wiegt
+# dieses eine Kriterium mehr — ein harter Filter ist es bewusst NICHT.
+_PRIO_GEWICHT_STANDARD = 1.5
+_PRIO_GEWICHT = {"fahranfaenger": 2.5}
+
 
 @dataclass
 class FitKomponente:
@@ -170,15 +181,22 @@ def _prioritaet_fit(k: Any, prio: str) -> float | None:
     if prio == "fahranfaenger":
         if ps is None:
             return None
-        s = 0.2
-        if karo and set(karo) & {"kleinwagen", "kompakt"}:
-            s += 0.35
+        # Monoton fallend über die Leistung. Vorher konnte ein 224-PS-Fahrzeug
+        # denselben Teilwert erreichen wie ein 160-PS-Fahrzeug (der Abzug
+        # begann erst ab 250 PS) — dadurch war "Für Fahranfänger" praktisch
+        # wirkungslos und die Gesamtpassung landete überall bei ~85 %.
         if ps <= 110:
-            s += 0.45
+            s = 0.90
         elif ps <= 150:
-            s += 0.2
-        elif ps >= 250:
-            s -= 0.2
+            s = 0.70
+        elif ps <= 180:
+            s = 0.45
+        elif ps <= 220:
+            s = 0.25
+        else:
+            s = 0.10
+        if karo and set(karo) & {"kleinwagen", "kompakt"}:
+            s += 0.10
         return max(0.0, min(1.0, s))
     if prio == "praktisch":
         return _karo_heuristik(karo, _PRAKTISCH)
@@ -216,20 +234,29 @@ def _baujahr_ueberlappung(k: Any, req_von: int | None, req_bis: int | None) -> f
 
 
 def _karosserie_sauberkeit(k: Any, gewuenscht: list[str]) -> float:
-    """Reiner Treffer der gewünschten Klasse -> 1.0; Multi-Body-Kandidat, der
-    die Klasse nur unter mehreren trägt -> leicht abgewertet (der visuelle/
-    fachliche Bezug ist dann weniger eindeutig)."""
+    """Wie eindeutig ist die Karosserie dieser Empfehlung belegt?
+
+    Löst sie sich auf eine konkrete Klasse auf, die der Nutzer gewünscht hat,
+    ist der Bezug eindeutig (1.0). Bleibt sie mehrdeutig, ist die Empfehlung
+    fachlich unschärfer — das darf nicht wie ein sauberer Treffer aussehen.
+    """
     klassen = list(k.karosserie_klassen or [])
     if not gewuenscht or not klassen:
         return 0.85
-    treffer = set(kk.lower() for kk in gewuenscht) & set(klassen)
-    if not treffer:
+    wunsch = {kk.lower() for kk in gewuenscht}
+    konkret = getattr(k, "karosserie_konkret", None)
+    quelle = getattr(k, "karosserie_quelle", "")
+    if konkret:
+        if konkret not in wunsch:
+            return 0.5
+        # Belegt (die Variante nennt die Karosserie selbst bzw. die Baureihe
+        # hat nur diese eine) schlägt "die Baureihe bietet sie an" — sonst
+        # stünde eine nachgewiesene Zuordnung gleichauf mit einer bloß
+        # plausiblen.
+        return 1.0 if quelle in ("bezeichnung", "baureihe_eindeutig") else 0.85
+    if not (wunsch & set(klassen)):
         return 0.5   # sollte wg. Hard-Filter nicht vorkommen
-    if len(klassen) == 1:
-        return 1.0
-    if len(klassen) == 2:
-        return 0.9
-    return 0.8
+    return 0.75      # belegbar, aber nicht auf eine Klasse auflösbar
 
 
 def _tradeoff_sauberkeit(k: Any) -> tuple[float, list[str]]:
@@ -253,20 +280,20 @@ def berechne_fit(k: Any, req: Any) -> FitBewertung:
     komp: list[FitKomponente] = []
 
     # --- Was der Nutzer explizit angefragt hat ---
-    # Diese Kriterien sind durch die HARTEN FILTER ohnehin erfüllt ("table
-    # stakes") — deshalb bewusst niedriger gewichtet als die weichen
-    # Kriterien (Nutzung, Prioritäten), die die eigentliche Passung
-    # ausmachen. Nur die feinen Abstufungen (Multi-Body, Leistungs-Position)
-    # tragen hier noch Differenzierung.
+    # KRAFTSTOFF / GETRIEBE / ANTRIEB fließen NICHT als Punkte ein.
+    # Sie sind harte Filter: jeder ausgegebene Kandidat erfüllt sie zu 100 %.
+    # Als Komponenten mit fester Erfüllung 1.0 haben sie nichts unterschieden,
+    # sondern nur den Mittelwert jeder Suche nach oben gezogen — genau die
+    # Ursache dafür, dass sehr verschieden passende Fahrzeuge alle bei 85–86 %
+    # landeten. Erfüllte harte Filter sind die Eintrittskarte in die Liste,
+    # keine Passungsleistung. Sie erscheinen weiterhin in `filters_applied`.
+    #
+    # Es bleiben die Kriterien mit echter Abstufung: wie eindeutig die
+    # Karosserie belegt ist, wo die Leistung im Wunschfenster liegt und wie
+    # stark das Baujahrfenster überlappt.
     if getattr(req, "karosserie", None):
         e = _karosserie_sauberkeit(k, req.karosserie)
         komp.append(FitKomponente("Gewünschte Karosserie", 0.9, e, e >= 0.9))
-    if getattr(req, "kraftstoff", None):
-        komp.append(FitKomponente("Gewünschter Kraftstoff", 0.6, 1.0, True))
-    if getattr(req, "getriebe", None):
-        komp.append(FitKomponente("Gewünschtes Getriebe", 0.5, 1.0, True))
-    if getattr(req, "antrieb", None):
-        komp.append(FitKomponente("Gewünschter Antrieb", 0.5, 1.0, True))
     if getattr(req, "leistung_min_ps", None) is not None or getattr(req, "leistung_max_ps", None) is not None:
         e = _leistung_position(k, req.leistung_min_ps, req.leistung_max_ps)
         komp.append(FitKomponente("Leistung im Wunschbereich", 1.0, e, e >= 0.8))
@@ -292,7 +319,8 @@ def berechne_fit(k: Any, req: Any) -> FitBewertung:
             e = _prioritaet_fit(k, prio)
             if e is None:
                 continue
-            komp.append(FitKomponente(label, 1.5, e, e >= 0.7))
+            komp.append(FitKomponente(label, _PRIO_GEWICHT.get(prio, _PRIO_GEWICHT_STANDARD),
+                                      e, e >= 0.7))
 
     # Zahl der KRITERIEN, die der Nutzer wirklich vorgegeben hat (die zwei
     # Qualitätskomponenten unten zählen NICHT dazu).

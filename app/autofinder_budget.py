@@ -130,9 +130,16 @@ Ein Eintrag pro candidate_id aus der Eingabe. Keine zusätzlichen Felder, keine 
 
 
 def _formatiere_kandidat_zeile(k: Any) -> str:
+    """Beschreibt die KONKRETE empfohlene Variante, nicht die Sammelangaben
+    der Baureihe: eine Preiseinschätzung für "Kompakt/Kombi, Automatik oder
+    Schaltgetriebe, 2012–2020" wäre eine Einschätzung für kein Fahrzeug."""
     zeitraum = f"{k.baujahr_von or '?'}–{k.baujahr_bis or 'heute'}"
-    karosserie = "/".join(k.karosserie_klassen) if k.karosserie_klassen else "unbekannt"
-    getriebe = "/".join(k.getriebe_klassen) if k.getriebe_klassen else "unbekannt"
+    karo_konkret = getattr(k, "karosserie_konkret", None)
+    getr_konkret = getattr(k, "getriebe_konkret", None)
+    karosserie = karo_konkret or (
+        "/".join(k.karosserie_klassen) if k.karosserie_klassen else "unbekannt")
+    getriebe = getr_konkret or (
+        "/".join(k.getriebe_klassen) if k.getriebe_klassen else "unbekannt")
     return (
         f"- candidate_id={_kandidat_id(k)} | {k.marke} {k.modell} {k.generation or ''} "
         f"{k.motor_bezeichnung} | Baujahre {zeitraum} | {k.kraftstoff} | "
@@ -142,7 +149,7 @@ def _formatiere_kandidat_zeile(k: Any) -> str:
 
 def _baue_user_message(kandidaten: list[Any], *, budget_min: int | None,
                         budget_max: int | None, baujahr_von: int | None,
-                        baujahr_bis: int | None, kilometer_max: int | None) -> str:
+                        baujahr_bis: int | None) -> str:
     """Baut den kompakten Prompt-Kontext (§3): NUR die in §3 gelisteten Felder,
     kein DB-Kontext, keine Schwachstellen, keine Rückrufe, kein Webinhalt."""
     zeilen = ["Budget des Nutzers:"]
@@ -154,8 +161,6 @@ def _baue_user_message(kandidaten: list[Any], *, budget_min: int | None,
         zeilen.append(f"  ab {budget_min} EUR")
     if baujahr_von is not None or baujahr_bis is not None:
         zeilen.append(f"  gewünschtes Baujahrfenster: {baujahr_von or '?'}–{baujahr_bis or '?'}")
-    if kilometer_max is not None:
-        zeilen.append(f"  maximaler Kilometerstand: {kilometer_max}")
     zeilen.append("")
     zeilen.append("Kandidaten (NUR diese candidate_id-Werte sind gültig):")
     zeilen.extend(_formatiere_kandidat_zeile(k) for k in kandidaten)
@@ -200,7 +205,6 @@ async def bewerte_budget(
     budget_max: int | None,
     baujahr_von: int | None = None,
     baujahr_bis: int | None = None,
-    kilometer_max: int | None = None,
 ) -> tuple[dict[str, tuple[str, str]], bool]:
     """Führt GENAU EINEN Gemini-Call für die komplette übergebene Shortlist aus.
 
@@ -218,7 +222,6 @@ async def bewerte_budget(
         kandidaten,
         budget_min=budget_min, budget_max=budget_max,
         baujahr_von=baujahr_von, baujahr_bis=baujahr_bis,
-        kilometer_max=kilometer_max,
     )
 
     try:

@@ -60,8 +60,22 @@ VERIFIZIERTE_CHASSIS_CODES: dict[str, dict[str, str]] = {
     "bmw-6er-e63-e64":     {"E63": "Coupé", "E64": "Cabrio"},
     "bmw-6er-f12-f13-f06": {"F12": "Cabrio", "F13": "Coupé", "F06": "Gran Coupé"},
     "bmw-8er-g15-g14-g16": {"G15": "Coupé", "G14": "Cabrio", "G16": "Gran Coupé"},
+    # Die A-Klasse führt ihre beiden Karosserien unter EINEM Datensatz
+    # ("W177"), obwohl der Werkscode nur das Schrägheck meint — die Limousine
+    # ist V177. Ohne diese Zuordnung stand auf einer als Limousine
+    # ausgewiesenen Empfehlung der Code des Schräghecks. Mercedes führt beide
+    # Codes durchgängig getrennt (Typgenehmigung, Ersatzteilkataloge,
+    # Modellpflege-Mitteilungen); der Datensatz selbst nennt genau die zwei
+    # Karosserien "Schrägheck" und "Limousine".
+    "mercedes-benz-a-klasse-w177": {"W177": "Schrägheck", "V177": "Limousine"},
 }
 
 # Marker in `schema_migrations`, damit der Seed genau EINMAL läuft und spätere
 # manuelle Pflege nicht bei jedem App-Start überschrieben wird.
-SEED_MARKER = "chassis_codes_seed_v1"
+#
+# Die Version wird MITGEZOGEN, wenn oben Einträge dazukommen: der Seed setzt
+# ausschließlich Zeilen, deren `chassis_codes` noch leer ist, und überschreibt
+# nie eine bereits gepflegte Zuordnung. Ein erneuter Lauf ist damit gefahrlos
+# und die einzige Möglichkeit, neue Zuordnungen in eine bestehende Datenbank
+# zu bekommen.
+SEED_MARKER = "chassis_codes_seed_v2"

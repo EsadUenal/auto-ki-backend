@@ -107,6 +107,36 @@ def _roh_werte(feld_json: str | None) -> list[str]:
     return []
 
 
+def normalisiere_karosserie_text(roh: str | None) -> frozenset[str]:
+    """EIN roher Karosserie-Text → Menge bekannter Klassen.
+
+    Dieselbe Mustererkennung wie `normalisiere_karosserie`, nur für einen
+    einzelnen Freitext statt eines JSON-Arrays. Gebraucht wird das von
+    `app/autofinder_variante.py`: dort wird geprüft, ob eine MOTORVARIANTEN-
+    Bezeichnung ("GTD Variant", "C 220 d Coupé", "2.0 TDI Avant") die
+    Karosserie selbst benennt — dann ist sie für genau diese Variante belegt
+    und muss nicht aus der (baureihenweiten) Karosserieliste geraten werden.
+    """
+    if not roh:
+        return frozenset()
+    s = str(roh).lower()
+    treffer: set[str] = set()
+    # Sonderfall: "…hecklimousine" / "Kombilimousine" = Schrägheck ->
+    # KOMPAKT, und NUR das (dieser eine Rohwert trägt nichts anderes bei).
+    if _HATCHBACK_LIMO_RE.search(s):
+        return frozenset({KOMPAKT})
+    for klasse, muster in _KAROSSERIE_MUSTER:
+        for m in muster:
+            if m.startswith("re:"):
+                if re.search(m[3:], s):
+                    treffer.add(klasse)
+                    break
+            elif m in s:
+                treffer.add(klasse)
+                break
+    return frozenset(treffer)
+
+
 def normalisiere_karosserie(karosserie_json: str | None) -> frozenset[str]:
     """Rohe `baureihe.karosserie` → Menge bekannter Klassen aus `KAROSSERIE_KLASSEN`.
 
@@ -117,21 +147,7 @@ def normalisiere_karosserie(karosserie_json: str | None) -> frozenset[str]:
     """
     treffer: set[str] = set()
     for roh in _roh_werte(karosserie_json):
-        s = roh.lower()
-        # Sonderfall: "…hecklimousine" / "Kombilimousine" = Schrägheck ->
-        # KOMPAKT, und NUR das (dieser eine Rohwert trägt nichts anderes bei).
-        if _HATCHBACK_LIMO_RE.search(s):
-            treffer.add(KOMPAKT)
-            continue
-        for klasse, muster in _KAROSSERIE_MUSTER:
-            for m in muster:
-                if m.startswith("re:"):
-                    if re.search(m[3:], s):
-                        treffer.add(klasse)
-                        break
-                elif m in s:
-                    treffer.add(klasse)
-                    break
+        treffer |= normalisiere_karosserie_text(roh)
     return frozenset(treffer)
 
 

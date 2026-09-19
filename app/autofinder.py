@@ -56,6 +56,16 @@ from app.autofinder_norm import (
     normalisiere_karosserie,
     normalisiere_segment,
 )
+from app.autofinder_variante import (
+    belegbare_karosserien,
+    karosserie_aus_bezeichnung,
+    loese_baujahre,
+    loese_generationslabel,
+    loese_getriebe,
+    loese_karosserie,
+    loese_motorbezeichnung,
+    variantenseitig_kodierte_klassen,
+)
 from app.database import get_baureihe, get_conn
 
 log = logging.getLogger(__name__)
@@ -79,13 +89,20 @@ class AutoFinderRequest:
     wirkt bereits in Runde 1 (siehe Modul-Docstring)."""
 
     # ---- BASIS ----
-    # Budget/Kilometer: die DB hat keinen Gebrauchtmarktpreis und keine
-    # Kilometerangabe je Baureihe. NICHT gefiltert, NICHT gescort (§4/§13).
+    # Budget: die DB hat keinen Gebrauchtmarktpreis. NICHT gefiltert (§4/§13) —
+    # es steuert nur Reihenfolge und Preisorientierung.
+    #
+    # `kilometer_max` gibt es hier BEWUSST NICHT MEHR: es gab dafür nie eine
+    # Datenquelle (keine Kilometerangabe je Baureihe, keine Gebrauchtwagen-
+    # Angebote). Ein entgegengenommenes, aber nirgends ausgewertetes Feld sah
+    # im UI wie ein wirksamer Filter aus. Die HTTP-Schicht nimmt den Wert aus
+    # Kompatibilitätsgründen weiter an, reicht ihn aber nicht mehr hierher
+    # durch — damit ist strukturell ausgeschlossen, dass er still in Filter
+    # oder Score einfließt.
     budget_min: int | None = None
     budget_max: int | None = None
     baujahr_von: int | None = None
     baujahr_bis: int | None = None
-    kilometer_max: int | None = None
 
     # ---- FAHRZEUG (harte Filter, §5) ----
     # Produktentscheidung: `marken_bevorzugt` wirkt in Runde 1 als HARTER
@@ -141,6 +158,27 @@ class AutoFinderKandidat:
     karosserie_klassen: list[str]
 
     match_score: float
+
+    # ---- KONKRETE VARIANTE (app/autofinder_variante.py) ----
+    # `karosserie_klassen` oben ist die für DIESE Variante BELEGBARE Menge
+    # (nicht mehr die Sammelmenge der Baureihe). Die Felder hier sagen, was
+    # davon als konkrete Empfehlung behauptet werden darf.
+    karosserie_konkret: str | None = None
+    karosserie_quelle: str = "mehrdeutig"
+    karosserie_baureihe: list[str] = field(default_factory=list)
+    getriebe_konkret: str | None = None
+    getriebe_quelle: str = "mehrdeutig"
+    # `baujahr_von`/`baujahr_bis` oben sind der für die Anfrage RELEVANTE
+    # Ausschnitt; die Bauzeit der Generation bleibt hier sichtbar.
+    generation_baujahr_von: int | None = None
+    generation_baujahr_bis: int | None = None
+    # Werkscode passend zur aufgelösten Karosserie, sofern geprüft hinterlegt.
+    generation_label: str | None = None
+    # True = die gepflegte Bezeichnung sagte nichts aus (nur eine
+    # Leistungsangabe) und der Anzeigename wurde aus Hubraum/Kraftstoff
+    # hergeleitet. Siehe app/autofinder_variante.loese_motorbezeichnung.
+    motor_hergeleitet: bool = False
+
     match_gruende: list[str] = field(default_factory=list)
     # Getrennt vom match_score (§9) — Anteil befüllter Kernfelder, 0.0–1.0.
     datenqualitaet: float = 0.0
@@ -188,8 +226,8 @@ def _lade_rohkandidaten(conn: sqlite3.Connection) -> list[dict]:
         SELECT
             b.id AS baureihe_id, b.marke, b.modell, b.generation,
             b.bauzeitraum_von, b.bauzeitraum_bis, b.karosserie, b.segment,
-            b.euro_ncap_sterne,
-            m.variante_id, m.bezeichnung, m.motorcode, m.kraftstoff,
+            b.euro_ncap_sterne, b.chassis_codes,
+            m.variante_id, m.bezeichnung, m.motorcode, m.kraftstoff, m.hubraum_ccm,
             m.leistung_ps, m.drehmoment_nm, m.getriebe, m.antrieb,
             m.beschleunigung_0_100, m.verbrauch_wltp, m.verbrauch_real
         FROM motorvariante m
@@ -215,7 +253,7 @@ def _lade_kandidatenbasis_gecacht(conn: sqlite3.Connection) -> list[dict]:
     now = time.monotonic()
     if _kandidatenbasis_cache is not None and (now - _kandidatenbasis_cache[0]) < _KANDIDATENBASIS_CACHE_TTL_S:
         return _kandidatenbasis_cache[1]
-    roh = [_annotiere_normalisierung(r) for r in _lade_rohkandidaten(conn)]
+    roh = _annotiere_basis(_lade_rohkandidaten(conn))
     _kandidatenbasis_cache = (now, roh)
     return roh
 
@@ -230,13 +268,49 @@ def invalidate_kandidatenbasis_cache() -> None:
 
 def _annotiere_normalisierung(roh: dict) -> dict:
     """Hängt die einmalig berechneten Normalisierungs-Sets an — wird
-    NICHT persistiert, nur für die Dauer einer Suche im Speicher gehalten."""
-    roh["_karo"] = normalisiere_karosserie(roh.get("karosserie"))
+    NICHT persistiert, nur für die Dauer einer Suche im Speicher gehalten.
+
+    `_karo` ist hier die Karosseriemenge, die sich aus DIESER Zeile allein
+    belegen lässt. Ohne die Schwestervarianten der Baureihe kann nichts
+    abgezogen werden — `_annotiere_basis` schärft den Wert danach nach.
+    """
+    roh["_karo_baureihe"] = normalisiere_karosserie(roh.get("karosserie"))
     roh["_segment"] = normalisiere_segment(roh.get("segment"))
     roh["_getriebe"] = normalisiere_getriebe(roh.get("getriebe"))
+    roh["_karo"] = belegbare_karosserien(
+        roh["_karo_baureihe"], roh.get("bezeichnung"), frozenset())
     v = roh.get("verbrauch_wltp")
     roh["_verbrauch"] = v if v is not None else roh.get("verbrauch_real")
     return roh
+
+
+def _annotiere_basis(rohzeilen: list[dict]) -> list[dict]:
+    """Zwei Durchgänge, weil die Karosserie einer Motorvariante nur im Kontext
+    ihrer SCHWESTERVARIANTEN auflösbar ist.
+
+    Durchgang 1 normalisiert jede Zeile für sich. Durchgang 2 bestimmt je
+    Baureihe, welche Karosserien dort überhaupt über Variantennamen kodiert
+    sind, und leitet daraus `_karo` ab — die für GENAU DIESE Motorvariante
+    belegbare Karosseriemenge. Ab hier arbeitet die gesamte Engine (Hard-
+    Filter, Score, Ausgabe) nur noch mit `_karo`; die Sammelmenge der Baureihe
+    bleibt als `_karo_baureihe` nur noch Kontext.
+    """
+    zeilen = [_annotiere_normalisierung(r) for r in rohzeilen]
+
+    bezeichnungen_je_baureihe: dict[str, list[str]] = {}
+    for r in zeilen:
+        bezeichnungen_je_baureihe.setdefault(r["baureihe_id"], []).append(
+            r.get("bezeichnung") or "")
+    kodiert_je_baureihe = {
+        bid: variantenseitig_kodierte_klassen(bez)
+        for bid, bez in bezeichnungen_je_baureihe.items()
+    }
+
+    for r in zeilen:
+        r["_karo"] = belegbare_karosserien(
+            r["_karo_baureihe"], r.get("bezeichnung"),
+            kodiert_je_baureihe.get(r["baureihe_id"], frozenset()))
+    return zeilen
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -313,10 +387,17 @@ def _dedupe_schluessel(roh: dict) -> tuple:
     (z.B. "C220 d" / "C220 d AMG Line" / "C220 d Avantgarde") zu EINEM
     Kandidaten. Antrieb UND Getriebeklasse sind Teil des Schlüssels, damit
     z.B. "320d" und "320d xDrive" (unterschiedlicher Antrieb) NICHT
-    zusammenfallen — das wäre eine fachlich unterschiedliche Variante."""
+    zusammenfallen — das wäre eine fachlich unterschiedliche Variante.
+
+    Die belegbare KAROSSERIE gehört aus demselben Grund dazu: "GTD" und
+    "GTD Variant" teilen Leistung, Kraftstoff, Antrieb und Getriebe und fielen
+    sonst zu einem Kandidaten zusammen. Welcher der beiden ihn dann vertritt,
+    entschiede über die angezeigte Karosserie — bei einer Suche ohne
+    Karosseriefilter also faktisch zufällig."""
     return (
         roh["baureihe_id"], roh.get("leistung_ps"), roh.get("kraftstoff"),
         roh.get("antrieb"), tuple(sorted(roh["_getriebe"])),
+        tuple(sorted(roh["_karo"])),
     )
 
 
@@ -391,8 +472,19 @@ def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]
     # "gemischt": bewusst neutral (0 Punkte) — keine erfundene Präferenz.
 
     if req.sportlich:
+        # "Sportlich" UND "für Fahranfänger" sind gleichzeitig wählbar und
+        # widersprechen sich teilweise. Ohne Sonderbehandlung gewinnt hier
+        # immer die rohe Leistung: die Vorauswahl bestand dann aus 250–306-PS-
+        # Fahrzeugen, und moderat motorisierte, durchaus sportliche Autos
+        # erreichten die Bewertungsstufe gar nicht erst. Fahranfänger-Eignung
+        # ist aber keine Geschmacksfrage wie "sportlich", sondern eine Aussage
+        # über den Fahrer (Versicherung, Fahrverhalten) — deshalb dürfen
+        # genau die Merkmale, die ein Einsteigerfahrzeug ausschließen (sehr
+        # hohe Leistung, sehr hohes Drehmoment), dann keinen Bonus mehr geben.
+        # Beschleunigung bleibt: ein leichtes, spritziges Auto ist sportlich
+        # UND einsteigertauglich.
         ps = roh.get("leistung_ps")
-        if ps is not None and ps >= 250:
+        if not req.fahranfaenger and ps is not None and ps >= 250:
             score += 2
             gruende.append(f"Hohe Leistung ({ps} PS)")
         b100 = roh.get("beschleunigung_0_100")
@@ -400,7 +492,7 @@ def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]
             score += 2
             gruende.append(f"0–100 km/h in {b100:.1f}s")
         drehmoment = roh.get("drehmoment_nm")
-        if drehmoment is not None and drehmoment >= 400:
+        if not req.fahranfaenger and drehmoment is not None and drehmoment >= 400:
             score += 1
             gruende.append(f"Hohes Drehmoment ({drehmoment} Nm)")
 
@@ -512,21 +604,43 @@ def _visual_key(roh: dict) -> str:
     return f"{_slug(roh['marke'])}--{_slug(roh['modell'])}--{_slug(roh['generation'])}"
 
 
-def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float) -> AutoFinderKandidat:
+def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
+                  req: AutoFinderRequest) -> AutoFinderKandidat:
+    karo = loese_karosserie(roh["_karo_baureihe"], roh.get("bezeichnung"),
+                            # `_karo` trägt das Ergebnis der Baureihen-Analyse
+                            # bereits; die Kodierungsmenge muss dafür nicht
+                            # erneut bestimmt werden.
+                            roh["_karo_baureihe"] - roh["_karo"],
+                            gewuenscht=list(req.karosserie))
+    getr = loese_getriebe(sorted(roh["_getriebe"]), gewuenscht=list(req.getriebe))
+    bj = loese_baujahre(roh.get("bauzeitraum_von"), roh.get("bauzeitraum_bis"),
+                        req.baujahr_von, req.baujahr_bis)
+    motor_name, motor_hergeleitet = loese_motorbezeichnung(
+        roh.get("bezeichnung"), roh.get("hubraum_ccm"), roh.get("kraftstoff"))
     return AutoFinderKandidat(
         baureihe_id=roh["baureihe_id"],
         variante_id=roh["variante_id"],
         marke=roh["marke"],
         modell=roh["modell"],
         generation=roh["generation"],
-        motor_bezeichnung=roh["bezeichnung"],
-        baujahr_von=roh.get("bauzeitraum_von"),
-        baujahr_bis=roh.get("bauzeitraum_bis"),
+        motor_bezeichnung=motor_name or "",
+        baujahr_von=bj.von,
+        baujahr_bis=bj.bis,
         leistung_ps=roh.get("leistung_ps"),
         kraftstoff=roh.get("kraftstoff"),
         getriebe_klassen=sorted(roh["_getriebe"]),
         antrieb=roh.get("antrieb"),
         karosserie_klassen=sorted(roh["_karo"]),
+        karosserie_konkret=karo.konkret,
+        karosserie_quelle=karo.quelle,
+        karosserie_baureihe=sorted(roh["_karo_baureihe"]),
+        getriebe_konkret=getr.konkret,
+        getriebe_quelle=getr.quelle,
+        generation_baujahr_von=bj.generation_von,
+        generation_baujahr_bis=bj.generation_bis,
+        generation_label=loese_generationslabel(
+            roh["generation"], roh.get("chassis_codes"), karo.konkret),
+        motor_hergeleitet=motor_hergeleitet,
         match_score=score,
         match_gruende=gruende,
         datenqualitaet=dq,
@@ -579,7 +693,7 @@ def finde_fahrzeuge(request: AutoFinderRequest, *, k: int = 5,
     dq_by_id = {t[2]["variante_id"]: t[1] for t in sortiert}
 
     kandidaten = [
-        _zu_kandidat(r, *score_by_id[r["variante_id"]], dq_by_id[r["variante_id"]])
+        _zu_kandidat(r, *score_by_id[r["variante_id"]], dq_by_id[r["variante_id"]], request)
         for r in top
     ]
 

@@ -89,30 +89,41 @@ _SYSTEM_PROMPT = """Du erklärst einem Autokäufer, warum bereits feststehende F
 
 STRIKTE REGELN:
 - Du fügst KEINE Fahrzeuge hinzu, entfernst keine und änderst KEINE technischen Daten. Du antwortest nur zu den gegebenen candidate_id-Werten, unverändert übernommen.
-- Du erfindest KEINE Zuverlässigkeits-Behauptungen. Nenne einen Schwachpunkt nur, wenn er dir als Kontext gegeben wurde ODER allgemein sehr gut belegt und modelltypisch ist.
-- Als "bekannter Punkt" gegebene Hinweise ohne Prüfvermerk NICHT als sicheren, konkreten Defekt dieses Fahrzeugs darstellen — allenfalls vorsichtig als "wird gelegentlich berichtet".
+- Jeder Kandidat ist EINE konkrete Variante. Die angegebene Karosserie, das angegebene Getriebe und der angegebene Baujahrbereich sind verbindlich: schreibe nichts, was dem widerspricht, und nenne keine andere Karosserie oder Getriebeart derselben Baureihe.
+- Du erfindest KEINE Zuverlässigkeits-Behauptungen und KEINE modelltypischen Defekte. Schreibe NICHT über Schwachstellen, Motorschäden, Rückrufe oder typische Reparaturfälle dieses Modells — diese Angaben pflegt ENFAL selbst und gibt sie getrennt aus. Ein Defekt, den du nicht dieser Generation UND dieser Motorisierung zuordnen kannst, gehört nirgendwohin.
 - Kein Wort wie "(ungeprüft)" oder "(geprüft)" in deinen Texten.
-- Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt, basierend auf Marke/Modell/Generation/Motor/Baujahr/plausibler Laufleistung aus allgemeinem Wissen. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
+- FAHRANFÄNGER: Wenn der Nutzer "fahranfaenger" angegeben hat, formuliere differenziert statt absolut. Erlaubt sind konkrete, überprüfbare Aussagen (übersichtliche Abmessungen, gute Bedienbarkeit, verbreitete Assistenzsysteme, Werkstattdichte). VERBOTEN sind pauschale Eignungsurteile wie "ideal für Fahranfänger", "ohne Überforderung" oder "fahrsicher für Einsteiger", sobald das Fahrzeug spürbar Leistung hat (ab etwa 150 PS). Ordne dann Leistung, Versicherungseinstufung und Fahrverhalten ausdrücklich als Anforderung ein, nicht als Vorteil. Widersprich dir nicht: nenne nicht im selben Atemzug "ideal für Einsteiger" und "verlangt Disziplin".
+- Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe, angegebener Baujahrbereich), nicht für die Baureihe allgemein. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
 
 Für jeden Kandidaten:
 - why_fits: 3 bis 5 konkrete, an die Nutzeranfrage (Budget, Nutzung, Jahreskilometer, Prioritäten, gewünschte Karosserie/Kraftstoff/Getriebe/Leistung) gebundene Gründe. Konkret, keine Floskeln.
-- trade_offs: 2 bis 4 echte, für diesen Nutzer relevante Nachteile oder Einschränkungen (z.B. Verbrauch, Unterhalt, Kofferraum, Wertverlust, typische Reparaturkosten, Eignung fürs Nutzungsmuster).
-- known_points: 0 bis 3 gestützte, klar benannte bekannte Punkte (z.B. modelltypische Schwachstelle, Rückruf-Thema) — nur wenn gut belegt, sonst leere Liste.
+- trade_offs: 2 bis 4 echte, für diesen Nutzer relevante Nachteile oder Einschränkungen (z.B. Verbrauch, Unterhalt, Kofferraum, Wertverlust, Versicherungseinstufung, Eignung fürs Nutzungsmuster) — KEINE behaupteten Defekte.
 - estimated_price_min, estimated_price_max: ganze EUR-Zahlen, min < max, realistische breite Spanne.
 - price_confidence: HIGH | MEDIUM | LOW | UNKNOWN.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne Markdown, ohne Erklärtext:
-{"candidates":[{"candidate_id":"<wie Eingabe>","why_fits":["..."],"trade_offs":["..."],"known_points":["..."],"estimated_price_min":12000,"estimated_price_max":16000,"price_confidence":"MEDIUM"}]}"""
+{"candidates":[{"candidate_id":"<wie Eingabe>","why_fits":["..."],"trade_offs":["..."],"estimated_price_min":12000,"estimated_price_max":16000,"price_confidence":"MEDIUM"}]}"""
 
 
 def _kandidat_block(k: Any, req: Any) -> str:
+    """Beschreibt die KONKRETE empfohlene Variante.
+
+    Vorher standen hier die Sammelangaben der Baureihe ("Karosserie
+    kombi/kompakt", "Getriebe automatik/manuell", Bauzeit der ganzen
+    Generation). Das Modell hat daraus zwangsläufig widersprüchliche Texte
+    gebaut — etwa "als elegante Limousine verfügbar" unter einer Karte, die
+    Cabrio auswies. Aufgelöste Werte zuerst, Sammelangaben gar nicht.
+    """
     z = f"{k.baujahr_von or '?'}–{k.baujahr_bis or 'heute'}"
-    karo = "/".join(k.karosserie_klassen or []) or "unbekannt"
-    getr = "/".join(k.getriebe_klassen or []) or "unbekannt"
+    karo = getattr(k, "karosserie_konkret", None) \
+        or "/".join(k.karosserie_klassen or []) or "unbekannt"
+    getr = getattr(k, "getriebe_konkret", None) \
+        or "/".join(k.getriebe_klassen or []) or "unbekannt"
     zeilen = [
         f"candidate_id={_kandidat_id(k)}",
-        f"  {k.marke} {k.modell} {k.generation or ''} — {k.motor_bezeichnung}",
-        f"  Baujahre {z} | {k.kraftstoff} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
+        f"  {k.marke} {k.modell} {getattr(k, 'generation_label', None) or k.generation or ''} "
+        f"— {k.motor_bezeichnung}",
+        f"  Relevante Baujahre {z} | {k.kraftstoff} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
         f"Antrieb {k.antrieb or '?'} | Karosserie {karo}",
     ]
     if getattr(k, "verbrauch_l_100km", None) is not None:
@@ -124,11 +135,11 @@ def _kandidat_block(k: Any, req: Any) -> str:
     gr = [g for g in (getattr(k, "match_gruende", []) or [])]
     if gr:
         zeilen.append(f"  Deterministische Passungsgründe: {'; '.join(gr)}")
-    # Schwachpunkt-Kontext: Prüf-Label bleibt hier drin, damit Gemini die
-    # Unsicherheit kennt — es wird angewiesen, das Wort NICHT auszugeben.
-    tos = [t for t in (getattr(k, "trade_offs", []) or [])]
-    if tos:
-        zeilen.append(f"  Bekannter Schwachpunkt-Kontext: {'; '.join(tos)}")
+    # Die geprüften Schwachstellen/Rückrufe der Datenbank werden BEWUSST NICHT
+    # mehr übergeben: sie erscheinen deterministisch als "bekannte Punkte" in
+    # der Antwort (siehe app/routers/autofinder._bekannte_punkte). Gäbe man
+    # sie hier mit, lädt das zum Umformulieren und Ausschmücken ein — genau
+    # der Pfad, über den ein nicht zuordenbarer Defekt in den Text kam.
     bs = getattr(k, "budget_status", None)
     if bs and bs != "UNKNOWN":
         zeilen.append(f"  Budget-Einschätzung: {bs}")
@@ -217,7 +228,10 @@ def _validiere(roh: Any, erlaubte_ids: set[str]) -> dict[str, Enrichment]:
         ergebnis[cid] = Enrichment(
             why_fits=why,
             trade_offs=_clean_liste(e.get("trade_offs"), _MAX_TRADE),
-            known_points=_clean_liste(e.get("known_points"), _MAX_KNOWN),
+            # `known_points` wird NICHT mehr aus der Modellantwort übernommen —
+            # auch dann nicht, wenn das Modell das Feld ungefragt mitschickt.
+            # Bekannte Punkte kommen ausschließlich aus geprüften DB-Fakten.
+            known_points=[],
             estimated_price_min=lo, estimated_price_max=hi, price_confidence=conf,
         )
     return ergebnis

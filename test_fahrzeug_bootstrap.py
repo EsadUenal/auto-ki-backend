@@ -85,17 +85,39 @@ def _counts(pfad, tabellen):
         c.close()
 
 
-def _snapshot(pfad):
-    """Inhalts-Hash je Tabelle — erkennt auch Aenderungen ohne Zeilenzahl-Aenderung."""
+def _snapshot(pfad, ohne_spalten=None):
+    """Inhalts-Hash je Tabelle — erkennt auch Aenderungen ohne Zeilenzahl-Aenderung.
+
+    `ohne_spalten` blendet je Tabelle einzelne Spalten aus. Gebraucht fuer
+    Spalten, die eine dokumentierte einmalige Migration befuellen darf — die
+    werden getrennt und schaerfer geprueft (Abschnitt B5-B7), statt hier
+    pauschal jede Aenderung durchzuwinken.
+    """
+    ohne_spalten = ohne_spalten or {}
     c = sqlite3.connect(pfad)
     try:
         out = {}
         for (t,) in c.execute("select name from sqlite_master where type='table' "
                               "and name not like 'sqlite_%' order by name"):
-            rows = c.execute(f'select * from "{t}"').fetchall()
+            spalten = [r[1] for r in c.execute(f'pragma table_info("{t}")')]
+            behalten = [s for s in spalten if s not in ohne_spalten.get(t, ())]
+            auswahl = ", ".join(f'"{s}"' for s in behalten) or "1"
+            rows = c.execute(f'select {auswahl} from "{t}"').fetchall()
             out[t] = (len(rows),
                       hashlib.sha256(repr(sorted(map(repr, rows))).encode()).hexdigest()[:16])
         return out
+    finally:
+        c.close()
+
+
+def _chassis_codes(pfad):
+    """{baureihe_id: chassis_codes} — fuer die gezielte Migrationspruefung."""
+    c = sqlite3.connect(pfad)
+    try:
+        spalten = {r[1] for r in c.execute("pragma table_info(baureihe)")}
+        if "chassis_codes" not in spalten:
+            return {}
+        return dict(c.execute("select id, chassis_codes from baureihe"))
     finally:
         c.close()
 
@@ -297,9 +319,11 @@ else:
     _tmp2 = tempfile.mkdtemp(prefix="vira_exist_")
     _kopie = os.path.join(_tmp2, "auto_ki.db")
     shutil.copy(_LIVE, _kopie)
-    _vor = _snapshot(_kopie)
+    _chassis_vor = _chassis_codes(_kopie)
+    _vor = _snapshot(_kopie, ohne_spalten={"baureihe": ("chassis_codes",)})
     _bootstrap(_kopie, laeufe=3)
-    _nach = _snapshot(_kopie)
+    _nach = _snapshot(_kopie, ohne_spalten={"baureihe": ("chassis_codes",)})
+    _chassis_nach = _chassis_codes(_kopie)
     _diff = {t for t in set(_vor) | set(_nach) if _vor.get(t) != _nach.get(t)}
     check("B1 Fahrzeugtabellen inhaltlich unveraendert",
           all(_vor[t] == _nach[t] for t in FAHRZEUG if t in _vor))
@@ -310,6 +334,26 @@ else:
     check("B4 der Seed wurde NICHT erneut importiert",
           _vor.get("baureihe") == _nach.get("baureihe"),
           f"{_vor.get('baureihe')} -> {_nach.get('baureihe')}")
+
+    # B5-B7: `baureihe.chassis_codes` ist die EINZIGE Fahrzeugspalte, die der
+    # Start noch fuellen darf (app/chassis_codes.py, versionierter Marker).
+    # Die Zuordnung Werkscode -> Karosserie loest zusammengefasste
+    # Generationsdatensaetze auf (A-Klasse: W177 = Schraegheck, V177 =
+    # Limousine) und wird dafuer gebraucht, dass eine Empfehlung nicht den
+    # Code der falschen Karosserie traegt. Erlaubt ist ausschliesslich:
+    # leeres Feld wird gefuellt — nie ueberschrieben, nie geleert.
+    _geaendert = {bid for bid in set(_chassis_vor) | set(_chassis_nach)
+                  if _chassis_vor.get(bid) != _chassis_nach.get(bid)}
+    check("B5 chassis_codes wird nur dort gesetzt, wo es leer war",
+          all(not _chassis_vor.get(bid) for bid in _geaendert),
+          str(sorted(_geaendert)))
+    check("B6 bestehende Zuordnungen bleiben unveraendert",
+          all(_chassis_vor[bid] == _chassis_nach[bid]
+              for bid in _chassis_vor if _chassis_vor[bid]))
+    _chassis_vor2 = _chassis_codes(_kopie)
+    _bootstrap(_kopie, laeufe=1)
+    check("B7 ein weiterer Start aendert nichts mehr (idempotent)",
+          _chassis_codes(_kopie) == _chassis_vor2)
     shutil.rmtree(_tmp2, ignore_errors=True)
 
 

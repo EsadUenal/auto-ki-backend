@@ -193,8 +193,14 @@ check("H: bmw-8er-e63-e64 hat KEIN Mapping",
       "bmw-8er-e63-e64" not in VERIFIZIERTE_CHASSIS_CODES)
 check("H: der korrekte 6er-Datensatz E63/E64 hat eines",
       VERIFIZIERTE_CHASSIS_CODES["bmw-6er-e63-e64"] == {"E63": "Coupé", "E64": "Cabrio"})
-check("H: insgesamt genau 7 verifizierte Zuordnungen",
-      len(VERIFIZIERTE_CHASSIS_CODES) == 7)
+check("H: insgesamt genau 8 verifizierte Zuordnungen",
+      len(VERIFIZIERTE_CHASSIS_CODES) == 8)
+# Die A-Klasse fuehrt Schraegheck (W177) und Limousine (V177) unter EINEM
+# Datensatz; ohne diese Zuordnung stand auf einer Limousinen-Empfehlung der
+# Code des Schraeghecks (AutoFinder RC1).
+check("H: A-Klasse W177/V177 ist hinterlegt",
+      VERIFIZIERTE_CHASSIS_CODES["mercedes-benz-a-klasse-w177"]
+      == {"W177": "Schrägheck", "V177": "Limousine"})
 
 # ══ I — Karosserie-Synonyme über die ZENTRALE Normalisierung ═══════════════
 check("I: Touring und Kombi sind dasselbe",
@@ -230,7 +236,7 @@ try:
     check("M: der falsche 8er-Datensatz bleibt leer", e63 is None)
     check("M: Marker genau einmal gesetzt",
           conn.execute("SELECT COUNT(*) FROM schema_migrations "
-                       "WHERE name='chassis_codes_seed_v1'").fetchone()[0] == 1)
+                       "WHERE name='chassis_codes_seed_v2'").fetchone()[0] == 1)
     check("M: keine Zeile verloren",
           conn.execute("SELECT COUNT(*) FROM baureihe").fetchone()[0] == 2)
     check("M: generation-String unverändert",

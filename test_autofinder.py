@@ -58,7 +58,11 @@ def alle_kandidaten():
     GESAMTEN gefilterten Pool pruefen wollen, nicht nur auf den Top-5."""
     with _db.get_conn() as conn:
         roh = af._lade_rohkandidaten(conn)
-    return [af._annotiere_normalisierung(r) for r in roh]
+    # `_annotiere_basis` statt `_annotiere_normalisierung`: die Karosserie
+    # einer Motorvariante ist nur im Kontext ihrer Schwestervarianten
+    # aufloesbar (app/autofinder_variante.py). Nur so entspricht der Pool hier
+    # dem, was die Engine im Betrieb filtert.
+    return af._annotiere_basis(roh)
 
 
 _ALLE = alle_kandidaten()
@@ -174,8 +178,16 @@ _rs5_gruppe = [r for r in _ALLE
 check("G: Testvoraussetzung — RS 5 B9 450 PS hat >=4 Rohzeilen vor Dedupe",
       len(_rs5_gruppe) >= 4)
 _rs5_dedupliziert = af.dedupe_kandidaten(_rs5_gruppe)
-check("G: nach Dedupe genau 1 Kandidat je (Baureihe,PS,Kraftstoff,Antrieb,Getriebeklasse)",
-      len(_rs5_dedupliziert) == 1)
+# Die vier Rohzeilen sind ZWEI Karosserien (Coupé / Sportback) mal zwei
+# Ausstattungslinien (Basis / Competition plus). Zusammengefasst wird die
+# Ausstattung — die Karosserie NICHT: sie ist Teil des Dedupe-Schluessels,
+# seit die Empfehlung eine konkrete Karosserie ausweist. Vorher fiel alles
+# auf EINEN Kandidaten zusammen, und welcher ihn vertrat, entschied faktisch
+# zufaellig darueber, ob ENFAL "Coupé" oder "Sportback" anzeigte.
+check("G: nach Dedupe genau 1 Kandidat je (Baureihe,PS,Kraftstoff,Antrieb,"
+      "Getriebeklasse,Karosserie)", len(_rs5_dedupliziert) == 2)
+check("G: beide Karosserien ueberleben, die Ausstattungslinien fallen zusammen",
+      {next(iter(r["_karo"]), None) for r in _rs5_dedupliziert} == {"coupe", "limousine"})
 
 # Echte technische Unterschiede (unterschiedlicher Antrieb) duerfen NICHT
 # zusammengeworfen werden.
