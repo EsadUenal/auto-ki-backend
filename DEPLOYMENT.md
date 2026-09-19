@@ -51,9 +51,11 @@ Logzeile) getestet · Brevo-Domain `getenfal.de` vollständig authentifiziert
 E2E-Rauchtest auf der finalen Domain bestanden: Registrierung, Login,
 `/auth/me`, Logout, Bestätigungsmail-Versand, Security-Header, `/docs` +
 `/openapi.json` weiterhin 404 — Test-Account danach wieder gelöscht ·
-GitHub-Uptime-Workflow auf die echten Domains umgestellt. **Offen:** nur noch
-`www.getenfal.de` (siehe Abschnitt 6, zwei mögliche Fixes, keiner davon
-DNS-Arbeit).
+GitHub-Uptime-Workflow auf die echten Domains umgestellt · `www.getenfal.de`
+per Cloudflare-Redirect-Regel (301, Pfad+Query erhalten, keine Schleife) auf
+`https://getenfal.de` weitergeleitet, dafür dem Cloudflare-Token zusätzlich
+`Zone → Single Redirect → Edit` gegeben (Token unverändert, nur die
+Berechtigung erweitert). **Schritt 8 ist damit vollständig abgeschlossen.**
 
 **Zwei Fallen, die live aufgetreten sind:**
 1. `AUTO_KI_ENV=development` war in Railway gesetzt → API-Doku öffentlich,
@@ -81,7 +83,7 @@ zusätzlich direkt als Service-Einstellungen gesetzt (Railway-API
 | `https://getenfal.de` | `auto-ki-web` (Frontend) | öffentliche Website — vorgerenderte Seiten `/`, `/autofinder`, `/autokosten`, `/pricing` |
 | `https://app.getenfal.de` | `auto-ki-app` (zweiter Service, gleicher Build — Domain-Limit, siehe 0) | dieselbe App; Antworten tragen `X-Robots-Tag: noindex` |
 | `https://api.getenfal.de` | `auto-ki-backend` (Backend) | FastAPI, Volume `/data` |
-| `https://www.getenfal.de` | — | nur Weiterleitung auf `getenfal.de` (DNS-Ebene, siehe 6) |
+| `https://www.getenfal.de` | — | 301-Weiterleitung auf `getenfal.de` (Cloudflare Redirect Rule, siehe 6) |
 
 **Ein** Frontend-Build für Website und App: Landingpage und App sind heute
 dieselbe React-App (ein Router, ein Bundle). Eine zweite Codebasis wäre reiner
@@ -332,26 +334,34 @@ Brevos Vorschlag `p=none` — bewusst **nicht** heruntergestuft, siehe
 Abschnitt 9) und `TXT _domainkey` (STRATO-eigener Legacy-Eintrag, andere
 Selector-Namen als Brevo, keine Kollision).
 
-**`www.getenfal.de` — noch NICHT sauber weitergeleitet.** Ziel wäre ein
-301 auf `https://getenfal.de$request_uri`. Zwei unabhängige Blocker, keiner
-davon durch DNS-Arbeit lösbar:
-1. Der Cloudflare-Token hat nur `Zone → DNS → Edit`. Redirect Rules
-   (`/zones/.../rulesets/phases/http_request_dynamic_redirect/...`) verlangen
-   eine zusätzliche Berechtigung (Error 10000); Page Rules sind für
-   Account-Tokens laut Cloudflare-API grundsätzlich gesperrt (Error 1011),
-   unabhängig von Berechtigungen.
-2. `auto-ki-web` hat mit `getenfal.de` bereits die **eine** erlaubte Custom
-   Domain des Hobby-Plans belegt — `www` als eigene Railway-Domain (für einen
-   origin-seitigen nginx-Redirect) würde einen zweiten Slot brauchen
-   (`railway domain www.getenfal.de` → „limit for custom domains … upgrade").
+**`www.getenfal.de` → 301 auf `https://getenfal.de` per Cloudflare Redirect
+Rule** (Rules → Redirect Rules, Ruleset-Phase `http_request_dynamic_redirect`).
+Erster Versuch scheiterte an der Token-Berechtigung (`Zone → DNS → Edit`
+allein reicht nicht, Error 10000; Page Rules sind für Account-Tokens
+unabhängig von Berechtigungen grundsätzlich gesperrt, Error 1011) — nach
+Erweiterung des bestehenden Tokens um `Zone → Single Redirect → Edit` (Token
+selbst unverändert, nur die Berechtigung ergänzt) per API angelegt:
 
-Aktuell: `http://www…` → Cloudflare leitet automatisch auf `https://www…`
-um, `https://www…` erreicht danach über den bestehenden (unveränderten)
-Proxied-CNAME `auto-ki-web`, das die Custom Domain nicht kennt → **404**
-(kein Absturz, keine Schleife, aber auch keine Weiterleitung). Behebbar durch
-**eine** von zwei Aktionen: (a) dem Cloudflare-Token zusätzlich
-`Zone → Single Redirect/Rulesets → Edit` geben, oder (b) Railway-Plan mit
-mehr Custom Domains pro Service.
+```json
+{
+  "expression": "(http.host eq \"www.getenfal.de\")",
+  "action": "redirect",
+  "action_parameters": {
+    "from_value": {
+      "status_code": 301,
+      "target_url": {"expression": "concat(\"https://getenfal.de\", http.request.uri.path)"},
+      "preserve_query_string": true
+    }
+  }
+}
+```
+
+Live geprüft: `http://` und `https://www.getenfal.de` → 301 auf
+`https://getenfal.de/`, Pfad **und** Query-String bleiben erhalten
+(`/pricing?foo=bar` → `/pricing?foo=bar`), keine Schleife (Ziel liefert 200).
+`www` wurde bewusst **nicht** bei Railway als eigene Custom Domain angelegt
+(Hobby-Plan: 1 Custom Domain pro Service, `getenfal.de` belegt den Slot
+bereits) — die Cloudflare-Regel braucht keinen zweiten Slot.
 
 Status prüfen: `railway domain status <domain> --service <service>`.
 
