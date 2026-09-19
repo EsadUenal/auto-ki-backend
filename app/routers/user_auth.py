@@ -392,7 +392,7 @@ def login(body: LoginBody, response: Response, request: Request):
             "SELECT id, email, password_hash, abo_typ, checks_verbleibend, "
             "kaufchecks_verbleibend, verkaufschecks_verbleibend, "
             "ersatzteil_suchen_verbleibend, deleted_at, ist_haendler, "
-            "auth_version, email_verified "
+            "auth_version, email_verified, abo_kuendigt_zum "
             "FROM users WHERE email = ?",
             (body.email.strip().lower(),),
         ).fetchone()
@@ -420,9 +420,14 @@ def login(body: LoginBody, response: Response, request: Request):
         "kaufchecks_verbleibend": row["kaufchecks_verbleibend"],
         "verkaufschecks_verbleibend": row["verkaufschecks_verbleibend"],
         "ersatzteil_suchen_verbleibend": row["ersatzteil_suchen_verbleibend"],
-        "abo_kuendigt_zum": None,
+        "abo_kuendigt_zum": row["abo_kuendigt_zum"],
         "ist_haendler": bool(row["ist_haendler"]),
         "dealer_access": has_dealer_access(row["abo_typ"], row["ist_haendler"]),
+        # Bug (RC1): Login gab bisher keinen Plus-/Monatsverbrauchsstatus zurueck,
+        # /me dagegen schon (siehe _plus_und_nutzung unten). Sichtbare Folge: nach
+        # Login zeigte die Sidebar "Kostenlos" fuer einen aktiven Plus-Nutzer, bis
+        # zum naechsten /me-Refresh. Beide Endpunkte muessen denselben Stand liefern.
+        **_plus_und_nutzung(row["id"]),
     }
 
 

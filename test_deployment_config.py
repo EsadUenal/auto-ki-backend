@@ -186,6 +186,10 @@ try:
     check("D-2: API-Key nur im Header, nicht im Body", headers["api-key"] == "xkeysib-test" and "xkeysib-test" not in json.dumps(body))
     check("D-2: Link zeigt auf FRONTEND_URL mit Token im Fragment",
           f"https://app.getenfal.de/email-bestaetigen#token={token}" in body["textContent"], body["textContent"])
+    check("D-2: HTML-Version vorhanden, mit CTA und demselben Link",
+          "htmlContent" in body and "E-Mail-Adresse bestätigen" in body["htmlContent"]
+          and f"https://app.getenfal.de/email-bestaetigen#token={token}" in body["htmlContent"],
+          body.get("htmlContent", "")[:200])
     check("D-2: Empfaenger/Absender korrekt",
           body["to"] == [{"email": "kunde@example.com"}] and body["sender"] == {"email": "noreply@getenfal.de", "name": "ENFAL"},
           str(body))
