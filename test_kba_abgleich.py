@@ -192,16 +192,24 @@ from app.kba_batch_a_daten import ZEILEN as _BATCH_A_ZEILEN  # noqa: E402
 from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids  # noqa: E402
 from app.kba_batch_b1_daten import ZEILEN as _BATCH_B1_ZEILEN  # noqa: E402
 from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids  # noqa: E402
+# Mixed-Target-Import (d8e96c2): amtliche Rueckrufe, deren KBA-Referenz
+# mehrere Baureihen trifft und die nur fuer die sicher zuordenbaren Ziele
+# uebernommen wurden. Gleiche Abgrenzung wie Batch A/B1 — dieser Abschnitt
+# prueft das Ergebnis des GESAMTABGLEICHS, nicht den Gesamtbestand.
+from app.kba_mixed_target_daten import ZEILEN as _MIXED_ZEILEN  # noqa: E402
+from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids  # noqa: E402
 
 # Batch B1 kam nach Batch A hinzu: amtliche Rueckrufe auf OFFENEN, aber
 # primaerquellenbestaetigten Generationen. Fuer diesen Abschnitt gilt dieselbe
 # Abgrenzung wie fuer Batch A — er prueft das Ergebnis des GESAMTABGLEICHS.
 _BATCH_A = _batch_a_ids()
 _BATCH_B1 = _batch_b1_ids()
-_IMPORTIERT = _BATCH_A | _BATCH_B1
+_MIXED = _mixed_ids()
+_IMPORTIERT = _BATCH_A | _BATCH_B1 | _MIXED
 _abgleich = [r for r in _alle if r["id"] not in _IMPORTIERT]
-check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1",
-      len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN) + len(_BATCH_B1_ZEILEN))
+check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1 + Mixed-Target",
+      len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN) + len(_BATCH_B1_ZEILEN)
+      + len(_MIXED_ZEILEN))
 check("F1 746 Rueckrufe aus dem Gesamtabgleich (749 minus 3 Dubletten)",
       len(_abgleich) == 746)
 _mit_ref = [r for r in _abgleich if (r["kba_referenz"] or "").strip()]

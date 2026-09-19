@@ -48,6 +48,7 @@ nichts zu korrigieren); der Marker wird trotzdem gesetzt.
 QUELLENNACHWEIS je Korrektur steht am jeweiligen Schritt.
 """
 
+import json
 import logging
 import sqlite3
 
@@ -1863,6 +1864,93 @@ def schritt_a4_b9_rs4_dublette(conn, apply_):
 
 
 MARKER_A4_B9_RS4 = "audi_a4_b9_rs4_dublette_v1"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# KURZHECK IST KEINE STUFENHECK-LIMOUSINE
+# ══════════════════════════════════════════════════════════════════════════
+# BEFUND (AutoFinder RC1): zwei Baureihen fuehren als Karosserie den blossen
+# Wert "Limousine" fuer ihre KURZE Karosserie. ENFAL normalisiert das zur
+# Klasse `limousine` — in der Nutzertaxonomie die Stufenheck-Limousine, klar
+# getrennt von `kompakt`. Wer im AutoFinder "Limousine" waehlt, bekam dadurch
+# ein Kompaktfahrzeug angeboten, und der Kompakt-Filter fand es nicht.
+#
+# Beide Hersteller bieten in diesen Generationen KEIN Stufenheck an:
+#
+#   volkswagen-golf-viii
+#     volkswagen.de fuehrt unter "Modelle und Konfigurator" genau zwei
+#     Golf-Karosserien: "Der Golf" und "Der Golf Variant". Die Modellseite
+#     beschreibt den kurzen Golf als "Kompakt." — eine Golf-Limousine
+#     (Stufenheck) gibt es im deutschen Programm nicht.
+#     https://www.volkswagen.de/de/specials/golf-family.html
+#     https://www.volkswagen.de/de/modelle/golf.html
+#     Abgerufen 2026-09-19.
+#
+#   ford-focus-mk4
+#     Der Ford-Konfigurator auf ford.de gibt fuer den Focus
+#     "Karosserie: 5-Tuerer" an; die Modellseite heisst
+#     "Ford Focus - Limousine & Turnier (Kombi)". Ford Deutschland benutzt
+#     "Limousine" also als Marketingwort fuer den FUENFTUERIGEN Schraegheck,
+#     nicht fuer ein Stufenheck. Ein Focus-Stufenheck stand in dieser
+#     Generation nicht im deutschen Programm.
+#     https://media.ford.com/content/fordmedia/feu/de/de/news/2018/04/10/
+#       weltpremiere-des-neuen-ford-focus--innovativster--dynamischster-.html
+#     https://www.ford.de/content/dam/guxeu/de/documents/shop/kaufen/angebote/
+#       ford-focus-business/BRO-Ford_Focus_Infobroschuere.pdf
+#     Abgerufen 2026-09-19.
+#
+# Korrigiert wird deshalb NUR der Rohwert "Limousine" -> "Schraegheck", also
+# genau die Schreibweise, die jede andere Schraegheck-Baureihe im Bestand
+# ohnehin benutzt (Golf VII, Astra K, Focus Mk3 ...). Die Kombi-Werte
+# ("Variant"/"Kombi") bleiben unberuehrt; es wird keine Karosserie ergaenzt
+# und keine entfernt.
+#
+# BEWUSST NICHT MITKORRIGIERT: die uebrigen Kompakt-/Kleinwagen-Baureihen mit
+# dem Wert "Limousine" wurden durchgesehen und sind korrekt — Audi A3, Ford
+# Focus Mk2/Mk3, Opel Astra F-J, Skoda Octavia, Toyota Corolla, Kia Rio und
+# die Mercedes-/BMW-Reihen hatten in der jeweiligen Generation tatsaechlich
+# ein Stufenheck bzw. werden vom Hersteller als Limousine gefuehrt.
+KURZHECK_KORREKTUREN = {
+    "volkswagen-golf-viii": (["Limousine", "Variant"], ["Schrägheck", "Variant"]),
+    "ford-focus-mk4":       (["Limousine", "Kombi"],   ["Schrägheck", "Kombi"]),
+}
+
+
+def schritt_kurzheck_karosserie(conn, apply_):
+    for baureihe_id, (erwartet, korrigiert) in KURZHECK_KORREKTUREN.items():
+        zeile = conn.execute("select karosserie from baureihe where id=?",
+                             (baureihe_id,)).fetchone()
+        if zeile is None:
+            log(f"  [KURZHECK] {baureihe_id}: nicht im Bestand — uebersprungen")
+            continue
+        # Index statt Spaltenname: `fuehre_migration_aus` bekommt die Verbindung
+        # ohne `sqlite3.Row`-Factory.
+        roh = zeile[0]
+        try:
+            ist = json.loads(roh or "[]")
+        except (ValueError, TypeError):
+            raise RuntimeError(f"[KURZHECK] ABBRUCH: {baureihe_id} hat kein "
+                               f"lesbares Karosserie-JSON ({roh!r})")
+        if ist == korrigiert:
+            log(f"  [KURZHECK] {baureihe_id}: bereits korrigiert (idempotent)")
+            continue
+        # PRECONDITION: nur den exakt bekannten Ausgangszustand anfassen. Wurde
+        # der Datensatz zwischenzeitlich anders gepflegt, ist diese Korrektur
+        # nicht mehr die richtige — dann lieber abbrechen als ueberschreiben.
+        if ist != erwartet:
+            raise RuntimeError(
+                f"[KURZHECK] ABBRUCH: {baureihe_id} traegt {ist!r}, erwartet war "
+                f"{erwartet!r} — Datensatz wurde zwischenzeitlich geaendert")
+        log(f"  [KURZHECK] {baureihe_id}: {ist!r} -> {korrigiert!r} "
+            "(Kurzheck ist Kompakt, kein Stufenheck)")
+        if apply_:
+            conn.execute("update baureihe set karosserie=? where id=?",
+                         (json.dumps(korrigiert, ensure_ascii=False), baureihe_id))
+
+
+MARKER_KURZHECK = "kurzheck_keine_limousine_v1"
+
+SCHRITTE_KURZHECK = (schritt_kurzheck_karosserie,)
 SCHRITTE_A4_B9_RS4 = (schritt_a4_b9_rs4_dublette,)
 
 
@@ -1912,6 +2000,9 @@ MIGRATIONEN = (
     # AutoFinder Consumer-Release-Audit: RS4-Motorzeile in der zivilen
     # A4-B9-Baureihe, identisch zur eigenen RS-4-Avant-B9-Baureihe.
     (MARKER_A4_B9_RS4, SCHRITTE_A4_B9_RS4),
+    # Kurzheck-Karosserien, die faelschlich als Stufenheck-Limousine gefuehrt
+    # wurden (Golf VIII, Focus Mk4) — siehe Quellen bei KURZHECK_KORREKTUREN.
+    (MARKER_KURZHECK, SCHRITTE_KURZHECK),
 )
 
 

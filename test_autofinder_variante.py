@@ -19,7 +19,9 @@ Kein Netzwerk, kein LLM (Gemini ist neutral gestubbt).
 Ausfuehren:  python test_autofinder_variante.py
 """
 import importlib
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 
@@ -594,6 +596,110 @@ check("N: die Antwort liefert fuer CUPRA keine reine Leistungsangabe als Motor",
       all(k["motor"] != f"{k['leistung_ps']} PS" for k in _cup))
 check("N: und kennzeichnet die Herleitung",
       all(k["motor_hergeleitet"] for k in _cup) if _cup else True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# O) KURZHECK IST KEINE STUFENHECK-LIMOUSINE
+# ══════════════════════════════════════════════════════════════════════════
+# Golf VIII und Focus Mk4 fuehrten ihre KURZE Karosserie als "Limousine".
+# In ENFALs Nutzertaxonomie ist "Limousine" das Stufenheck, getrennt von
+# "Kompakt" — beide Fahrzeuge erschienen dadurch unter dem falschen Filter.
+# Quellen siehe app/data_migrations.KURZHECK_KORREKTUREN.
+from app.autofinder_norm import normalisiere_karosserie   # noqa: E402
+
+_KURZHECK_FAELLE = {
+    "volkswagen-golf-viii": ("Variant", "Golf Variant"),
+    "ford-focus-mk4":       ("Kombi",   "Focus Turnier"),
+}
+for _bid, (_kombi_wort, _kombi_name) in _KURZHECK_FAELLE.items():
+    _rows = [r for r in _alle if r["baureihe_id"] == _bid]
+    check(f"O: {_bid} ist im Bestand", len(_rows) > 0)
+    if not _rows:
+        continue
+    _roh = _rows[0]["karosserie"]
+    _klassen = normalisiere_karosserie(_roh)
+    check(f"O: {_bid} traegt kein blosses 'Limousine' mehr",
+          "Limousine" not in json.loads(_roh or "[]"))
+    print(f"    {_bid}: {_roh} -> {sorted(_klassen)}")
+    check(f"O: {_bid} normalisiert auf Kompakt + Kombi",
+          _klassen == frozenset({"kompakt", "kombi"}))
+    check(f"O: {_bid} — die Kombi-Karosserie ({_kombi_name}) bleibt erhalten",
+          _kombi_wort in json.loads(_roh or "[]"))
+
+    _lim = af.AutoFinderRequest(karosserie=["limousine"])
+    _komp = af.AutoFinderRequest(karosserie=["kompakt"])
+    _komb = af.AutoFinderRequest(karosserie=["kombi"])
+    check(f"O: {_bid} — KEINE Variante passiert den Limousinen-Filter",
+          not any(af.erfuellt_harte_filter(r, _lim) for r in _rows))
+    check(f"O: {_bid} — das Kurzheck passiert den Kompakt-Filter",
+          any(af.erfuellt_harte_filter(r, _komp) for r in _rows))
+    check(f"O: {_bid} — die Kombi-Karosserie passiert den Kombi-Filter",
+          any(af.erfuellt_harte_filter(r, _komb) for r in _rows))
+
+# Ueber den HTTP-Weg: eine reine Limousinen-Suche darf die beiden nicht mehr
+# liefern, eine Kompakt-Suche dagegen schon.
+_r_lim = post({"karosserie": ["limousine"], "kraftstoff": ["Benzin"]})
+check("O: Limousinen-Suche liefert weder Golf VIII noch Focus Mk4",
+      not any(k["baureihe_id"] in _KURZHECK_FAELLE
+              for k in _r_lim.json().get("kandidaten", [])))
+_r_komp = post({"karosserie": ["kompakt"], "marken_bevorzugt": ["Volkswagen"],
+                "baujahr_von": 2020})
+check("O: eine Kompakt-Suche kann den Golf VIII liefern",
+      _r_komp.status_code == 200)
+
+# Der Rest des Bestands bleibt unangetastet: Baureihen mit einem ECHTEN
+# Stufenheck behalten ihre Limousinen-Klasse.
+for _bid in ("audi-a3-typ-8v", "skoda-octavia-dritte-generation", "ford-focus-mk3"):
+    _r = next((r for r in _alle if r["baureihe_id"] == _bid), None)
+    if _r:
+        check(f"O: {_bid} behaelt seine Limousinen-Klasse (echtes Stufenheck)",
+              "limousine" in normalisiere_karosserie(_r["karosserie"]))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# P) DIE KURZHECK-MIGRATION AUF EINER BESTEHENDEN DATENBANK
+# ══════════════════════════════════════════════════════════════════════════
+# Der korrigierte Seed erreicht nur frische Installationen. Eine bestehende
+# Datenbank bekommt die Korrektur ueber die Migration — die muss den alten
+# Zustand erkennen, genau ihn ersetzen und danach idempotent sein.
+import app.data_migrations as _dm   # noqa: E402
+
+_mig_db = os.path.join(_tmp, "migration.db")
+_mc = sqlite3.connect(_mig_db)
+_mc.execute("CREATE TABLE baureihe (id TEXT PRIMARY KEY, karosserie TEXT)")
+for _bid, (_alt, _neu) in _dm.KURZHECK_KORREKTUREN.items():
+    _mc.execute("INSERT INTO baureihe (id, karosserie) VALUES (?,?)",
+                (_bid, json.dumps(_alt, ensure_ascii=False)))
+_mc.execute("INSERT INTO baureihe (id, karosserie) VALUES (?,?)",
+            ("audi-a4-b9", json.dumps(["Limousine", "Avant"], ensure_ascii=False)))
+_mc.commit()
+
+_dm.schritt_kurzheck_karosserie(_mc, True)
+_mc.commit()
+_nach = dict(_mc.execute("SELECT id, karosserie FROM baureihe"))
+check("P: die Migration korrigiert genau die bekannten Kurzheck-Zeilen",
+      all(json.loads(_nach[b]) == n for b, (_a, n) in _dm.KURZHECK_KORREKTUREN.items()))
+check("P: eine Baureihe mit echtem Stufenheck bleibt unangetastet",
+      json.loads(_nach["audi-a4-b9"]) == ["Limousine", "Avant"])
+
+_dm.schritt_kurzheck_karosserie(_mc, True)   # zweiter Lauf
+_mc.commit()
+check("P: ein zweiter Lauf aendert nichts (idempotent)",
+      dict(_mc.execute("SELECT id, karosserie FROM baureihe")) == _nach)
+
+# Wurde der Datensatz zwischenzeitlich anders gepflegt, darf die Migration ihn
+# NICHT ueberschreiben — sie bricht ab und laesst die Entscheidung dem Menschen.
+_mc.execute("UPDATE baureihe SET karosserie=? WHERE id=?",
+            (json.dumps(["Stufenheck", "Variant"], ensure_ascii=False),
+             "volkswagen-golf-viii"))
+_mc.commit()
+try:
+    _dm.schritt_kurzheck_karosserie(_mc, True)
+    _abgebrochen = False
+except RuntimeError as _exc:
+    _abgebrochen = "ABBRUCH" in str(_exc)
+check("P: ein zwischenzeitlich geaenderter Datensatz fuehrt zum Abbruch", _abgebrochen)
+_mc.close()
 
 
 print()

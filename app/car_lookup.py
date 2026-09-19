@@ -408,8 +408,20 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
         return None, MATCH_NONE
 
     # Gleichstand: eine Zeile mit ECHT belegtem Bauzeitraum schlaegt eine
-    # undatierte. Ohne diesen Schluessel entschied die DB-Zeilenreihenfolge.
-    scored.sort(key=lambda x: (x[0], x[2]), reverse=True)
+    # undatierte. Danach entscheidet die Match-Art: ein exakter Modelltreffer
+    # muss vor einem blossen Teilstring/Token-Innentreffer liegen. Der
+    # Mehrdeutigkeitsblock unten setzte das bereits voraus, die Sortierung tat
+    # es aber bisher nicht. Mit dem vollstaendigen Seed konnte deshalb z.B.
+    # ``X1`` durch ``iX1``, ``Q8`` durch ``Q8 e-tron`` und ``TT`` durch
+    # ``TT RS`` verdraengt werden, obwohl jeweils ein exakter Treffer existiert.
+    scored.sort(
+        key=lambda x: (
+            x[0],
+            x[2],
+            _MATCH_RANG.get(arten.get(x[3]["id"], MATCH_NONE), 0),
+        ),
+        reverse=True,
+    )
     best = scored[0][3]
     art = arten.get(best["id"], MATCH_NONE)
 

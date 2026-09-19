@@ -226,7 +226,12 @@ with get_conn() as conn:
         "AND baureihe_id<>'opel-insignia-b'").fetchone()[0]
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
     from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
-    _BATCH_A = _batch_a_ids() | _batch_b1_ids()
+    from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
+    # `_BATCH_A` steht hier fuer ALLE nach dem Gesamtabgleich importierten
+    # Chargen (A, B1 und der Mixed-Target-Import d8e96c2). Die Aussagen unten
+    # betreffen den Bestand des Gesamtabgleichs; jede spaetere Charge gehoert
+    # deshalb ausgeblendet, sonst prueft der Abschnitt einen anderen Bestand.
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids()
     _platz = ",".join("?" * len(_BATCH_A))
     # BATCH A traegt ebenfalls Quellenstufe A — jede Zeile mit eigener amtlicher
     # Referenz aus dem KBA-Gesamtexport. Diese Zusicherung gilt dem Bestand
@@ -361,7 +366,7 @@ check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
 print("\n--- G) Bestandsintegritaet ---")
 # KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS).
 check(f"G1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
-      f"(746 + Batch A + Batch B1)",
+      f"(746 + Batch A + Batch B1 + Mixed-Target)",
       _gesamt == 746 + len(_BATCH_A))
 _insignia_alt = [r for r in _insignia if r["id"] not in _BATCH_A]
 check("G2 opel-insignia-b hat 6 Zeilen aus dem Altbestand (5 + 1 Nachtrag)",

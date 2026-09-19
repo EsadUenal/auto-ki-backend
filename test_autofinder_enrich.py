@@ -40,6 +40,10 @@ os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 # test_autofinder_demo.py — nicht hierher.
 os.environ["AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH"] = "0"
 os.environ["AUTO_KI_AUTOFINDER_ANONYM_DEMO_PRO_TAG"] = "0"
+# E-Mail-Verifikation gehoert nach test_registration_credits.py. Dieser Test
+# prueft ausschliesslich den Enrichment-/Fallback-Vertrag und verwendet bewusst
+# keinen echten Nutzer- oder Mailflow.
+os.environ["AUTO_KI_EMAIL_VERIFIKATION"] = "0"
 
 import app.config as _cfg; importlib.reload(_cfg)
 import app.database as _db; importlib.reload(_db)

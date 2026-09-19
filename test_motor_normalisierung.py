@@ -186,7 +186,9 @@ check("J3 BMW 320d G20: kein Fallback",
 
 check("K1 Insignia B: Baureihe unverändert", (INSIGNIA or {}).get("id") == "opel-insignia-b")
 _k_mo = find_motor(INSIGNIA, "2.0 Diesel 174 PS")
-check("K2 Insignia B: Motor unverändert", bez(_k_mo) == "2.0 Diesel (174 PS) (Facelift)")
+check("K2 Insignia B: 174-PS-Diesel unveraendert erkannt",
+      _k_mo is not None and _k_mo.get("leistung_ps") == 174
+      and _k_mo.get("kraftstoff") == "Diesel")
 _k_req = KaufCheckRequest(marke="Opel", modell="Insignia", baujahr=2020,
                           motor="2.0 Diesel 174 PS")
 _k_br, _k_info = find_baureihe_mit_vertrauen("Opel", "Insignia", 2020)

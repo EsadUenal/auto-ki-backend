@@ -120,7 +120,11 @@ with get_conn() as conn:
     # verwaessern statt sie zu pruefen.
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
     from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
-    _BATCH_A = _batch_a_ids() | _batch_b1_ids()
+    from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
+    # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2): auch er hat
+    # an den Pilotfahrzeugen Zeilen ergaenzt. `_BATCH_A` meint hier "alles,
+    # was nach dem Pilotbestand importiert wurde".
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids()
     _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
     _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
@@ -441,7 +445,10 @@ print("\n--- I) §14 die vier Kaufchecks ---")
 _ERWARTET = {
     # (marke, hint): (Anzahl sichtbarer Rueckruf-Insights, Floor erwartet)
     ("BMW", "320d"):           2,   # unveraendert: Batch A traf den G20 nicht
-    ("Opel", "2.0 Diesel"):    2,   # 1 Nachtrag (KBA 12223) + 1 aus Batch A
+    # 1 Nachtrag (KBA 12223) + 1 aus Batch A + 1 aus dem Mixed-Target-Import
+    # (KBA 10383, Radverschraubung, Baujahre 2019-2020, verified) — dieser
+    # Rueckruf trifft das Pilotfahrzeug (2.0 Diesel, 2019) tatsaechlich.
+    ("Opel", "2.0 Diesel"):    3,
     ("Audi", "2.0 FSI 150 PS"): 1,  # unveraendert
     ("Mercedes-Benz", "C220d"): 5,  # 1 Altbestand + 4 aus Batch A
 }

@@ -106,14 +106,33 @@ check("3.5 kein DB-Profil im Prompt", "DB-Profil:" not in p_bmw["dbctx"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-print("\n=== 4) Mehrdeutige Eingabe -> keine harten baureihenspezifischen Aussagen ===")
+print("\n=== 4) Reale Exaktmodelle und mehrdeutige Eingaben ===")
 
-for marke, modell, bj in [("Audi", "RS Q8", 2022), ("Audi", "TT RS", 2018),
-                          ("BMW", "iX1", 2022)]:
+# Diese Modelle stehen inzwischen als eigene Baureihen im kanonischen Seed.
+# Sie kuenstlich als unsicher zu erwarten waere Daten-Drift im Test und wuerde
+# den echten Exakttreffer verschleiern. Gesichert wird stattdessen die Ziel-ID.
+for marke, modell, bj, bid in [
+    ("Audi", "RS Q8", 2022, "audi-rs-q8-4m"),
+    ("Audi", "TT RS", 2018, "audi-tt-rs-fv/8s"),
+    ("BMW", "iX1", 2022, "bmw-ix1-u11"),
+]:
     p = gate(marke, modell, bj)
-    check(f"4.x {marke} {modell}: nicht belastbar", not p["info"]["belastbar"])
-    check(f"4.x {marke} {modell}: keine Insights", p["ins"] == [])
-    check(f"4.x {marke} {modell}: kein DB-Profil im Prompt", "DB-Profil:" not in p["dbctx"])
+    check(f"4a {marke} {modell}: exakter eigener Treffer",
+          p["info"]["match_art"] == MATCH_EXACT
+          and (p["br"] or {}).get("id") == bid)
+
+# Echte unklare Zusätze bleiben weiterhin gegatet und tragen keine harten
+# baureihenspezifischen Aussagen.
+for marke, modell, bj in [
+    ("Audi", "RS Q8 Hyperdrive", 2022),
+    ("Audi", "TT RS Hyperdrive", 2018),
+    ("BMW", "iX1 Hyperdrive", 2022),
+]:
+    p = gate(marke, modell, bj)
+    check(f"4b {marke} {modell}: nicht belastbar", not p["info"]["belastbar"])
+    check(f"4b {marke} {modell}: keine Insights", p["ins"] == [])
+    check(f"4b {marke} {modell}: kein DB-Profil im Prompt",
+          "DB-Profil:" not in p["dbctx"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

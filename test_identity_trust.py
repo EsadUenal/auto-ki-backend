@@ -139,27 +139,33 @@ print("\n=== F/G/H) Echte Teilstring-Konflikte ===")
 
 check("F1 BMW X1 bleibt ein sicherer Treffer",
       identitaet("BMW", "X1", 2022)["belastbar"])
-check("F2 BMW iX1 wird NICHT als X1 durchgewinkt",
-      not identitaet("BMW", "iX1", 2022)["belastbar"])
-check("F3 iX1 erzeugt keine X1-Aktionen",
-      not [a for a in spez(pipeline("BMW", "iX1", 2022)["ka"])
-           if a.kategorie in ("schwachstelle", "motorproblem", "rueckruf")])
+_ix1_br, _ix1_info = find_baureihe_mit_vertrauen("BMW", "iX1", 2022)
+check("F2 BMW iX1 wird exakt als eigenes Modell erkannt",
+      _ix1_info["match_art"] == MATCH_EXACT)
+check("F3 BMW iX1 wird NICHT als X1 durchgewinkt",
+      _ix1_br is not None and _ix1_br["id"] == "bmw-ix1-u11")
 
 check("G1 Audi Q8 bleibt ein sicherer Treffer",
       identitaet("Audi", "Q8", 2022)["match_art"] == MATCH_EXACT)
-check("G2 Audi RS Q8 wird NICHT dem Q8 zugeordnet",
-      not identitaet("Audi", "RS Q8", 2022)["belastbar"])
+_rsq8_br, _rsq8_info = find_baureihe_mit_vertrauen("Audi", "RS Q8", 2022)
+check("G2 Audi RS Q8 wird exakt als eigenes Modell erkannt",
+      _rsq8_info["match_art"] == MATCH_EXACT
+      and _rsq8_br is not None and _rsq8_br["id"] == "audi-rs-q8-4m")
 
 check("H1 Audi TT bleibt ein sicherer Treffer",
       identitaet("Audi", "TT", 2018)["match_art"] == MATCH_EXACT)
-check("H2 Audi TT RS wird NICHT dem TT zugeordnet",
-      not identitaet("Audi", "TT RS", 2018)["belastbar"])
+_ttrs_br, _ttrs_info = find_baureihe_mit_vertrauen("Audi", "TT RS", 2018)
+check("H2 Audi TT RS wird exakt als eigenes Modell erkannt",
+      _ttrs_info["match_art"] == MATCH_EXACT
+      and _ttrs_br is not None and _ttrs_br["id"] == "audi-tt-rs-fv/8s")
 
 # Im Audit zusätzlich gefundene False Positives über den Motorpfad
 check("H3 'Golf GTI' landet nicht mehr sicher beim VW up!",
       not identitaet("Volkswagen", "Golf GTI", 2015)["belastbar"])
-check("H4 'e-tron' landet nicht mehr sicher beim RS e-tron GT",
-      not identitaet("Audi", "e-tron", 2021)["belastbar"])
+_etron_br, _etron_info = find_baureihe_mit_vertrauen("Audi", "e-tron", 2021)
+check("H4 'e-tron' wird exakt als eigenes Modell erkannt, nicht als RS e-tron GT",
+      _etron_info["match_art"] == MATCH_EXACT
+      and _etron_br is not None and _etron_br["id"] == "audi-e-tron-2019")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -195,8 +201,16 @@ check("K2 Baureihe unverändert", _ins_b["br"]["id"] == "opel-insignia-b")
 # KBA 12223 (Bauzeitraum 2017-2020) trifft dieses Fahrzeug und kommt hinzu.
 # BATCH A: +1 — der amtlich belegte Rückruf KBA 10237 (unzureichende Montage
 # der Tankbänder, Produktion 2020) trifft dieses Fahrzeug ebenfalls.
-check("K3 Evidence unverändert vorhanden (5 + 1 aus Batch A)",
-      len(_ins_b["ins"]) == 6)
+# MIXED-TARGET-IMPORT (d8e96c2): +1 — der amtlich belegte Rückruf KBA 10383
+# (unzureichendes Anzugsdrehmoment der Radverschraubungen, Baujahre 2019-2020)
+# trifft dieses Fahrzeug ebenfalls. Statt nur die Zahl hochzuzählen, hält der
+# Test jetzt zusätzlich fest, WELCHER Rückruf dazugekommen ist — eine reine
+# Zahl hätte auch bei einem ganz anderen Zuwachs weiter gestimmt.
+check("K3 Evidence unverändert vorhanden (5 + 1 aus Batch A + 1 aus Mixed-Target)",
+      len(_ins_b["ins"]) == 7)
+check("K3e der amtliche Radverschraubungs-Rückruf KBA 10383 ist sichtbar und verified",
+      any(q.ref == "10383" and f.trust == "verified"
+          for f in _ins_b["ins"] for q in f.quellen))
 check("K3d der amtliche Bremskraft-Rückruf KBA 12223 ist sichtbar und verified",
       any("Bremskraftausgleich" in f.titel and f.trust == "verified"
           for f in _ins_b["ins"]))

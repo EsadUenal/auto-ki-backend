@@ -85,10 +85,30 @@ def _counts(pfad, tabellen):
         c.close()
 
 
-def _snapshot(pfad, ohne_spalten=None):
+def _spalten(pfad):
+    """{tabelle: [spalten]} — der Schema-Stand einer Datei."""
+    c = sqlite3.connect(pfad)
+    try:
+        return {t: [r[1] for r in c.execute(f'pragma table_info("{t}")')]
+                for (t,) in c.execute(
+                    "select name from sqlite_master where type='table' "
+                    "and name not like 'sqlite_%' order by name")}
+    finally:
+        c.close()
+
+
+def _snapshot(pfad, nur_spalten=None, ohne_spalten=None):
     """Inhalts-Hash je Tabelle — erkennt auch Aenderungen ohne Zeilenzahl-Aenderung.
 
-    `ohne_spalten` blendet je Tabelle einzelne Spalten aus. Gebraucht fuer
+    `nur_spalten` ({tabelle: [spalten]}) vergleicht ausschliesslich die dort
+    genannten Spalten. Das ist noetig, weil `ensure_tables()` ADDITIVE
+    Schema-Migrationen ausfuehrt: eine neue Spalte oder eine neue Tabelle ist
+    genau der Zweck des Starts, kein Datenverlust. Ein Hash ueber `select *`
+    haette jede solche Migration als "Inhalt veraendert" gemeldet — und damit
+    genau das verdeckt, was der Abschnitt wirklich zusichern soll: dass
+    BESTEHENDE Zeilen und ihre bisherigen Spalten unangetastet bleiben.
+
+    `ohne_spalten` blendet zusaetzlich einzelne Spalten aus. Gebraucht fuer
     Spalten, die eine dokumentierte einmalige Migration befuellen darf — die
     werden getrennt und schaerfer geprueft (Abschnitt B5-B7), statt hier
     pauschal jede Aenderung durchzuwinken.
@@ -99,8 +119,10 @@ def _snapshot(pfad, ohne_spalten=None):
         out = {}
         for (t,) in c.execute("select name from sqlite_master where type='table' "
                               "and name not like 'sqlite_%' order by name"):
-            spalten = [r[1] for r in c.execute(f'pragma table_info("{t}")')]
-            behalten = [s for s in spalten if s not in ohne_spalten.get(t, ())]
+            vorhanden = [r[1] for r in c.execute(f'pragma table_info("{t}")')]
+            basis = nur_spalten.get(t, vorhanden) if nur_spalten else vorhanden
+            behalten = [s for s in basis
+                        if s in vorhanden and s not in ohne_spalten.get(t, ())]
             auswahl = ", ".join(f'"{s}"' for s in behalten) or "1"
             rows = c.execute(f'select {auswahl} from "{t}"').fetchall()
             out[t] = (len(rows),
@@ -310,30 +332,48 @@ finally:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-print("\n=== B) Bestehende DB bleibt unangetastet ===")
-_LIVE = os.environ.get("AUTO_KI_DB_PATH") or os.path.join(
-    os.environ.get("LOCALAPPDATA", ""), "auto-ki-backend", "auto_ki.db")
-if not os.path.exists(_LIVE):
-    print("[SKIP] keine bestehende Datenbank vorhanden — Abschnitt B uebersprungen")
-else:
-    _tmp2 = tempfile.mkdtemp(prefix="vira_exist_")
-    _kopie = os.path.join(_tmp2, "auto_ki.db")
-    shutil.copy(_LIVE, _kopie)
-    _chassis_vor = _chassis_codes(_kopie)
-    _vor = _snapshot(_kopie, ohne_spalten={"baureihe": ("chassis_codes",)})
-    _bootstrap(_kopie, laeufe=3)
-    _nach = _snapshot(_kopie, ohne_spalten={"baureihe": ("chassis_codes",)})
-    _chassis_nach = _chassis_codes(_kopie)
-    _diff = {t for t in set(_vor) | set(_nach) if _vor.get(t) != _nach.get(t)}
-    check("B1 Fahrzeugtabellen inhaltlich unveraendert",
+# B) Ein Start darf eine BESTEHENDE Datenbank nicht veraendern.
+#
+# Geprueft wird das gegen ZWEI Datenbanken:
+#   B-fresh  eine vom Test selbst aus dem Repo-Seed erzeugte DB. Vollstaendig
+#            reproduzierbar, laeuft ueberall (CI, frischer Klon) und muss ein
+#            striktes No-Op sein.
+#   B-live   zusaetzlich die tatsaechlich vorhandene Entwickler-/Betriebs-DB,
+#            sofern eine da ist. Nur sie kann zeigen, dass auch eine AELTERE,
+#            real gewachsene Datei einen Start unbeschadet uebersteht.
+#
+# WAS "unveraendert" HEISST: `ensure_tables()` fuehrt ADDITIVE
+# Schema-Migrationen aus — neue Tabelle, neue Spalte. Das ist der Zweck des
+# Starts, kein Datenverlust. Verglichen werden deshalb die Spalten, die VORHER
+# schon existierten (siehe `_snapshot(nur_spalten=...)`). Frueher hashte der
+# Abschnitt `select *` und meldete jede additive Migration als
+# "Inhalt veraendert" — das verdeckte die eigentliche Zusicherung, statt sie
+# zu pruefen.
+def _pruefe_unveraendert(kopie, praefix):
+    _spalten_vor = _spalten(kopie)
+    _chassis_vor = _chassis_codes(kopie)
+    _vor = _snapshot(kopie, ohne_spalten={"baureihe": ("chassis_codes",)})
+    _bootstrap(kopie, laeufe=3)
+    _nach = _snapshot(kopie, nur_spalten=_spalten_vor,
+                      ohne_spalten={"baureihe": ("chassis_codes",)})
+    _chassis_nach = _chassis_codes(kopie)
+    _neue_tabellen = {t for t in _nach if t not in _vor}
+    _diff = {t for t in set(_vor) | set(_nach)
+             if t not in _neue_tabellen and _vor.get(t) != _nach.get(t)}
+
+    check(f"{praefix}1 Fahrzeugtabellen inhaltlich unveraendert",
           all(_vor[t] == _nach[t] for t in FAHRZEUG if t in _vor))
-    check("B2 Nutzertabellen inhaltlich unveraendert",
+    check(f"{praefix}2 Nutzertabellen inhaltlich unveraendert",
           all(_vor[t] == _nach[t] for t in NUTZER if t in _vor))
-    check("B3 nur die Migrationsbuchhaltung darf sich aendern",
+    check(f"{praefix}3 nur die Migrationsbuchhaltung darf sich aendern",
           _diff <= {"schema_migrations"}, str(sorted(_diff)))
-    check("B4 der Seed wurde NICHT erneut importiert",
+    check(f"{praefix}4 der Seed wurde NICHT erneut importiert",
           _vor.get("baureihe") == _nach.get("baureihe"),
           f"{_vor.get('baureihe')} -> {_nach.get('baureihe')}")
+    # Eine Migration darf Tabellen ANLEGEN — aber niemals mit Inhalt.
+    check(f"{praefix}4b neu angelegte Tabellen sind leer",
+          all(_nach[t][0] == 0 for t in _neue_tabellen),
+          str(sorted(_neue_tabellen)) or "-")
 
     # B5-B7: `baureihe.chassis_codes` ist die EINZIGE Fahrzeugspalte, die der
     # Start noch fuellen darf (app/chassis_codes.py, versionierter Marker).
@@ -344,17 +384,35 @@ else:
     # leeres Feld wird gefuellt — nie ueberschrieben, nie geleert.
     _geaendert = {bid for bid in set(_chassis_vor) | set(_chassis_nach)
                   if _chassis_vor.get(bid) != _chassis_nach.get(bid)}
-    check("B5 chassis_codes wird nur dort gesetzt, wo es leer war",
+    check(f"{praefix}5 chassis_codes wird nur dort gesetzt, wo es leer war",
           all(not _chassis_vor.get(bid) for bid in _geaendert),
           str(sorted(_geaendert)))
-    check("B6 bestehende Zuordnungen bleiben unveraendert",
+    check(f"{praefix}6 bestehende Zuordnungen bleiben unveraendert",
           all(_chassis_vor[bid] == _chassis_nach[bid]
               for bid in _chassis_vor if _chassis_vor[bid]))
-    _chassis_vor2 = _chassis_codes(_kopie)
-    _bootstrap(_kopie, laeufe=1)
-    check("B7 ein weiterer Start aendert nichts mehr (idempotent)",
-          _chassis_codes(_kopie) == _chassis_vor2)
-    shutil.rmtree(_tmp2, ignore_errors=True)
+    _chassis_vor2 = _chassis_codes(kopie)
+    _bootstrap(kopie, laeufe=1)
+    check(f"{praefix}7 ein weiterer Start aendert nichts mehr (idempotent)",
+          _chassis_codes(kopie) == _chassis_vor2)
+
+
+print("\n=== B) Bestehende DB bleibt unangetastet (reproduzierbare Fixture) ===")
+_tmp2 = tempfile.mkdtemp(prefix="vira_exist_")
+_fixture = os.path.join(_tmp2, "auto_ki.db")
+_bootstrap(_fixture, laeufe=1)          # aus dem Repo-Seed, vollstaendig reproduzierbar
+_pruefe_unveraendert(_fixture, "B")
+
+print("\n=== B-live) Zusaetzlich gegen die tatsaechlich vorhandene DB ===")
+_LIVE = os.environ.get("AUTO_KI_DB_PATH") or os.path.join(
+    os.environ.get("LOCALAPPDATA", ""), "auto-ki-backend", "auto_ki.db")
+if not os.path.exists(_LIVE):
+    print("[SKIP] keine bestehende Datenbank vorhanden — Abschnitt B-live uebersprungen")
+else:
+    _kopie = os.path.join(_tmp2, "live_kopie.db")
+    shutil.copy(_LIVE, _kopie)
+    _pruefe_unveraendert(_kopie, "BL")
+
+shutil.rmtree(_tmp2, ignore_errors=True)
 
 
 print()

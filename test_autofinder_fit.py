@@ -38,6 +38,9 @@ os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 # test_autofinder_demo.py — nicht hierher.
 os.environ["AUTO_KI_AUTOFINDER_FREE_LIMIT_MONATLICH"] = "0"
 os.environ["AUTO_KI_AUTOFINDER_ANONYM_DEMO_PRO_TAG"] = "0"
+# Auth/E-Mail-Verifikation wird in eigenen Security-Tests geprueft. Hier darf
+# sie den isolierten Fit-/Routervertrag nicht vorzeitig mit 403 beenden.
+os.environ["AUTO_KI_EMAIL_VERIFIKATION"] = "0"
 
 import app.config as _cfg; importlib.reload(_cfg)
 import app.database as _db; importlib.reload(_db)

@@ -33,6 +33,9 @@ _tmp = tempfile.mkdtemp(prefix="vira_af_img_")
 os.environ["AUTO_KI_DB_PATH"] = os.path.join(_tmp, "k.db")
 os.environ["AUTO_KI_CHROMA_PATH"] = os.path.join(_tmp, "chroma")
 os.environ["AUTO_KI_AUTOFINDER_IMG_DIR"] = os.path.join(_tmp, "img")
+# Dieser Test prueft Bildkosten-Safety und den Such-Endpunkt, nicht den
+# Registrierungsflow. Die produktive E-Mail-Huerde bleibt separat getestet.
+os.environ["AUTO_KI_EMAIL_VERIFIKATION"] = "0"
 # eigene Manifeste, damit weder die kuratierte Starter-Library noch das echte
 # On-Demand-Manifest angefasst werden
 _manifest_pfad = os.path.join(_tmp, "manifest.json")
