@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any
 
+from app.config import NACHRICHT_MAX_ZEICHEN
 from app.autofinder_norm import KAROSSERIE_KLASSEN, GETRIEBE_KLASSEN
 from app.autofinder import KRAFTSTOFF_WERTE, ANTRIEB_WERTE
 
@@ -26,7 +27,12 @@ class FahrzeugRequest(BaseModel):
 
 class ChatMessage(BaseModel):
     rolle: str = Field(max_length=20)   # "user" | "ki"
-    text: str = Field(max_length=_MAX_TEXT_LEN)
+    # Muss mindestens so gross sein wie das Persistenzlimit einer gespeicherten
+    # Nachricht (NACHRICHT_MAX_ZEICHEN). Bei 8_000 hier gegen 20_000 dort wurde
+    # eine lange, korrekt gespeicherte Antwort beim naechsten Turn als Verlauf
+    # abgelehnt (422) — die Folgefrage verlor ihren Kontext, obwohl er in der DB
+    # stand.
+    text: str = Field(max_length=NACHRICHT_MAX_ZEICHEN)
 
 
 class ChatRequest(BaseModel):
@@ -76,6 +82,9 @@ class ChatResponse(BaseModel):
     fahrzeug_referenz: list[str] = Field(default_factory=list)
     vertrauen: str       # "hoch" | "mittel" | "niedrig"
     belege: list[Any] = Field(default_factory=list)
+    # True, wenn das Modell am Output-Limit gestoppt hat. Ohne dieses Feld endete
+    # eine zu lange Antwort lautlos mitten im Satz und sah vollstaendig aus.
+    abgeschnitten: bool = False
 
 
 # ---------- Kauf-Check ----------

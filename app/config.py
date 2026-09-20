@@ -266,11 +266,30 @@ PROVIDER_FEATURE_LIMITS: dict[str, dict[str, int]] = {
                  "tavily": int(os.environ.get("AUTO_KI_PROVIDER_UNSCOPED_TAVILY_MAX", "3"))},
 }
 
-GEMINI_CHAT_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_CHAT_MAX_OUTPUT_TOKENS", "2048"))
+GEMINI_CHAT_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_CHAT_MAX_OUTPUT_TOKENS", "4096"))
 GEMINI_ANALYSE_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_ANALYSE_MAX_OUTPUT_TOKENS", "2048"))
 GEMINI_JSON_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_JSON_MAX_OUTPUT_TOKENS", "16384"))
 GEMINI_AUX_MAX_OUTPUT_TOKENS = int(os.environ.get("AUTO_KI_GEMINI_AUX_MAX_OUTPUT_TOKENS", "4096"))
 GEMINI_MAX_INPUT_CHARS = int(os.environ.get("AUTO_KI_GEMINI_MAX_INPUT_CHARS", "120000"))
+
+# Zeichenbudget, das im Chat-Prompt IMMER fuer den Gespraechsverlauf reserviert
+# bleibt. Vorher teilte sich der Verlauf das Gesamtbudget als REST hinter dem
+# System-Prompt — und der System-Prompt enthaelt den DB-/Web-Kontext. Erkannte
+# die Fahrzeugerkennung viele Baureihen, wuchs der Kontext ueber das Gesamtbudget
+# hinaus, der Rest wurde 0 und der komplette Verlauf fiel lautlos aus dem Prompt
+# ("Im aktuellen Chatverlauf liegen bisher keine frueheren Fragen vor", obwohl
+# dieselbe Historie die Websuche gesteuert hatte). Der Verlauf ist das Gedaechtnis
+# des Produkts — er wird jetzt ZUERST reserviert, der Kontext bekommt den Rest.
+GEMINI_CHAT_HISTORY_RESERVE_CHARS = int(
+    os.environ.get("AUTO_KI_GEMINI_CHAT_HISTORY_RESERVE_CHARS", "16000")
+)
+
+# Obergrenze fuer die Zahl der Baureihen, deren DB-Profil in EINEN Chat-Prompt
+# wandert. Die Text-Erkennung matcht bei Mehrfahrzeug-Gespraechen grosszuegig
+# (eine Corolla-Nennung trifft mehrere Generationen) — ohne Deckel landeten so
+# >100k Zeichen Fahrzeugprofile im Prompt. Die Websuche ist unabhaengig davon
+# bereits auf MAX_PARALLELE_SUCHEN begrenzt.
+CHAT_MAX_KONTEXT_FAHRZEUGE = int(os.environ.get("AUTO_KI_CHAT_MAX_KONTEXT_FAHRZEUGE", "6"))
 
 # P2-5: Gratis-Kontingente (Chat, AutoFinder, Analyse-Rueckfragen) erst nach
 # bestaetigter E-Mail. Bezahlte Leistungen bleiben unberuehrt.

@@ -30,7 +30,8 @@ from app.config import (
     GEMINI_API_KEY, LLM_MODEL, DB_PATH, CHROMA_PATH, TAVILY_API_KEY,
     GEMINI_TIMEOUT_SECONDS, GEMINI_STREAM_TIMEOUT_SECONDS,
     GEMINI_CHAT_MAX_OUTPUT_TOKENS, GEMINI_ANALYSE_MAX_OUTPUT_TOKENS,
-    GEMINI_MAX_INPUT_CHARS,
+    GEMINI_MAX_INPUT_CHARS, GEMINI_CHAT_HISTORY_RESERVE_CHARS,
+    CHAT_MAX_KONTEXT_FAHRZEUGE,
 )
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
@@ -84,6 +85,17 @@ def _bestimme_kategorie(message: str) -> str:
 # die Tavily-Quote und die Antwortzeit bei pathologischen Nachrichten mit sehr vielen
 # genannten Fahrzeugen. Deutlich über dem im Phase-1-Test verwendeten Fall (5 Fahrzeuge).
 MAX_PARALLELE_SUCHEN = 8
+
+# Wie viele der juengsten Verlaufsnachrichten die Fahrzeugerkennung heranzieht,
+# wenn die aktuelle Nachricht selbst kein Fahrzeug nennt. Eine Folgefrage bezieht
+# sich auf das zuletzt Besprochene — der komplette Verlauf einer langen Sitzung
+# haette sonst jedes je erwaehnte Auto erneut in den Kontext gezogen.
+_VERLAUF_ERKENNUNG_NACHRICHTEN = 6
+
+# Notfall-Mindestgarantie für das Gesprächsgedächtnis, falls das Zeichenbudget
+# trotz Reservierung aufgebraucht ist (z.B. exotische Env-Konfiguration).
+_HISTORY_MINDEST_NACHRICHTEN = 2
+_HISTORY_MINDEST_ZEICHEN = 2_000
 
 import chromadb
 
@@ -296,6 +308,15 @@ _JARGON_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\s*\(?ungeprüft\)?", re.IGNORECASE), ""),
     (re.compile(r"\b(niedriges|mittleres|hohes)\s+vertrauen\b", re.IGNORECASE), ""),
     (re.compile(r"\bVertrauen(sstufe)?\s*[:=]\s*\w+", re.IGNORECASE), ""),
+    # Pseudo-Belege: "(Quelle: Allgemeines Kfz-Wissen)" sieht aus wie eine geprüfte
+    # Quelle, ist aber keine. Der System-Prompt verbietet sie — Modelle halten sich
+    # daran nicht zu 100%, deshalb zusätzlich auf Code-Ebene entfernen.
+    (re.compile(
+        r"\s*[\(\[]\s*Quellen?\s*[:\-]?\s*"
+        r"(allgemeines?\s+)?(kfz|fahrzeug|auto)?[\s\-]*"
+        r"(wissen|allgemeinwissen|fachwissen|erfahrungswerte?|erfahrung|modellwissen)"
+        r"\s*[\)\]]",
+        re.IGNORECASE), ""),
 ]
 
 
@@ -531,6 +552,12 @@ def _marke_treffer(marke: str, text: str) -> bool:
 _GENERISCHE_MOTORFAMILIEN = frozenset({
     "tdi", "tsi", "tfsi", "fsi", "cdi", "hdi", "dci", "crdi", "vtec",
     "mpi", "tce", "cdti", "dtec", "bluehdi", "bluetdi", "cgi", "tdci",
+    # Antriebs- und Motorfamilien, die eine Marke quer ueber viele Baureihen
+    # verbaut. "1.8 Hybrid" ist genauso wenig eine eindeutige Kennung wie
+    # "2.0 TDI": ohne diese Eintraege zog eine Corolla-Nennung zusaetzlich
+    # Prius und C-HR in den Kontext, weil alle drei diese Bezeichnung fuehren.
+    "hybrid", "mhev", "phev", "ecoboost", "skyactiv", "ecotec", "ecoblue",
+    "multijet", "puretech", "bluetec", "jtd", "thp", "gdi", "vvt", "vvti",
 })
 
 
@@ -647,7 +674,11 @@ def _suche_baureihen_in_text(text: str) -> list[str]:
         chosen = gen_matches if gen_matches else rows
         ids.update(r["id"] for r in chosen)
 
-    return list(ids)
+    # Sortiert statt Set-Reihenfolge: die Treffermenge steuert weiter unten, welche
+    # Fahrzeuge in Kontext und Websuche kommen (beides gedeckelt). Eine von der
+    # Hash-Reihenfolge abhaengige Auswahl waere zwischen zwei identischen Anfragen
+    # nicht reproduzierbar und in Tests nicht pruefbar.
+    return sorted(ids)
 
 
 # Trennt eine Nachricht in einzelne Fahrzeug-Segmente auf: Zeilenumbrüche IMMER, sonst
@@ -659,6 +690,25 @@ _SATZTRENNER = re.compile(r"[\r\n]+|(?<=[.?!])\s+")
 def _erkenne_segmente(text: str) -> list[str]:
     teile = [t.strip() for t in _SATZTRENNER.split(text) if t.strip()]
     return teile if teile else ([text.strip()] if text.strip() else [])
+
+
+def _reihum(nennungen: list[tuple[str, list[str]]]) -> list[tuple[str, str]]:
+    """Ordnet Baureihen-Treffer reihum ueber die Nennungen statt nennungsweise.
+
+    Der nachgelagerte Deckel (CHAT_MAX_KONTEXT_FAHRZEUGE, MAX_PARALLELE_SUCHEN)
+    schneidet am Ende ab. Bei nennungsweiser Reihenfolge verbrauchte EINE unscharfe
+    Nennung ("Toyota Corolla 1.8 Hybrid" trifft mehrere Generationen) das komplette
+    Budget, und ein spaeter im selben Text genanntes, eindeutig getroffenes Fahrzeug
+    ("Ford Focus Mk4") fiel ganz heraus. Reihum bekommt jede Nennung zuerst ihren
+    besten Treffer, bevor irgendeine einen zweiten bekommt.
+    """
+    treffer: dict[str, str] = {}
+    tiefe = max((len(ids) for _, ids in nennungen), default=0)
+    for i in range(tiefe):
+        for segment, ids in nennungen:
+            if i < len(ids):
+                treffer.setdefault(ids[i], segment)
+    return list(treffer.items())
 
 
 def _erkenne_fahrzeuge(message: str, verlauf: list[dict]) -> list[tuple[str, str]]:
@@ -680,12 +730,13 @@ def _erkenne_fahrzeuge(message: str, verlauf: list[dict]) -> list[tuple[str, str
     (Auto-Keyword vorhanden) — verhindert falsche DB-Badges bei Smalltalk wie
     'bro wie gehts?' nach einem vorherigen Kfz-Gespräch.
     """
-    treffer: dict[str, str] = {}
+    nennungen: list[tuple[str, list[str]]] = []
     for segment in _erkenne_segmente(message):
-        for bid in _suche_baureihen_in_text(segment.lower()):
-            treffer.setdefault(bid, segment)
-    if treffer:
-        return list(treffer.items())
+        ids = _suche_baureihen_in_text(segment.lower())
+        if ids:
+            nennungen.append((segment, ids))
+    if nennungen:
+        return _reihum(nennungen)
 
     # Verlauf nur hinzuziehen wenn die aktuelle Nachricht Kfz-Kontext zeigt
     # (echte Folgefrage wie "Motoren?"/"Und wie groß ist der Tank?", nicht Smalltalk
@@ -699,15 +750,54 @@ def _erkenne_fahrzeuge(message: str, verlauf: list[dict]) -> list[tuple[str, str
     ):
         return []
 
-    verlauf_text = " ".join(m.get("text", "") for m in verlauf)
-    for bid in _suche_baureihen_in_text(verlauf_text.lower()):
-        treffer.setdefault(bid, message)
-    return list(treffer.items())
+    # Derselbe Segment-Fix wie oben fuer die aktuelle Nachricht — er fehlte hier.
+    # Der Verlauf wurde zu EINEM Textblob zusammengeklebt und als Ganzes gegen die
+    # DB geprueft: ein Gespraech ueber "Toyota Corolla" und "Ford Focus Mk4" matchte
+    # dadurch zusaetzlich Supra, Hilux, Mustang und Kuga, weil Marken-Token aus der
+    # einen Zeile mit Zifferntoken aus einer anderen kombiniert wurden. Jede
+    # Verlaufsnachricht wird deshalb einzeln und segmentweise geprueft.
+    for msg in reversed(verlauf[-_VERLAUF_ERKENNUNG_NACHRICHTEN:]):
+        for segment in _erkenne_segmente(msg.get("text", "")):
+            ids = _suche_baureihen_in_text(segment.lower())
+            if ids:
+                nennungen.append((message, ids))
+    return _reihum(nennungen)
 
 
 def _detect_baureihe_ids(message: str, verlauf: list[dict]) -> list[str]:
     """Kompatibilitäts-Wrapper um _erkenne_fahrzeuge() — nur die IDs, ohne Segment-Text."""
     return [bid for bid, _ in _erkenne_fahrzeuge(message, verlauf)]
+
+
+# ---------- Prompt-Budget ----------
+
+# Trennzeichen, an denen _kuerze_kontext schneiden darf, von grob nach fein.
+_KONTEXT_TRENNER = ("\n\n---\n\n", "\n\n", "\n")
+
+
+def _kuerze_kontext(kontext: str, budget: int) -> str:
+    """Kuerzt den DB-/Web-Kontext auf ``budget`` Zeichen — an Blockgrenzen.
+
+    Der Verlauf bekommt sein Budget ZUERST (GEMINI_CHAT_HISTORY_RESERVE_CHARS);
+    der Kontext ist das, was gekuerzt werden darf. Vorher war es umgekehrt: der
+    Kontext durfte beliebig wachsen und der Verlauf fiel als Restgroesse lautlos
+    auf 0 — das Modell verlor mitten im Gespraech sein Gedaechtnis, waehrend
+    dieselbe Historie die Websuche noch gesteuert hatte (Quellenchips waren da,
+    die Erinnerung nicht).
+
+    Geschnitten wird an der groebsten Grenze, die noch passt, damit kein halbes
+    Fahrzeugprofil und kein angeschnittener Satz im Prompt landet.
+    """
+    if budget <= 0:
+        return ""
+    if len(kontext) <= budget:
+        return kontext
+    for trenner in _KONTEXT_TRENNER:
+        kopf = kontext[:budget]
+        schnitt = kopf.rfind(trenner)
+        if schnitt > budget // 3:
+            return kopf[:schnitt].rstrip()
+    return kontext[:budget].rstrip()
 
 
 # ---------- System-Prompt ----------
@@ -734,6 +824,25 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 - Kurze Folgefragen ("Motoren?", "Und der Verbrauch?", "Was kostet das?") beziehen sich IMMER auf das zuletzt besprochene Fahrzeug — nie auf ein unbekanntes neues Modell.
 - Wenn der Kontext kein Profil enthält, aber der Verlauf ein Fahrzeug nennt, beantworte die Frage trotzdem auf Basis des Verlaufs + allg. Kfz-Wissens.
 - Stelle eine kurze Rückfrage NUR wenn du wirklich nicht weißt, worauf sich die Frage bezieht.
+
+— QUELLENANGABEN IM TEXT (hart) —
+- Schreibe NIEMALS eine Quellenangabe in den Fließtext, die keine echte, nachprüfbare Quelle ist. Verboten sind insbesondere Formulierungen wie "(Quelle: Allgemeines Kfz-Wissen)", "(Quelle: Erfahrungswerte)", "(Quelle: Allgemeinwissen)" oder Ähnliches. Sie sehen aus wie ein geprüfter Beleg, sind aber keiner.
+- Woher eine Aussage kommt, drückst du sprachlich aus, nicht als Klammer-Beleg: geprüfte Modelldaten nennst du direkt, Web-Erkenntnisse mit höchstens einem unaufdringlichen Hinweis ("Aktuelle Marktangebote zeigen…"), allgemeines Fachwissen als das, was es ist ("als Faustregel gilt…", "erfahrungsgemäß…"). Die echten Quellen werden dem Nutzer automatisch unterhalb der Antwort angezeigt.
+
+— ZUVERLÄSSIGKEIT UND SCHWACHSTELLEN (differenziert statt absolut) —
+- Vermeide absolute Zuverlässigkeits-Urteile ("eines der zuverlässigsten Autos überhaupt", "praktisch unkaputtbar", "hält ewig"). Formuliere abgestuft und mit Bezug: "gilt in seiner Klasse als überdurchschnittlich zuverlässig — worauf du trotzdem achten solltest: …".
+- Zuverlässigkeit ist IMMER variantenabhängig. Beziehe, soweit bekannt, Generation, Motorvariante, Baujahrsspanne und gegebenenfalls Getriebe ein, statt über eine ganze Baureihe zu pauschalieren.
+- Fragt der Nutzer ausdrücklich nach Zuverlässigkeit, Schwachstellen oder Kaufrisiken, darfst du einen dir bekannten motor- oder baujahrsspezifischen Risikopunkt NICHT weglassen, nur weil er die Empfehlung relativiert. Gilt der Punkt nur für bestimmte Varianten oder Baujahre, sage genau das dazu.
+- Überlade die Antwort trotzdem NICHT mit Warnlisten: nenne die wenigen Punkte, die für Kaufentscheidung und Folgekosten wirklich relevant sind — nicht jeden theoretisch denkbaren Defekt.
+- Steht im Kontext nichts zu einem Risiko, erfinde keins. Kennst du einen Punkt nur als allgemein bekanntes Fachwissen, benenne ihn als solchen ("gilt je nach Motorvariante als bekannter Prüfpunkt") und empfiehl die konkrete Prüfung.
+
+— ANTRIEBSART: NUR LIEFERN, WAS GEFRAGT IST (transparent abweichen) —
+- Nennt der Nutzer eine Antriebsart oder Getriebeart (Benziner, Diesel, Hybrid, Elektro, Automatik, Schaltgetriebe), halte dich zuerst daran.
+- Ein abweichender Vorschlag ist erlaubt, wenn er sachlich besser passt — aber NUR ausdrücklich gekennzeichnet, nicht stillschweigend als Erfüllung des Wunsches. Zum Beispiel: "Falls für dich auch ein Benzin-Hybrid infrage kommt: …". Ein Vollhybrid ist kein reiner Benziner und darf nicht als solcher durchgehen.
+- Dasselbe gilt für Budget und Karosserieform: abweichen ja, verschweigen nein.
+
+— FACHBEGRIFFE PRÄZISE WÄHLEN —
+- Nutze die technisch korrekte Bezeichnung statt der naheliegenden Alltagsbezeichnung, wenn beides auseinanderfällt. Beispiel Vollhybrid: die 12-V-Batterie versorgt dort das Bordnetz und dreht den Verbrenner NICHT über einen klassischen Anlasser — korrekt ist 12-V-Bordnetz- beziehungsweise Hilfsbatterie, nicht "Starterbatterie". Analog überall dort, wo die Bauart die übliche Bezeichnung unzutreffend macht.
 
 — ANPASSUNG AN DEN NUTZER (so flexibel wie nötig) —
 - Erkenne am Schreibstil des Nutzers, wie du antwortest: Schreibt er locker und einfach, antworte locker und einfach. Nutzt er Fachbegriffe und fragt technisch, antworte präzise und fachlich.
@@ -803,6 +912,33 @@ Antwort verwenden (klar als Web-Quelle gekennzeichnet) — auch wenn er nur unge
 """
 
 
+# ---------- Abbruchgrund des Modells ----------
+
+# Sichtbarer Abschluss, wenn das Modell am Output-Limit stoppt. Eine Antwort darf
+# nie stumm mitten im Satz enden — der Nutzer muss erkennen, dass etwas fehlt,
+# und wissen, wie er weiterkommt.
+_ABGESCHNITTEN_HINWEIS = (
+    "\n\n---\n\n*Diese Antwort wurde gekürzt, weil sie die maximale Länge erreicht hat. "
+    "Frag gezielt nach dem, was dir noch fehlt — z. B. nach einem einzelnen Fahrzeug —, "
+    "dann bekommst du den Rest vollständig.*"
+)
+
+
+def _finish_reason(chunk) -> object | None:
+    """Liest den Abbruchgrund aus einem Stream-Chunk, tolerant gegenüber SDK-Formen."""
+    kandidaten = getattr(chunk, "candidates", None)
+    if not kandidaten:
+        return None
+    return getattr(kandidaten[0], "finish_reason", None)
+
+
+def _ist_abgeschnitten(finish_reason) -> bool:
+    """True, wenn das Modell wegen des Output-Limits gestoppt hat (nicht regulär)."""
+    if finish_reason is None:
+        return False
+    return str(getattr(finish_reason, "name", finish_reason)).upper().endswith("MAX_TOKENS")
+
+
 # ---------- Haupt-Funktion: Chat (Streaming) ----------
 
 async def chat_stream(
@@ -838,6 +974,15 @@ async def chat_stream(
     if not fahrzeuge and fahrzeug_kontext:
         for bid in _suche_baureihen_in_text(fahrzeug_kontext.lower()):
             fahrzeuge.append((bid, fahrzeug_kontext))
+    # Deckel gegen Kontext-Explosion: die Text-Erkennung matcht grosszuegig (eine
+    # Corolla-Nennung trifft mehrere Generationen, dazu Prius/C-HR). Ohne Deckel
+    # landeten in einer Mehrfahrzeug-Frage >100k Zeichen Fahrzeugprofile im
+    # System-Prompt. Die Reihenfolge ist die Erwaehnungsreihenfolge — der Deckel
+    # behaelt also das zuerst Genannte.
+    if len(fahrzeuge) > CHAT_MAX_KONTEXT_FAHRZEUGE:
+        print(f"[TIMING] detect_baureihe: {len(fahrzeuge)} Treffer -> auf "
+              f"{CHAT_MAX_KONTEXT_FAHRZEUGE} begrenzt", flush=True)
+        fahrzeuge = fahrzeuge[:CHAT_MAX_KONTEXT_FAHRZEUGE]
     baureihe_ids = [bid for bid, _ in fahrzeuge]
     print(f"[TIMING] detect_baureihe: {_ms(t_detect)} -> ids={baureihe_ids} (ctx={bool(fahrzeug_kontext)})", flush=True)
 
@@ -995,27 +1140,58 @@ async def chat_stream(
 
     print(f"[TIMING] kontext fertig: {_ms(t0)} (quelle={quelle}, hat_db={hat_db}, hat_web={hat_web})", flush=True)
 
+    # Prompt-Budget: Verlauf zuerst reservieren, Kontext bekommt den Rest.
+    web_hinweis = _WEB_HINWEIS if hat_web else ""
+    rahmen_len = len(SYSTEM_PROMPT.format(kontext="", web_hinweis=web_hinweis))
+    kontext_budget = (
+        GEMINI_MAX_INPUT_CHARS
+        - GEMINI_CHAT_HISTORY_RESERVE_CHARS
+        - rahmen_len
+        - len(message)
+    )
+    if len(kontext) > kontext_budget:
+        print(f"[TIMING] kontext gekuerzt: {len(kontext)} -> {max(0, kontext_budget)} chars "
+              f"(Verlaufsbudget {GEMINI_CHAT_HISTORY_RESERVE_CHARS} bleibt reserviert)", flush=True)
+        kontext = _kuerze_kontext(kontext, kontext_budget)
+
     system = SYSTEM_PROMPT.format(
         kontext=kontext,
-        web_hinweis=_WEB_HINWEIS if hat_web else "",
+        web_hinweis=web_hinweis,
     )
 
     # ── 4. Gemini-Aufruf (Streaming) ────────────────────────────────────────
     history = []
     # Neueste Historie behalten, aber das serverseitig erzeugte Tokenvolumen
     # unabhängig von der Zahl maximal langer Einzelnachrichten hart deckeln.
+    # Der Kontext wurde oben bereits so gekürzt, dass hier mindestens
+    # GEMINI_CHAT_HISTORY_RESERVE_CHARS übrig bleiben.
     rest = max(0, GEMINI_MAX_INPUT_CHARS - len(system) - len(message))
     ausgewaehlt = []
-    for msg in reversed(verlauf):
+    for i, msg in enumerate(reversed(verlauf)):
         text = msg.get("text", "")
+        if not text:
+            continue
+        # Mindestgarantie: der jüngste Gesprächsschritt (letzte Frage + letzte
+        # Antwort) kommt IMMER mit, auch wenn die Budgetrechnung durch eine
+        # abweichende Env-Konfiguration entgleist. Ohne diese Garantie ist eine
+        # Folgefrage im selben Chat wertlos — das war der eigentliche Defekt.
         if rest <= 0:
-            break
-        text = text[-rest:]
+            if i >= _HISTORY_MINDEST_NACHRICHTEN:
+                break
+            rest = _HISTORY_MINDEST_ZEICHEN
+        if len(text) > rest:
+            # Angeschnittene Nachricht als solche kennzeichnen, damit das Modell
+            # den Anfang nicht als vollständigen Gesprächsbeitrag liest. Die
+            # Markierung zählt zum Budget, sonst wächst der Prompt bei jeder
+            # gekürzten Nachricht ein Stück über die Grenze hinaus.
+            marke = "[…] "
+            text = marke + text[-max(0, rest - len(marke)):]
         ausgewaehlt.append((msg, text))
         rest -= len(text)
     for msg, text in reversed(ausgewaehlt):
         role = "user" if msg.get("rolle") == "user" else "model"
         history.append({"role": role, "parts": [{"text": text}]})
+    print(f"[TIMING] verlauf: {len(verlauf)} Nachrichten -> {len(history)} im Prompt", flush=True)
 
     client = _get_client()
     contents = history + [{"role": "user", "parts": [{"text": message}]}]
@@ -1060,9 +1236,17 @@ async def chat_stream(
     # und dadurch am Filter vorbeigeschmuggelt wird. FLUSH_TAIL > längster Begriff.
     _FLUSH_TAIL = 24
     scrub_buf = ""
+    finish_reason = None
     try:
         async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
             async for chunk in response:
+                # Abbruchgrund mitlesen: Gemini liefert ihn am letzten Chunk. Wurde
+                # er — wie bisher — ignoriert, endete eine am Output-Limit
+                # abgeschnittene Antwort LAUTLOS mitten im Satz und sah für den
+                # Nutzer aus wie eine vollständige Antwort.
+                fr = _finish_reason(chunk)
+                if fr is not None:
+                    finish_reason = fr
                 if chunk.text:
                     if first_token:
                         print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
@@ -1084,7 +1268,17 @@ async def chat_stream(
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
 
-    print(f"[TIMING] GESAMT: {_ms(t0)} ({token_count} chunks, quelle={quelle})", flush=True)
+    abgeschnitten = _ist_abgeschnitten(finish_reason)
+    if abgeschnitten:
+        # Kein stilles Ende mitten im Satz: der Nutzer sieht, dass hier etwas
+        # fehlt, und bekommt einen konkreten nächsten Schritt. Bewusst KEIN
+        # automatischer Fortsetzungs-Request — das wäre ein zweiter, für den
+        # Nutzer unsichtbarer Modellaufruf pro Antwort.
+        log.info("Chat: Antwort am Output-Limit abgeschnitten (finish_reason=%s)", finish_reason)
+        yield {"type": "text", "delta": _ABGESCHNITTEN_HINWEIS}
+
+    print(f"[TIMING] GESAMT: {_ms(t0)} ({token_count} chunks, quelle={quelle}, "
+          f"finish_reason={finish_reason})", flush=True)
 
     yield {
         "type": "meta",
@@ -1092,6 +1286,7 @@ async def chat_stream(
         "fahrzeug_referenz": baureihe_ids,
         "vertrauen":         vertrauen,
         "belege":            belege,
+        "abgeschnitten":     abgeschnitten,
     }
 
 
