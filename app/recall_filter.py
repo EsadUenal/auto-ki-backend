@@ -445,9 +445,9 @@ _HINWEIS_FIN = "Betroffenheit anhand der FIN beim Hersteller/KBA prüfen."
 
 RUECKRUF_APPLICABILITY_TEXT: dict[str, str] = {
     "confirmed_by_vin": "Für dieses Fahrzeug per FIN bestätigt",
-    "variant_match": "Kann Fahrzeuge dieser Variante betreffen — per FIN prüfen",
-    "series_only": "Für Teile der Baureihe gemeldet — per FIN prüfen",
-    "unclear": "Betroffenheit unklar — per FIN prüfen",
+    "variant_match": "Kann Fahrzeuge dieser Variante betreffen: per FIN prüfen",
+    "series_only": "Für Teile der Baureihe gemeldet: per FIN prüfen",
+    "unclear": "Betroffenheit unklar: per FIN prüfen",
 }
 
 
@@ -490,7 +490,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
         if fahrzeug_kraftstoff is None:
             # Motor nicht erkannt -> Varianten-Betroffenheit NICHT bestimmbar.
             return ("unclear", "niedrig",
-                    f"Betroffenheit unklar — der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
+                    f"Betroffenheit unklar: der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
                     "Für die Baureihe hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
         matcht = (
             fahrzeug_kraftstoff == scope
@@ -502,9 +502,9 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
             # "betrifft".
             if passt is True and kba_ok:
                 return ("variant_match", "hoch",
-                        f"Sicherheitsrelevant — Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
+                        f"Sicherheitsrelevant. Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
             return ("series_only", "mittel",
-                    f"Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
+                    f"Sicherheitsrelevant. Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
         # Klarer Antriebs-Widerspruch (§8): z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist
         # nachweislich Diesel. Die Motorisierung ist ERKANNT und passt eindeutig NICHT
         # -> "incompatible". Solche Rückrufe werden VOLLSTÄNDIG aus den sichtbaren
@@ -514,7 +514,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
                        "diesel": "Diesel-Varianten", "benzin": "Benzin-Varianten",
                        "mild": "Mild-Hybrid-Varianten"}.get(scope, "bestimmte Varianten")
         return ("incompatible", "hoch",
-                f"Betrifft laut Datenlage {scope_label} — die erkannte Motorisierung gehört nicht dazu.",
+                f"Betrifft laut Datenlage {scope_label}: die erkannte Motorisierung gehört nicht dazu.",
                 f"Dieser Rückruf betrifft {scope_label}; die erkannte Motorisierung passt eindeutig nicht dazu.")
 
     # Kein Antriebs-Scope erkennbar -> allgemeiner BAUREIHEN-Rückruf (z.B. Bremse,
@@ -542,12 +542,12 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     if passt is True:
         if kba_ok:
             return ("series_only", "hoch",
-                    f"Sicherheitsrelevant — betrifft die Baureihe im gemeldeten "
+                    f"Sicherheitsrelevant: betrifft die Baureihe im gemeldeten "
                     f"Zeitraum; Durchführung per FIN prüfen. {_HINWEIS_FIN}", "")
         return ("series_only", "mittel",
-                f"Sicherheitsrelevant — Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
+                f"Sicherheitsrelevant. Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
     return ("series_only", "mittel",
-            f"Sicherheitsrelevant — Baujahr-Zuordnung nicht eindeutig. {_HINWEIS_FIN}", "")
+            f"Sicherheitsrelevant. Baujahr-Zuordnung nicht eindeutig. {_HINWEIS_FIN}", "")
 
 
 def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
@@ -567,11 +567,11 @@ def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
         r, passt, kba, motor_match, marke=marke)
     beschr = (r.get("mangel") or "").strip()
     if r.get("abhilfe"):
-        beschr = f"{beschr} — Abhilfe: {r['abhilfe'].strip()}"
+        beschr = f"{beschr}{'' if beschr.endswith(('.', '!', '?')) else '.'} Abhilfe: {r['abhilfe'].strip()}"
     if r.get("datum"):
         beschr = f"{beschr} (Rückruf {r['datum']})"
     wortlaut = RUECKRUF_APPLICABILITY_TEXT.get(applicability, applicability)
-    text = f"{beschr} [{wortlaut}]" + (f" — {variant_hinweis}" if variant_hinweis else "")
+    text = f"{beschr} [{wortlaut}]" + (f". {variant_hinweis}" if variant_hinweis else "")
     return {
         **r,
         "passt_baujahr": passt,

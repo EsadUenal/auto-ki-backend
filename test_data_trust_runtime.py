@@ -253,13 +253,13 @@ rr_v = [i for i in ins_v if i.kategorie == "rueckruf"][0]
 check("G1 unverifiziert: Quelle nennt sich NICHT KBA-Rueckrufdatenbank",
       "KBA-Rückrufdatenbank" not in (rr_u.quellen[0].titel or ""))
 check("G2 unverifiziert: Titel sagt 'Rueckrufhinweis', nicht 'KBA-Rueckruf'",
-      rr_u.titel.startswith("Rückrufhinweis"))
+      "(Rückrufhinweis" in rr_u.titel)
 check("G3 unverifiziert: keine scheinbar amtliche Nummer im Evidence-ref",
       rr_u.quellen[0].ref is None)
 check("G4 unverifiziert: die Nummer taucht auch in keiner Kaufaktion auf",
       not any("009696" in (a.aktion or "") for a in spez_u))
 check("G5 verifiziert: KBA-Bezeichnung und Nummer kommen zurueck",
-      rr_v.titel.startswith("KBA-Rückruf") and rr_v.quellen[0].ref == "009696")
+      "(KBA-Rückruf" in rr_v.titel and rr_v.quellen[0].ref == "009696")
 check("G6 der Rueckrufinhalt bleibt in beiden Faellen vollstaendig erhalten",
       "Bremskraftunterst" in rr_u.beschreibung and "Bremskraftunterst" in rr_v.beschreibung)
 check("G7 unverifiziert: die FIN-Pruefung wird weiterhin empfohlen",

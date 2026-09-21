@@ -83,7 +83,7 @@ def nachricht_unzureichend(identity: "VehicleIdentity | None", grund: str) -> st
             fehlende_hinweise.append("Kilometerstand")
 
     basis = (
-        "ENFAL konnte für dieses Fahrzeug aktuell keine belastbare Marktdatenbasis finden — "
+        "ENFAL konnte für dieses Fahrzeug aktuell keine belastbare Marktdatenbasis finden: "
         "es liegen zu wenige wirklich vergleichbare Angebote vor, um einen zuverlässigen "
         "Marktwert und eine belastbare Preisbewertung zu erstellen. Dieser Check wurde "
         "deshalb NICHT abgeschlossen und NICHT von deinem Kontingent abgezogen. Du kannst "

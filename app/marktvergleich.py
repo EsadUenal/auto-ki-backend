@@ -2115,7 +2115,7 @@ def prompt_block(ma: Marktanalyse | None) -> str:
     if not ma or not ma.median_eur:
         return ""
     lines = [
-        "=== DETERMINISTISCHER MARKTVERGLEICH (Backend-berechnet — VERBINDLICH) ===",
+        "=== DETERMINISTISCHER MARKTVERGLEICH (Backend-berechnet, VERBINDLICH) ===",
         f"Robust aus {ma.verwendet} vergleichbaren Web-Preisangaben berechnet "
         f"({ma.anzahl_sehr_aehnlich} sehr ähnlich, {ma.anzahl_aehnlich} ähnlich):",
         f"- Median-Marktwert: {ma.median_eur} €",
@@ -2431,7 +2431,7 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     if len(verwendet) < 3:
         return _unzuverlaessig(
             "Zu wenige vergleichbare Preisangaben aus der Websuche für eine belastbare "
-            "Median-/Quartils-Berechnung — Marktanalyse auf begrenzter Datenbasis."
+            "Median-/Quartils-Berechnung. Marktanalyse auf begrenzter Datenbasis."
         )
 
     preise = [b.preis_eur for b in verwendet]
@@ -2445,7 +2445,7 @@ def analysiere_markt(web_results: list[dict], ziel: dict, angebot_eur: int | Non
     if median and (hi - lo) / median > _MAX_REL_SPANNE:
         return _unzuverlaessig(
             f"Die gefundenen Vergleichspreise streuen zu stark "
-            f"({lo:,}–{hi:,} €) für einen belastbaren Marktwert — die Web-Datenbasis "
+            f"({lo:,}–{hi:,} €) für einen belastbaren Marktwert, die Web-Datenbasis "
             f"ist uneinheitlich (z.B. gemischte Angebots-/Finanzierungspreise). "
             f"Nur grobe Orientierung möglich.".replace(",", ".")
         )

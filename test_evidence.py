@@ -41,8 +41,10 @@ BAUREIHE = {
                      for f in ("schwachstellen", "motorprobleme", "rueckrufe", "wartung")},
     "quellen": [{"quelle": "BMW-Servicedoku", "url": "https://example.com/bmw", "abrufdatum": "2026-01-01"}],
     "schwachstellen_baureihe": [
+        # KAUFCHECK-RC1: "hoch" braucht eine STARKE Einzelverifikation
+        # (Primärquelle) — Baujahr-Deckung allein reicht nicht mehr.
         {"bauteil": "AGR-Kühler", "beschreibung": "AGR-System kann verrußen.",
-         "betroffene_baujahre": "2019-2021", "schweregrad": "hoch"},
+         "betroffene_baujahre": "2019-2021", "schweregrad": "hoch", "_trust": "verified", "_verifikation": {"status": "verified", "quelle_stufe": "A", "quelle": "Hersteller-Serviceinformation"}},
         {"bauteil": "Steuerkette (früh)", "beschreibung": "Nur frühe Baujahre betroffen.",
          "betroffene_baujahre": "2012-2015", "schweregrad": "hoch"},
     ],
@@ -109,9 +111,9 @@ BAUREIHE_SEV = {
                                         "date": "2026-08-24"}},
     "schwachstellen_baureihe": [
         {"bauteil": "A", "beschreibung": "gleiche Baujahre, hoher Schweregrad",
-         "betroffene_baujahre": "2019-2021", "schweregrad": "hoch"},
+         "betroffene_baujahre": "2019-2021", "schweregrad": "hoch", "_trust": "verified", "_verifikation": {"status": "verified", "quelle_stufe": "A", "quelle": "Hersteller-Serviceinformation"}},
         {"bauteil": "B", "beschreibung": "gleiche Baujahre, geringer Schweregrad",
-         "betroffene_baujahre": "2019-2021", "schweregrad": "gering"},
+         "betroffene_baujahre": "2019-2021", "schweregrad": "gering", "_trust": "verified", "_verifikation": {"status": "verified", "quelle_stufe": "A", "quelle": "Hersteller-Serviceinformation"}},
     ],
     "rueckrufe": [],
 }
@@ -125,12 +127,43 @@ check("2b: confidence bleibt provenance-basiert (hoch), nicht vom schweregrad ab
 # 2d) KAUFCHECK-RC1: ein UNVERIFIZIERTER DB-Fakt trägt nie "Datenqualität hoch" —
 # auch nicht bei passendem Baujahr. Früher hing "hoch" allein an der Baujahr-
 # Deckung und machte einen nie geprüften Eintrag zur scheinbar belastbaren Angabe.
-_sev_unv = [i for i in build_insights({**BAUREIHE_SEV, "verification": {}}, None, [], req(2020))
-            if i.kategorie == "schwachstelle"]
+_sev_unv = [i for i in build_insights(
+    {**BAUREIHE_SEV, "verification": {},
+     "schwachstellen_baureihe": [{k: v for k, v in s.items() if not k.startswith("_")}
+                                 for s in BAUREIHE_SEV["schwachstellen_baureihe"]]},
+    None, [], req(2020)) if i.kategorie == "schwachstelle"]
 check("2d: unverifizierter Fakt -> Datenqualität 'niedrig', unabhängig vom Schweregrad",
       len(_sev_unv) == 2 and {i.confidence for i in _sev_unv} == {"niedrig"})
 check("2d: unverifizierter Fakt heißt 'gemeldeter Hinweis', nicht 'bekannte Schwachstelle'",
       all(i.titel.endswith("gemeldeter Hinweis") for i in _sev_unv))
+
+# ── 2e) KAUFCHECK-RC1 Closing: Datenqualität = Belegstärke ────────────────
+from app.evidence import datenqualitaet  # noqa: E402
+
+_B_EINZEL = {"_verifikation": {"status": "verified", "quelle_stufe": "B",
+                               "quelle": "AUTO BILD TUEV-Check; gebrauchtwagenberater.de"}}
+check("2e-A: verifizierte Einzelaussage ('vereinzelt') ist NICHT hoch",
+      datenqualitaet(_B_EINZEL, "verified", True,
+                     "Bei frühen Modellen gab es vereinzelt Berichte über Software-Bugs.") == "mittel")
+check("2e-A: nur EINE Sekundärquelle ist NICHT hoch",
+      datenqualitaet({"_verifikation": {"quelle_stufe": "B", "quelle": "autozeitung.de"}},
+                     "verified", True, "Steuerkette längt sich.") == "mittel")
+check("2e-A: Community-/Forenquelle (Stufe C) ist nie hoch",
+      datenqualitaet({"_verifikation": {"quelle_stufe": "C", "quelle": "forum a; forum b; forum c"}},
+                     "verified", True, "Steuerkette längt sich.") == "mittel")
+check("2e-B: Primärquelle + Baujahr + konkrete Aussage bleibt hoch",
+      datenqualitaet({"_verifikation": {"quelle_stufe": "A", "quelle": "Hersteller-TSB"}},
+                     "verified", True, "Steuerkette längt sich.") == "hoch")
+check("2e-B: zwei unabhängige Sekundärquellen tragen hoch",
+      datenqualitaet({"_verifikation": {"quelle_stufe": "B", "quelle": "ADAC; auto motor und sport"}},
+                     "verified", True, "Steuerkette längt sich.") == "hoch")
+check("2e: Baujahrpassung allein reicht nicht (unverifiziert)",
+      datenqualitaet({}, "unverified_db", True, "Steuerkette längt sich.") == "niedrig")
+check("2e: bloße Baureihen-Verifikation ohne Quellenstufe reicht nicht für hoch",
+      datenqualitaet({}, "verified", True, "Steuerkette längt sich.") == "mittel")
+check("2e: starke Quelle ohne Baujahrdeckung ist nicht hoch",
+      datenqualitaet({"_verifikation": {"quelle_stufe": "A", "quelle": "Hersteller-TSB"}},
+                     "verified", None, "Steuerkette längt sich.") == "mittel")
 
 # ── 2c) Rückruf-Applicability (Phase 1B): Varianten-/Antriebs-Zuordnung ──────
 # severity / confidence / applicability sind DREI getrennte Konzepte.

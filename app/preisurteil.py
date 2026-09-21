@@ -83,25 +83,25 @@ def _recommendation(verdict: str, check_typ: str) -> str:
     """Deterministische Handlungsempfehlung je Verdikt und Check-Typ."""
     kauf = check_typ != "verkauf"
     if verdict == "deutlich_unter":
-        return ("Auffällig günstig — Fahrzeughistorie, Papiere und Zustand vor Zahlung besonders "
+        return ("Auffällig günstig. Fahrzeughistorie, Papiere und Zustand vor Zahlung besonders "
                 "sorgfältig prüfen." if kauf else
-                "Sehr niedrig angesetzt — deutlicher Spielraum nach oben.")
+                "Sehr niedrig angesetzt: deutlicher Spielraum nach oben.")
     if verdict == "unter":
-        return ("Günstiges Angebot — Zustand und Historie prüfen." if kauf else
-                "Unter dem Markt angesetzt — höherer Startpreis ist realistisch.")
+        return ("Günstiges Angebot. Zustand und Historie prüfen." if kauf else
+                "Unter dem Markt angesetzt: höherer Startpreis ist realistisch.")
     if verdict == "marktgerecht":
         return ("Preis liegt im markttypischen Bereich." if kauf else
-                "Realistisch angesetzt — nah am Markt.")
+                "Realistisch angesetzt: nah am Markt.")
     if verdict == "oberes_segment":
-        return ("Am oberen Ende des Marktes — Nachverhandlung empfohlen." if kauf else
-                "Ambitioniert am oberen Marktrand — nur mit belegbaren Vorteilen haltbar, sonst "
+        return ("Am oberen Ende des Marktes. Nachverhandlung empfohlen." if kauf else
+                "Ambitioniert am oberen Marktrand: nur mit belegbaren Vorteilen haltbar, sonst "
                 "verlängert es die Verkaufszeit.")
     if verdict == "ueber":
-        return ("Über dem Marktniveau — Preis nachverhandeln oder Alternativen prüfen." if kauf else
-                "Über dem Markt — für einen zügigen Verkauf senken.")
+        return ("Über dem Marktniveau. Preis nachverhandeln oder Alternativen prüfen." if kauf else
+                "Über dem Markt: für einen zügigen Verkauf senken.")
     if verdict == "deutlich_ueber":
-        return ("Deutlich über dem Markt — Nachverhandlung dringend empfohlen." if kauf else
-                "Deutlich über dem Markt — so kaum verkäuflich, klar senken.")
+        return ("Deutlich über dem Markt. Nachverhandlung dringend empfohlen." if kauf else
+                "Deutlich über dem Markt: so kaum verkäuflich, klar senken.")
     return ""
 
 
@@ -230,12 +230,12 @@ def verkaufs_prompt_block(strategie: dict | None) -> str:
         return ""
     s = strategie
     return "\n".join([
-        "=== DETERMINISTISCHE PREISSTRATEGIE (Backend-berechnet — VERBINDLICH) ===",
+        "=== DETERMINISTISCHE PREISSTRATEGIE (Backend-berechnet, VERBINDLICH) ===",
         "In der Preistabelle GENAU diese Werte und KEINE anderen Zahlen verwenden:",
-        f"- Schnellverkauf: {s['schnellverkaufs_preis']} € — Vermarktung: {s['verkaufsdauer_schnell']}",
-        f"- Empfohlener Preis: {s['empfohlener_preis']} € — Vermarktung: {s['verkaufsdauer_empfohlen']}",
-        f"- Maximalpreis: {s['maximal_preis']} € — Vermarktung: {s['verkaufsdauer_maximal']}",
-        "Verkaufszeiten NUR als diese Kategorien angeben — ERFINDE KEINE Tages-/Wochen-"
+        f"- Schnellverkauf: {s['schnellverkaufs_preis']} €, Vermarktung: {s['verkaufsdauer_schnell']}",
+        f"- Empfohlener Preis: {s['empfohlener_preis']} €, Vermarktung: {s['verkaufsdauer_empfohlen']}",
+        f"- Maximalpreis: {s['maximal_preis']} €, Vermarktung: {s['verkaufsdauer_maximal']}",
+        "Verkaufszeiten NUR als diese Kategorien angeben. ERFINDE KEINE Tages-/Wochen-"
         "Zahlen. Erzeuge KEINE eigenen Preise und keinen abweichenden Median.",
     ])
 
@@ -257,7 +257,7 @@ def verkaufs_no_market_prompt_block() -> str:
     Kontextfehler und wird "hilfsbereit" überschrieben.
     """
     return "\n".join([
-        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft — VERBINDLICH) ===",
+        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft, VERBINDLICH) ===",
         "Für dieses Fahrzeug liegen KEINE belastbaren aktuellen Marktpreisdaten vor.",
         "Der deterministische Marktvergleich hat kein verwertbares Ergebnis geliefert.",
         "",
@@ -271,7 +271,7 @@ def verkaufs_no_market_prompt_block() -> str:
         "- Setze marktpreis_min, marktpreis_max, schnellverkaufs_preis,",
         "  empfohlener_preis und maximal_preis ALLE auf null.",
         "- Nenne KEINE Verkaufsdauer und KEINE Euro-/Prozent-Abweichung zum Markt.",
-        "- Stufe eine ggf. genannte Preisvorstellung NICHT ein — weder als",
+        "- Stufe eine ggf. genannte Preisvorstellung NICHT ein: weder als",
         "  realistisch, zu hoch, zu niedrig, günstig, marktgerecht noch ambitioniert.",
         "  Auch keine indirekte Andeutung.",
         "- Im Abschnitt '## (a) Marktvergleich' schreibe NUR ein bis zwei sachliche",
@@ -283,7 +283,7 @@ def verkaufs_no_market_prompt_block() -> str:
         "",
         "Alles Übrige führst du davon unberührt VOLLSTÄNDIG durch: Fahrzeug erkannt,",
         "wertsteigernde Ausstattung, Zustands- und Mängeltransparenz, Inserats-",
-        "Optimierungstipps und die Verkaufsstrategie (Kanäle, Ablauf, Verhandlung) —",
+        "Optimierungstipps und die Verkaufsstrategie (Kanäle, Ablauf, Verhandlung): ",
         "nur eben ohne konkrete Preiszahlen.",
     ])
 
@@ -307,7 +307,7 @@ def no_market_prompt_block() -> str:
     Kontext und wird "hilfsbereit" überschrieben.
     """
     return "\n".join([
-        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft — VERBINDLICH) ===",
+        "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft, VERBINDLICH) ===",
         "Für dieses Fahrzeug liegen KEINE belastbaren aktuellen Marktpreisdaten vor.",
         "Der deterministische Marktvergleich hat kein verwertbares Ergebnis geliefert.",
         "",
@@ -320,7 +320,7 @@ def no_market_prompt_block() -> str:
         "- Nenne KEINEN Marktpreis, KEINEN Median und KEINE Marktspanne.",
         "- Setze marktpreis_min = null und marktpreis_max = null.",
         "- Setze preis_bewertung = \"unbekannt\".",
-        "- Stufe den Angebotspreis NICHT ein — weder als günstig, fair, marktgerecht,",
+        "- Stufe den Angebotspreis NICHT ein: weder als günstig, fair, marktgerecht,",
         "  angemessen, teuer noch überteuert. Auch keine indirekte Andeutung",
         "  (\"wirkt attraktiv\", \"erscheint hoch\", \"liegt im Rahmen\").",
         "- Leite KEINE Preisdifferenz, KEINE Prozentangabe zum Markt und KEINE",
@@ -336,7 +336,7 @@ def no_market_prompt_block() -> str:
         "Fahrzeugidentität, Schwachstellen, Motorprobleme, Rückrufe, Risiken,",
         "Besichtigungs-Checkliste und Kaufempfehlung. Die Kaufempfehlung stützt sich",
         "in diesem Fall AUSSCHLIESSLICH auf technische Kriterien und die Plausibilität",
-        "des Inserats — nicht auf den Preis. Die Stufe \"preis_nachverhandeln\" ist",
+        "des Inserats: nicht auf den Preis. Die Stufe \"preis_nachverhandeln\" ist",
         "hier NICHT zulässig, da sie eine Preisbewertung voraussetzt.",
     ])
 
@@ -347,7 +347,7 @@ def prompt_block(pa: PriceAssessment | None) -> str:
     if not pa or pa.verdict == "unbekannt" or not pa.median_eur:
         return ""
     lines = [
-        "=== KANONISCHES PREISURTEIL (Backend-berechnet — VERBINDLICH, NICHT NEU BEWERTEN) ===",
+        "=== KANONISCHES PREISURTEIL (Backend-berechnet, VERBINDLICH, NICHT NEU BEWERTEN) ===",
         f"- Median-Marktwert: {pa.median_eur} €",
     ]
     if pa.lower_bound_eur and pa.upper_bound_eur:

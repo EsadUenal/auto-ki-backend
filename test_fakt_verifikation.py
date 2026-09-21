@@ -31,7 +31,7 @@ def check(name, ok, info=""):
         FEHLER.append(name)
 
 
-from app.evidence import build_insights                              # noqa: E402
+from app.evidence import build_insights, titel_bauteil               # noqa: E402
 from app.empfehlungs_floor import ermittle_floor                     # noqa: E402
 from app.fakt_verifikation import (                                  # noqa: E402
     FAKT_ARTEN, QUELLENSTUFEN, STATUS_PARTIALLY, STATUS_REJECTED, STATUS_VERIFIED,
@@ -154,7 +154,7 @@ _req = Req(baujahr=2018)
 _br = baureihe([_fakt("schwachstelle_baureihe", SW_A, True),
                 _fakt("schwachstelle_baureihe", SW_B, False)], [])
 _ins = build_insights(_br, motor([], []), [], _req, check_typ="kauf")
-_sw_ins = {i.titel.split(" —")[0]: i for i in _ins if i.kategorie == "schwachstelle"}
+_sw_ins = {titel_bauteil(i.titel): i for i in _ins if i.kategorie == "schwachstelle"}
 check("C1 verifizierte Schwachstelle traegt trust=verified",
       _sw_ins["Steuerkette"].trust == "verified")
 check("C2 unverifizierte Schwachstelle DERSELBEN Baureihe bleibt unverified_db",
@@ -190,11 +190,11 @@ check("C7 unverifizierter Rueckruf derselben Baureihe bleibt unverified_db",
 # ist aber verifiziert -> "Rueckruf". Ungeprueft bleibt "Rueckrufhinweis".
 check("C8 verifizierter Rueckruf ohne KBA-Nummer heisst 'Rueckruf', "
       "nicht 'KBA-Rueckruf' und nicht 'Rueckrufhinweis'",
-      bool(_rr_v) and _rr_v[0].titel.startswith("Rückruf")
-      and not _rr_v[0].titel.startswith("KBA-Rückruf")
-      and not _rr_v[0].titel.startswith("Rückrufhinweis"))
+      bool(_rr_v) and "(Rückruf" in _rr_v[0].titel
+      and not "(KBA-Rückruf" in _rr_v[0].titel
+      and not "(Rückrufhinweis" in _rr_v[0].titel)
 check("C9 unverifizierter Rueckruf derselben Baureihe heisst 'Rueckrufhinweis'",
-      bool(_rr_u) and _rr_u[0].titel.startswith("Rückrufhinweis"))
+      bool(_rr_u) and "(Rückrufhinweis" in _rr_u[0].titel)
 check("C10 der verifizierte Rueckruf nennt seine fehlende KBA-Referenz offen",
       bool(_rr_v) and any("keine KBA-Referenz" in (q.titel or "")
                           for q in _rr_v[0].quellen))
@@ -204,7 +204,7 @@ _ins_wa = build_insights(baureihe([], []),
                          motor([], [_fakt("kritische_wartung", WA_A, True),
                                     _fakt("kritische_wartung", WA_B, False)]),
                          [], _req, check_typ="kauf")
-_wa = {i.titel.split(" —")[0]: i for i in _ins_wa if i.kategorie == "wartung"}
+_wa = {titel_bauteil(i.titel): i for i in _ins_wa if i.kategorie == "wartung"}
 check("C9 verifizierter Wartungspunkt traegt trust=verified",
       _wa["Zahnriemen"].trust == "verified")
 check("C10 unverifizierter Wartungspunkt desselben Motors bleibt unverified_db",
@@ -281,7 +281,7 @@ check("G1 der rejected Fakt wird bereits in der Datenschicht entfernt",
 
 _br4 = baureihe(_sichtbar, [])
 _ins4 = build_insights(_br4, motor([], []), [], _req, check_typ="kauf")
-_t4 = {i.titel.split(" —")[0]: i.trust for i in _ins4 if i.kategorie == "schwachstelle"}
+_t4 = {titel_bauteil(i.titel): i.trust for i in _ins4 if i.kategorie == "schwachstelle"}
 check("G2 A (verified) ist sichtbar und traegt verified",
       _t4.get("Steuerkette") == "verified")
 check("G3 B (partially_verified) ist sichtbar, bleibt unverified_db",

@@ -469,7 +469,7 @@ def neutralisiere_preiszeile_ohne_markt(text: str) -> str:
         zellen = [z.strip() for z in m.group(0).strip().strip("|").split("|")]
         kriterium = zellen[0] if zellen else "Preis"
         angabe = zellen[1] if len(zellen) > 1 else ""
-        return f"| {kriterium} | {angabe} | keine belastbare Marktbasis | — nicht bewertbar |"
+        return f"| {kriterium} | {angabe} | keine belastbare Marktbasis | nicht bewertbar |"
     return _PREISZEILE.sub(_zeile, text)
 
 

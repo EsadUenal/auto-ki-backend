@@ -213,7 +213,7 @@ def _oel_hinweis(system: str | None, km: int | None) -> str | None:
     if km is None:
         return None
     if system:
-        return (f"Das Fahrzeug berechnet die Servicefälligkeit selbst ({system}) — "
+        return (f"Das Fahrzeug berechnet die Servicefälligkeit selbst ({system}): "
                 f"die aktuelle Fälligkeit steht im Service-Menü des Fahrzeugs. Der Wert "
                 f"aus der Datenbank ist nur eine Orientierung, keine feste Herstellervorgabe.")
     return ("Richtwert aus der Fahrzeugdatenbank. Maßgeblich ist die Service-Vorgabe des "
@@ -320,7 +320,7 @@ def prompt_block(ctx: Fahrzeugkontext | None) -> str:
     kopf = [
         "## Fahrzeug-Zusatzkontext (Fahrzeugdatenbank, ERGÄNZEND)",
         "Diese Angaben beschreiben die Baureihe allgemein. Sie sind KEINE geprüfte "
-        "Evidence zu diesem konkreten Fahrzeug und KEIN Befund — nutze sie nur zur "
+        "Evidence zu diesem konkreten Fahrzeug und KEIN Befund: nutze sie nur zur "
         "Einordnung und zur Beschreibung erkennbarer Merkmale, niemals als Mangel.",
     ]
     # Die beiden Schutzregeln stehen NUR dort, wo sie etwas bewachen. Ein Verbot zum

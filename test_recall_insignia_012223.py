@@ -51,7 +51,7 @@ def rueckrufe(ins):
 
 
 def neuer(ins):
-    return [i for i in rueckrufe(ins) if "Bremskraftausgleich" in i.titel]
+    return [i for i in rueckrufe(ins) if "Bremskraftausgleich" in (i.titel + " " + i.beschreibung)]
 
 
 # ══ A) Kuratierte Daten ══════════════════════════════════════════════════════
@@ -132,7 +132,7 @@ check("C5 confidence=hoch", bool(_n) and _n[0].confidence == "hoch")
 check("C6 NIEMALS confirmed_by_vin ohne VIN",
       all(i.applicability != "confirmed_by_vin" for i in rueckrufe(_ins)))
 check("C7 Wortlaut 'KBA-Rueckruf' (amtliche Nummer liegt vor)",
-      bool(_n) and _n[0].titel.startswith("KBA-Rückruf"))
+      bool(_n) and "(KBA-Rückruf" in _n[0].titel)
 check("C8 Quelle nennt die amtliche Nummer",
       bool(_n) and any(q.ref == "12223" and q.titel == "KBA-Rückrufdatenbank"
                        for q in _n[0].quellen))
@@ -171,7 +171,7 @@ check("D8 die Empfehlung bleibt unangetastet",
       wende_floor_an("kaufen", _ins)[0] == "kaufen")
 check("D9 der Rueckruf ist trotzdem sichtbar, verifiziert und amtlich benannt",
       bool(_n) and _n[0].trust == "verified" and _n[0].confidence == "hoch"
-      and _n[0].titel.startswith("KBA-Rückruf"))
+      and "(KBA-Rückruf" in _n[0].titel)
 check("D10 Floor senkt NICHT", wende_floor_an("finger_weg", _ins)[0] == "finger_weg")
 check("D11 Floor laesst 'unbekannt' unangetastet",
       wende_floor_an("unbekannt", _ins)[0] == "unbekannt")
@@ -189,7 +189,7 @@ _verified2 = [i for i in rueckrufe(_ins2) if i.trust == "verified"]
 # verifiziert (#544 Bremspedal / 10743, #546 NOx / 11422, #808 EBCM / 12223).
 # Jeder einzeln gegen den amtlichen Export geprueft — kein Mitverifizieren:
 # entscheidend ist, dass NUR Zeilen mit eigenem amtlichem Beleg verified sind.
-_verif_titel = {i.titel for i in _verified2}
+_verif_titel = {i.titel + ' ' + i.beschreibung for i in _verified2}
 # BATCH A hat dem Insignia B weitere amtlich belegte Rueckrufe hinzugefuegt.
 # Die zu sichernde Aussage ist nicht die Titelliste, sondern das Prinzip: nur
 # eine Zeile mit EIGENEM amtlichem Beleg ist verified — und jede verifizierte

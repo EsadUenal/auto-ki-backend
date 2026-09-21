@@ -161,14 +161,14 @@ def _preis_finding_verkauf(pa: PriceAssessment, ev_id: str) -> KeyFinding:
             evidence_ids=ev, prioritaet=_P_V_PREIS_UEBER)
     if pa.verdict in ("unter", "deutlich_unter"):
         return KeyFinding(id="", kategorie="marktposition", stufe=STUFE_CHANCE, icon="📊",
-            titel="Zielpreis unter Marktniveau — Spielraum nach oben",
+            titel="Zielpreis unter Marktniveau: Spielraum nach oben",
             beschreibung=f"Du liegst {_eur(diff)} bzw. {_pct(pct)} unter dem Median "
                          f"({_eur(median)}). Ein höherer Startpreis ist realistisch.",
             wert=f"↓ {_pct(pct)} unter Median", evidence_ids=ev, prioritaet=_P_V_PREIS_POS)
     return KeyFinding(id="", kategorie="marktposition", stufe=STUFE_INFO, icon="📊",
         titel="Zielpreis nah am Marktmedian",
         beschreibung=f"Dein Zielpreis liegt sehr nah am Median vergleichbarer Fahrzeuge "
-                     f"({_eur(median)}, {_pct(pct)} Abweichung) — realistisch angesetzt.",
+                     f"({_eur(median)}, {_pct(pct)} Abweichung): realistisch angesetzt.",
         evidence_ids=ev, prioritaet=_P_V_PREIS_INFO)
 
 
@@ -201,10 +201,19 @@ def _ps_aus_text(*teile: str | None) -> int | None:
     return None
 
 
-def _mangel_kurz(insight_titel: str) -> str:
-    """'KBA-Rückruf (Baureihe): Brandgefahr ...' -> 'Brandgefahr ...' (gekürzt)."""
-    teil = insight_titel.split(":", 1)[-1].strip()
-    return (teil[:60] + "…") if len(teil) > 61 else teil
+def _mangel_kurz(insight) -> str:
+    """Kurzer Rückruftitel — bevorzugt das strukturierte Feld `kurztitel`.
+
+    KaufCheck RC1: vorher wurde der Insight-Titel am ersten ":" zerlegt und nach
+    60 Zeichen mit "…" abgeschnitten ("Aufgrund fehlerhafter Auslegung kann es bei
+    hohen Belastunge…"). Akzeptiert aus Kompatibilität auch einen Titel-String.
+    """
+    kurz = getattr(insight, "kurztitel", None)
+    if kurz:
+        return kurz
+    titel = insight if isinstance(insight, str) else (getattr(insight, "titel", "") or "")
+    teil = titel.split(":", 1)[-1].strip()
+    return (teil[:60].rstrip() + "…") if len(teil) > 61 else teil
 
 
 def _finalisiere(findings: list[KeyFinding]) -> list[KeyFinding]:
@@ -230,7 +239,7 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
     out: list[KeyFinding] = []
 
     if zu_pruefen:
-        titel_liste = ", ".join(_mangel_kurz(i.titel) for i in zu_pruefen[:3])
+        titel_liste = "; ".join(_mangel_kurz(i) for i in zu_pruefen[:3])
         n = len(zu_pruefen)
         out.append(KeyFinding(
             id="", kategorie="rueckruf", stufe=STUFE_WARNUNG, icon="⚠️",
@@ -247,7 +256,7 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
             id="", kategorie="rueckruf", stufe=STUFE_INFO, icon="🛈",
             titel=f"{n} Rückruf{'e' if n > 1 else ''} mit unklarer Betroffenheit",
             beschreibung="Für die Baureihe hinterlegt, betrifft aber bestimmte Varianten. "
-                         + ", ".join(_mangel_kurz(i.titel) for i in unklar[:3]),
+                         + "; ".join(_mangel_kurz(i) for i in unklar[:3]),
             aktion="Ob dein Fahrzeug betroffen ist, anhand der FIN beim Hersteller/KBA prüfen.",
             evidence_ids=[i.id for i in unklar],
             prioritaet=_P_RUECKRUF_UNKLAR,
@@ -271,7 +280,7 @@ def _identitaets_finding(fehlende_angabe: str | None) -> KeyFinding:
         titel="Baureihe nicht sicher erkannt",
         beschreibung="Die Angaben lassen sich keiner Baureihe eindeutig zuordnen. "
                      "Es werden deshalb keine fahrzeugspezifischen Schwachstellen, "
-                     "Motorprobleme oder Rückrufe ausgegeben — die allgemeinen "
+                     "Motorprobleme oder Rückrufe ausgegeben: die allgemeinen "
                      "Prüflisten gelten unverändert.",
         aktion=f"Für eine gezielte Analyse bitte {fehlt} nachtragen.",
         prioritaet=_P_IDENTITAET)
@@ -318,7 +327,8 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
             aktion="Bauteil bei der Werkstattprüfung gezielt kontrollieren lassen.",
             evidence_ids=[i.id for i in motorprobleme], prioritaet=_P_MOTORPROBLEM))
     if schwach_hoch:
-        namen = ", ".join(i.titel.split("—")[0].strip() for i in schwach_hoch[:3])
+        from app.evidence import titel_bauteil
+        namen = ", ".join(titel_bauteil(i.titel) for i in schwach_hoch[:3])
         n = len(schwach_hoch)
         findings.append(KeyFinding(
             id="", kategorie="schwachstelle", stufe=STUFE_WARNUNG, icon="⚙️",
@@ -472,7 +482,7 @@ def _identitaets_finding_verkauf(fehlende_angabe: str | None) -> KeyFinding:
         titel="Fahrzeug nicht eindeutig identifiziert",
         beschreibung="Die genaue Baureihe/Motorisierung konnte aus deinen Angaben nicht "
                      "sicher bestimmt werden. Fahrzeugspezifische Hinweise wurden deshalb "
-                     "bewusst eingeschränkt — Inseratsanalyse, Verkaufstipps und die "
+                     "bewusst eingeschränkt. Inseratsanalyse, Verkaufstipps und die "
                      "Bewertung deiner Angaben gelten unverändert.",
         aktion=f"Für eine gezieltere Analyse bitte {fehlt} nachtragen.",
         prioritaet=_P_IDENTITAET)
@@ -536,7 +546,7 @@ def build_key_findings_verkauf(req, baureihe: dict | None, motor_match: dict | N
             id="", kategorie="angaben", stufe=STUFE_WARNUNG if n >= 2 else STUFE_INFO, icon="📋",
             titel=f"{n} wichtige Angabe{'n' if n > 1 else ''} fehl{'en' if n > 1 else 't'} im Inserat",
             beschreibung=", ".join(fehlend),
-            aktion="Ergänzen — vollständige Angaben schaffen Vertrauen und beschleunigen den Verkauf.",
+            aktion="Ergänzen: vollständige Angaben schaffen Vertrauen und beschleunigen den Verkauf.",
             prioritaet=_P_V_ANGABEN))
 
     # ── B) Wertsteigernde Ausstattung prominent nennen ──────────────────────────

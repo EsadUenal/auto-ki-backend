@@ -363,7 +363,7 @@ check("G9 partially_verified traegt keinen Floor "
 # bestaetigt Referenz 11422 samt Herstellercode und Motoreingrenzung. Er traegt
 # jetzt trust=verified und damit auch wieder den Floor.
 check("G9b #546 ist durch den amtlichen Export verifiziert",
-      any("Abschalteinrichtung" in i.titel and i.trust == "verified"
+      any("Abschalteinrichtung" in (i.titel + " " + i.beschreibung) and i.trust == "verified"
           for i in _rueckrufe(_ins_pos)))
 # NACHTRAG: der Insignia-Testwagen traegt jetzt als EINZIGES der vier
 # Pilotfahrzeuge einen Floor — ausgeloest vom amtlich belegten Rueckruf
@@ -399,14 +399,14 @@ print("\n--- H) §13 Nutzerwortlaut ---")
 check("H1 verified MIT amtlicher Nummer -> 'KBA-Rückruf' + Nummer als Quelle "
       "(synthetische Fixture aus Abschnitt G — kein reales Pilotfahrzeug "
       "erreicht diese Kombination mehr, siehe A7/D1)",
-      bool(_nox) and _nox[0].titel.startswith("KBA-Rückruf")
+      bool(_nox) and "(KBA-Rückruf" in _nox[0].titel
       and any(q.ref == "445566" and q.titel == "KBA-Rückrufdatenbank"
               for q in _nox[0].quellen))
 
 # verified OHNE amtliche Nummer (BMW Hochvoltspeicher, NHTSA-belegt)
 _b_hv, _mm_hv, _req_hv, _ins_hv = _check(
     "BMW", "3er", "G20/G21", "330e", 2020, "Plug-in-Hybrid")
-_hv = [i for i in _rueckrufe(_ins_hv) if "Hochvoltspeicher" in i.titel]
+_hv = [i for i in _rueckrufe(_ins_hv) if "Hochvoltspeicher" in (i.titel + " " + i.beschreibung)]
 check("H2 der NHTSA-belegte Rueckruf erscheint beim PHEV", len(_hv) == 1)
 check("H3 er ist verified", bool(_hv) and _hv[0].trust == "verified")
 # KBA-GESAMTABGLEICH: dieser Rueckruf traegt jetzt die amtliche Nummer 10176 —
@@ -417,7 +417,7 @@ check("H3 er ist verified", bool(_hv) and _hv[0].trust == "verified")
 # Wortlaut-Regel dafuer wird synthetisch in test_kba_trust.py und
 # test_fakt_verifikation.py (C8-C10) weiter zugesichert.
 check("H4 mit amtlicher Nummer heisst er 'KBA-Rückruf'",
-      bool(_hv) and _hv[0].titel.startswith("KBA-Rückruf"))
+      bool(_hv) and "(KBA-Rückruf" in _hv[0].titel)
 check("H5 Quellentitel ist die KBA-Rückrufdatenbank mit der Nummer 10176",
       bool(_hv) and any(q.ref == "10176" and q.titel == "KBA-Rückrufdatenbank"
                         for q in _hv[0].quellen))
@@ -432,7 +432,7 @@ for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
 check("H7 kein unverified Rueckruf zeigt eine Referenz",
       all(q.ref is None for i in _alle_unverified for q in i.quellen))
 check("H8 jeder unverified Rueckruf heisst 'Rückrufhinweis'",
-      all(i.titel.startswith("Rückrufhinweis") for i in _alle_unverified))
+      all("(Rückrufhinweis" in i.titel for i in _alle_unverified))
 check("H9 jeder unverified Rueckruf nennt seine Quelle 'nicht amtlich bestätigt'",
       all(any("nicht amtlich bestätigt" in (q.titel or "") for q in i.quellen)
           for i in _alle_unverified))
@@ -486,14 +486,14 @@ for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
 # Fensters 2017-2018 — der NOx-Rueckruf darf ihn NICHT mehr betreffen.
 _, _, _, _ins_ins = _check("Opel", "Insignia", "B", "2.0 Diesel", 2019, "Diesel")
 check("I5 Insignia 2019: der NOx-Rueckruf ist korrekt NICHT mehr einschlaegig",
-      not any("Abschalteinrichtung" in i.titel for i in _rueckrufe(_ins_ins)))
+      not any("Abschalteinrichtung" in (i.titel + " " + i.beschreibung) for i in _rueckrufe(_ins_ins)))
 
 
 # ══ J) §11 — Applicability wirkt in beide Richtungen ═════════════════════════
 print("\n--- J) §11 Motorbezug der Audi-Rueckrufe ---")
 _, _, _, _ins_fsi = _check("Audi", "A3", "Typ 8P", "2.0 FSI 150 PS", 2008, "Benzin")
 check("J1 Benziner 2008: der 2.0-TDI-Rueckruf ist ausgeblendet",
-      not any("2.0 TDI" in i.titel for i in _rueckrufe(_ins_fsi)))
+      not any("2.0 TDI" in (i.titel + " " + i.beschreibung) for i in _rueckrufe(_ins_fsi)))
 _, _, _, _ins_tdi = _check("Audi", "A3", "Typ 8P", "1.9 TDI", 2010, "Diesel")
 # KAUFCHECK-RC1: der 2.0-TDI-Rueckruf (#283) ist unbelegt und damit nicht mehr
 # sichtbar. Die Applicability — der eigentliche Gegenstand von J — wird deshalb
@@ -505,9 +505,9 @@ with get_conn() as _c:
 check("J2 Diesel 2010: derselbe Rueckruf waere fuer den Diesel einschlaegig (Applicability)",
       rueckruf_applicability(_tdi, True, "", {"kraftstoff": "Diesel"})[0] != "incompatible")
 check("J2b ... wird aber als unbelegter Altbestand nicht angezeigt",
-      not any("2.0 TDI" in i.titel for i in _rueckrufe(_ins_tdi)))
+      not any("2.0 TDI" in (i.titel + " " + i.beschreibung) for i in _rueckrufe(_ins_tdi)))
 check("J3 Diesel 2010: der 1.4-TFSI-Rueckruf ist ausgeblendet",
-      not any("1.4 TFSI" in i.titel for i in _rueckrufe(_ins_tdi)))
+      not any("1.4 TFSI" in (i.titel + " " + i.beschreibung) for i in _rueckrufe(_ins_tdi)))
 check("J4 keine neue Applicability-Kategorie erfunden",
       all(i.applicability in ("confirmed_by_vin", "variant_match", "series_only",
                               "unclear")

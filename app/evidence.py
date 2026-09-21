@@ -41,6 +41,49 @@ TRUST_WEB = "web"
 TRUST_USER = "user"
 TRUST_ABGELEITET = "abgeleitet"
 
+from app.rueckruf_titel import rueckruf_kurztitel  # noqa: E402
+
+# Titel "<Bauteil>: <Art>" (neu) bzw. "<Bauteil> — <Art>" (bis RC1, noch in
+# gespeicherten Ergebnissen und Fixtures). Beide Formen werden verstanden.
+_TITEL_TRENNER = re.compile(r"\s+—\s+|:\s+")
+
+
+def titel_bauteil(titel: str | None) -> str:
+    """Bauteil-Teil eines Insight-Titels, unabhängig vom Trennzeichen."""
+    return _TITEL_TRENNER.split(titel or "", 1)[0].strip()
+
+
+def datenqualitaet(fakt: dict | None, trust: str, passt: bool | None,
+                   beschreibung: str | None) -> str:
+    """Datenqualität (confidence) einer Schwachstellen-Aussage aus der BELEGSTÄRKE.
+
+    KaufCheck RC1 (Closing): "Software/Infotainment" stand auf "hoch", weil der
+    Fakt verifiziert war und das Baujahr passte. Die Verifikation stützt sich aber
+    nur auf Sekundärquellen (Stufe B), und die Beschreibung selbst spricht von
+    "vereinzelten Berichten". "Hoch" darf weder aus der Baujahrpassung noch aus
+    der bloßen Existenz einer Verifikation oder URL entstehen.
+
+    Regeln (generisch, für Baureihen- und Motor-Schwachstellen):
+      * nicht verifiziert                                   -> "niedrig"
+      * verifiziert, aber schwach belegt                    -> "mittel"
+      * "hoch" nur, wenn ALLES zutrifft:
+          - starke Quelle: Primärquelle (Stufe A) ODER mindestens zwei
+            unabhängige Sekundärquellen (Stufe B)
+          - Baujahr eindeutig gedeckt (passt is True)
+          - die Aussage ist kein Einzelbericht ("vereinzelt", "selten", …)
+    Stufe C (Community/Foren) trägt nie "hoch".
+    """
+    if trust != TRUST_VERIFIED:
+        return "niedrig"
+    v = (fakt or {}).get("_verifikation") or {}
+    stufe = str(v.get("quelle_stufe") or "").strip().upper()
+    quellen = [q for q in re.split(r"[;\n]", str(v.get("quelle") or "")) if q.strip()]
+    stark = stufe == "A" or (stufe == "B" and len(quellen) >= 2)
+    einzel = bool(_EINZELBERICHT.search(beschreibung or ""))
+    if stark and passt is True and not einzel:
+        return "hoch"
+    return "mittel"
+
 # Formulierungen, mit denen eine DB-Beschreibung selbst sagt, dass es sich um
 # Einzelberichte handelt — dann ist es keine "bekannte Schwachstelle".
 _EINZELBERICHT = re.compile(
@@ -103,7 +146,7 @@ def _typen(quellen: list[EvidenceQuelle]) -> list[str]:
 def _einfluss_schwachstelle(schweregrad: str | None, check_typ: str) -> str:
     s = (schweregrad or "").strip().lower()
     if check_typ == "verkauf":
-        return "Wertmindernd — beim Verkauf offen kommunizieren."
+        return "Wertmindernd: beim Verkauf offen kommunizieren."
     if s in ("hoch", "kritisch", "sehr hoch"):
         return "Erhöht das technische Kaufrisiko deutlich."
     if s in ("mittel", "moderat"):
@@ -175,7 +218,7 @@ def build_insights(
         insights.append(Insight(
             id=_id("schwachstelle"),
             kategorie="schwachstelle",
-            titel=(f"{s.get('bauteil') or 'Schwachstelle'} — "
+            titel=(f"{s.get('bauteil') or 'Schwachstelle'}: "
                    f"{'bekannte Schwachstelle' if bekannt else 'gemeldeter Hinweis'}"),
             beschreibung=beschreibung_s,
             quellen_typen=_typen(quellen),
@@ -185,8 +228,7 @@ def build_insights(
             # passendem Baujahr erschien als "Datenqualitaet hoch". Jetzt traegt nur
             # ein verifizierter Fakt "hoch" (bzw. "mittel" ohne Baujahrbezug); ein
             # unbelegter Eintrag ist "niedrig".
-            confidence=(("hoch" if passt is True else "mittel")
-                        if trust_schwachstelle == TRUST_VERIFIED else "niedrig"),
+            confidence=datenqualitaet(s, trust_schwachstelle, passt, beschreibung_s),
             schweregrad=(s.get("schweregrad") or None),
             trust=trust_schwachstelle,
             einfluss=_einfluss_schwachstelle(s.get("schweregrad"), check_typ),
@@ -231,8 +273,8 @@ def build_insights(
             quellen_titel = ("KBA-Rückrufdatenbank" if kba_anzeige
                              else "Amtlich belegter Rückruf (keine KBA-Referenz hinterlegt)")
         else:
-            quellen_titel = ("Rückrufhinweis aus der ENFAL-Fahrzeugdatenbank — "
-                             "nicht amtlich bestätigt")
+            quellen_titel = ("Rückrufhinweis aus der ENFAL-Fahrzeugdatenbank ("
+                             "nicht amtlich bestätigt)")
             kba_anzeige = None      # keine scheinbar amtliche Nummer anzeigen
         quellen = [EvidenceQuelle(typ="rueckruf_kba", ref=kba_anzeige, titel=quellen_titel)]
         # Phase 1B: Varianten-/Antriebs-Zuordnung -> applicability (getrennt von
@@ -253,11 +295,12 @@ def build_insights(
             continue
         beschr = (r.get("mangel") or "").strip()
         if r.get("abhilfe"):
-            beschr = f"{beschr} — Abhilfe: {r['abhilfe'].strip()}"
+            # Amtlicher Mangeltext bleibt unverändert; ein Punkt nur, wenn er fehlt.
+            beschr = f"{beschr}{'' if beschr.endswith(('.', '!', '?')) else '.'} Abhilfe: {r['abhilfe'].strip()}"
         if r.get("datum"):
             beschr = f"{beschr} (Rückruf {r['datum']})"
         if variant_hinweis:
-            beschr = f"{beschr} — {variant_hinweis}"
+            beschr = f"{beschr}. {variant_hinweis}"
         # Titel signalisiert nur bei bestbelegter (Nicht-VIN-)Stufe einen konkreten
         # Rückruf; sonst als Baureihen-Hinweis kennzeichnen. NIE "betrifft dein
         # Fahrzeug" ohne VIN-Prüfung (§27) — das steht nur im Frontend-Label, hier
@@ -274,13 +317,19 @@ def build_insights(
             praefix = "KBA-Rückruf" if kba_anzeige else "Rückruf"
         else:
             praefix = "Rückrufhinweis"
+        # KaufCheck RC1: früher "Präfix: <amtlicher Text>[:70]" — ein hart
+        # abgeschnittener Halbsatz. Jetzt ein kurzer Titel aus Bauteil und Folge
+        # (app/rueckruf_titel.py); der volle amtliche Text steht unverändert in
+        # `beschreibung`.
+        kurz = rueckruf_kurztitel(r.get("mangel"))
         if applicability in ("confirmed_by_vin", "variant_match"):
-            titel = f"{praefix}: {(r.get('mangel') or 'Rückrufaktion')[:80]}".rstrip(": ").strip()
+            titel = f"{kurz} ({praefix})"
         else:
-            titel = f"{praefix} (Baureihe): {(r.get('mangel') or 'Rückrufaktion')[:70]}".rstrip(": ").strip()
+            titel = f"{kurz} ({praefix}, Baureihe)"
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
+            kurztitel=kurz,
             titel=titel,
             beschreibung=beschr.strip(" —"),
             quellen_typen=_typen(quellen),
@@ -304,9 +353,9 @@ def build_insights(
                                                              trust_motorproblem))]
             kosten = s.get("kosten_ca")
             if check_typ == "verkauf":
-                einfluss = "Wertrelevant — Zustand des Bauteils belegen."
+                einfluss = "Wertrelevant. Zustand des Bauteils belegen."
             else:
-                einfluss = (f"Mögliche Reparaturkosten ca. {kosten} — erhöht das technische Risiko."
+                einfluss = (f"Mögliche Reparaturkosten ca. {kosten}. Das erhöht das technische Risiko."
                             if kosten else "Erhöht das technische Risiko.")
             insights.append(Insight(
                 id=_id("motorproblem"),
@@ -315,7 +364,7 @@ def build_insights(
                 beschreibung=(s.get("beschreibung") or "").strip(),
                 quellen_typen=_typen(quellen),
                 quellen=quellen,
-                confidence="hoch" if passt is True else "mittel",
+                confidence=datenqualitaet(s, trust_motorproblem, passt, s.get("beschreibung")),
                 trust=trust_motorproblem,
                 einfluss=einfluss,
             ))
@@ -376,7 +425,7 @@ def build_insights(
             insights.append(Insight(
                 id=_id("wartung"),
                 kategorie="wartung",
-                titel=f"{bauteil} — kritischer Wartungspunkt ({motor_match.get('bezeichnung') or 'Motor'})",
+                titel=f"{bauteil}: kritischer Wartungspunkt ({motor_match.get('bezeichnung') or 'Motor'})",
                 beschreibung=" ".join(t for t in teile if t).strip(),
                 quellen_typen=_typen(quellen),
                 quellen=quellen,
@@ -443,16 +492,16 @@ def build_insights(
 # im Klartext sichtbar ("laut Webrecherche") — der Nutzer soll den Unterschied zur
 # geprüften Fahrzeugdatenbank ohne Badge erkennen können.
 _WEB_TITEL = {
-    "schwachstelle": "{bauteil} — Hinweis aus der Webrecherche",
+    "schwachstelle": "{bauteil}: Hinweis aus der Webrecherche",
     "rueckruf": "Rückruf-Hinweis aus der Webrecherche ({bauteil})",
-    "wartung": "{bauteil} — Wartungsangabe aus der Webrecherche",
+    "wartung": "{bauteil}: Wartungsangabe aus der Webrecherche",
 }
 _WEB_EINFLUSS = {
     "schwachstelle": "Aus Webquellen belegt, nicht aus der "
-                     "Fahrzeugdatenbank — vor dem Kauf gezielt prüfen.",
-    "rueckruf": "Aus Webquellen belegt — Betroffenheit ausschließlich anhand der "
+                     "Fahrzeugdatenbank: vor dem Kauf gezielt prüfen.",
+    "rueckruf": "Aus Webquellen belegt. Betroffenheit ausschließlich anhand der "
                 "FIN beim Hersteller/KBA klären.",
-    "wartung": "Aus Webquellen belegte Intervallangabe — Nachweis der Durchführung "
+    "wartung": "Aus Webquellen belegte Intervallangabe. Nachweis der Durchführung "
                "verlangen.",
 }
 
@@ -574,7 +623,7 @@ def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, mark
         beschr = (f"{marktanalyse.gefunden} Preisangaben aus der Websuche gefunden, aber zu wenige "
                   f"eindeutig vergleichbare für eine belastbare Spanne." + spanne)
     else:
-        beschr = ("Nur begrenzte, nicht eindeutig vergleichbare Web-Daten gefunden — "
+        beschr = ("Nur begrenzte, nicht eindeutig vergleichbare Web-Daten gefunden: "
                   "die Marktanalyse basiert auf einer schmalen Datenbasis." + spanne)
     return Insight(
         id=_id("marktvergleich"),
@@ -622,9 +671,9 @@ def format_evidence_for_prompt(insights: list[Insight]) -> str:
         return ""
     lines = [
         "=== VERFÜGBARE EVIDENCE (Schicht A, Backend-geprüft) ===",
-        "Referenziere in den *_evidence_ids-Feldern NUR IDs aus dieser Liste — sonst leere Liste.",
+        "Referenziere in den *_evidence_ids-Feldern NUR IDs aus dieser Liste: sonst leere Liste.",
         "Bei Rückrufen (kategorie=rueckruf) gilt die angegebene Betroffenheits-Formulierung "
-        "WÖRTLICH — schreibe NIEMALS 'betrifft dein Fahrzeug' ohne FIN-Prüfung.",
+        "WÖRTLICH: schreibe NIEMALS 'betrifft dein Fahrzeug' ohne FIN-Prüfung.",
     ]
     for i in insights:
         label = _EVIDENCE_TYP_LABEL.get(i.kategorie, i.kategorie)

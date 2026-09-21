@@ -38,7 +38,7 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
         gruende.append(f"Fahrzeug eindeutig zugeordnet: {name} {motor}"
                        + (f" ({details})" if details else "") + ".")
     elif baureihe:
-        gruende.append("Baureihe erkannt, Motorisierung aber nicht eindeutig — "
+        gruende.append("Baureihe erkannt, Motorisierung aber nicht eindeutig: "
                        "motorbezogene Aussagen bleiben allgemein.")
 
     # 2) Inserat in sich stimmig
@@ -58,25 +58,25 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     rueckrufe = [i for i in insights or [] if getattr(i, "kategorie", None) == "rueckruf"]
     if rueckrufe and all(getattr(i, "applicability", None) in ("series_only", "unclear")
                          for i in rueckrufe):
-        gruende.append("Gemeldete Rückrufe gelten für Teile der Baureihe — ob genau dieses "
+        gruende.append("Gemeldete Rückrufe gelten für Teile der Baureihe. Ob genau dieses "
                        "Fahrzeug betroffen ist, klärt eine FIN-Abfrage.")
 
     # 4) Inseratsangaben — ausdrücklich als Angaben, nicht als Tatsachen
     if getattr(req, "scheckheftgepflegt", None) is True:
-        gruende.append("Laut Inserat scheckheftgepflegt — Vollständigkeit und Belege "
+        gruende.append("Laut Inserat scheckheftgepflegt. Vollständigkeit und Belege "
                        "vor dem Kauf prüfen.")
     if hu is not None and getattr(hu, "status", None) == "plausibel":
-        gruende.append(f"HU laut Inserat gültig bis {hu.anzeige} — Prüfbericht ansehen.")
+        gruende.append(f"HU laut Inserat gültig bis {hu.anzeige}. Prüfbericht ansehen.")
 
     # 5) Warum "nach Besichtigung"
     if empfehlung == "kaufen_nach_besichtigung":
-        gruende.append("Zustand, Unfallfreiheit und Wartung sind Inseratsangaben — "
+        gruende.append("Zustand, Unfallfreiheit und Wartung sind Inseratsangaben. "
                        "sie lassen sich erst bei der Besichtigung bestätigen.")
 
     # 6) Preis als eigene Dimension
     if markt_verfuegbar and preis_label:
         gruende.append(f"Preis separat bewertet: {preis_label}.")
     else:
-        gruende.append("Preis nicht bewertet: keine belastbare Marktpreisbasis — die "
+        gruende.append("Preis nicht bewertet: keine belastbare Marktpreisbasis. Die "
                        "Empfehlung ist eine rein technische Einschätzung.")
     return gruende

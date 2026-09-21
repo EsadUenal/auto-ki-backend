@@ -113,7 +113,7 @@ def bewerte_hu(roh: str | None, heute: dt.date | None = None,
     if teile is None:
         return HuBewertung(roh=roh, monat=None, jahr=None, status=UNLESBAR,
                            monate_bis_faellig=None, anzeige=roh.strip(),
-                           hinweis="HU-Termin nicht eindeutig lesbar — im Fahrzeugschein "
+                           hinweis="HU-Termin nicht eindeutig lesbar: im Fahrzeugschein "
                                    "(Zulassungsbescheinigung Teil I) nachsehen.")
     monat, jahr = teile
     anzeige = f"{monat:02d}/{jahr}"
@@ -121,7 +121,7 @@ def bewerte_hu(roh: str | None, heute: dt.date | None = None,
 
     if diff < 0:
         status, hinweis = ABGELAUFEN, (
-            f"HU laut Angabe seit {anzeige} abgelaufen — vor dem Kauf neue HU verlangen "
+            f"HU laut Angabe seit {anzeige} abgelaufen. Vor dem Kauf neue HU verlangen "
             f"oder die Kosten dafür einplanen.")
     else:
         # Bis zu 36 Monate nur, wenn das Fahrzeug zum Termin höchstens 3 Jahre alt
@@ -132,11 +132,11 @@ def bewerte_hu(roh: str | None, heute: dt.date | None = None,
             max_monate = _ERST_HU_MONATE
         if diff <= max_monate:
             status, hinweis = PLAUSIBEL, (
-                f"HU gültig bis {anzeige} (noch {diff} Monate) — passt zu einer frisch "
+                f"HU gültig bis {anzeige} (noch {diff} Monate). Das passt zu einer frisch "
                 f"durchgeführten Hauptuntersuchung. Prüfbericht trotzdem ansehen.")
         else:
             status, hinweis = UNGEWOEHNLICH_WEIT, (
-                f"HU bis {anzeige} liegt {diff} Monate in der Zukunft — mehr als das "
+                f"HU bis {anzeige} liegt {diff} Monate in der Zukunft, also mehr als das "
                 f"reguläre Prüfintervall. Termin im Fahrzeugschein und Prüfbericht "
                 f"abgleichen.")
     return HuBewertung(roh=roh, monat=monat, jahr=jahr, status=status,
@@ -150,7 +150,7 @@ def prompt_zeile(b: HuBewertung | None, heute: dt.date | None = None) -> str:
     heute = heute or dt.date.today()
     return (
         f"HU-/TÜV-PRÜFUNG (deterministisch, Stand {heute.month:02d}/{heute.year}): "
-        f"Angabe {b.anzeige} — Bewertung: {b.status}. {b.hinweis}\n"
+        f"Angabe {b.anzeige}. Bewertung: {b.status}. {b.hinweis}\n"
         "Diese Bewertung ist verbindlich: Beurteile den HU-Termin NICHT neu, "
         "unterstelle keinen Tippfehler und rechne nicht mit einem anderen aktuellen Datum."
     )
@@ -176,7 +176,7 @@ _SATZ = re.compile(r"[^.!?\n]*[.!?]?")
 _STATUS_ZELLE = {
     PLAUSIBEL: "✓ Plausibel",
     ABGELAUFEN: "⚠ Abgelaufen",
-    UNGEWOEHNLICH_WEIT: "⚠ Ungewöhnlich weit — im Fahrzeugschein prüfen",
+    UNGEWOEHNLICH_WEIT: "⚠ Ungewöhnlich weit: im Fahrzeugschein prüfen",
     UNLESBAR: "⚠ Nicht eindeutig lesbar",
 }
 

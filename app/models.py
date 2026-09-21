@@ -340,6 +340,9 @@ class Insight(BaseModel):
     # als LETZTE Sektion erzeugt, damit die fortlaufenden IDs aller übrigen
     # Kategorien unverändert bleiben — siehe app/evidence.py::build_insights.
     kategorie: str
+    # KaufCheck RC1: kurze, verständliche Überschrift (Rückrufe). Der volle
+    # amtliche Text bleibt unverändert in `beschreibung`.
+    kurztitel: str | None = None
     titel: str
     beschreibung: str
     quellen_typen: list[str] = Field(default_factory=list)   # abgeleitet aus quellen[].typ

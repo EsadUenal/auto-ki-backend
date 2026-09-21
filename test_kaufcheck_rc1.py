@@ -187,7 +187,7 @@ def test_markt():
     print("\n[F] Ohne Marktbasis keine Preiswertung — auch nicht in der Tabelle")
     b = ERG["bericht"]
     check("Keine Stufe 'Selten' in der Preiszeile", "Selten (aber möglich)" not in b)
-    check("Preiszeile neutral", "| Preis | 24.900 € | keine belastbare Marktbasis | — nicht bewertbar |" in b)
+    check("Preiszeile neutral", "| Preis | 24.900 € | keine belastbare Marktbasis | nicht bewertbar |" in b)
     check("preis_bewertung bleibt 'unbekannt'", ERG["preis_bewertung"] == "unbekannt")
     check("Keine Marktspanne", ERG["marktpreis_min"] is None and ERG["marktpreis_max"] is None)
     check("Research-Status 'completed_no_market'", ERG["research_status"] == "completed_no_market")
@@ -310,6 +310,104 @@ def test_quellen_einzeln():
           "nicht bewertbar" in neutralisiere_preiszeile_ohne_markt("| Preis | 9.000 € | – | ⚠ Selten |"))
 
 
+
+# ══ Closing-Pass: Datenqualität, Rückruf-Kurztitel, Motorcode, Textstil ══════
+def test_closing():
+    from app.rueckruf_titel import rueckruf_kurztitel, MAX_TITEL
+    from app.kba_g20_nachtrag_daten import ZEILEN
+    from app.empfehlung_gruende import baue_empfehlung_gruende
+    from app.pruefplan_basis import (BASIS_BESICHTIGUNG, BASIS_PROBEFAHRT,
+                                     BASIS_VERKAEUFERFRAGEN, BASIS_DOKUMENTE)
+
+    print("\n[A/B] Software/Infotainment: verifizierte Einzelaussage ist nicht 'hoch'")
+    soft = next(i for i in map(_dump, ERG["insights"])
+                if i["kategorie"] == "schwachstelle" and i["titel"].startswith("Software"))
+    check("Software/Infotainment: Datenqualität 'mittel' statt 'hoch'",
+          soft["confidence"] == "mittel", soft["confidence"])
+
+    print("\n[C] Rückruf-Kurztitel: kurz, verständlich, ohne abgeschnittene Halbsätze")
+    erwartet = {"10009": "Spurstange: Bruchgefahr",
+                "9839": "Gurtschloss: fehlerhafte Airbag- und Gurtstraffer-Auslösung",
+                "15632R": "Starterrelais: Brandgefahr"}
+    for z in ZEILEN:
+        check(f"KBA {z['kba_referenz']}: '{erwartet[z['kba_referenz']]}'",
+              rueckruf_kurztitel(z["mangel"]) == erwartet[z["kba_referenz"]],
+              rueckruf_kurztitel(z["mangel"]))
+    rr = [i for i in map(_dump, ERG["insights"]) if i["kategorie"] == "rueckruf"]
+    check("Insight-Titel beginnt mit dem Kurztitel, Einstufung in Klammern",
+          all(i["titel"] == f"{i['kurztitel']} (KBA-Rückruf, Baureihe)" for i in rr),
+          str([i["titel"] for i in rr]))
+    with sqlite3.connect(_DB) as c_:
+        alle = [r[0] for r in c_.execute(
+            "select mangel from rueckruf where kba_referenz is not null and trim(kba_referenz)<>''")]
+    titel = [rueckruf_kurztitel(m) for m in alle]
+    check(f"Alle {len(alle)} belegten Rückrufe: Titel <= {MAX_TITEL} Zeichen",
+          all(len(t) <= MAX_TITEL for t in titel), str(max(titel, key=len)))
+    check("Kein Kurztitel endet mit '…'", not any("…" in t for t in titel))
+    check("Kein Kurztitel enthält einen Gedankenstrich", not any("—" in t for t in titel))
+    alle_texte = " ".join(
+        [f["beschreibung"] or "" for f in map(_dump, ERG["key_findings"])]
+        + [_dump(a)["titel"] for b_ in ("verkaeuferfragen", "dokumente") for a in _alle_aktionen(b_)])
+    check("Findings und Checklisten nutzen die Kurztitel, keine abgeschnittenen Halbsätze",
+          "Spurstange: Bruchgefahr" in alle_texte and "Belastunge…" not in alle_texte
+          and "Aufgrund fehlerhafter Auslegung" not in alle_texte)
+    check("Kein Fahrzeug-Sonderfall im Titelmodul",
+          not any(w in open("app/rueckruf_titel.py", encoding="utf-8").read().lower()
+                  for w in ("bmw", "g20", "330i", "15632", "10009", "9839")))
+
+    print("\n[D/H] Amtliche Originalbeschreibung bleibt vollständig und unverändert")
+    for z in ZEILEN:
+        treffer = [i for i in rr if (q := i["quellen"]) and q[0].get("ref") == z["kba_referenz"]]
+        check(f"KBA {z['kba_referenz']}: voller amtlicher Mangeltext in der Detailbeschreibung",
+              treffer and treffer[0]["beschreibung"].startswith(z["mangel"]),
+              treffer and treffer[0]["beschreibung"][:80])
+        check(f"KBA {z['kba_referenz']}: amtliche Abhilfe unverändert enthalten",
+              treffer and z["abhilfe"] in treffer[0]["beschreibung"])
+    with sqlite3.connect(_DB) as c_:
+        db_mangel = {r[0]: r[1] for r in c_.execute(
+            "select kba_referenz, mangel from rueckruf where id in (4033,4034,4035)")}
+    check("Amtliche Texte in der DB durch die Stilregel nicht verändert",
+          all(db_mangel[z["kba_referenz"]] == z["mangel"] for z in ZEILEN))
+    check("Amtlicher Gedankenstrich im Originaltext bliebe erhalten",
+          rueckruf_kurztitel("Kurz — amtlich") == "Kurz — amtlich")
+
+    print("\n[E/F] Motorcode: konkret bleibt konkret, nichts wird erfunden")
+    check("Replay: angezeigter Code ist der gespeicherte B48B20",
+          any("(B48B20, 258 PS)" in g for g in ERG["empfehlung_gruende"]), str(ERG["empfehlung_gruende"][:1]))
+    check("Replay: keine künstliche Präzisierung auf B48B20B",
+          not any("B48B20B" in g for g in ERG["empfehlung_gruende"]))
+    br = {"marke": "BMW", "modell": "3er", "generation": "G20"}
+    konkret = baue_empfehlung_gruende(REQ, br, {"bezeichnung": "320i", "motorcode": "B48A20M1",
+                                                "leistung_ps": 184}, [], [], "kaufen", False, None)
+    check("Konkreter Variantencode wird nicht auf die Motorfamilie reduziert",
+          "(B48A20M1, 184 PS)" in konkret[0], konkret[0])
+    familie = baue_empfehlung_gruende(REQ, br, {"bezeichnung": "320i", "motorcode": "B48",
+                                                "leistung_ps": 184}, [], [], "kaufen", False, None)
+    check("Nur Motorfamilie bekannt: bleibt 'B48'", "(B48, 184 PS)" in familie[0], familie[0])
+    check("Prompt verlangt den Motorcode exakt wie in der DB",
+          "Motorcode exakt so, wie er im DB-Kontext steht" in kc._SYSTEM)
+
+    print("\n[G] Von ENFAL erzeugte Texte ohne gehäufte Gedankenstriche")
+    erzeugt = []
+    for b_ in ("besichtigung", "probefahrt", "verkaeuferfragen", "dokumente"):
+        for a in map(_dump, _alle_aktionen(b_)):
+            erzeugt += [a["titel"], a["aktion"], a.get("hinweis") or ""]
+    erzeugt += [f"{_dump(f)['titel']} {_dump(f)['beschreibung'] or ''} {_dump(f).get('aktion') or ''}"
+                for f in ERG["key_findings"]]
+    erzeugt += ERG["empfehlung_gruende"] + [ERG["hu_pruefung"]["hinweis"]]
+    erzeugt += [f"{i['titel']} {i.get('einfluss') or ''}" for i in map(_dump, ERG["insights"])]
+    ctx = _dump(ERG["fahrzeugkontext"])
+    erzeugt += [ctx.get("wartung_oel_hinweis") or ""]
+    mit_strich = [t for t in erzeugt if "—" in t]
+    check("Kein Gedankenstrich in Checklisten, Findings, Begründungen, Titeln, Hinweisen",
+          not mit_strich, str(mit_strich[:3]))
+    katalog = [t for kat in (BASIS_BESICHTIGUNG, BASIS_PROBEFAHRT, BASIS_VERKAEUFERFRAGEN,
+                             BASIS_DOKUMENTE) for e in kat for t in (e[2], e[3], e[4] or "")]
+    check("Basis-Katalog frei von Gedankenstrichen",
+          not [t for t in katalog if "—" in t], str([t for t in katalog if "—" in t][:2]))
+    check("Stilregel steht im KaufCheck-Prompt",
+          "Gedankenstriche sparsam" in kc._SYSTEM)
+
 try:
     test_hu()
     test_claims()
@@ -320,6 +418,7 @@ try:
     test_rueckrufe()
     test_datenqualitaet()
     test_quellen_einzeln()
+    test_closing()
 finally:
     shutil.rmtree(_TMP, ignore_errors=True)
 
@@ -335,3 +434,14 @@ if os.environ.get("KC_RC1_ZEIGEN"):
     print("\n===== EMPFEHLUNG_GRUENDE =====")
     for g_ in ERG["empfehlung_gruende"]:
         print(" -", g_)
+
+if os.environ.get("KC_RC1_TITEL"):
+    for i in map(_dump, ERG["insights"]):
+        if i["kategorie"] == "rueckruf":
+            print("TITEL:", i["titel"], "| KURZ:", i["kurztitel"])
+    for f in map(_dump, ERG["key_findings"]):
+        print("KF:", f["titel"], "|", f["beschreibung"])
+    for b_ in ("verkaeuferfragen", "dokumente"):
+        for a in map(_dump, _alle_aktionen(b_)):
+            if "Rückruf" in a["titel"]:
+                print(b_.upper()+":", a["titel"])

@@ -308,19 +308,19 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
     zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
     if status == STATUS_NAEHERT_SICH:
         rest = _km(von_km - kilometerstand)
-        kern = (f"Für „{bauteil}“ ist ein Wartungspunkt bei {punkt} hinterlegt — rund "
+        kern = (f"Für „{bauteil}“ ist ein Wartungspunkt bei {punkt} hinterlegt: rund "
                 f"{rest} voraus. Vor dem Kauf klären, wann diese Arbeit zuletzt "
                 f"gemacht wurde, und den Beleg dazu ansehen.")
     elif status == STATUS_IM_BEREICH:
         kern = (f"Bei dieser Laufleistung liegt „{bauteil}“ im relevanten Bereich des "
                 f"hinterlegten Wartungspunkts ({punkt}). Nachweis über die Durchführung "
-                f"zeigen lassen — ob die Arbeit bereits erledigt ist, geht aus den "
+                f"zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
                 f"vorliegenden Daten nicht hervor.")
     elif status == STATUS_DARUEBER:
         rueck = _km(kilometerstand - (bis_km if bis_km is not None else von_km))
         kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) liegt rund "
                 f"{rueck} zurück. Bei dieser Laufleistung sollte geprüft werden, ob die "
-                f"Wartung bereits durchgeführt wurde — die vorliegenden Daten sagen "
+                f"Wartung bereits durchgeführt wurde: die vorliegenden Daten sagen "
                 f"darüber nichts aus.")
     else:
         return ""
@@ -337,7 +337,7 @@ _QUELLEN_KATEGORIEN = {"wartung": "db_wartung", "web_wartung": "web_wartung"}
 # `build_insights` setzt ihn wörtlich so zusammen (app/evidence.py).
 _INTERVALL_SATZ = re.compile(r"Vorgesehenes Intervall:\s*(?P<wert>.+?)\.\s*$")
 
-_WARTUNG_TITEL = re.compile(r"^(?P<bauteil>.+?)\s+—\s+")
+_WARTUNG_TITEL = re.compile(r"^(?P<bauteil>.+?)(?:\s+—\s+|:\s+)")
 
 
 def _bauteil(i: Insight) -> str:
@@ -520,7 +520,7 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
         return ""
     kopf = [
         "## Laufleistung und Wartung (deterministisch berechnet)",
-        "Der Zeitpunkt des letzten Service ist NICHT bekannt — es existiert dazu "
+        "Der Zeitpunkt des letzten Service ist NICHT bekannt: es existiert dazu "
         "keine Angabe, weder im Inserat noch in der Fahrzeugdatenbank. Schreibe "
         "deshalb NIEMALS, ein Service sei fällig, überfällig, versäumt oder nicht "
         "durchgeführt worden, und behaupte nie, die Servicehistorie fehle. Ein "
@@ -528,7 +528,7 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
         "verlangen.",
         "Die durchschnittliche Fahrleistung ist ein Mittelwert über die gesamte "
         "Fahrzeuglebensdauer, keine gemessene Jahresleistung eines Vorbesitzers. "
-        "Bewerte sie NICHT als gut oder schlecht — nenne nur die Zahl, es gibt "
+        "Bewerte sie NICHT als gut oder schlecht: nenne nur die Zahl, es gibt "
         "dafür keine belastbare Vergleichsschwelle.",
         "Leite aus der Laufleistung KEINE Preisaussage ab (nicht „deswegen "
         "günstig/teuer“, kein Abschlag, kein Marktwert). Der Preis wird "

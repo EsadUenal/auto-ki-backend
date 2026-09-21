@@ -47,14 +47,14 @@ _Eintrag = tuple[str, str, str, str, str | None, tuple[str, ...]]
 BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
     ("spaltmasse", "Außen",
      "Spaltmaße rundum vergleichen",
-     "Türen, Hauben und Kotflügel auf gleichmäßige Spalten prüfen — ungleiche Spaltmaße "
+     "Türen, Hauben und Kotflügel auf gleichmäßige Spalten prüfen: ungleiche Spaltmaße "
      "deuten auf eine Unfallreparatur hin.",
      None, ("karosserie",)),
     ("lack", "Außen",
      "Lack bei Tageslicht schräg ansehen",
      "Flach über die Flächen schauen: Farbtonunterschiede zwischen den Teilen, Wellen im "
      "Lack und Overspray an Gummidichtungen deuten auf Nachlackierung hin.",
-     "Bei Regen oder Dunkelheit ist das kaum erkennbar — möglichst bei Tageslicht ansehen.",
+     "Bei Regen oder Dunkelheit ist das kaum erkennbar: möglichst bei Tageslicht ansehen.",
      ()),
     ("rost", "Außen",
      "Rost an den typischen Stellen suchen",
@@ -73,7 +73,7 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      None, ("beleuchtung",)),
     ("reifen", "Räder und Bremsen",
      "Reifen an allen vier Rädern prüfen",
-     "Profiltiefe, DOT-Alter, Fabrikat und Abriebbild vergleichen — einseitiger Abrieb "
+     "Profiltiefe, DOT-Alter, Fabrikat und Abriebbild vergleichen: einseitiger Abrieb "
      "deutet auf Fahrwerk oder falsche Spureinstellung hin.",
      None, ("raeder",)),
     ("bremsen", "Räder und Bremsen",
@@ -108,13 +108,13 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      ("starterbatterie",)),
     ("warnlampen", "Innen und Elektrik",
      "Warnleuchten beim Einschalten der Zündung beobachten",
-     "Alle Kontrollleuchten müssen kurz aufleuchten und danach erlöschen — auch Airbag, "
+     "Alle Kontrollleuchten müssen kurz aufleuchten und danach erlöschen: auch Airbag, "
      "ABS, Motor und Reifendruck.",
      "Eine Leuchte, die gar nicht erst angeht, kann bewusst entfernt worden sein.",
      ()),
     ("innenraum", "Innen und Elektrik",
      "Innenraum-Verschleiß mit der Laufleistung abgleichen",
-     "Lenkrad, Schaltknauf, Pedalgummis und Fahrersitz ansehen — starke Abnutzung passt "
+     "Lenkrad, Schaltknauf, Pedalgummis und Fahrersitz ansehen: starke Abnutzung passt "
      "nicht zu einer niedrigen angegebenen Laufleistung.",
      None, ("innenraum",)),
     ("feuchtigkeit", "Innen und Elektrik",
@@ -139,7 +139,7 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      None, ()),
     ("schluessel", "Identität",
      "Alle Schlüssel ausprobieren",
-     "Jeden übergebenen Schlüssel einmal am Fahrzeug testen — ein Ersatzschlüssel kostet "
+     "Jeden übergebenen Schlüssel einmal am Fahrzeug testen: ein Ersatzschlüssel kostet "
      "je nach Modell einen dreistelligen Betrag.",
      None, ()),
 )
@@ -153,12 +153,12 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
     # ── Vor Fahrtbeginn ──────────────────────────────────────────────────────
     ("kaltstart", "Vor Fahrtbeginn",
      "Motor kalt starten lassen",
-     "Ein bereits warmgelaufener Motor verdeckt Startprobleme und Kaltstartgeräusche — "
+     "Ein bereits warmgelaufener Motor verdeckt Startprobleme und Kaltstartgeräusche: "
      "auf einen echten Kaltstart bestehen.",
      None, ()),
     ("warnlampen", "Vor Fahrtbeginn",
      "Warnleuchten nach dem Start kontrollieren",
-     "Nach dem Anspringen darf keine Kontrollleuchte dauerhaft leuchten — besonders "
+     "Nach dem Anspringen darf keine Kontrollleuchte dauerhaft leuchten: besonders "
      "Motor, ABS, Airbag und Ladekontrolle.",
      None, ()),
     ("leerlauf", "Vor Fahrtbeginn",
@@ -184,7 +184,7 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
      None, ("allradantrieb",)),
     ("lenkung", "Anfahren und Rangieren",
      "Lenkung bei niedriger Geschwindigkeit prüfen",
-     "Die Lenkung soll gleichmäßig leichtgängig sein — kein Rucken, kein plötzliches "
+     "Die Lenkung soll gleichmäßig leichtgängig sein: kein Rucken, kein plötzliches "
      "Schwergängigwerden, keine Pumpgeräusche.",
      None, ("lenkung",)),
     ("rueckwaerts", "Anfahren und Rangieren",
@@ -195,7 +195,7 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
     # ── Normale Fahrt ────────────────────────────────────────────────────────
     ("geradeauslauf", "Normale Fahrt",
      "Geradeauslauf prüfen",
-     "Auf gerader, ebener Strecke das Lenkrad kurz locker halten — das Fahrzeug soll "
+     "Auf gerader, ebener Strecke das Lenkrad kurz locker halten: das Fahrzeug soll "
      "nicht seitlich ziehen.",
      "Nur bei freier Strecke und ohne Gegenverkehr, Hände am Lenkrad lassen.",
      ()),
@@ -237,7 +237,7 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
     # ── Bremsen ──────────────────────────────────────────────────────────────
     ("bremswirkung", "Bremsen",
      "Bremswirkung auf freier Strecke prüfen",
-     "Aus mäßigem Tempo kontrolliert und deutlich abbremsen — das Fahrzeug soll "
+     "Aus mäßigem Tempo kontrolliert und deutlich abbremsen: das Fahrzeug soll "
      "gleichmäßig und ohne Nachlassen verzögern.",
      "Nur wenn kein Fahrzeug folgt und der Verkehr es sicher zulässt.",
      ("bremsen",)),
@@ -294,13 +294,13 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
 BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
     ("eigentuemer", "Verkäufer und Eigentum",
      "Sind Sie der eingetragene Halter, oder verkaufen Sie im Auftrag?",
-     "Klärt die Verkaufsberechtigung — bei Verkauf im Auftrag Vollmacht und Ausweis "
+     "Klärt die Verkaufsberechtigung: bei Verkauf im Auftrag Vollmacht und Ausweis "
      "zeigen lassen.",
      None, ()),
     ("finanzierung", "Verkäufer und Eigentum",
      "Ist das Fahrzeug bezahlt, oder läuft noch eine Finanzierung?",
      "Bei laufender Finanzierung liegt die Zulassungsbescheinigung Teil II meist bei der "
-     "Bank — das Eigentum vor der Zahlung klären.",
+     "Bank: das Eigentum vor der Zahlung klären.",
      None, ()),
     ("unfall", "Historie",
      "Hatte das Fahrzeug einen Unfall oder wurden Teile nachlackiert?",
@@ -309,7 +309,7 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      None, ("unfall",)),
     ("maengel", "Historie",
      "Welche Mängel oder Auffälligkeiten sind Ihnen aktuell bekannt?",
-     "Offen gestellte Frage — die Antwort anschließend mit dem eigenen "
+     "Offen gestellte Frage: die Antwort anschließend mit dem eigenen "
      "Besichtigungsergebnis abgleichen.",
      None, ()),
     ("reparaturen", "Historie",
@@ -326,7 +326,7 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      None, ()),
     ("hu", "Wartung und Technik",
      "Wann war die letzte Hauptuntersuchung, und was stand im Prüfbericht?",
-     "Den Bericht zeigen lassen — dort stehen auch Mängel, die ohne Beanstandung "
+     "Den Bericht zeigen lassen: dort stehen auch Mängel, die ohne Beanstandung "
      "vermerkt wurden.",
      None, ("hu-bericht",)),
     ("werkstattpruefung", "Wartung und Technik",
@@ -334,7 +334,7 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      "Ein grundloses Nein ist ein Warnsignal; ein seriöser Verkäufer stimmt in der Regel zu.",
      None, ()),
     ("nutzung", "Nutzung",
-     "Wie wurde das Fahrzeug überwiegend genutzt — Kurzstrecke, Langstrecke oder mit Anhänger?",
+     "Wie wurde das Fahrzeug überwiegend genutzt: Kurzstrecke, Langstrecke oder mit Anhänger?",
      "Das Nutzungsprofil erklärt das Verschleißbild und muss zur Laufleistung passen.",
      None, ()),
     ("standzeit", "Nutzung",
@@ -347,7 +347,7 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      None, ()),
     ("schluessel", "Zubehör",
      "Wie viele Schlüssel gehören zum Fahrzeug?",
-     "Ein fehlender Zweitschlüssel kostet je nach Modell einen dreistelligen Betrag — vor "
+     "Ein fehlender Zweitschlüssel kostet je nach Modell einen dreistelligen Betrag: vor "
      "Ort alle Schlüssel testen.",
      None, ()),
     ("raeder", "Zubehör",
@@ -368,7 +368,7 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
      None, ()),
     ("zb2", "Fahrzeugpapiere",
      "Zulassungsbescheinigung Teil II zeigen lassen",
-     "Der Fahrzeugbrief weist das Eigentum nach und nennt die Zahl der Vorhalter — ohne "
+     "Der Fahrzeugbrief weist das Eigentum nach und nennt die Zahl der Vorhalter: ohne "
      "ihn sollte kein Kauf stattfinden.",
      None, ()),
     ("fin", "Fahrzeugpapiere",
@@ -378,7 +378,7 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
      None, ()),
     ("ausweis", "Fahrzeugpapiere",
      "Ausweis des Verkäufers mit den Papieren abgleichen",
-     "Der Name im Ausweis muss zum Halter in Teil II passen — sonst eine schriftliche "
+     "Der Name im Ausweis muss zum Halter in Teil II passen: sonst eine schriftliche "
      "Vollmacht verlangen.",
      None, ()),
     ("hu", "Prüfungen und Wartung",
@@ -401,7 +401,7 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
     ("km_plausibel", "Prüfungen und Wartung",
      "Kilometerstände in den Unterlagen auf Plausibilität prüfen",
      "Die Kilometerstände aus HU-Bericht, Serviceheft und Rechnungen chronologisch "
-     "vergleichen — sie müssen durchgehend ansteigen.",
+     "vergleichen: sie müssen durchgehend ansteigen.",
      None, ()),
     ("rueckruf", "Prüfungen und Wartung",
      "Nach Nachweisen zu durchgeführten Rückrufaktionen fragen",
