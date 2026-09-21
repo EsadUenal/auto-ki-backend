@@ -93,8 +93,12 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      None, ()),
     ("motorraum", "Unten und Motorraum",
      "Motorraum im kalten Zustand ansehen",
-     "Ölstand am Peilstab, Kühlmittelstand und den Öleinfülldeckel auf helle Emulsion "
-     "prüfen; ein auffällig frisch gereinigter Motorraum kann Undichtigkeiten verdecken.",
+     # Neutral formuliert: viele aktuelle Motoren haben keinen Peilstab mehr, der
+     # Ölstand wird elektronisch im Fahrzeugmenü angezeigt (RC1-Befund BMW G20).
+     "Motorölstand nach Herstellervorgabe prüfen (Peilstab oder elektronische "
+     "Ölstandsanzeige im Fahrzeugmenü), außerdem Kühlmittelstand und den Öleinfülldeckel "
+     "auf helle Emulsion; ein auffällig frisch gereinigter Motorraum kann Undichtigkeiten "
+     "verdecken.",
      None, ("oelverlust",)),
     ("kaltstart", "Unten und Motorraum",
      "Kaltstart abwarten",
@@ -125,8 +129,8 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      None, ("infotainment",)),
     ("klima", "Innen und Elektrik",
      "Klimaanlage im Stand prüfen",
-     "Klimaanlage einschalten und prüfen, ob die Luft nach kurzer Zeit spürbar kalt wird; "
-     "auf Geruch und Kompressorgeräusch achten.",
+     "Falls vorhanden: Klimaanlage einschalten und prüfen, ob die Luft nach kurzer Zeit "
+     "spürbar kalt wird; auf Geruch und Kompressorgeräusch achten.",
      None, ("klimaanlage",)),
     ("fin", "Identität",
      "FIN am Fahrzeug mit den Papieren vergleichen",

@@ -107,6 +107,14 @@ class KaufCheckRequest(BaseModel):
     tuev_bis: str | None = Field(default=None, max_length=20)        # z.B. "06/2027"
     scheckheftgepflegt: bool | None = None
 
+    @field_validator("tuev_bis")
+    @classmethod
+    def _hu_normalisieren(cls, v):
+        # RC1: "092028" kam ungeparst im Prompt und in der Checkliste an.
+        # An der Eingabegrenze auf "MM/JJJJ" bringen; Unlesbares bleibt unverändert.
+        from app.hu_termin import normalisiere_hu
+        return normalisiere_hu(v)
+
     # Alternativ: Volltext des Inserats (Copy-Paste von mobile.de / AutoScout)
     freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
 
@@ -611,7 +619,12 @@ class Fahrzeugkontext(BaseModel):
     vorgaenger: str | None = None            # aufgelöster Klarname, z.B. "Opel Insignia A"
     erkennung_generation: str | None = None  # Freitext, gekürzt
     facelift_merkmale: str | None = None     # Freitext, gekürzt
-    wartung_oel_km: int | None = None        # Herstellerintervall in km (strukturiert)
+    wartung_oel_km: int | None = None        # Richtwert in km aus der Fahrzeugdatenbank
+    # RC1: viele Hersteller rechnen das Serviceintervall fahrzeugabhaengig (BMW:
+    # Condition Based Service). Der DB-Wert ist dann nur eine Orientierung und
+    # darf nicht als starre Herstellervorgabe erscheinen.
+    wartung_system: str | None = None        # z.B. "Condition Based Service (CBS)"
+    wartung_oel_hinweis: str | None = None   # nutzertauglicher Einordnungssatz
     wartung_hu_intervall: str | None = None  # Freitext, zeitbezogen — NIE gegen km rechnen
 
     def hat_inhalt(self) -> bool:
@@ -724,6 +737,10 @@ class KaufCheckResponse(BaseModel):
     # Phase 1 Schicht B: welche vorhandenen Insight-IDs (siehe `insights`) die jeweilige
     # LLM-Entscheidung stützen. Backend-validiert — enthält nur existierende IDs.
     empfehlung_evidence_ids: list[str] = Field(default_factory=list)
+    # RC1: deterministische Begründung der Empfehlung — getrennt von den Risiken.
+    empfehlung_gruende: list[str] = Field(default_factory=list)
+    # RC1: HU-Termin, datumssicher gegen "heute" bewertet (app/hu_termin.py).
+    hu_pruefung: dict | None = None
     preis_evidence_ids: list[str] = Field(default_factory=list)
     risiko_evidence_ids: list[str] = Field(default_factory=list)
     # Phase 2: verdichtete Kern-Erkenntnisse ("Das solltest du wissen"), max. 5,
@@ -826,6 +843,12 @@ class VerkaufsCheckRequest(BaseModel):
     vorbesitzer: int | None = None
     tuev_bis: str | None = Field(default=None, max_length=20)        # z.B. "06/2027"
     scheckheftgepflegt: bool | None = None
+
+    @field_validator("tuev_bis")
+    @classmethod
+    def _hu_normalisieren(cls, v):
+        from app.hu_termin import normalisiere_hu
+        return normalisiere_hu(v)
 
     freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)            # alternative Freitexteingabe
     bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)

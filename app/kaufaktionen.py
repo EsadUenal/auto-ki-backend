@@ -351,8 +351,9 @@ _KOMPONENTEN: tuple[dict, ...] = (
          muster=("oelverbrauch", "oelverlust", "kolbenring", "ventilschaftdicht",
                  "kurbelgehaeuseentlueftung", "kge", "oelpumpe", "oelwanne", "oellec"),
          sicherheit=False,
-         besichtigung="Ölstand am Peilstab prüfen, Motor und Stellplatz auf Ölspuren "
-                      "kontrollieren und den Öleinfülldeckel auf Emulsion ansehen.",
+         besichtigung="Motorölstand nach Herstellervorgabe prüfen (Peilstab oder "
+                      "elektronische Anzeige im Fahrzeugmenü), Motor und Stellplatz auf "
+                      "Ölspuren kontrollieren und den Öleinfülldeckel auf Emulsion ansehen.",
          probefahrt=None),
     dict(schluessel="zylinderkopf", muster=("zylinderkopfdichtung", "zylinderkopf", "kopfdichtung"),
          sicherheit=False,
@@ -669,8 +670,74 @@ def _fahrzeug_kurzbezeichnung(req, baureihe: dict | None) -> str | None:
     return name or None
 
 
+# ── Getriebeabhängige Basistexte (RC1) ───────────────────────────────────────
+#
+# Der Basis-Katalog ist fahrzeugneutral und mischte deshalb Handschaltung und
+# Automatik in einem Satz ("bei Handschaltung auf den Greifpunkt der Kupplung
+# achten, bei Automatik …") — bis hin zu "Die Kupplung darf nicht durchrutschen"
+# bei einem Automatik-BMW. Ist das Getriebe bekannt, wird genau die passende
+# Formulierung verwendet; ist es unbekannt, bleibt der neutrale Katalogtext.
+AUTOMATIK, MANUELL = "automatik", "manuell"
+
+_AUTOMATIK_WORTE = ("automatik", "steptronic", "tiptronic", "dsg", "s tronic", "s-tronic",
+                    "dkg", "doppelkupplung", "pdk", "cvt", "wandler", "multitronic",
+                    "powershift", "edc", "g-tronic")
+_MANUELL_WORTE = ("schaltgetriebe", "handschalt", "manuell")
+
+_BASIS_GETRIEBE: dict[tuple[str, str], dict[str, str]] = {
+    ("probefahrt", "anfahren"): {
+        AUTOMATIK: "Mehrmals aus dem Stand anfahren: Das Automatikgetriebe soll ohne "
+                   "Verzögerung und ohne Ruck anfahren.",
+        MANUELL: "Mehrmals aus dem Stand anfahren und auf Rupfen sowie den Greifpunkt der "
+                 "Kupplung achten.",
+    },
+    ("probefahrt", "rueckwaerts"): {
+        AUTOMATIK: "Fahrstufe R mehrfach einlegen: ohne spürbaren Schlag, das Fahrzeug soll "
+                   "sauber rückwärts anfahren.",
+        MANUELL: "Der Rückwärtsgang soll ohne Kratzen einrasten.",
+    },
+    ("probefahrt", "schalten"): {
+        AUTOMATIK: "Alle Fahrstufen durchfahren: Gangwechsel sollen weich und ohne "
+                   "Verzögerung kommen, auch beim Zurückschalten.",
+        MANUELL: "Jeden Gang inklusive der oberen Gänge einlegen — ohne Kratzen, Hakeln "
+                 "oder Herausspringen.",
+    },
+    ("probefahrt", "last"): {
+        AUTOMATIK: "Wenn möglich eine Steigung hochfahren: Die Drehzahl darf nicht ohne "
+                   "entsprechenden Vortrieb hochlaufen (Hinweis auf ein durchrutschendes "
+                   "Getriebe).",
+        MANUELL: "Wenn möglich eine Steigung hochfahren: Die Kupplung darf nicht "
+                 "durchrutschen und die Drehzahl nicht ohne entsprechenden Vortrieb "
+                 "hochlaufen.",
+    },
+    ("probefahrt", "nach_geruch"): {
+        AUTOMATIK: "Am Motorraum und an den Rädern auf Geruch nach verbranntem Öl oder "
+                   "heißgelaufenen Bremsen achten.",
+    },
+}
+
+
+def getriebe_art(req, motor_match: dict | None) -> str | None:
+    """automatik | manuell | None — aus der Nutzerangabe, sonst eindeutig aus der DB."""
+    text = " ".join(str(getattr(req, f, None) or "") for f in ("motor", "beschreibung",
+                                                                "freitext")).lower()
+    auto = any(w in text for w in _AUTOMATIK_WORTE)
+    manu = any(w in text for w in _MANUELL_WORTE)
+    if auto != manu:
+        return AUTOMATIK if auto else MANUELL
+    optionen = (motor_match or {}).get("getriebe")
+    if isinstance(optionen, str):
+        optionen = [optionen]
+    optionen = [str(o).lower() for o in (optionen or [])]
+    if optionen and all(any(w in o for w in _AUTOMATIK_WORTE) for o in optionen):
+        return AUTOMATIK
+    if optionen and all(any(w in o for w in _MANUELL_WORTE) for o in optionen):
+        return MANUELL
+    return None
+
+
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
-                 fahrzeug: str | None) -> list[Kaufaktion]:
+                 fahrzeug: str | None, getriebe: str | None = None) -> list[Kaufaktion]:
     """Baut die Basis-Checkliste eines Bereichs aus dem Katalog.
 
     Dedup über die Ebenen hinweg (§18): Ein Basis-Punkt entfällt, wenn ein
@@ -689,6 +756,8 @@ def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
         if _wird_abgedeckt(deckt, belegte_schluessel):
             continue
         rang = _R_BASIS - n
+        if getriebe:
+            aktion = _BASIS_GETRIEBE.get((bereich, schluessel), {}).get(getriebe, aktion)
         out.append(Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-basis-{schluessel}",
             bereich=bereich, typ=TYP_BASIS, titel=titel, aktion=aktion,
@@ -748,6 +817,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     _aus_inserat(s, req)
 
     fahrzeug = _fahrzeug_kurzbezeichnung(req, baureihe)
+    getriebe = getriebe_art(req, motor_match)
     kataloge = {
         BESICHTIGUNG:     BASIS_BESICHTIGUNG,
         PROBEFAHRT:       BASIS_PROBEFAHRT,
@@ -762,7 +832,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
             export_title=EXPORT_TITEL[bereich],
             fahrzeug=fahrzeug,
             fahrzeugspezifisch=spezifisch,
-            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug),
+            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug, getriebe),
         )
     return Kaufaktionen(
         besichtigung=listen[BESICHTIGUNG],
@@ -787,6 +857,56 @@ def _rang_schwachstelle(schweregrad: str | None, komp: dict | None) -> int:
     return rang
 
 
+# ── Art einer Schwachstelle (RC1) ───────────────────────────────────────────
+#
+# Das Frage-Template lautete für JEDE Schwachstelle "Wurde am Bauteil „X“
+# bereits gearbeitet …?". Bei "Knarzgeräusche Innenraum" ergab das die
+# Frage nach dem "Bauteil Knarzgeräusche". Die DB-Spalte heißt zwar `bauteil`,
+# enthält aber auch Symptome und Softwarethemen. Die Art wird deshalb aus dem
+# Text bestimmt — generisch, ohne Fahrzeug-Sonderfall.
+GERAEUSCH, SOFTWARE, BAUTEIL = "geraeusch", "software", "bauteil"
+
+_GERAEUSCH_WORTE = ("geraeusch", "knarz", "klapper", "quietsch", "poltern", "rassel",
+                    "brumm", "pfeif", "heul", "klacker", "knack", "dröhn", "droehn")
+# Bewusst KEIN "app": das steckt auch in "Heckklappe" oder "Kappe".
+_SOFTWARE_WORTE = ("software", "infotainment", "idrive", "mmi", "navi",
+                   "konnektiv", "bluetooth", "update")
+
+
+def schwachstellen_art(bauteil: str | None) -> str:
+    n = _norm(bauteil)
+    if any(w in n for w in _GERAEUSCH_WORTE):
+        return GERAEUSCH
+    if any(w in n for w in _SOFTWARE_WORTE):
+        return SOFTWARE
+    return BAUTEIL
+
+
+def _ist_bekannt(i: Insight) -> bool:
+    """Dieselbe Einstufung wie der Insight-Titel (app/evidence.py): verifiziert und
+    nicht als Einzelbericht beschrieben."""
+    return (i.titel or "").endswith("bekannte Schwachstelle")
+
+
+def _gruppe(i: Insight) -> str:
+    return "Bekannte Schwachstelle" if _ist_bekannt(i) else "Gemeldeter Hinweis"
+
+
+def _herkunft_satz(i: Insight) -> str:
+    return ("Bekannte Schwachstelle dieser Baureihe" if _ist_bekannt(i)
+            else "Für diese Baureihe gemeldeter Punkt")
+
+
+def verkaeuferfrage(bauteil: str, art: str) -> str:
+    if art == GERAEUSCH:
+        return (f"Sind Ihnen Auffälligkeiten zum Thema „{bauteil}“ bekannt — und wurde "
+                f"deswegen schon etwas nachgebessert oder ersetzt?")
+    if art == SOFTWARE:
+        return (f"Gab es Störungen im Bereich „{bauteil}“, und ist der aktuelle "
+                f"Software-Stand eingespielt?")
+    return f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?"
+
+
 def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
     """Bekannte Baureihen-Schwachstelle -> Besichtigung (+ ggf. Probefahrt) + Frage.
 
@@ -798,42 +918,52 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
         if i.kategorie != "schwachstelle":
             continue
         bauteil = _bauteil_aus_schwachstelle(i)
-        komp = _komponente(bauteil)
+        art = schwachstellen_art(bauteil)
+        # Ein Geräusch ist kein Bauteil: die Komponententabelle würde "Knarzgeräusche
+        # Innenraum" über das Wort "Innenraum" auf die Verschleißprüfung der Sitze
+        # abbilden — fachlich eine andere Prüfung.
+        komp = None if art == GERAEUSCH else _komponente(bauteil)
         schluessel = komp["schluessel"] if komp else _slug(bauteil)
         rang = _rang_schwachstelle(i.schweregrad, komp)
+        gruppe = _gruppe(i)
 
         # Besichtigung: Tabellentext, sonst der evidenzgebundene Fallback auf das
         # konkrete Bauteil (§5 — kein generischer 30-Punkte-Katalog).
-        besichtigung = (komp or {}).get("besichtigung") or (
-            f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
-            f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
-        )
+        if art == GERAEUSCH:
+            besichtigung = (f"Auf den gemeldeten Punkt „{bauteil}“ achten: im Stand die "
+                            f"betroffenen Verkleidungen und Bedienelemente bewegen, bei der "
+                            f"Probefahrt auf schlechter Fahrbahn hinhören.")
+        else:
+            besichtigung = (komp or {}).get("besichtigung") or (
+                f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
+                f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
+            )
         s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
               evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe="Bekannte Schwachstelle")
+              gruppe=gruppe)
 
         # Probefahrt NUR über eines der beiden Tore (§6).
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe="Bekannte Schwachstelle")
+              gruppe=gruppe)
 
         s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
-              "Bekannte Schwachstelle dieser Baureihe — nach durchgeführten Reparaturen fragen "
+              verkaeuferfrage(bauteil, art),
+              f"{_herkunft_satz(i)} — nach durchgeführten Reparaturen oder Updates fragen "
               "und Rechnungen bzw. Werkstattbelege zeigen lassen.",
               rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe="Bekannte Schwachstelle")
+              gruppe=gruppe)
 
         # Dokumentenebene nur bei wirklich teuren/schweren Punkten — sonst würde die
         # Dokumentenliste mit jeder Kleinigkeit volllaufen.
         if (i.schweregrad or "").strip().lower() in _HOHE_SCHWERE:
             s.add(DOKUMENTE, schluessel, f"Reparaturnachweis {bauteil}",
-                  f"Falls am Bauteil „{bauteil}“ gearbeitet wurde: Rechnung oder Werkstattbeleg "
+                  f"Falls wegen „{bauteil}“ gearbeitet wurde: Rechnung oder Werkstattbeleg "
                   f"mit Datum und Kilometerstand vorlegen lassen.",
                   rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe="Bekannte Schwachstelle")
+              gruppe=gruppe)
 
 
 # ── 2) Motorprobleme ─────────────────────────────────────────────────────────

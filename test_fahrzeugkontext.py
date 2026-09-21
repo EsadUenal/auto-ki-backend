@@ -218,8 +218,12 @@ print("\n=== H/I) Ölwechsel-Intervall ===")
 
 check("H1 wartung_oel_km strukturiert als Zahl", ctx_a.wartung_oel_km == 25000)
 check("H2 Typ ist int, nicht String", isinstance(ctx_a.wartung_oel_km, int))
-check("H3 im Prompt als Herstellerangabe gekennzeichnet",
-      "Ölwechsel-Intervall (Herstellerangabe): alle 25.000 km" in prompt_block(ctx_a))
+# KAUFCHECK-RC1: der DB-Wert ist ein Richtwert. Viele Hersteller rechnen das
+# Intervall fahrzeugabhängig (BMW: Condition Based Service) — als starre
+# "Herstellerangabe" wäre er falsch.
+check("H3 im Prompt als Richtwert, nicht als starre Herstellervorgabe gekennzeichnet",
+      "Ölwechsel-Richtwert (Fahrzeugdatenbank, KEINE starre Herstellervorgabe): 25.000 km"
+      in prompt_block(ctx_a))
 check("H4 fehlender Wert bleibt None",
       ctx_von(baureihe(wartung_oel_km=None)).wartung_oel_km is None)
 check("H5 nicht-numerischer Wert verworfen", _oel_km({"wartung_oel_km": "bald"}) is None)

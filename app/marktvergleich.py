@@ -466,7 +466,7 @@ def _karosserie_im_text(text: str) -> str | None:
 _RE_INSIGNIA_WORT = re.compile(r"(?<![a-zäöüß0-9])insignia(?![a-zäöüß])",
                                re.IGNORECASE)
 _RE_ST_KUERZEL = re.compile(
-    r"(?<![a-zäöüß0-9])st(?![a-zäöüß0-9])(?!\.)(?!-?\s*line)", re.IGNORECASE)
+    r"(?<![a-zäöüß0-9])st(?![a-zäöüß0-9])(?!\.)(?!-?\s*line\b)", re.IGNORECASE)
 
 
 def _insignia_st_kombi(text: str) -> bool:

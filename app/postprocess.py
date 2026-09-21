@@ -450,6 +450,29 @@ def _neutralisiere_tabellenzeile(zeile: str) -> str:
     return "|".join(zellen)
 
 
+_PREISZEILE = re.compile(
+    r"^\|\s*(?:Preis|Angebotspreis|Kaufpreis|Verkaufspreis)\s*\|[^\n]*$",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def neutralisiere_preiszeile_ohne_markt(text: str) -> str:
+    """KaufCheck-RC1: Tabellenzeile "Preis" ohne belastbare Marktbasis neutral setzen.
+
+    Die Vergleichstabelle zeigte "| Preis | 24.900 € | nicht verfügbar | ⚠ Selten
+    (aber möglich) |". Ohne Markterwartung ist jede Plausibilitätsstufe eine
+    Preiswertung ohne Grundlage. Behalten wird nur der Angebotspreis selbst.
+    """
+    if not text:
+        return text
+
+    def _zeile(m: re.Match) -> str:
+        zellen = [z.strip() for z in m.group(0).strip().strip("|").split("|")]
+        kriterium = zellen[0] if zellen else "Preis"
+        angabe = zellen[1] if len(zellen) > 1 else ""
+        return f"| {kriterium} | {angabe} | keine belastbare Marktbasis | — nicht bewertbar |"
+    return _PREISZEILE.sub(_zeile, text)
+
+
 def neutralisiere_no_market_preisurteil(text: str) -> str:
     """Entfernt konkrete Marktpreisbehauptungen und -urteile aus dem Freitext —
     NUR aufzurufen, wenn für diesen Check KEINE belastbare Markt-Evidence vorliegt

@@ -206,8 +206,14 @@ check("K2 Baureihe unverändert", _ins_b["br"]["id"] == "opel-insignia-b")
 # trifft dieses Fahrzeug ebenfalls. Statt nur die Zahl hochzuzählen, hält der
 # Test jetzt zusätzlich fest, WELCHER Rückruf dazugekommen ist — eine reine
 # Zahl hätte auch bei einem ganz anderen Zuwachs weiter gestimmt.
-check("K3 Evidence unverändert vorhanden (5 + 1 aus Batch A + 1 aus Mixed-Target)",
-      len(_ins_b["ins"]) == 7)
+# KAUFCHECK-RC1: -1 — der Altbestandsrückruf #547 ("Kurzschluss im Heizsystem
+# der Vordersitze") trägt weder eine amtliche Referenz noch eine Verifikation;
+# im amtlichen KBA-Gesamtexport existiert KEIN Opel-Rückruf zu Sitzheizungen.
+# Unbelegte Rückrufe werden nicht mehr angezeigt (recall_filter.rueckruf_ist_belegt).
+check("K3 Evidence vorhanden (3 Schwachstellen + 3 amtlich belegte Rückrufe)",
+      len(_ins_b["ins"]) == 6)
+check("K3f der unbelegte Sitzheizungs-Rückruf ist nicht mehr sichtbar",
+      not any("Heizsystem der Vordersitze" in f.titel for f in _ins_b["ins"]))
 check("K3e der amtliche Radverschraubungs-Rückruf KBA 10383 ist sichtbar und verified",
       any(q.ref == "10383" and f.trust == "verified"
           for f in _ins_b["ins"] for q in f.quellen))

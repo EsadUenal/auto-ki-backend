@@ -531,7 +531,56 @@ def _kraftstoff_aus_hint(h: str) -> str | None:
     return None
 
 
-def find_motor(baureihe: dict, hint: str | None) -> dict | None:
+# Antriebsangaben in Freitext -> DB-Wert von `motorvariante.antrieb`.
+_ANTRIEB_MUSTER = (
+    ("Allrad", ("allrad", "xdrive", "quattro", "4motion", "4matic", "4x4", "awd", "4wd")),
+    ("Heck", ("hinterrad", "heckantrieb", "heckgetrieben", "rwd")),
+    ("Front", ("frontantrieb", "vorderrad", "fwd")),
+)
+
+
+def _antrieb_aus_text(text: str) -> str | None:
+    t = (text or "").lower()
+    for wert, muster in _ANTRIEB_MUSTER:
+        if any(m in t for m in muster):
+            return wert
+    return None
+
+
+def _eingrenzen(treffer: list[dict], hint_lower: str, modell: str | None) -> dict:
+    """Wählt unter mehreren Leistungstreffern die Variante, die der Nutzer beschreibt.
+
+    RC1-Befund: "2.0 Benzin, 258 PS, Automatik, Hinterradantrieb" beim BMW 330i
+    traf "330i" (Heck) UND "330i xDrive" (Allrad) — beide 258 PS. Gewonnen hat
+    schlicht die erste Zeile der Liste, also der Allradler, obwohl der Nutzer
+    ausdrücklich Hinterradantrieb angegeben hatte. Damit hingen Allrad-Specs und
+    ggf. allradspezifische Punkte an einem Hecktriebler.
+
+    Eingrenzung in fester Reihenfolge, jeweils nur wenn sie etwas übrig lässt:
+      1. Antrieb aus dem Freitext (Allrad/Heck/Front) gegen `antrieb`.
+      2. Modellbezeichnung des Inserats ("330i") normalisiert GLEICH der
+         Variantenbezeichnung — Gleichheit, kein Teilstring (siehe oben: "c200"
+         steckt in "c200d").
+    Bleibt danach mehr als eine übrig, bleibt es bei der bisherigen, stabilen
+    Listenreihenfolge.
+    """
+    if len(treffer) == 1:
+        return treffer[0]
+    auswahl = treffer
+    antrieb = _antrieb_aus_text(hint_lower)
+    if antrieb:
+        passend = [m for m in auswahl if (m.get("antrieb") or "").strip().lower() == antrieb.lower()]
+        if passend:
+            auswahl = passend
+    if len(auswahl) > 1 and modell:
+        modell_norm = _norm_bezeichnung(modell)
+        gleich = [m for m in auswahl if _norm_bezeichnung(m.get("bezeichnung")) == modell_norm]
+        if gleich:
+            auswahl = gleich
+    return auswahl[0]
+
+
+def find_motor(baureihe: dict, hint: str | None, modell: str | None = None) -> dict | None:
     """Findet die passende Motorvariante per Textabgleich.
 
     Signalreihenfolge: (1) direkte Bezeichnung/Motorcode, (2) Leistung — dabei die
@@ -610,15 +659,15 @@ def find_motor(baureihe: dict, hint: str | None) -> dict | None:
     ps_match = re.search(r"(\d{2,3})\s*ps\b", h)
     if ps_match:
         val = int(ps_match.group(1))
-        for m in kandidaten:
-            if m.get("leistung_ps") == val:
-                return m
+        treffer = [m for m in kandidaten if m.get("leistung_ps") == val]
+        if treffer:
+            return _eingrenzen(treffer, h, modell)
     kw_match = re.search(r"(\d{2,3})\s*kw\b", h)
     if kw_match:
         val = int(kw_match.group(1))
-        for m in kandidaten:
-            if m.get("leistung_kw") == val:
-                return m
+        treffer = [m for m in kandidaten if m.get("leistung_kw") == val]
+        if treffer:
+            return _eingrenzen(treffer, h, modell)
 
     # (3) Keine Leistungsangabe, aber der Kraftstoff grenzt eindeutig auf genau
     #     einen Motor ein -> diesen nehmen.

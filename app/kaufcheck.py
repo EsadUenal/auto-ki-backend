@@ -58,6 +58,11 @@ from app.preisurteil import (
     prompt_block as preis_prompt_block,
 )
 from app.kaufaktionen import build_kaufaktionen
+from app.hu_termin import bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
+from app.markt_quellen import geeignete_marktquellen
+from app.empfehlung_gruende import baue_empfehlung_gruende
+from app.fahrzeugkontext import generationslabel
+from app.postprocess import neutralisiere_preiszeile_ohne_markt
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
@@ -176,6 +181,18 @@ Mindest-Kriterien: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, G
 ## Besichtigungs-Checkliste
 Markdown-Checkboxen, priorisiert: kritische Prüfpunkte (die im schlimmsten Fall den Kauf verhindern sollten) ZUERST, allgemeine Hinweise (Kosmetik, übliche Verschleißteile) DANACH.
 
+INSERAT-ANGABEN SIND ANGABEN, KEINE TATSACHEN:
+- Gib Verkäuferangaben immer als solche wieder ("laut Inserat …") und formuliere sie NIE stärker als eingegeben: "scheckheftgepflegt" heißt NICHT "lückenlose Wartungshistorie"; "unfallfrei laut Inserat" heißt NICHT "nachweislich unfallfrei"; "HU neu" heißt NICHT "Prüfbericht gesehen"; "2 Vorbesitzer" heißt NICHT "amtlich bestätigt".
+- Datum: Das aktuelle Datum steht im Nutzerteil ("HEUTIGES DATUM"). Rechne ausschließlich damit, nie mit einem angenommenen anderen Jahr.
+
+PREIS OHNE MARKTBASIS:
+- Steht im Nutzerteil kein belastbarer Marktpreis, gibt es KEINE Preiswertung — auch nicht indirekt über die Plausibilitätsspalte. In der Tabellenzeile "Preis" steht dann als Erwartung "keine belastbare Marktbasis" und als Plausibilität "— nicht bewertbar", niemals "selten", "günstig", "fair", "marktgerecht" oder "teuer".
+- Die Kaufempfehlung ist dann eine rein TECHNISCHE Einschätzung. Formuliere sie so, dass der Angebotspreis nicht als bestätigt erscheint.
+
+CHECKLISTE:
+- Keine Handlung, die beim konkreten Fahrzeug unmöglich oder falsch sein kann: Ölstand "nach Herstellervorgabe" prüfen (viele Motoren haben keinen Peilstab mehr), Kupplungsprüfungen nur bei Schaltgetriebe, Ausstattungs- und Assistenzprüfungen mit "falls vorhanden".
+- Ein Geräusch- oder Softwarethema ist kein Bauteil — frage nach Auffälligkeiten und Nachbesserungen, nicht nach "Arbeiten am Bauteil".
+
 REGELN:
 1. Erfinde keine Zahlen — Specs nur aus DB-Kontext verwenden.
 2. Kennzeichne Web-Preise transparent als Websuche-Ergebnis, ohne interne Begriffe wie "ungeprüft" oder "Vertrauen" im Text zu verwenden — das sind Entwicklerbegriffe, keine Nutzersprache.
@@ -184,6 +201,12 @@ REGELN:
 5. Das JSON-Feld "bericht" darf Zeilenumbrüche (\\n) enthalten.
 6. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Checkliste.\
 """
+
+
+def _heute():
+    """Aktuelles Datum — eigene Funktion, damit Tests es festsetzen können."""
+    import datetime as _dt
+    return _dt.date.today()
 
 
 def _format_inserat(req: KaufCheckRequest) -> str:
@@ -263,7 +286,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Der Check bricht dabei NICHT ab: Inserat-Daten, Marktrecherche, LLM-Bericht
     # und die allgemeinen Basis-Pruefplaene laufen vollstaendig weiter.
     baureihe_markt, identitaet = await baureihe_task
-    motor_markt = find_motor(baureihe_markt, req.motor) if baureihe_markt else None
+    motor_markt = find_motor(baureihe_markt, req.motor, req.modell) if baureihe_markt else None
     if identitaet["belastbar"]:
         baureihe, motor_match = baureihe_markt, motor_markt
     else:
@@ -308,9 +331,21 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     #
     # Der Kontext hängt an KEINER Marktinformation: bei `completed_no_market`
     # entsteht exakt derselbe Block wie bei vorhandenem Marktpreis.
+    # RC1: Werkscode passend zur im Inserat genannten Karosserie ("G20" statt
+    # "G20/G21"), wiederverwendet aus der AutoFinder-Auflösung. Die Baureihe wird
+    # für DIESEN Check mit dem aufgelösten Label weitergegeben (DB-Kontext,
+    # Kaufaktionen); der Marktpfad arbeitet weiter mit `baureihe_markt`.
+    karosserie_text = " ".join(filter(None, [req.modell, req.beschreibung, req.freitext]))
+    if baureihe:
+        label = generationslabel(baureihe, karosserie_text)
+        if label and label != baureihe.get("generation"):
+            baureihe = {**baureihe, "generation": label}
     fahrzeugkontext = build_fahrzeugkontext(baureihe)
     db_ctx = build_db_context(baureihe, motor_match, req.baujahr,
                               fahrzeugkontext=fahrzeugkontext)
+    # RC1: HU-Termin deterministisch gegen HEUTE bewerten (nie im Modell).
+    heute = _heute()
+    hu = bewerte_hu(req.tuev_bis, heute=heute, baujahr=req.baujahr)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
@@ -384,7 +419,12 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Quellenqualität für LLM-Kontext/Belege: fachfremde Modell-Seiten aussortieren
     # (kein 'BMW 4er'/'Mercedes C-Klasse' als 3er-Quelle), dann Marktplätze bevorzugt,
     # Social Media/Duplikate raus, auf so viele Quellen wie nötig begrenzt.
-    web_relevant = [r for r in web_results_roh if modell_relevant(r, ziel)]
+    # RC1: als Marktquelle zählt nur, was POSITIV zum Fahrzeug passt — keine
+    # Fehler-/Sperrseiten, Teileshops, Leasingangebote oder fachfremden Seiten
+    # (app/markt_quellen.py). Vorher liess `modell_relevant` alles ohne
+    # Modellsignal als "neutral" durch.
+    web_relevant = [r for r in geeignete_marktquellen(web_results_roh, ziel, req.marke)
+                    if modell_relevant(r, ziel)]
     web_results = curate_results(web_relevant, kategorie=KATEGORIE_MARKTPREISE, max_results=_MAX_KAUFCHECK_QUELLEN)
     web_ctx = results_to_context(web_results)
     belege  = results_to_belege(web_results)
@@ -424,7 +464,9 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     else:
         markt_block = no_market_prompt_block()
         preis_block = ""
-    user_msg = "\n\n".join(filter(None, [_format_inserat(req), motor_status, db_ctx, web_ctx,
+    datum_zeile = f"HEUTIGES DATUM: {heute.month:02d}/{heute.year}"
+    user_msg = "\n\n".join(filter(None, [datum_zeile, _format_inserat(req),
+                                         hu_prompt_zeile(hu, heute), motor_status, db_ctx, web_ctx,
                                          laufleistung_block, markt_block,
                                          preis_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
@@ -450,20 +492,30 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # kanonische Preisurteil unberuehrt.
         if not markt_verfuegbar:
             result["bericht"] = neutralisiere_no_market_preisurteil(result["bericht"])
+            # RC1: "⚠ Selten (aber möglich)" in der Preiszeile ist ohne Marktbasis
+            # ebenso eine Preiswertung — die Zeile wird deterministisch neutral gesetzt.
+            result["bericht"] = neutralisiere_preiszeile_ohne_markt(result["bericht"])
+        # RC1: HU-Aussagen an die deterministische Bewertung angleichen.
+        result["bericht"] = hu_bereinige(result["bericht"], hu)
         # §Phase 8: letztes Sicherheitsnetz — auch wenn db_ctx/evidence_block bereits
         # gefiltert waren (§Phase 7), kann das LLM Begriffe frei kombinieren
         # (z.B. aus dem Schwachstellen-/DB-Profil-Text). Entfernt NUR Sätze/Zeilen,
         # die eindeutig einem für dieses Fahrzeug ausgeschlossenen Rückruf zuordenbar
         # sind (z.B. Hochvolt-Rückruf bei erkanntem Diesel).
-        if baureihe and baureihe.get("rueckrufe"):
+        if baureihe and (baureihe.get("rueckrufe") or baureihe.get("rueckrufe_gesperrt")):
             # KBA-Trust-Gate: `marke` mitgeben, damit dieselbe Applicability-
             # Formulierung entsteht wie im Prompt oben (build_db_context) — sonst
             # könnte der Bericht-Validator gegen eine andere Wortwahl prüfen als das
             # LLM tatsächlich gesehen hat.
-            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match,
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe.get("rueckrufe"), motor_match,
                                                         req.baujahr, marke=baureihe.get("marke"))
+            # KaufCheck RC1: unbelegte (gesperrte) Rueckrufe duerfen im Bericht
+            # ebenso wenig auftauchen wie nachweislich unpassende.
+            _ausgeschlossen = list(_ausgeschlossen) + [
+                {**r, "ausschlussgrund": "nicht_belegt"}
+                for r in baureihe.get("rueckrufe_gesperrt") or []]
             if _ausgeschlossen:
-                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr,
+                _erlaubt = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, req.baujahr,
                                                 marke=baureihe.get("marke"))
                 result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
 
@@ -578,6 +630,12 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Empfehlung?". Es sind ausschliesslich echte, bereits validierte Insight-IDs
     # aus genau diesem Check; kein neues Nutzerfeld noetig, kein unsichtbarer
     # Override.
+    # RC1: "Warum diese Empfehlung?" darf nicht dieselben Punkte zeigen wie
+    # "Warum diese Risiken?". Was bereits als Risiko referenziert ist, erklärt
+    # die Empfehlung nicht und fällt dort heraus. Ausnahme: hat der Floor die
+    # Empfehlung angehoben, SIND seine Belege der Grund (unten wieder ergänzt).
+    empfehlung_evidence_ids = [i for i in empfehlung_evidence_ids
+                               if i not in set(risiko_evidence_ids)]
     if floor_befund is not None:
         for _fid in floor_befund.evidence_ids:
             empfehlung_evidence_ids = ergaenze_id(empfehlung_evidence_ids, _fid)
@@ -601,6 +659,11 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     kaufaktionen = build_kaufaktionen(req, baureihe, motor_match, insights,
                                      laufleistungskontext=laufleistungskontext)
 
+    empfehlung_gruende = baue_empfehlung_gruende(
+        req, baureihe, motor_match, insights, key_findings, result.get("empfehlung", "unbekannt"),
+        markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
+        generation=(baureihe or {}).get("generation"))
+
     return {
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
@@ -616,6 +679,10 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "belege":           belege,
         "insights":         insights,
         "empfehlung_evidence_ids": empfehlung_evidence_ids,
+        "empfehlung_gruende":      empfehlung_gruende,
+        "hu_pruefung":             (None if hu is None else {
+            "angabe": hu.anzeige, "status": hu.status,
+            "monate_bis_faellig": hu.monate_bis_faellig, "hinweis": hu.hinweis}),
         "preis_evidence_ids":      preis_evidence_ids,
         "risiko_evidence_ids":     risiko_evidence_ids,
         "key_findings":            key_findings,

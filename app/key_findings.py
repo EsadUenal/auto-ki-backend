@@ -410,8 +410,11 @@ def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding
     if getattr(req, "scheckheftgepflegt", None) is True:
         out.append(KeyFinding(
             id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
-            titel="Scheckheftgepflegt",
-            beschreibung="Laut Inserat lückenlose Wartungshistorie — spricht für gute Pflege.",
+            titel="Scheckheftgepflegt (laut Inserat)",
+            # RC1: keine Verstaerkung der Verkaeuferangabe. "scheckheftgepflegt"
+            # belegt weder Lueckenlosigkeit noch den Umfang der Wartung.
+            beschreibung="Laut Inserat scheckheftgepflegt. Vollständigkeit der Servicehistorie "
+                         "und Belege vor dem Kauf prüfen.",
             prioritaet=_P_VORTEIL))
 
     return out

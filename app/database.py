@@ -715,13 +715,24 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
             ).fetchall()
         ]))
 
-        result["rueckrufe"] = sichtbare_fakten(annotiere_fakten(conn, "rueckruf", [
+        # KAUFCHECK-RC1: zusaetzlich zur Sperre widerlegter Fakten nur BELEGTE
+        # Rueckrufe (amtliche Referenz oder Einzelverifikation). Hier, am einzigen
+        # Lesepunkt, damit kein Konsument die Sperre umgehen kann. Lokaler Import:
+        # recall_filter importiert seinerseits aus diesem Modul.
+        from app.recall_filter import nur_belegte_rueckrufe
+        _alle_rueckrufe = sichtbare_fakten(annotiere_fakten(conn, "rueckruf", [
             dict(r) for r in conn.execute(
                 "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
                 "FROM rueckruf WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
         ]))
+        result["rueckrufe"] = nur_belegte_rueckrufe(_alle_rueckrufe, marke=result.get("marke"))
+        # Die gesperrten Rueckrufe werden NICHT angezeigt, aber dem Bericht-
+        # Validator bekannt gemacht: erwaehnt ein Modell sie trotzdem (etwa aus
+        # eigenem Vorwissen), entfernt app/report_validator.py die Aussage.
+        _sichtbar = {id(r) for r in result["rueckrufe"]}
+        result["rueckrufe_gesperrt"] = [r for r in _alle_rueckrufe if id(r) not in _sichtbar]
 
         result["quellen"] = [
             dict(r) for r in conn.execute(

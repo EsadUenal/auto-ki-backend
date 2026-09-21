@@ -37,4 +37,7 @@ def fahrzeug_endpunkt(body: FahrzeugRequest, request: Request):
             },
         )
 
+    # Interne Liste gesperrter (unbelegter) Rueckrufe — nur fuer den Bericht-
+    # Validator gedacht, nie fuer die Auslieferung.
+    data.pop("rueckrufe_gesperrt", None)
     return data

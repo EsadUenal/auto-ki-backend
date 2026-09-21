@@ -388,13 +388,18 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
             result["bericht"] = neutralisiere_no_market_preisurteil(result["bericht"])
         # §Phase 8: letztes Sicherheitsnetz gegen ausgeschlossene Rückrufe im
         # Freitext-Bericht (dieselbe Absicherung wie im Kaufcheck, siehe kaufcheck.py).
-        if baureihe and baureihe.get("rueckrufe"):
+        if baureihe and (baureihe.get("rueckrufe") or baureihe.get("rueckrufe_gesperrt")):
             # KBA-Trust-Gate: `marke` mitgeben, damit dieselbe Applicability-
             # Formulierung entsteht wie im Prompt (build_db_context).
-            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe["rueckrufe"], motor_match,
+            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe.get("rueckrufe"), motor_match,
                                                         req.baujahr, marke=baureihe.get("marke"))
+            # KaufCheck RC1: unbelegte (gesperrte) Rueckrufe duerfen im Bericht
+            # ebenso wenig auftauchen wie nachweislich unpassende.
+            _ausgeschlossen = list(_ausgeschlossen) + [
+                {**r, "ausschlussgrund": "nicht_belegt"}
+                for r in baureihe.get("rueckrufe_gesperrt") or []]
             if _ausgeschlossen:
-                _erlaubt = gefilterte_rueckrufe(baureihe["rueckrufe"], motor_match, req.baujahr,
+                _erlaubt = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, req.baujahr,
                                                 marke=baureihe.get("marke"))
                 result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
         # Preis-Konsistenz: liegt empfohlener/maximaler Preis spürbar über der

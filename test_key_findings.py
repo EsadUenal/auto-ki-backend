@@ -229,8 +229,13 @@ REQ_SCHECKHEFT = SimpleNamespace(marke="BMW", modell="320d", baujahr=2016, kilom
                                  beschreibung=None, freitext=None, scheckheftgepflegt=True,
                                  ausstattung=[])
 f8b_c = build_key_findings_kauf(REQ_SCHECKHEFT, BAUREIHE_BMW, MOTOR_BMW, [])
-check("8b-C: Scheckheft-Finding bleibt unverändert erhalten",
-      any(f.titel == "Scheckheftgepflegt" for f in f8b_c))
+# KAUFCHECK-RC1: das Finding bleibt, ist aber als Inseratsangabe gekennzeichnet
+# und verstärkt sie nicht mehr ("lückenlose Wartungshistorie").
+check("8b-C: Scheckheft-Finding bleibt erhalten",
+      any(f.titel.startswith("Scheckheftgepflegt") for f in f8b_c))
+check("8b-C: Scheckheft-Finding verstärkt die Inseratsangabe nicht",
+      all("lückenlos" not in (f.beschreibung or "").lower()
+          for f in f8b_c if f.titel.startswith("Scheckheftgepflegt")))
 
 
 # ── 9/10) Cap 5 + deterministische Sortierung (Betrug > Widerspruch > Preis) ─

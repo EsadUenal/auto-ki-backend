@@ -1,0 +1,60 @@
+{
+ "eingabe": {
+  "marke": "BMW",
+  "modell": "330i",
+  "baujahr": 2019,
+  "kilometerstand": 95000,
+  "motor": "2.0 Benzin, 258 PS, Automatik, Hinterradantrieb",
+  "ausstattung": "Navi, Sitzheizung, LED-Scheinwerfer, PDC vorne/hinten, Tempomat",
+  "preis": 24900,
+  "beschreibung": "BMW 330i Limousine, Baujahr 2019, 95.000 km, 258 PS, Automatik, Benzin. Laut Verkäufer unfallfrei und scheckheftgepflegt. 2 Vorbesitzer. HU neu. Fahrzeug befindet sich laut Inserat in gepflegtem Zustand. Verkaufspreis 24.900 €.",
+  "unfallfrei": "ja",
+  "vorbesitzer": 2,
+  "tuevBis": "092028",
+  "scheckheft": true
+ },
+ "llm": {
+  "bericht": "## Fahrzeug erkannt\nBMW 330i Limousine (Baureihe 3er G20), 2.0-Liter-Turbobenziner (B48, 258 PS / 190 kW), Automatikgetriebe, Baujahr 2019.\n\n## Kaufempfehlung\n**KAUFEN NACH BESICHTIGUNG**\nDie Baureihe G20 mit dem B48-Motor gilt technisch als solide und weist ab Werk nur geringfügige Schwachstellen auf. Da das Inserat eine unplausible TÜV-Gültigkeit angibt, müssen vor einem Kauf die tatsächlichen Hauptuntersuchungs- und Servicedokumente sowie die Durchführung relevanter Rückrufaktionen vor Ort geprüft werden.\n\n## Kritische Risiken\n- **KBA-Rückruf Lenkung (2020-08):** Mangelhafte Schweißnähte an der Lenkung gemeldet (für Teile der Baureihe gemeldet — per FIN prüfen).\n- **KBA-Rückruf Bremskraftverstärker (2020-03):** Möglicher Ausfall des Bremskraftverstärkers bekannt (für Teile der Baureihe gemeldet — per FIN prüfen).\n- **Software & Infotainment:** Frühe Modelle (2019–2020) neigen vereinzelt zu Software-Bugs oder Konnektivitätsproblemen des iDrive-Systems.\n- **Verarbeitungsdetails:** Gelegentlich auftretende Knarzgeräusche im Bereich von Armaturenbrett oder Türverkleidungen.\n\n## Preis-Einschätzung\nFür dieses Fahrzeug konnte über die Websuche keine belastbare Marktpreisbasis ermittelt werden. Eine fundierte preisliche Einstufung bleibt daher offen.\n\n## Inserat im Vergleich\n| Kriterium | Inserat-Angabe | DB-/Markterwartung | Plausibilität |\n|---|---|---|---|\n| Baujahr | 2019 | 2019 (G20 Markteinführung) | ✓ Plausibel |\n| Kilometerstand | 95.000 km (ca. 13.600 km/Jahr) | Segmentüblich für Baujahr | ✓ Plausibel |\n| Motor/Leistung | 2.0 Benzin / 258 PS (190 kW) | B48B20 (258 PS) | ✓ Plausibel |\n| Kraftstoff | Benzin | Benzin | ✓ Plausibel |\n| Getriebe | Automatik | 8-Stufen-Steptronic | ✓ Plausibel |\n| Preis | 24.900 € | nicht verfügbar | ⚠ Selten (aber möglich) |\n| TÜV-Gültigkeit | 09/2028 | Maximal 2 Jahre ab Prüfung | ✏️ Vermutlich Tippfehler |\n\n## Besichtigungs-Checkliste\n- [ ] **FIN-Abfrage zu KBA-Rückrufen:** Nachweise über die Durchführung der Rückrufe zu Bremskraftverstärker und Lenkung vorlegen lassen.\n- [ ] **HU-Prüfbericht und Papiere:** Tatsächliches Ablaufdatum der Hauptuntersuchung anhand des Prüfberichts abgleichen (Angabe 2028 unmöglich).\n- [ ] **Service-Nachweise:** Vollständigkeit des digitalen bzw. physischen Scheckhefts sowie Einhaltung der Wartungsvorgaben prüfen.\n- [ ] **Infotainment & Fahrzeugelektronik:** iDrive-System auf aktuelle Softwareversion, Funktion von Navigation, Bluetooth und PDC testen.\n- [ ] **Geräuschentwicklung Innenraum:** Bei der Probefahrt auf Unebenheiten auf Klappern oder Knarzen der Verkleidungen achten.\n- [ ] **Verschleißprüfung:** Zustand von Bremsen, Bereifung und Fahrwerkskomponenten sichtprüfen.",
+  "empfehlung": "kaufen_nach_besichtigung",
+  "preis_bewertung": "unbekannt",
+  "marktpreis_min": null,
+  "marktpreis_max": null,
+  "empfehlung_evidence_ids": [
+   "schwachstelle-1",
+   "schwachstelle-2",
+   "rueckruf-3",
+   "rueckruf-4"
+  ],
+  "preis_evidence_ids": [
+   "marktvergleich-5"
+  ],
+  "risiko_evidence_ids": [
+   "rueckruf-3",
+   "rueckruf-4",
+   "schwachstelle-1",
+   "schwachstelle-2"
+  ]
+ },
+ "web": [
+  {
+   "title": "Zugriff verweigert / Access denied",
+   "url": "https://suchen.mobile.de/auto/bmw.html",
+   "content": "If the issue persists, despite checking all of the above, please contact us— quoting the displayed Ref ID (valid for a maximum of 48 hours) —at:\n\nTelefon\n\nMontag bis Freitag von 8:00 - 18:00\n\n Private"
+  },
+  {
+   "title": "Automatische Niveauregulierung, Federung & Lenkung, Autoteile ...",
+   "url": "https://picclick.de/Auto-Motorrad-Teile/Autoteile-Zubeh%C3%B6r/Federung-Lenkung/Automatische-Niveauregulierung",
+   "content": "Automatische Niveauregulierung, Shop the Largest Selection, Click to See! EUR 1.050,66 Sofort-Kaufen oder Preisvorschlag. Motor - 4.40 Benzin / 2.0 Benzin 141"
+  },
+  {
+   "title": "Verkauf Dreiachser",
+   "url": "https://www.helmuts-ul-seiten.de/verkauf1a.html",
+   "content": "elektrisch  2 x 50l-Tanks in den Tragflächen  Fußspitzenbremse & Feststellbremse  Heizung  Radverkleidungen  Störklappen  Ledersitze mit Lordosenstütze  Verstellbare Pedale  Abschließbare Türschlösser"
+  },
+  {
+   "title": "BMW X3 Leasing Angebote: Für Privat- & Gewerbekunden!",
+   "url": "https://www.leasingmarkt.de/leasing-bmw-x3",
+   "content": "BMW X3 Angebote vergleichen. Automatik SUV / Geländewagen. Anschaffungspreis: 61.440,00 €. Automatik SUV / Geländewagen. Anschaffungspreis: 57.990,00 €"
+  }
+ ]
+}

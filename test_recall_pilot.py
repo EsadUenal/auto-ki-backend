@@ -442,15 +442,24 @@ check("H10 jeder sichtbare Rueckruf verweist auf die FIN-Pruefung",
 
 # ══ I) §14 — die vier echten Kaufchecks ══════════════════════════════════════
 print("\n--- I) §14 die vier Kaufchecks ---")
+# KAUFCHECK-RC1: unbelegte Altbestandsrückrufe (ohne amtliche Referenz und ohne
+# Verifikation) werden nicht mehr angezeigt — frühere Audits hatten jede der hier
+# betroffenen Zeilen bereits als unbelegt oder falsch zugeordnet eingestuft.
+# Der BMW G20 bekommt dafür die amtlich belegten Aktionen des G20-Nachtrags
+# (KBA 9839, 15632R treffen Baujahr 2020; 10009 nur 2019). Ohne angewendeten
+# Nachtrag (veraltete lokale DB) sind es 0.
+with get_conn() as _c:
+    _G20_NACHTRAG = _c.execute(
+        "select 1 from schema_migrations where name='kba_g20_nachtrag_v1'").fetchone() is not None
 _ERWARTET = {
-    # (marke, hint): (Anzahl sichtbarer Rueckruf-Insights, Floor erwartet)
-    ("BMW", "320d"):           2,   # unveraendert: Batch A traf den G20 nicht
+    # (marke, hint): Anzahl sichtbarer Rueckruf-Insights
+    ("BMW", "320d"):           2 if _G20_NACHTRAG else 0,   # vorher 2 unbelegte (#11, #12)
     # 1 Nachtrag (KBA 12223) + 1 aus Batch A + 1 aus dem Mixed-Target-Import
     # (KBA 10383, Radverschraubung, Baujahre 2019-2020, verified) — dieser
     # Rueckruf trifft das Pilotfahrzeug (2.0 Diesel, 2019) tatsaechlich.
     ("Opel", "2.0 Diesel"):    3,
-    ("Audi", "2.0 FSI 150 PS"): 1,  # unveraendert
-    ("Mercedes-Benz", "C220d"): 5,  # 1 Altbestand + 4 aus Batch A
+    ("Audi", "2.0 FSI 150 PS"): 0,  # vorher 1: unbelegter Altbestand #282
+    ("Mercedes-Benz", "C220d"): 4,  # 4 aus Batch A; der unbelegte Altbestand entfaellt
 }
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _b, _mm, _req, _i = _check(_m, _mo, _g, _h, _bj, _k)
@@ -486,8 +495,17 @@ _, _, _, _ins_fsi = _check("Audi", "A3", "Typ 8P", "2.0 FSI 150 PS", 2008, "Benz
 check("J1 Benziner 2008: der 2.0-TDI-Rueckruf ist ausgeblendet",
       not any("2.0 TDI" in i.titel for i in _rueckrufe(_ins_fsi)))
 _, _, _, _ins_tdi = _check("Audi", "A3", "Typ 8P", "1.9 TDI", 2010, "Diesel")
-check("J2 Diesel 2010: derselbe Rueckruf ist sichtbar",
-      any("2.0 TDI" in i.titel for i in _rueckrufe(_ins_tdi)))
+# KAUFCHECK-RC1: der 2.0-TDI-Rueckruf (#283) ist unbelegt und damit nicht mehr
+# sichtbar. Die Applicability — der eigentliche Gegenstand von J — wird deshalb
+# direkt am Datensatz geprueft: fuer einen Diesel ist er NICHT inkompatibel.
+with get_conn() as _c:
+    _tdi = dict(_c.execute(
+        "select * from rueckruf where baureihe_id='audi-a3-typ-8p' and mangel like '%2.0 TDI%'"
+    ).fetchone())
+check("J2 Diesel 2010: derselbe Rueckruf waere fuer den Diesel einschlaegig (Applicability)",
+      rueckruf_applicability(_tdi, True, "", {"kraftstoff": "Diesel"})[0] != "incompatible")
+check("J2b ... wird aber als unbelegter Altbestand nicht angezeigt",
+      not any("2.0 TDI" in i.titel for i in _rueckrufe(_ins_tdi)))
 check("J3 Diesel 2010: der 1.4-TFSI-Rueckruf ist ausgeblendet",
       not any("1.4 TFSI" in i.titel for i in _rueckrufe(_ins_tdi)))
 check("J4 keine neue Applicability-Kategorie erfunden",

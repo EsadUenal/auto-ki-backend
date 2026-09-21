@@ -270,6 +270,51 @@ def referenz_ist_belegt(r: dict | None) -> bool:
     return ((r or {}).get("_trust") or "").strip().lower() == "verified"
 
 
+def rueckruf_ist_belegt(r: dict | None, marke: str | None = None) -> bool:
+    """Darf dieser Rückruf dem Nutzer überhaupt gezeigt werden?
+
+    KAUFCHECK-RC1: Der Bestand enthält 731 Rückrufzeilen ohne amtliche Referenz —
+    Altbestand aus der Erstbefüllung. Wo sie einzeln geprüft wurden, war das
+    Ergebnis ernüchternd: beim BMW 3er G20 ist der "Bremskraftverstärker-Rückruf
+    2020-03" eine Fehlzitation (die zitierte Quelle betraf 2013 den N20-Motor),
+    der "Schweißnähte an der Lenkung"-Rückruf existiert in dieser Form nicht
+    (der echte Lenkungsrückruf KBA 10009 betrifft die Spurstange). Ein Abgleich
+    aller 731 Zeilen gegen den amtlichen KBA-Gesamtexport fand selbst mit sehr
+    großzügigen Kriterien nur für 47 % überhaupt ein mögliches Gegenstück.
+
+    Ein Rückruf ist eine Sicherheitsaussage über ein reales Fahrzeug. Ein
+    erfundener Rückruf ist nicht "vorsichtig", sondern falsch — er schickt den
+    Nutzer mit einer nicht existierenden Aktion zum Verkäufer. Sichtbar ist
+    deshalb nur, was belegt ist:
+
+      * eine plausible, nicht kollidierende KBA-Referenz (kba_referenz_anzeige), oder
+      * eine Einzelverifikation mit status='verified' (z.B. über NHTSA belegt).
+
+    Alles andere bleibt in der Datenbank, erscheint aber nirgends — weder in
+    Insights, Key Findings, Kaufaktionen, LLM-Kontext noch im Chat.
+    """
+    if not r:
+        return False
+    # Zuerst die billige Prüfung: eine Einzelverifikation entscheidet sofort.
+    # Die KBA-Kollisionsprüfung baut ihren Index je Aufruf neu auf und liegt hier
+    # im heißen Pfad von `get_baureihe` (AutoFinder ruft ihn pro Kandidat auf).
+    if (r.get("_trust") or "").strip().lower() == "verified":
+        return True
+    kba = (r.get("kba_referenz") or "").strip()
+    return bool(kba and kba_referenz_anzeige(kba, marke))
+
+
+def nur_belegte_rueckrufe(zeilen: list[dict] | None, marke: str | None = None) -> list[dict]:
+    """Filtert unbelegte Rückrufe heraus (siehe `rueckruf_ist_belegt`)."""
+    if not zeilen:
+        return zeilen or []
+    belegt = [r for r in zeilen if rueckruf_ist_belegt(r, marke)]
+    if len(belegt) != len(zeilen):
+        log.info("%d unbelegte(r) Rückruf(e) ohne amtliche Referenz ausgeblendet.",
+                 len(zeilen) - len(belegt))
+    return belegt
+
+
 def _jahre(text: str | None) -> list[int]:
     return [int(y) for y in _JAHR.findall(text or "")]
 

@@ -98,8 +98,15 @@ check("2: KBA-Referenz als ref hinterlegt", bool(rk) and any(q.ref == "011234" f
 check("2: confidence hoch (KBA + Baujahr)", bool(rk) and rk[0].confidence == "hoch")
 
 # ── 2b) Severity und Confidence sind STRIKT unabhängig ──────────────────────
+# KAUFCHECK-RC1: "Datenqualität" (confidence) folgt jetzt der BELEGLAGE. Die
+# Fixture ist deshalb ausdrücklich verifiziert — die Absicht dieses Blocks
+# (Datenqualität unabhängig vom Schweregrad) bleibt unverändert geprüft; der
+# unverifizierte Fall steht in 2d.
 BAUREIHE_SEV = {
     "id": "sev", "quellen": [],
+    "verification": {"schwachstellen": {"status": "verified",
+                                        "source": "https://example.test/nachweis",
+                                        "date": "2026-08-24"}},
     "schwachstellen_baureihe": [
         {"bauteil": "A", "beschreibung": "gleiche Baujahre, hoher Schweregrad",
          "betroffene_baujahre": "2019-2021", "schweregrad": "hoch"},
@@ -114,6 +121,16 @@ check("2b: gleiche Baujahr-Deckung -> gleiche confidence trotz unterschiedl. sch
       len(sev) == 2 and len({i.confidence for i in sev}) == 1)
 check("2b: confidence bleibt provenance-basiert (hoch), nicht vom schweregrad abhängig",
       all(i.confidence == "hoch" for i in sev))
+
+# 2d) KAUFCHECK-RC1: ein UNVERIFIZIERTER DB-Fakt trägt nie "Datenqualität hoch" —
+# auch nicht bei passendem Baujahr. Früher hing "hoch" allein an der Baujahr-
+# Deckung und machte einen nie geprüften Eintrag zur scheinbar belastbaren Angabe.
+_sev_unv = [i for i in build_insights({**BAUREIHE_SEV, "verification": {}}, None, [], req(2020))
+            if i.kategorie == "schwachstelle"]
+check("2d: unverifizierter Fakt -> Datenqualität 'niedrig', unabhängig vom Schweregrad",
+      len(_sev_unv) == 2 and {i.confidence for i in _sev_unv} == {"niedrig"})
+check("2d: unverifizierter Fakt heißt 'gemeldeter Hinweis', nicht 'bekannte Schwachstelle'",
+      all(i.titel.endswith("gemeldeter Hinweis") for i in _sev_unv))
 
 # ── 2c) Rückruf-Applicability (Phase 1B): Varianten-/Antriebs-Zuordnung ──────
 # severity / confidence / applicability sind DREI getrennte Konzepte.

@@ -1954,6 +1954,99 @@ SCHRITTE_KURZHECK = (schritt_kurzheck_karosserie,)
 SCHRITTE_A4_B9_RS4 = (schritt_a4_b9_rs4_dublette,)
 
 
+# -- NACHTRAG: amtlich belegte Rueckrufe BMW 3er G20/G21 (KaufCheck RC1) -----
+#
+# Details, Quellen und die bewusst NICHT uebernommenen Aktionen stehen in
+# app/kba_g20_nachtrag_daten.py. Mechanik identisch zu Batch A / Insignia:
+# Idempotenz ueber den natuerlichen Schluessel (baureihe_id + kba_referenz),
+# nie auf eine von einem fremden Fakt belegte ID schreiben, Verifikation erst
+# NACH dem Einfuegen (der Fingerprint geht ueber den gespeicherten Inhalt).
+
+def schritt_kba_g20_nachtrag(conn, apply_):
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.kba_g20_nachtrag_daten import (
+        GEPRUEFT_AM, KBA_QUELLE, KBA_URL, LIZENZVERMERK, ZEILEN,
+    )
+
+    spalten = ("baureihe_id", "datum", "betroffene_baujahre", "mangel", "abhilfe",
+               "kba_referenz")
+    hat_fv = "fakt_verifikation" in {r[0] for r in conn.execute(
+        "select name from sqlite_master where type='table'")}
+    tabelle, idspalte, _sp = FAKT_ARTEN["rueckruf"]
+
+    for z in ZEILEN:
+        fid, bid, kba = z["id"], z["baureihe_id"], z["kba_referenz"]
+        if conn.execute("select 1 from baureihe where id=?", (bid,)).fetchone() is None:
+            log(f"  [G20] Baureihe {bid} fehlt - #{fid} uebersprungen")
+            continue
+        soll = {sp: z[sp] for sp in spalten}
+        zeile_ist = conn.execute(f"select {', '.join(spalten)} from rueckruf where id=?",
+                                 (fid,)).fetchone()
+        if zeile_ist is None:
+            vorhanden = conn.execute(
+                "select id from rueckruf where baureihe_id=? and kba_referenz=?",
+                (bid, kba)).fetchone()
+            if vorhanden:
+                log(f"  [G20] KBA {kba} steht auf {bid} bereits unter #{vorhanden[0]} - "
+                    "keine Dublette angelegt")
+                continue
+            if apply_:
+                conn.execute(
+                    f"insert into rueckruf (id, {', '.join(spalten)}) values (?,?,?,?,?,?,?)",
+                    (fid, *[soll[sp] for sp in spalten]))
+            log(f"  [G20] #{fid} ({bid}, KBA {kba}) angelegt: {z['mangel'][:60]}")
+        else:
+            ist = dict(zip(spalten, zeile_ist))
+            # Eigene Zeile erkennen wir an Baureihe + Mangeltext. Bei einer frischen
+            # Installation legt der Seed sie an, danach entfernt der KBA-
+            # Gesamtabgleich (kba_abgleich_v1) jede Referenz ausserhalb SEINER
+            # Allowlist — auch diese. Dann wird die eigene Zeile repariert, wie in
+            # Batch A. Eine FREMD belegte ID wird nie angefasst.
+            if ist["baureihe_id"] != bid or ist["mangel"] != z["mangel"]:
+                log(f"  [G20] ID {fid} ist von einem anderen Fakt belegt "
+                    f"({ist['baureihe_id']}) - NICHTS geschrieben")
+                continue
+            abweichend = {sp: soll[sp] for sp in spalten if ist[sp] != soll[sp]}
+            if abweichend and apply_:
+                conn.execute(
+                    f"update rueckruf set {', '.join(f'{k}=?' for k in abweichend)} where id=?",
+                    (*abweichend.values(), fid))
+            if abweichend:
+                log(f"  [G20] #{fid} wiederhergestellt: {sorted(abweichend)}")
+
+        if not hat_fv:
+            continue
+        zeile = conn.execute(f'select * from "{tabelle}" where {idspalte}=?', (fid,)).fetchone()
+        if zeile is None:
+            continue
+        namen = [d[0] for d in conn.execute(f'select * from "{tabelle}" limit 1').description]
+        ist = dict(zip(namen, zeile))
+        if ist["baureihe_id"] != bid or ist["kba_referenz"] != kba:
+            continue
+        fp = fingerprint("rueckruf", ist)
+        referenz = f"{kba} (Herstellercode {z['herstellercode']})"
+        notiz = f"{z['notiz']} {LIZENZVERMERK}"
+        werte = (fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz, GEPRUEFT_AM, notiz)
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art='rueckruf' and fakt_id=?",
+            (fid,)).fetchone()
+        if apply_:
+            if bestand:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art='rueckruf' and fakt_id=?", (*werte, fid))
+            else:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, status, "
+                    "quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values ('rueckruf',?,?,?,?,?,?,?,?,?)", (fid, *werte))
+
+
+MARKER_KBA_G20_NACHTRAG = "kba_g20_nachtrag_v1"
+SCHRITTE_KBA_G20_NACHTRAG = (schritt_kba_g20_nachtrag,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2003,6 +2096,9 @@ MIGRATIONEN = (
     # Kurzheck-Karosserien, die faelschlich als Stufenheck-Limousine gefuehrt
     # wurden (Golf VIII, Focus Mk4) — siehe Quellen bei KURZHECK_KORREKTUREN.
     (MARKER_KURZHECK, SCHRITTE_KURZHECK),
+    # KaufCheck RC1: amtlich belegte, fuer den BMW 3er G20/G21 einschlaegige
+    # Rueckrufe (KBA 10009, 9839, 15632R) — siehe app/kba_g20_nachtrag_daten.py.
+    (MARKER_KBA_G20_NACHTRAG, SCHRITTE_KBA_G20_NACHTRAG),
 )
 
 

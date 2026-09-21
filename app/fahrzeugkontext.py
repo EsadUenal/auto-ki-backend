@@ -49,6 +49,7 @@ gezogen.
 """
 
 import logging
+import json
 import re
 
 from app.models import Fahrzeugkontext
@@ -184,7 +185,70 @@ def _vorgaenger(baureihe: dict, aufloeser=None) -> str | None:
     return re.sub(r"\s+", " ", name) or None
 
 
-def build_fahrzeugkontext(baureihe: dict | None, *, aufloeser=None) -> Fahrzeugkontext | None:
+# Hersteller mit fahrzeugabhaengig berechnetem Serviceintervall. Bewusst nur,
+# wo das System eindeutig belegt ist: BMW (und MINI) fuehren seit den
+# Baureihen ab 2003 den Condition Based Service — die Faelligkeit berechnet das
+# Fahrzeug selbst und zeigt sie im Service-Menue. Eine starre km-Zahl ist dort
+# keine Herstellervorgabe. Fuer alle anderen Marken bleibt der neutrale Hinweis.
+_VARIABLER_SERVICE: dict[str, tuple[int, str]] = {
+    "bmw": (2003, "Condition Based Service (CBS)"),
+    "mini": (2003, "Condition Based Service (CBS)"),
+}
+
+
+def _wartungssystem(baureihe: dict) -> str | None:
+    marke = (baureihe.get("marke") or "").strip().lower()
+    eintrag = _VARIABLER_SERVICE.get(marke)
+    if not eintrag:
+        return None
+    ab, name = eintrag
+    try:
+        von = int(baureihe.get("bauzeitraum_von") or 0)
+    except (TypeError, ValueError):
+        return None
+    return name if von >= ab else None
+
+
+def _oel_hinweis(system: str | None, km: int | None) -> str | None:
+    if km is None:
+        return None
+    if system:
+        return (f"Das Fahrzeug berechnet die Servicefälligkeit selbst ({system}) — "
+                f"die aktuelle Fälligkeit steht im Service-Menü des Fahrzeugs. Der Wert "
+                f"aus der Datenbank ist nur eine Orientierung, keine feste Herstellervorgabe.")
+    return ("Richtwert aus der Fahrzeugdatenbank. Maßgeblich ist die Service-Vorgabe des "
+            "Herstellers bzw. die Serviceanzeige im Fahrzeug.")
+
+
+def generationslabel(baureihe: dict | None, karosserie_text: str | None) -> str | None:
+    """Werkscode passend zur im Inserat genannten Karosserie ("G20" statt "G20/G21").
+
+    Wiederverwendung der AutoFinder-Aufloesung (`loese_generationslabel`) —
+    keine zweite Logik. Nur wenn der Inserattext GENAU EINE Karosserieklasse nennt
+    und die Baureihe eine gepruefte `chassis_codes`-Zuordnung hat; sonst bleibt das
+    Sammellabel stehen. Es wird nie ein Code geraten.
+    """
+    if not baureihe:
+        return None
+    generation = _text(baureihe.get("generation"))
+    if not karosserie_text or not baureihe.get("chassis_codes"):
+        return generation
+    from app.autofinder_norm import normalisiere_karosserie_text
+    from app.autofinder_variante import loese_generationslabel
+    klassen = normalisiere_karosserie_text(karosserie_text)
+    if len(klassen) != 1:
+        return generation
+    codes = baureihe.get("chassis_codes")
+    # `get_baureihe` liefert die Zuordnung bereits geparst (dict), die AutoFinder-
+    # Funktion erwartet den gespeicherten JSON-Text — sonst faellt sie still auf
+    # das Sammellabel zurueck.
+    if isinstance(codes, dict):
+        codes = json.dumps(codes, ensure_ascii=False)
+    return loese_generationslabel(generation, codes, next(iter(klassen)))
+
+
+def build_fahrzeugkontext(baureihe: dict | None, *, aufloeser=None,
+                          karosserie_text: str | None = None) -> Fahrzeugkontext | None:
     """Baut den strukturierten Fahrzeugkontext — oder None ohne erkannte Baureihe.
 
     Es werden AUSSCHLIESSLICH tatsächlich vorhandene Werte übernommen. Fehlt ein
@@ -200,12 +264,14 @@ def build_fahrzeugkontext(baureihe: dict | None, *, aufloeser=None) -> Fahrzeugk
 
     ctx = Fahrzeugkontext(
         baureihe_id=_text(baureihe.get("id")),
-        generation=_text(baureihe.get("generation")),
+        generation=generationslabel(baureihe, karosserie_text),
         segment=_segment(baureihe),
         vorgaenger=_vorgaenger(baureihe, aufloeser),
         erkennung_generation=_kuerze(baureihe.get("erkennung_generation")),
         facelift_merkmale=_kuerze(baureihe.get("facelift_merkmale")),
         wartung_oel_km=_oel_km(baureihe),
+        wartung_system=_wartungssystem(baureihe),
+        wartung_oel_hinweis=_oel_hinweis(_wartungssystem(baureihe), _oel_km(baureihe)),
         wartung_hu_intervall=_text(baureihe.get("wartung_hu_intervall")),
     )
     if not ctx.hat_inhalt():
@@ -236,8 +302,13 @@ def prompt_block(ctx: Fahrzeugkontext | None) -> str:
     if ctx.vorgaenger:
         zeilen.append(f"Vorgängergeneration: {ctx.vorgaenger}")
     if ctx.wartung_oel_km:
-        zeilen.append(f"Ölwechsel-Intervall (Herstellerangabe): alle "
-                      f"{ctx.wartung_oel_km:,} km".replace(",", "."))
+        km = f"{ctx.wartung_oel_km:,}".replace(",", ".")
+        zeilen.append(f"Ölwechsel-Richtwert (Fahrzeugdatenbank, KEINE starre "
+                      f"Herstellervorgabe): {km} km")
+    if ctx.wartung_system:
+        zeilen.append(f"Serviceintervall wird fahrzeugabhängig berechnet: {ctx.wartung_system}. "
+                      "Nenne keine feste km-Zahl als Herstellerintervall, sondern verweise "
+                      "auf die Serviceanzeige im Fahrzeug.")
     if ctx.wartung_hu_intervall:
         zeilen.append(f"HU-Intervall (Angabe aus der Fahrzeugdatenbank): {ctx.wartung_hu_intervall}")
     if ctx.erkennung_generation:

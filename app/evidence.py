@@ -41,6 +41,12 @@ TRUST_WEB = "web"
 TRUST_USER = "user"
 TRUST_ABGELEITET = "abgeleitet"
 
+# Formulierungen, mit denen eine DB-Beschreibung selbst sagt, dass es sich um
+# Einzelberichte handelt — dann ist es keine "bekannte Schwachstelle".
+_EINZELBERICHT = re.compile(
+    r"\b(vereinzelt\w*|selten\w*|gelegentlich\w*|einzelf[äa]ll\w*|in einzelnen f[äa]llen)",
+    re.IGNORECASE)
+
 
 def _trust_der_baureihe(baureihe: dict | None, fakt: str) -> str:
     """Trust-Stufe einer DB-Faktenart für DIESE Baureihe.
@@ -159,16 +165,28 @@ def build_insights(
         quellen = [EvidenceQuelle(typ="datenbank", ref=s.get("bauteil"),
                                   titel=_db_quellentitel("ENFAL-Fahrzeugdatenbank",
                                                          trust_schwachstelle))]
+        beschreibung_s = (s.get("beschreibung") or "").strip()
+        # RC1: "bekannte Schwachstelle" nur, wenn der Fakt verifiziert ist UND die
+        # Beschreibung selbst nicht von Einzelberichten spricht. "Vereinzelt
+        # gemeldete Software-Bugs" oder "selten Knarzgeraeusche" sind Hinweise,
+        # keine bekannte Baureihen-Schwachstelle.
+        bekannt = (trust_schwachstelle == TRUST_VERIFIED
+                   and not _EINZELBERICHT.search(beschreibung_s))
         insights.append(Insight(
             id=_id("schwachstelle"),
             kategorie="schwachstelle",
-            titel=f"{s.get('bauteil') or 'Schwachstelle'} — bekannte Schwachstelle",
-            beschreibung=(s.get("beschreibung") or "").strip(),
+            titel=(f"{s.get('bauteil') or 'Schwachstelle'} — "
+                   f"{'bekannte Schwachstelle' if bekannt else 'gemeldeter Hinweis'}"),
+            beschreibung=beschreibung_s,
             quellen_typen=_typen(quellen),
             quellen=quellen,
-            # confidence NUR aus Provenance (Baujahr-Deckung bei erkannter Baureihe),
-            # NIE aus schweregrad.
-            confidence="hoch" if passt is True else "mittel",
+            # confidence = Datenqualitaet = BELEGLAGE, nie Schweregrad. Frueher hing
+            # sie allein an der Baujahr-Deckung: ein nie geprueften DB-Eintrag mit
+            # passendem Baujahr erschien als "Datenqualitaet hoch". Jetzt traegt nur
+            # ein verifizierter Fakt "hoch" (bzw. "mittel" ohne Baujahrbezug); ein
+            # unbelegter Eintrag ist "niedrig".
+            confidence=(("hoch" if passt is True else "mittel")
+                        if trust_schwachstelle == TRUST_VERIFIED else "niedrig"),
             schweregrad=(s.get("schweregrad") or None),
             trust=trust_schwachstelle,
             einfluss=_einfluss_schwachstelle(s.get("schweregrad"), check_typ),
