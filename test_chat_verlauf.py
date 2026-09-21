@@ -392,6 +392,44 @@ async def test_eine_antwort_ein_providerlauf():
           meta.get("abgeschnitten") is True)
 
 
+# ── O: Absolute Zuverlässigkeitsclaims (Live-Befund RC1) ────────────────────
+
+async def test_bewertungsregeln_stehen_direkt_vor_dem_kontext():
+    print("\n[O] Bewertungsregel steht mit höchster Recency direkt vor dem Kontext")
+    spy = _Spy().install()
+    await _lauf(TURN2_USER, [{"rolle": "user", "text": TURN1_USER},
+                             {"rolle": "ki", "text": TURN1_KI}], spy)
+    sp = spy.system
+    pos_hinweis = sp.find("— VOR JEDER BEWERTUNG —")
+    pos_kontext = sp.find("KONTEXT AUS GEPRÜFTER DATENBANK")
+    check("Bewertungshinweis ist im tatsächlich gesendeten System-Prompt", pos_hinweis >= 0)
+    check("… und steht unmittelbar vor dem Kontext",
+          0 <= pos_hinweis < pos_kontext and pos_kontext - pos_hinweis < 800,
+          f"hinweis={pos_hinweis} kontext={pos_kontext}")
+    for verboten in ("langlebigste", "wartungsärmste", "ganz klar", "unanfällig"):
+        check(f"Superlativ/Verstärker ausdrücklich untersagt: {verboten}", verboten in sp)
+    check("Rangfolge als Einschätzung formuliert", "tendenziell zuerst prüfen" in sp)
+    check("Einschätzung vs. belegte Daten getrennt",
+          "belegten Daten" in llm.SYSTEM_PROMPT and "technischen Einschätzung" in llm.SYSTEM_PROMPT)
+
+
+def test_verstaerker_filter():
+    print("\n[P] Verstärker werden nur in Adverbstellung entfernt")
+    faelle = {
+        "An erster Stelle steht ganz klar der Toyota Corolla.":
+            "An erster Stelle steht der Toyota Corolla.",
+        "Der Mazda ist zweifellos solide.": "Der Mazda ist solide.",
+        "Er ist ohne jeden Zweifel solide.": "Er ist solide.",
+        # Prädikativ am Satzende: Entfernen würde den Satz zerstören → bleibt.
+        "Das ist ganz klar.": "Das ist ganz klar.",
+        # Satzanfang: kein führendes Leerzeichen → bleibt unangetastet.
+        "Ganz klar: der Corolla.": "Ganz klar: der Corolla.",
+    }
+    for eingabe, erwartet in faelle.items():
+        ist = llm._scrub_jargon(eingabe)
+        check(f"{eingabe[:40]!r}", ist == erwartet, repr(ist))
+
+
 async def main() -> None:
     await test_folgefrage_traegt_verlauf()
     await test_dritter_turn_behaelt_verlauf()
@@ -407,6 +445,8 @@ async def main() -> None:
     test_verlaufsgrenze_passt_zur_persistenz()
     test_content_regeln_im_prompt()
     await test_eine_antwort_ein_providerlauf()
+    await test_bewertungsregeln_stehen_direkt_vor_dem_kontext()
+    test_verstaerker_filter()
 
 
 asyncio.run(main())

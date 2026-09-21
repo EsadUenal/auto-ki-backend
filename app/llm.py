@@ -317,6 +317,13 @@ _JARGON_PATTERNS: list[tuple[re.Pattern, str]] = [
         r"(wissen|allgemeinwissen|fachwissen|erfahrungswerte?|erfahrung|modellwissen)"
         r"\s*[\)\]]",
         re.IGNORECASE), ""),
+    # Verstärker, die eine Einschätzung wie eine objektive Tatsache klingen lassen
+    # ("An erster Stelle steht ganz klar der …"). Nur reine Adverbien — ihr
+    # Entfernen ändert keine Aussage und lässt den Satz grammatisch intakt.
+    # Superlative ("langlebigste") werden bewusst NICHT umgeschrieben: das wäre
+    # eine inhaltliche Änderung, die nur der Prompt sauber leisten kann.
+    (re.compile(r"\s+(ganz\s+klar|zweifellos|ohne\s+(jeden\s+)?zweifel|unangefochten)(?=\s+[^\W\d_])",
+                re.IGNORECASE), ""),
 ]
 
 
@@ -835,6 +842,10 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 - Fragt der Nutzer ausdrücklich nach Zuverlässigkeit, Schwachstellen oder Kaufrisiken, darfst du einen dir bekannten motor- oder baujahrsspezifischen Risikopunkt NICHT weglassen, nur weil er die Empfehlung relativiert. Gilt der Punkt nur für bestimmte Varianten oder Baujahre, sage genau das dazu.
 - Überlade die Antwort trotzdem NICHT mit Warnlisten: nenne die wenigen Punkte, die für Kaufentscheidung und Folgekosten wirklich relevant sind — nicht jeden theoretisch denkbaren Defekt.
 - Steht im Kontext nichts zu einem Risiko, erfinde keins. Kennst du einen Punkt nur als allgemein bekanntes Fachwissen, benenne ihn als solchen ("gilt je nach Motorvariante als bekannter Prüfpunkt") und empfiehl die konkrete Prüfung.
+- RANGFOLGEN UND VERGLEICHE: Eine Reihenfolge zwischen Fahrzeugen ist deine fachliche Einschätzung, keine Messung. Formuliere sie auch so: "Unter diesen drei würde ich den X tendenziell zuerst prüfen, weil …" — NICHT "An erster Stelle steht ganz klar X".
+- KEINE objektiv klingenden Superlative ohne Beleg im Kontext: nicht "die langlebigste", "die wartungsärmste", "die zuverlässigste Option", "unanfällig", "problemlos", "ganz klar", "zweifellos". Stattdessen relativ und begründet: "gilt als vergleichsweise wartungsarm, weil …", "hat in der Regel weniger typische Verschleißpunkte als …".
+- Trenne sichtbar zwischen belegten Daten (Datenbank, konkrete Websuche, Pannenstatistik) und deiner technischen Einschätzung ("aus technischer Sicht spricht dafür, dass …"). Eine Einschätzung darf nie wie ein Messergebnis klingen.
+- Eine positive Gesamteinschätzung überspielt nie einen bekannten Risikopunkt: nenne ihn im selben Absatz wie das Lob, nicht versteckt am Ende.
 
 — ANTRIEBSART: NUR LIEFERN, WAS GEFRAGT IST (transparent abweichen) —
 - Nennt der Nutzer eine Antriebsart oder Getriebeart (Benziner, Diesel, Hybrid, Elektro, Automatik, Schaltgetriebe), halte dich zuerst daran.
@@ -937,6 +948,20 @@ def _ist_abgeschnitten(finish_reason) -> bool:
     if finish_reason is None:
         return False
     return str(getattr(finish_reason, "name", finish_reason)).upper().endswith("MAX_TOKENS")
+
+
+# Steht IMMER direkt vor dem Kontext (höchste Recency im Prompt). Die Regel im
+# Zuverlässigkeitsblock allein reichte live nicht: das Modell schrieb trotzdem
+# "An erster Stelle steht ganz klar …" und "die langlebigste und wartungsärmste
+# Option". Frühe Regeln verlieren in langen System-Prompts an Gewicht — dieselbe
+# Erfahrung wie beim Web-Hinweis (_WEB_HINWEIS).
+_BEWERTUNGS_HINWEIS = """
+— VOR JEDER BEWERTUNG —
+Rangfolgen und Zuverlässigkeitsurteile sind Einschätzungen, keine Messwerte. Keine Superlative
+("langlebigste", "wartungsärmste", "zuverlässigste"), kein "ganz klar", kein "unanfällig".
+Formuliere relativ und begründet ("würde ich tendenziell zuerst prüfen, weil …") und nenne
+bekannte Risikopunkte direkt neben dem Lob.
+"""
 
 
 # ---------- Haupt-Funktion: Chat (Streaming) ----------
@@ -1141,7 +1166,7 @@ async def chat_stream(
     print(f"[TIMING] kontext fertig: {_ms(t0)} (quelle={quelle}, hat_db={hat_db}, hat_web={hat_web})", flush=True)
 
     # Prompt-Budget: Verlauf zuerst reservieren, Kontext bekommt den Rest.
-    web_hinweis = _WEB_HINWEIS if hat_web else ""
+    web_hinweis = (_WEB_HINWEIS if hat_web else "") + _BEWERTUNGS_HINWEIS
     rahmen_len = len(SYSTEM_PROMPT.format(kontext="", web_hinweis=web_hinweis))
     kontext_budget = (
         GEMINI_MAX_INPUT_CHARS
