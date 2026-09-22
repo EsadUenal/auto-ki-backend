@@ -52,6 +52,7 @@ from app.evidence import (
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
     vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
+    marktpreis_recherche_moeglich,
 )
 from app.preisurteil import (
     bewerte_preis, preis_bewertung_aus_verdict, no_market_prompt_block,
@@ -243,8 +244,18 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
     baureihe_task = asyncio.to_thread(find_baureihe_mit_vertrauen, req.marke, req.modell, req.baujahr)
 
+    # Cost-Gate (RC1): Steht schon vor dem ersten Request fest, dass keine
+    # freigegebene Quelle eine Preisbewertung tragen kann, entfällt die
+    # Marktrecherche komplett. Fachlich ändert sich nichts: das Ergebnis wäre
+    # ohnehin "keine belastbare Marktpreisbewertung" (PFAD B weiter unten).
+    # Wird später eine Quelle freigegeben, läuft der Pfad unverändert wieder an.
+    markt_recherche = marktpreis_recherche_moeglich(req.marke, req.modell)
+    if not markt_recherche:
+        log.info("Kaufcheck: keine fuer die Preisbildung freigegebene Quelle, "
+                 "Markt-Webrecherche entfaellt (0 Tavily-Calls).")
+
     web_results_task: asyncio.Task[list[dict]] | None = None
-    if TAVILY_API_KEY and req.marke and req.modell:
+    if markt_recherche:
         # Marktpreis per Tavily — kaskadierende Queries: spezifisch → breiter,
         # damit auch bei seltenen Modellen/Ausstattungen möglichst immer Ergebnisse kommen.
         q_spezifisch = " ".join(filter(None, [
@@ -365,7 +376,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
     identity = VehicleIdentity.from_market_context(baureihe_markt, motor_markt, req)
-    if TAVILY_API_KEY and req.marke and req.modell:
+    if markt_recherche:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
         # §Phase 0/13 (gemessen, scripts/diagnose_provider_matrix.py): max_results

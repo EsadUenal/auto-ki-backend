@@ -29,6 +29,7 @@ from app.evidence import (
 from app.marktvergleich import analysiere_markt, baue_ziel, modell_relevant, prompt_block as markt_prompt_block
 from app.marktrecherche import (
     vertiefe_marktrecherche, baue_deep_queries, baue_rare_queries, research_status,
+    marktpreis_recherche_moeglich,
 )
 from app.preisurteil import (
     bewerte_preis, verkaufs_strategie, verkaufs_prompt_block, verkaufs_no_market_prompt_block,
@@ -45,7 +46,7 @@ from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
-    erlaubte_marktquellen, KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
+    KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
 
 _MAX_VERKAUFSCHECK_QUELLEN = 4
@@ -213,16 +214,13 @@ def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
 
 
 def _web_marktrecherche_moeglich(req: VerkaufsCheckRequest) -> bool:
-    """VerkaufsCheck RC1: Die Tavily-Marktrecherche läuft nur, wenn überhaupt eine
-    Quelle für die Preisbildung freigegeben ist.
+    """VerkaufsCheck-Sicht auf das gemeinsame Cost-Gate.
 
-    Mit der leeren Production-Allowlist (AUTO_KI_ALLOWED_MARKET_SOURCES) verwirft
-    `marktvergleich._bewerte` JEDE Webquelle vor der fachlichen Prüfung. Die bis zu
-    16 Tavily-Calls pro Check konnten also nie einen Median liefern. Sie holten nur
-    Treffer, darunter gezielt Fahrzeugbörsen, die dann als Quellenchips erschienen.
-    Ohne freigegebene Quelle entfällt die Recherche deshalb komplett; die Logik
-    bleibt für eine später ausdrücklich freigegebene Quelle unverändert erhalten."""
-    return bool(TAVILY_API_KEY and req.marke and req.modell and erlaubte_marktquellen())
+    Die Regel selbst steht in `marktrecherche.marktpreis_recherche_moeglich` und
+    gilt fuer KaufCheck und VerkaufsCheck gleichermassen: ohne freigegebene
+    Quelle kann keine Preisbewertung entstehen, also wird auch nicht recherchiert.
+    Diese duenne Huelle bleibt bestehen, weil die Tests sie gezielt ersetzen."""
+    return marktpreis_recherche_moeglich(req.marke, req.modell)
 
 
 # Kleine Überschreitungen (Rundung, Marktrauschen) sind kein Widerspruch;

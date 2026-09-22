@@ -31,9 +31,11 @@ from urllib.parse import urlparse
 from app.marktvergleich import analysiere_markt
 from app.vehicle_identity import VehicleIdentity
 from app.marktvergleich import ist_teile_suchseite
+from app.config import TAVILY_API_KEY
 from app.web_search import (
     CLASSIC_AUKTION_DOMAINS,
     MARKTPLATZ_DOMAINS,
+    erlaubte_marktquellen,
     hat_brauchbaren_raw_content,
     hole_raw_content,
     ist_abruf_gesperrt,
@@ -186,6 +188,24 @@ def genug(ma) -> bool:
     einmal erreichter Stand kann nicht mehr verloren gehen.
     """
     return research_status(ma) == "completed_high"
+
+
+def marktpreis_recherche_moeglich(marke: str | None, modell: str | None) -> bool:
+    """Kann eine Marktpreis-Recherche ueberhaupt in einer Preisbewertung enden?
+
+    Cost-Gate fuer KaufCheck UND VerkaufsCheck (RC1). Ist die Freigabeliste leer
+    (Production-Default `AUTO_KI_ALLOWED_MARKET_SOURCES`), verwirft
+    `marktvergleich._bewerte` JEDE Webquelle vor der fachlichen Pruefung: es kann
+    dann kein Median, keine Spanne und keine Preisbewertung entstehen. Die bis zu
+    16 Tavily-Calls je Check waeren also von vornherein verloren.
+
+    Die Pruefung ist rein deterministisch und aendert NICHTS an der Recherche
+    selbst: wird spaeter eine Quelle freigegeben, laeuft der bestehende Pfad
+    unveraendert wieder an. Sie lockert auch keine Sperre: gesperrte
+    Fahrzeugboersen bleiben unabhaengig davon gesperrt
+    (app/web_search._ABRUF_GESPERRT).
+    """
+    return bool(TAVILY_API_KEY and marke and modell and erlaubte_marktquellen())
 
 
 def research_status(ma) -> str:

@@ -90,17 +90,24 @@ def _stub_umgebung(ma: Marktanalyse, llm_antwort: dict):
     """Setzt ALLE Netzwerkpfade von run_kaufcheck auf Stubs. Gibt die
     Originalwerte zum Wiederherstellen zurueck."""
     orig = (kc.vertiefe_marktrecherche, kc.call_gemini_json,
-            kc.tavily_search_with_fallback, kc.TAVILY_API_KEY)
+            kc.tavily_search_with_fallback, kc.TAVILY_API_KEY,
+            kc.marktpreis_recherche_moeglich)
     kc.vertiefe_marktrecherche = _stub_recherche(ma)
     kc.call_gemini_json = _stub_gemini(llm_antwort)
     kc.tavily_search_with_fallback = _stub_tavily
     kc.TAVILY_API_KEY = "test-key"   # damit der Recherchepfad ueberhaupt betreten wird
+    # RC1-Cost-Gate: Ohne freigegebene Marktquelle startet die Recherche gar nicht
+    # mehr (Production-Default). Dieser Test prueft PFAD A/B der Marktanalyse
+    # selbst, nicht das Freigabe-Gate — deshalb wird es hier ausdruecklich
+    # geoeffnet, damit die gestubbte Recherche wie bisher greift.
+    kc.marktpreis_recherche_moeglich = lambda marke, modell: True
     return orig
 
 
 def _stub_zurueck(orig) -> None:
     (kc.vertiefe_marktrecherche, kc.call_gemini_json,
-     kc.tavily_search_with_fallback, kc.TAVILY_API_KEY) = orig
+     kc.tavily_search_with_fallback, kc.TAVILY_API_KEY,
+     kc.marktpreis_recherche_moeglich) = orig
 
 
 def lauf_kaufcheck(ma: Marktanalyse, llm_antwort: dict, req: KaufCheckRequest = REQ) -> dict:
