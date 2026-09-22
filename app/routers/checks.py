@@ -13,8 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.check_lauf import einloese as einloese_lauf_nachweis
-from app.config import (CHECK_EINGABE_MAX_ZEICHEN, CHECK_ERGEBNIS_MAX_ZEICHEN,
-                        CHECK_TITEL_MAX)
+from app.config import (CARAPI_PERSISTENZ_ERLAUBT, CHECK_EINGABE_MAX_ZEICHEN,
+                        CHECK_ERGEBNIS_MAX_ZEICHEN, CHECK_TITEL_MAX)
+from app.verkaufsplan import entferne_provider_werte
 from app.database import get_conn
 from app.gemini_retry import GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.provider_control import provider_action
@@ -116,6 +117,12 @@ def save_check(body: SaveCheckBody, user_id: int = Depends(get_current_user_id))
     # Nachweis VOR dem Schreiben einloesen: nur ein serverseitig ausgestellter,
     # noch unverbrauchter Lauf desselben Nutzers und Typs zaehlt.
     nachweis = einloese_lauf_nachweis(body.lauf_id, user_id, body.typ)
+    # VerkaufsCheck RC1: Die CarAPI-Terms erlauben es, Antworten hoechstens 24 h
+    # zwischenzuspeichern. Ohne ausdrueckliche Persistenzfreigabe wird der
+    # provider-gestuetzte Marktblock deshalb VOR dem Schreiben entfernt; der
+    # uebrige Verkaufsfahrplan bleibt vollstaendig erhalten.
+    if body.typ == "verkauf" and not CARAPI_PERSISTENZ_ERLAUBT:
+        body.ergebnis = entferne_provider_werte(body.ergebnis)
     _groesse_pruefen(body.eingabe, CHECK_EINGABE_MAX_ZEICHEN, "Die Eingabe")
     _groesse_pruefen(body.ergebnis, CHECK_ERGEBNIS_MAX_ZEICHEN, "Das Ergebnis")
     with get_conn() as conn:

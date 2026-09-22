@@ -10,7 +10,7 @@ API-Keys, Nutzertexte und Zahlungsdaten gehoeren weder hierhin noch in Logs.
 | KI-Chat | `POST /api/v1/chat` | Gemini + optional Tavily | `LLM_MODEL`, Tavily Search | Gemini 1; Tavily nur bei Web-Trigger | Gemini 3, Tavily 9 |
 | AutoFinder | `POST /api/v1/autofinder` | Gemini + optional Tavily | `LLM_MODEL`, Tavily Search | Gemini 0–3; Tavily 0–2 | Gemini 6, Tavily 6 |
 | KaufCheck | `POST /api/v1/kaufcheck` | Gemini + optional Tavily | `LLM_MODEL`, Tavily Search/Extract | Gemini 1, bei abgeschnittenem JSON 2; Tavily adaptiv | Gemini 4, Tavily 16 |
-| VerkaufsCheck | `POST /api/v1/verkaufscheck` | Gemini + optional Tavily | `LLM_MODEL`, Tavily Search/Extract | Gemini 1, bei abgeschnittenem JSON 2; Tavily adaptiv | Gemini 4, Tavily 16 |
+| VerkaufsCheck | `POST /api/v1/verkaufscheck` | Gemini + optional CarAPI (Tavily nur mit freigegebener Marktquelle) | `LLM_MODEL`, CarAPI Valuation/Time-to-Sell | Gemini 1, bei abgeschnittenem JSON 2; CarAPI 0 (Default aus) oder 2; Tavily 0, solange `AUTO_KI_ALLOWED_MARKET_SOURCES` leer ist | Gemini 4, CarAPI 2, Tavily 16 |
 | Inseratsoptimierung | `POST /api/v1/checks/{id}/inserat-optimierung` | Gemini | `LLM_MODEL` | 0 (Cache) oder 1 | Gemini 3 |
 | Analyse-Rueckfrage | `POST /api/v1/analyse-frage` | Gemini | `LLM_MODEL` | 1 | Gemini 3 |
 | Ersatzteile (geparkte Direkt-Route) | `POST /api/v1/ersatzteile/suche` | Gemini + optional Tavily | `LLM_MODEL`, Tavily Search | Gemini 0–1; Tavily gestuft | Gemini 3, Tavily 6 |
@@ -92,6 +92,29 @@ Alle Werte liegen zentral in `app/config.py` und sind ohne Codeaenderung per ENV
 konfigurierbar: `AUTO_KI_GEMINI_*`, `AUTO_KI_TAVILY_*`,
 `AUTO_KI_PROVIDER_*`, `AUTO_KI_CHECK_VERSUCHE_PRO_TAG`, die bestehenden Chat-/
 AutoFinder-Monatslimits sowie die bestehenden API-/Admin-/Rate-Limit-Werte.
+
+### CarAPI (VerkaufsCheck, Default AUS)
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `CARAPI_API_KEY` | leer | Provider-Key, ohne Praefix wie `TAVILY_API_KEY`/`GEMINI_API_KEY` |
+| `AUTO_KI_CARAPI_ERLAUBT` | `0` | Schalter. Ohne `1` wird CarAPI nie aufgerufen, auch mit Key. Bleibt aus, bis die schriftliche Nutzungsfreigabe von CarAPI vorliegt. |
+| `AUTO_KI_CARAPI_PERSISTENZ_ERLAUBT` | `0` | Ohne `1` entfernt `POST /checks` den provider-gestuetzten Marktblock vor dem Speichern (CarAPI-Terms: hoechstens 24 h zwischenspeichern). |
+| `AUTO_KI_CARAPI_TIMEOUT_SECONDS` | `8` | Timeout je Aufruf. Kein Retry: auch ein 404 kostet laut Doku einen Credit. |
+| `AUTO_KI_PROVIDER_VERKAUFSCHECK_CARAPI_MAX` | `2` | Hartes Budget je Check (Valuation + Time-to-Sell). |
+
+Der Token wird laut CarAPI-Doku als Query-Parameter uebertragen. Deshalb loggt
+`app/carapi_provider.py` niemals eine URL oder einen Exception-Text und haelt den
+`httpx`-Logger auf WARNING. Antworten liegen hoechstens 6 h im Prozess-Cache.
+
+### Abrufsperre fuer Fahrzeugmarktplaetze
+
+`app/web_search.py` (`_ABRUF_GESPERRT`) sperrt mobile.de, AutoScout24, AutoUncle,
+Kleinanzeigen und vergleichbare Boersen fuer JEDE Websuche: aus `include_domains`
+entfernt (bleibt nichts uebrig, entfaellt der Call), sonst in `exclude_domains`,
+danach Ergebnisfilter, und `hole_raw_content`/`tavily_extract` laden ihre Seiten
+nie nach. Die Sperre ist nicht per ENV abschaltbar; nur der Test-Harness
+`_source_policy_testharness.py` setzt sie im Testprozess aus.
 
 ## Logging
 

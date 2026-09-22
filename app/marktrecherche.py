@@ -36,6 +36,7 @@ from app.web_search import (
     MARKTPLATZ_DOMAINS,
     hat_brauchbaren_raw_content,
     hole_raw_content,
+    ist_abruf_gesperrt,
     ist_info_domain,
     ist_marktplatz_domain,
     tavily_search_mit_status,
@@ -136,6 +137,12 @@ def ist_extract_kandidat(r: dict) -> bool:
     """
     url = r.get("url") or ""
     if not url or hat_brauchbaren_raw_content(r):
+        return False
+    # VerkaufsCheck RC1: Seiten gesperrter Fahrzeugboersen werden nie nachgeladen
+    # (Produktentscheidung, siehe app/web_search._ABRUF_GESPERRT). Die Sperre
+    # greift ohnehin in `hole_raw_content`; hier steht sie sichtbar im
+    # Auswahlschritt, damit gar nicht erst ein Kandidat daraus entsteht.
+    if ist_abruf_gesperrt(url):
         return False
     if ist_info_domain(url) or ist_teile_suchseite(url, r.get("title")):
         return False

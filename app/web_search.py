@@ -329,6 +329,96 @@ def erlaubte_marktquellen() -> frozenset[str]:
     return _ALLOWED_MARKET_SOURCES
 
 
+# ── Abrufsperre fuer Fahrzeugmarktplaetze (VerkaufsCheck RC1) ────────────────
+# Produktentscheidung: ENFAL liest Fahrzeugboersen NICHT automatisiert aus. Die
+# offiziellen Such-APIs (mobile.de, AutoScout24) wurden angefragt und sind
+# wirtschaftlich nicht tragbar; eine Suchmaschine ist kein Ersatz dafuer.
+#
+# Root Cause (Audit 2026-09-22): Die Source-Allowlist oben sperrte nur die
+# PREISBILDUNG. Abgerufen wurden die Portale trotzdem, und zwar gezielt:
+# marktrecherche.baue_deep_queries schickte Tavily `include_domains` =
+# mobile.de/autoscout24.de/autouncle.de/kleinanzeigen.de mit `raw_content`
+# (voller Seiteninhalt), die Extract-Nachladung holte fehlende Inhalte nach, und
+# die allgemeinen Preisqueries lieferten dieselben Portale als Quellenchips aus.
+#
+# Die Sperre sitzt deshalb am einzigen Nadeloehr aller Websuchen
+# (`_tavily_search_intern` + `hole_raw_content`) und gilt fuer JEDEN Pfad:
+#   * Portale werden aus `include_domains` entfernt; bleibt nichts uebrig,
+#     entfaellt der Call ganz (kostet dann auch keinen Credit),
+#   * ohne Positivliste stehen sie in `exclude_domains`,
+#   * was trotzdem zurueckkommt (Subdomain, Laender-TLD), wird verworfen,
+#   * Extract laedt ihre Seiten nie nach.
+# Die Freigabeliste AUTO_KI_ALLOWED_MARKET_SOURCES hebt diese Sperre NICHT auf:
+# eine lizenzierte Marktquelle gehoert hinter einen eigenen API-Adapter
+# (vgl. app/mobile_de_provider.py), nicht in eine Websuche.
+_ABRUF_GESPERRT: frozenset[str] = frozenset({
+    "mobile.de", "autoscout24", "autouncle", "kleinanzeigen.de",
+    "ebay-kleinanzeigen.de", "12gebrauchtwagen.de", "heycar.de", "autohero.com",
+    "pkw.de", *_CLASSIC_AUKTION_DOMAINS,
+})
+# Tavily verlangt Domains mit gueltiger TLD (siehe _MARKTPLATZ_DOMAINS_MIT_TLD).
+ABRUF_GESPERRT_TAVILY: list[str] = sorted({
+    "mobile.de", "suchen.mobile.de",
+    "autoscout24.de", "autoscout24.at", "autoscout24.ch", "autoscout24.com",
+    "autoscout24.it", "autoscout24.fr", "autoscout24.nl", "autoscout24.be",
+    "autouncle.de", "autouncle.at", "autouncle.ch", "autouncle.com",
+    "kleinanzeigen.de", "ebay-kleinanzeigen.de", "12gebrauchtwagen.de",
+    "heycar.de", "autohero.com", "pkw.de", *_CLASSIC_AUKTION_DOMAINS,
+})
+
+
+def ist_abruf_gesperrt(url_oder_domain: str | None) -> bool:
+    """True, wenn die URL/Domain zu einem gesperrten Fahrzeugmarktplatz gehoert.
+
+    Anders als `_enthaelt_domain` (Teilstring) wird hier auf Domain-Grenzen
+    geprueft: "automobile.de" ist nicht "mobile.de". Eintraege ohne Punkt
+    ("autoscout24") treffen ein ganzes Label, also jede Laender-TLD.
+    """
+    roh = (url_oder_domain or "").strip().lower()
+    if not roh:
+        return False
+    if "/" in roh:
+        domain = _domain_von(roh if "://" in roh else "https://" + roh)
+    else:
+        domain = roh[4:] if roh.startswith("www.") else roh
+    if not domain:
+        return False
+    labels = domain.split(".")
+    for ausnahme in _ABRUF_SPERRE_AUSNAHME:      # nur Test-/Replay-Harnesse
+        if domain == ausnahme or domain.endswith("." + ausnahme):
+            return False
+    for eintrag in _ABRUF_GESPERRT:
+        if "." in eintrag:
+            if domain == eintrag or domain.endswith("." + eintrag):
+                return True
+        elif eintrag in labels:
+            return True
+    return False
+
+
+def ohne_gesperrte_quellen(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Verwirft Treffer gesperrter Marktplaetze (letzte Sicherung nach dem Abruf)."""
+    return [r for r in results or [] if not ist_abruf_gesperrt(r.get("url"))]
+
+
+# Test-/Replay-Ausnahme, exakt wie `setze_marktquellen_freigabe` fuer die
+# Source-Policy: mehrere Engine-Tests und die historischen Diagnose-Mitschnitte
+# bestehen aus echten Portalseiten (Kartensegmentierung, Extract-Fallback,
+# Teilausfaelle). Sie pruefen die AUSWERTUNG dieser Seiten, nicht die Frage, ob
+# ENFAL sie abrufen darf. Produktionscode ruft das hier nie auf; ohne diesen
+# Aufruf bleibt die Sperre vollstaendig.
+_ABRUF_SPERRE_AUSNAHME: frozenset[str] = frozenset()
+
+
+def setze_abruf_sperre_ausnahme(domains) -> frozenset[str]:
+    """NUR fuer Test-/Replay-Harnesse. Gibt die vorherige Ausnahmeliste zurueck."""
+    global _ABRUF_SPERRE_AUSNAHME
+    vorher = _ABRUF_SPERRE_AUSNAHME
+    _ABRUF_SPERRE_AUSNAHME = frozenset(
+        str(d).strip().lower() for d in (domains or ()) if str(d).strip())
+    return vorher
+
+
 def setze_marktquellen_freigabe(domains) -> frozenset[str]:
     """Setzt die Freigabeliste und gibt die VORHERIGE zurueck.
 
@@ -580,7 +670,8 @@ _cache: dict[tuple, tuple[float, list[dict]]] = {}
 # bewerten würden, hochzählen — damit alte Cache-Einträge aus VOR der Änderung
 # nicht unbemerkt weiterverwendet werden, obwohl sie heute anders klassifiziert
 # würden. Fließt in den Cache-Key ein (siehe _cache_key).
-QUERY_VERSION = 2
+# 3: VerkaufsCheck RC1, Abrufsperre fuer Fahrzeugmarktplaetze.
+QUERY_VERSION = 3
 
 
 def _cache_key(query: str, count: int, include_domains, exclude_domains,
@@ -626,6 +717,18 @@ async def _tavily_search_intern(
     # Domains, unabhängig davon ob der Aufrufer daran denkt. curate_results()
     # filtert sie zur Sicherheit trotzdem nochmal heraus.
     exclude_domains = list({*(exclude_domains or []), *SOCIAL_MEDIA_AUSSCHLUSS})
+
+    # VerkaufsCheck RC1: Abrufsperre fuer Fahrzeugmarktplaetze (siehe
+    # _ABRUF_GESPERRT). Eine Positivliste, die nur aus Portalen bestand, faellt
+    # komplett weg: kein Call, kein Credit, kein technischer Fehler.
+    if include_domains:
+        erlaubt = [d for d in include_domains if not ist_abruf_gesperrt(d)]
+        if not erlaubt:
+            log.info("Websuche uebersprungen: Positivliste bestand nur aus gesperrten Marktplaetzen.")
+            return [], False
+        include_domains = erlaubt
+    else:
+        exclude_domains = sorted({*exclude_domains, *ABRUF_GESPERRT_TAVILY})
 
     key = _cache_key(query, count, include_domains, exclude_domains, include_raw_content, search_depth)
     if not bypass_cache:
@@ -695,7 +798,7 @@ async def _tavily_search_intern(
                 data = resp.json()
                 if not isinstance(data, dict) or not isinstance(data.get("results", []), list):
                     raise ValueError("ungueltige_provider_antwort")
-                results = data.get("results", [])
+                results = ohne_gesperrte_quellen(data.get("results", []))
                 log_provider_event("tavily", status="success", attempt=versuch + 1,
                                    started=call_started)
                 hatte_fehler = False
@@ -875,6 +978,8 @@ async def hole_raw_content(urls: list[str]) -> tuple[dict[str, str], dict[str, i
     out: dict[str, str] = {}
     offen: list[str] = []
     gesehen: set[tuple[str, str]] = set()
+    # VerkaufsCheck RC1: Seiten gesperrter Marktplaetze werden nie nachgeladen.
+    urls = [u for u in urls if not ist_abruf_gesperrt(u)]
     for url in urls:
         key = _extract_cache_key(url)
         if key in gesehen:              # §3: dieselbe Seite nur einmal nachladen
@@ -925,8 +1030,10 @@ async def tavily_extract(urls: list[str], *, advanced: bool = False) -> list[dic
     URLs liefern "raw_content": None statt eine Exception zu werfen (Aufrufer
     entscheidet selbst, wie streng er mit Teilausfällen umgeht).
     """
+    gesperrt = [u for u in urls or [] if ist_abruf_gesperrt(u)]
+    urls = [u for u in urls or [] if not ist_abruf_gesperrt(u)]
     if not TAVILY_API_KEY or not urls:
-        return []
+        return [{"url": u, "raw_content": None, "erfolg": False} for u in gesperrt]
     body: dict[str, Any] = {
         "api_key":       TAVILY_API_KEY,
         "urls":          urls,

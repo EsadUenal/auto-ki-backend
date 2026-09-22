@@ -853,6 +853,51 @@ class VerkaufsCheckRequest(BaseModel):
         from app.hu_termin import normalisiere_hu
         return normalisiere_hu(v)
 
+    # ── VerkaufsCheck RC1: weitere OPTIONALE Angaben ("verbessern dein Ergebnis").
+    # Alle additiv mit Default None: alte Clients und gespeicherte Checks laden
+    # unveraendert. Strukturierte Felder sind KANONISCH; der Beschreibungstext
+    # ueberschreibt sie nie (Widersprueche werden nur gemeldet, app/inserat.py).
+    # Auswahlwerte bleiben bewusst tolerante Strings (unbekannter Wert -> ignoriert,
+    # kein 422 fuer aeltere Frontends); normalisiert in app/verkaufsplan.py.
+    erstzulassung: str | None = Field(default=None, max_length=20)   # "MM/JJJJ"
+    variante: str | None = Field(default=None, max_length=100)       # Ausstattungslinie, z.B. "GTI"
+    karosserie: str | None = Field(default=None, max_length=60)
+    antrieb: str | None = Field(default=None, max_length=30)         # "Front" | "Heck" | "Allrad"
+    schluessel_anzahl: int | None = Field(default=None, ge=0, le=10)
+    letzter_service_datum: str | None = Field(default=None, max_length=20)
+    letzter_service_km: int | None = Field(default=None, ge=0, le=2_000_000)
+    wartungsnachweise: str | None = Field(default=None, max_length=20)  # "vollstaendig" | "teilweise" | "keine"
+    zweiter_radsatz: bool | None = None
+    reifen_zustand: str | None = Field(default=None, max_length=20)  # "neuwertig" | "gut" | "mittel" | "abgefahren"
+    import_status: str | None = Field(default=None, max_length=20)   # "nein" | "import" | "reimport"
+    tuning: str | None = Field(default=None, max_length=500)          # Umbauten/Tuning, frei
+    vorschaeden: str | None = Field(default=None, max_length=500)     # Nachlackierungen/Vorschaeden, frei
+    zustand_innen: str | None = Field(default=None, max_length=20)   # "sehr_gut" | "gut" | "gebrauchsspuren" | "maengel"
+    zustand_aussen: str | None = Field(default=None, max_length=20)
+    technische_maengel: list[str] = Field(default_factory=list, max_length=50)
+    optische_maengel: list[str] = Field(default_factory=list, max_length=50)
+    plz: str | None = Field(default=None, max_length=10)
+    verkaufsziel: str | None = Field(default=None, max_length=20)     # "schnell" | "ausgewogen" | "maximal"
+    preis_untergrenze: int | None = Field(default=None, ge=0, le=10_000_000)
+
+    @field_validator("erstzulassung", "letzter_service_datum")
+    @classmethod
+    def _monat_jahr(cls, v):
+        from app.hu_termin import normalisiere_hu
+        return normalisiere_hu(v)
+
+    @model_validator(mode="after")
+    def _maengel_zusammenfuehren(self):
+        """Getrennt erfasste technische/optische Mängel zusätzlich in `maengel`
+        führen: Faktenschutz der Inseratsoptimierung (`_maengel_ehrlich`),
+        Inseratsanalyse und Prompt lesen weiterhin dieses eine Feld."""
+        bekannt = {m.strip().lower() for m in self.maengel}
+        for m in [*self.technische_maengel, *self.optische_maengel]:
+            if m.strip() and m.strip().lower() not in bekannt:
+                self.maengel.append(m.strip())
+                bekannt.add(m.strip().lower())
+        return self
+
     freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)            # alternative Freitexteingabe
     bild_base64: str | None = Field(default=None, max_length=_MAX_BILD_B64_LEN)
 
@@ -970,6 +1015,11 @@ class VerkaufsCheckResponse(BaseModel):
     identitaet_konfidenz: str = "hoch"
     # Eine der MATCH_*-Konstanten aus app/car_lookup.py.
     identitaet_match_art: str | None = None
+    # VerkaufsCheck RC1: deterministischer Verkaufsfahrplan (app/verkaufsplan.py).
+    # Bewusst als dict: die Abschnitte sind reine Anzeige-Strukturen, der Aufbau
+    # ist in app/verkaufsplan.py dokumentiert und im Frontend typisiert. Additiv:
+    # alte gespeicherte Checks besitzen das Feld nicht.
+    verkaufsplan: dict[str, Any] | None = None
 
 
 # ---------- Phase 5: VIRA Dealer (Händler-Bestand) ----------

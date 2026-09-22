@@ -160,8 +160,15 @@ check("H2 Audi TT RS wird exakt als eigenes Modell erkannt",
       and _ttrs_br is not None and _ttrs_br["id"] == "audi-tt-rs-fv/8s")
 
 # Im Audit zusätzlich gefundene False Positives über den Motorpfad
-check("H3 'Golf GTI' landet nicht mehr sicher beim VW up!",
-      not identitaet("Volkswagen", "Golf GTI", 2015)["belastbar"])
+# VerkaufsCheck RC1: vorher sicherte H3 nur "nicht belastbar" — das war der
+# einzige Ausweg, solange "gti" als unerklaertes Restwort galt. Die eigentliche
+# Aussage ist: nie beim VW up!. "GTI" ist jetzt ueber die Golf-Motorzeilen
+# erklaert, der Golf VII wird damit belastbar erkannt.
+_gti_br, _gti_info = find_baureihe_mit_vertrauen("Volkswagen", "Golf GTI", 2015)
+check("H3 'Golf GTI' landet nie beim VW up!, sondern belastbar beim Golf VII",
+      _gti_br is not None and _gti_br["id"] == "volkswagen-golf-vii" and _gti_info["belastbar"])
+check("H3b 'Golf XV' bleibt unsicher (kein Golf-Motor heisst XV)",
+      not identitaet("Volkswagen", "Golf XV", 2015)["belastbar"])
 _etron_br, _etron_info = find_baureihe_mit_vertrauen("Audi", "e-tron", 2021)
 check("H4 'e-tron' wird exakt als eigenes Modell erkannt, nicht als RS e-tron GT",
       _etron_info["match_art"] == MATCH_EXACT

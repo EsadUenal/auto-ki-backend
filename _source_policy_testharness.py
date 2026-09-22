@@ -23,7 +23,7 @@ AUSDRUECKLICH:
     pruefen ausdruecklich, dass diese Quellen NICHT preisbildend werden. Eine
     pauschale Freigabe wuerde genau diese Negativtests entwerten.
 """
-from app.web_search import setze_marktquellen_freigabe
+from app.web_search import setze_abruf_sperre_ausnahme, setze_marktquellen_freigabe
 
 # Historische Engine-Test-Domains (reale Mitschnitte) + synthetische Testdomains,
 # die in den Fixtures der Marktvergleichstests vorkommen.
@@ -38,3 +38,16 @@ TEST_MARKTQUELLEN = frozenset({
 })
 
 setze_marktquellen_freigabe(TEST_MARKTQUELLEN)
+
+# VerkaufsCheck RC1: Zusaetzlich zur Preisbildungs-Freigabe gibt es eine
+# ABRUFSPERRE fuer Fahrzeugboersen (app/web_search._ABRUF_GESPERRT). Mehrere
+# Engine-Tests und die historischen Diagnose-Mitschnitte bestehen aus echten
+# Portalseiten; sie pruefen die AUSWERTUNG dieser Seiten (Kartensegmentierung,
+# Extract-Fallback, Teilausfaelle), nicht die Frage, ob ENFAL sie abrufen darf.
+# Die Ausnahme gilt ausschliesslich in diesem Testprozess. Negativtests, die
+# beweisen, dass die Portale NICHT abgerufen werden, importieren diesen Harness
+# bewusst nicht (z.B. test_verkaufscheck_rc1.py).
+setze_abruf_sperre_ausnahme({
+    "kleinanzeigen.de", "ebay-kleinanzeigen.de", "autouncle.de",
+    "mobile.de", "autoscout24.de",
+})

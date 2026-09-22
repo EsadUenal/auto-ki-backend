@@ -251,7 +251,9 @@ PROVIDER_FEATURE_LIMITS: dict[str, dict[str, int]] = {
     "kaufcheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_GEMINI_MAX", "4")),
                    "tavily": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_TAVILY_MAX", "16"))},
     "verkaufscheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_GEMINI_MAX", "4")),
-                       "tavily": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_TAVILY_MAX", "16"))},
+                       "tavily": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_TAVILY_MAX", "16")),
+                       # Genau Valuation + Time-to-Sell, keine Retries (app/carapi_provider.py).
+                       "carapi": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_CARAPI_MAX", "2"))},
     "inseratsoptimierung": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_INSERAT_GEMINI_MAX", "3")),
                             "tavily": 0},
     "analyse_frage": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_ANALYSE_FRAGE_GEMINI_MAX", "3")),
@@ -387,6 +389,24 @@ FAST_LLM_MODEL      = os.environ.get("AUTO_KI_FAST_LLM_MODEL",  "gemini-flash-li
 # Windows/PowerShell: $env:TAVILY_API_KEY = "tvly-..."
 # Dauerhaft: In .env eintragen: TAVILY_API_KEY=tvly-...
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# CarAPI.dev: externe Marktorientierung fuer den VerkaufsCheck (Etappe RC1)
+# ---------------------------------------------------------------------------
+# Provider-Key wie TAVILY_API_KEY/GEMINI_API_KEY ohne Praefix, Schalter wie
+# AUTO_KI_STRIPE_LIVE_ERLAUBT mit Praefix.
+#
+# AUTO_KI_CARAPI_ERLAUBT: Default AUS. Die schriftliche Nutzungsfreigabe von
+# CarAPI (kommerzielle B2C-Nutzung, Anzeige, Persistenz) steht noch aus. Solange
+# der Schalter nicht "1" ist, wird CarAPI nie aufgerufen, auch mit gesetztem Key.
+# AUTO_KI_CARAPI_PERSISTENZ_ERLAUBT: Default AUS. Laut CarAPI-Terms duerfen
+# gecachte Antworten hoechstens 24 h gehalten werden. Ohne ausdrueckliche
+# Freigabe werden abgeleitete Werte deshalb NICHT im Check-Verlauf gespeichert
+# (app/routers/checks.py entfernt sie vor dem Speichern).
+CARAPI_API_KEY = os.environ.get("CARAPI_API_KEY", "").strip()
+CARAPI_ERLAUBT = os.environ.get("AUTO_KI_CARAPI_ERLAUBT", "0").strip() == "1"
+CARAPI_PERSISTENZ_ERLAUBT = os.environ.get("AUTO_KI_CARAPI_PERSISTENZ_ERLAUBT", "0").strip() == "1"
+CARAPI_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_CARAPI_TIMEOUT_SECONDS", "8"))
 
 # ---------------------------------------------------------------------------
 # Source-Policy: Freigabe automatischer Marktpreis-Quellen

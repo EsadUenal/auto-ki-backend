@@ -81,18 +81,27 @@ async def _stub_tavily(*args, **kwargs) -> list[dict]:
 
 
 def _stub_umgebung(ma: Marktanalyse, llm_antwort: dict):
+    # VerkaufsCheck RC1: Die Web-Marktrecherche laeuft nur noch, wenn ueberhaupt
+    # eine Quelle fuer die Preisbildung freigegeben ist (leere Allowlist =
+    # Production-Default -> keine Recherche, 0 Tavily-Calls). Dieser Test prueft
+    # PFAD A/B der Marktanalyse selbst, nicht das Freigabe-Gate: das Gate wird
+    # deshalb ausdruecklich geoeffnet, damit die gestubbte Recherche wie bisher
+    # greift und die urspruengliche Aussage erhalten bleibt.
     orig = (vc.vertiefe_marktrecherche, vc.call_gemini_json,
-            vc.tavily_search_with_fallback, vc.TAVILY_API_KEY)
+            vc.tavily_search_with_fallback, vc.TAVILY_API_KEY,
+            vc._web_marktrecherche_moeglich)
     vc.vertiefe_marktrecherche = _stub_recherche(ma)
     vc.call_gemini_json = _stub_gemini(llm_antwort)
     vc.tavily_search_with_fallback = _stub_tavily
     vc.TAVILY_API_KEY = "test-key"
+    vc._web_marktrecherche_moeglich = lambda req: True
     return orig
 
 
 def _stub_zurueck(orig) -> None:
     (vc.vertiefe_marktrecherche, vc.call_gemini_json,
-     vc.tavily_search_with_fallback, vc.TAVILY_API_KEY) = orig
+     vc.tavily_search_with_fallback, vc.TAVILY_API_KEY,
+     vc._web_marktrecherche_moeglich) = orig
 
 
 def lauf(ma: Marktanalyse, llm_antwort: dict, req: VerkaufsCheckRequest = REQ) -> dict:

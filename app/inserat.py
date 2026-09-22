@@ -23,6 +23,7 @@ import re
 from datetime import date, datetime
 
 from app.car_lookup import call_gemini_json
+from app.claim_sicherheit import entschaerfe_verstaerkungen
 from app.key_findings import _AUSSTATTUNG_WERTVOLL, _ausstattung_treffer, _kraftstoff_norm
 from app.models import FehlendeAngabe, InseratOptimierung, ListingAnalyse, VerkaufsCheckRequest
 
@@ -137,7 +138,7 @@ def _vertrauensfaktoren(req: VerkaufsCheckRequest) -> list[str]:
         out.append(f"Anzahl Vorbesitzer klar angegeben ({vb})")
     tuev = getattr(req, "tuev_bis", None)
     if tuev:
-        out.append(f"TÜV/HU angegeben ({tuev})" + (" — noch lange gültig" if _tuev_lange_gueltig(tuev) else ""))
+        out.append(f"TÜV/HU angegeben ({tuev})" + (" (noch lange gültig)" if _tuev_lange_gueltig(tuev) else ""))
     if getattr(req, "maengel", None):
         out.append("Bekannte Mängel offen genannt")
     return out
@@ -160,9 +161,10 @@ def _verkaufsargumente(req: VerkaufsCheckRequest) -> list[str]:
     # Frischer/langer TÜV
     if _tuev_lange_gueltig(getattr(req, "tuev_bis", None)):
         args.append("TÜV/HU noch lange gültig")
-    # Lückenlose Wartung
+    # Wartung: VerkaufsCheck RC1 — "scheckheftgepflegt" ist eine Angabe des
+    # Verkäufers, KEINE nachgewiesene "vollständige Wartungshistorie".
     if getattr(req, "scheckheftgepflegt", None) is True and "Scheckheftgepflegt" not in args:
-        args.append("Vollständige Wartungshistorie")
+        args.append("Scheckheftgepflegt (laut Angabe)")
     # dedupliziert, max 6
     ausgabe: list[str] = []
     for a in args:
@@ -202,6 +204,34 @@ def finde_widersprueche(req: VerkaufsCheckRequest) -> list[str]:
     behauptet_unfallfrei = bool(re.search(r"unfallfrei|kein(?:e|erlei)?\s+unfall|ohne\s+unfall", tnorm))
     if behauptet_unfallfrei and _norm(getattr(req, "unfallfrei", None)) == "nein":
         out.append("Beschreibung sagt „unfallfrei“, angegeben ist ein Unfallschaden.")
+
+    # VerkaufsCheck RC1 (§14): Zahlenangaben im Text gegen die Strukturfelder.
+    # Gemeldet wird NUR ein echter Widerspruch; stimmen beide überein, entsteht
+    # keine künstliche Warnung. Die Strukturangabe bleibt in jedem Fall kanonisch.
+    for label, feldwert, muster, toleranz in (
+        ("Kilometerstand", getattr(req, "kilometerstand", None),
+         r"(\d{1,3}(?:[.\s]\d{3})+|\d{2,7})\s*km\b", 1),
+        ("Baujahr", getattr(req, "baujahr", None), r"baujahr\s*:?\s*((?:19|20)\d{2})", 0),
+        ("Vorbesitzer", getattr(req, "vorbesitzer", None),
+         r"(\d{1,2})\s*(?:vorbesitzer\w*|halter\w*)\b", 0),
+        ("Preisvorstellung", getattr(req, "preis_vorstellung", None),
+         r"(\d{1,3}(?:[.\s]\d{3})+|\d{3,7})\s*(?:€|eur\b)", 1),
+    ):
+        if not feldwert:
+            continue
+        werte = {int(re.sub(r"[.\s]", "", m)) for m in re.findall(muster, tnorm)}
+        if werte and all(abs(w - int(feldwert)) > toleranz for w in werte):
+            genannt = f"{sorted(werte)[0]:,}".replace(",", ".")
+            angegeben = f"{int(feldwert):,}".replace(",", ".")
+            out.append(f"Beschreibung nennt {label} {genannt}, angegeben ist {angegeben}.")
+
+    tuev = _norm(getattr(req, "tuev_bis", None))
+    if tuev:
+        termine = {f"{int(m[0]):02d}/{m[1]}" for m in
+                   re.findall(r"(0?[1-9]|1[0-2])\s*[/.]\s*(20\d{2})", tnorm)}
+        if termine and tuev not in termine:
+            out.append(f"Beschreibung nennt den Termin {sorted(termine)[0]}, angegeben ist "
+                       f"HU bis {getattr(req, 'tuev_bis')}.")
 
     return out
 
@@ -250,13 +280,13 @@ def _preis_hinweis(insights) -> tuple[str | None, list[str]]:
         pct = ma.differenz_pct
         if pct >= 8:
             return (f"Deine Preisvorstellung ({_eur(ma.angebot_eur)}) liegt rund {abs(pct):.0f} % über dem "
-                    f"Marktmedian ({_eur(ma.median_eur)}) — das kann die Verkaufszeit verlängern. "
+                    f"Marktmedian ({_eur(ma.median_eur)}). Das kann die Verkaufszeit verlängern. "
                     f"Höher nur bei belegbaren Vorteilen ansetzen.", ev)
         if pct <= -8:
             return (f"Deine Preisvorstellung ({_eur(ma.angebot_eur)}) liegt rund {abs(pct):.0f} % unter dem "
-                    f"Marktmedian ({_eur(ma.median_eur)}) — ein höherer Startpreis ist realistisch.", ev)
+                    f"Marktmedian ({_eur(ma.median_eur)}). Ein höherer Startpreis ist realistisch.", ev)
         return (f"Deine Preisvorstellung ({_eur(ma.angebot_eur)}) liegt nah am Marktmedian "
-                f"({_eur(ma.median_eur)}) — realistisch angesetzt.", ev)
+                f"({_eur(ma.median_eur)}), also realistisch angesetzt.", ev)
     return (f"Marktmedian vergleichbarer Fahrzeuge: {_eur(ma.median_eur)}. Ergänze eine "
             f"Preisvorstellung, um deine Position einzuordnen.", ev)
 
@@ -431,13 +461,13 @@ def _scrub_titel(titel: str, req: VerkaufsCheckRequest, entfernt: list[str]) -> 
         drop = False
         for name, rx, belegt in rules:
             if rx.search(seg) and not belegt:
-                entfernt.append(f"Titel — {name}: „{seg}“")
+                entfernt.append(f"Titel, {name}: „{seg}“")
                 drop = True
                 break
         if not drop:
             for key, label in _AUSSTATTUNG_WERTVOLL.items():
                 if key not in ausst_backed and _keyword_in(snorm, key):
-                    entfernt.append(f"Titel — nicht angegebene Ausstattung ({label}): „{seg}“")
+                    entfernt.append(f"Titel, nicht angegebene Ausstattung ({label}): „{seg}“")
                     drop = True
                     break
         if not drop:
@@ -468,6 +498,12 @@ def pruefe_fakten(titel: str, beschreibung: str, req: VerkaufsCheckRequest) -> t
     titel_clean = _scrub_titel(titel or "", req, entfernt)
     beschr_clean = _scrub_text(beschreibung or "", req, entfernt)
     beschr_clean = _maengel_ehrlich(beschr_clean, req)
+    # VerkaufsCheck RC1: Verstärkungen belegter Angaben abschwächen ("lückenloses
+    # Scheckheft" -> "Scheckheft"). Der Scrub oben entfernt nur UNBELEGTE Aussagen;
+    # eine belegte Angabe darf aber ebenfalls nicht stärker klingen als sie ist.
+    titel_clean, t_schwach = entschaerfe_verstaerkungen(titel_clean, stimme="inserat")
+    beschr_clean, b_schwach = entschaerfe_verstaerkungen(beschr_clean, stimme="inserat")
+    entfernt += [f"Abgeschwächt: „{s}“" for s in t_schwach + b_schwach]
     # Fällt der Titel komplett weg, deterministischen Vorschlag verwenden.
     if not titel_clean.strip():
         titel_clean = baue_titel_vorschlag(req) or " ".join(

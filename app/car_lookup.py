@@ -303,6 +303,19 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
     # bevorzugen.
     gen_tokens_user = {t for t in re.split(r"[^a-z0-9]+", (modell or "").lower()) if t}
 
+    # VerkaufsCheck RC1: "Golf GTI" blieb ein blosser Teilstring ("gti" unerklaert)
+    # und stand damit punktgleich neben dem VW up!, dessen Motorzeile "GTI" heisst.
+    # Ergebnis: "mehrdeutig", keine fahrzeugspezifische Aussage. Ein Restwort ist
+    # aber erklaert, wenn es in einer Motorbezeichnung GENAU DIESER Baureihe als
+    # ganzes Wort vorkommt (Golf VII fuehrt "GTI Performance (169 kW / 230 PS)").
+    # Datengetrieben wie das Karosserie-Vokabular, nur pro Baureihe statt global:
+    # "Golf XV" bleibt unerklaert, weil kein Golf-Motor "XV" heisst.
+    motor_tokens_je_baureihe: dict[str, set[str]] = {}
+    if modell:
+        for m in get_alle_motorvarianten_kurz():
+            motor_tokens_je_baureihe.setdefault(m["baureihe_id"], set()).update(
+                _tokens(m.get("bezeichnung")))
+
     # Match-Art je Kandidat (Identity-Trust-Gate): das Scoring bleibt UNVERAENDERT,
     # es wird nur zusaetzlich festgehalten, WARUM ein Kandidat getroffen hat.
     scored: list[tuple[int, bool, bool, dict]] = []
@@ -325,6 +338,11 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
                 score += 4
                 modell_getroffen = True
                 art = _substring_art(modell, r["modell"]) or MATCH_SUBSTRING
+                if art == MATCH_SUBSTRING and rl in ml:
+                    rest = [t for t in _tokens(ml) if t not in _tokens(rl)]
+                    eigene = motor_tokens_je_baureihe.get(r["id"], set())
+                    if rest and all(t in eigene or t in _karosserie_vokabular() for t in rest):
+                        art = MATCH_STRONG
         # Motorvarianten-Treffer nur werten, wenn die Marke passt (kein Cross-Brand-Match,
         # z.B. ein VW-"2.0 TDI" darf keine BMW-Baureihe matchen).
         if marke_ok and r["id"] in motor_baureihe_ids:

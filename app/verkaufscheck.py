@@ -14,7 +14,13 @@ import asyncio
 import logging
 
 from app.car_lookup import find_baureihe_mit_vertrauen, find_motor, build_db_context, call_gemini_json
+from app.carapi_provider import (
+    baue_anfrage as baue_carapi_anfrage, hole_bewertung, hole_marktdauer,
+    ist_aktiv as carapi_aktiv,
+)
+from app.claim_sicherheit import entschaerfe_verstaerkungen
 from app.config import TAVILY_API_KEY
+from app.verkaufsplan import baue_verkaufsplan, getriebe_bezeichnung, leistung
 from app.database import get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
@@ -39,7 +45,7 @@ from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
 from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
-    KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
+    erlaubte_marktquellen, KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
 
 _MAX_VERKAUFSCHECK_QUELLEN = 4
@@ -138,8 +144,26 @@ REGELN:
 4. Alle Zahlfelder MÜSSEN als Integer stehen — nicht im Bericht verstecken.
 5. Sachlich und neutral bleiben — Begründungen immer technisch (Zustand, Laufleistung, Marktdaten, Ausstattung), nie werblich/emotional ("toller Wagen", "beliebtes Modell").
 6. Auf Deutsch schreiben.
-7. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Verkaufsstrategie.\
+7. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Verkaufsstrategie.
+8. Angaben des Verkäufers bleiben Angaben ("laut deiner Angabe") und werden NIE stärker formuliert: "scheckheftgepflegt" heißt NICHT "lückenloses Scheckheft" oder "vollständige Wartungshistorie"; "unfallfrei" (Angabe) heißt NICHT "nachweislich unfallfrei" oder "bestehende Unfallfreiheit"; "2 Vorbesitzer" heißt NICHT "amtlich bestätigt"; "keine bekannten technischen Mängel" heißt NICHT "technisch einwandfrei" oder "mängelfrei".
+9. Übernimm die Getriebebezeichnung so konkret, wie sie angegeben ist: "DSG" bleibt "DSG" (nicht nur "Automatik"), ebenso "S tronic", "PDK" und vergleichbare Bezeichnungen.
+10. Bekannte Schwachstellen der Baureihe sind Prüfhinweise, keine Mängel dieses Fahrzeugs: "vor der Besichtigung selbst prüfen, falls vorhanden offen nennen". Behaupte nie, das Fahrzeug habe ein Problem, das der Verkäufer nicht angegeben hat.
+11. Verwende im nutzerseitigen deutschen Text Gedankenstriche sparsam. Bevorzuge normale deutsche Satzzeichen wie Punkt, Komma, Doppelpunkt oder Klammern. Vermeide den typischen häufigen KI-Stil mit langen Gedankenstrichen.\
 """
+
+
+# VerkaufsCheck RC1: Die externe Marktorientierung (app/carapi_provider.py) zeigt
+# ENFAL in einem eigenen, deterministischen Bereich. Das Modell bekommt die Zahl
+# bewusst NICHT: ohne Nutzungsfreigabe darf sie nicht im gespeicherten Bericht
+# landen, und ein zweiter, frei formulierter Marktwert im Fließtext waere ein
+# Widerspruch zum deterministischen Bereich.
+_MARKT_SEPARAT_BLOCK = "\n".join([
+    "=== MARKTORIENTIERUNG WIRD SEPARAT ANGEZEIGT ===",
+    "ENFAL zeigt eine externe Marktorientierung in einem eigenen Bereich außerhalb dieses",
+    "Berichts. Nenne im Bericht trotzdem KEINE Marktpreise und KEINE Preiseinordnung.",
+    "Im Abschnitt '## (a) Marktvergleich' schreibe nur einen Satz: Die Marktorientierung",
+    "steht im eigenen Bereich 'Marktorientierung'.",
+])
 
 
 def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
@@ -162,7 +186,43 @@ def _format_fahrzeug(req: VerkaufsCheckRequest) -> str:
     if req.tuev_bis:         lines.append(f"TÜV bis:            {req.tuev_bis}")
     if req.scheckheftgepflegt is not None:
         lines.append(f"Scheckheftgepflegt: {'ja' if req.scheckheftgepflegt else 'nein'}")
+    # VerkaufsCheck RC1: weitere optionale Angaben (nur gesetzte). Das Getriebe
+    # kommt aus `getriebe_bezeichnung`, damit "DSG" auch im Prompt DSG bleibt.
+    getriebe = getriebe_bezeichnung(req)
+    for label, wert in (
+        ("Getriebe", getriebe), ("Erstzulassung", req.erstzulassung), ("Variante", req.variante),
+        ("Karosserie", req.karosserie), ("Antrieb", req.antrieb), ("Farbe", req.farbe),
+        ("Schlüssel", req.schluessel_anzahl),
+        ("Letzter Service", ", ".join(filter(None, [
+            req.letzter_service_datum,
+            f"{req.letzter_service_km:,} km".replace(",", ".") if req.letzter_service_km else None]))),
+        ("Wartungsnachweise", req.wartungsnachweise),
+        ("Zweiter Radsatz", {True: "ja", False: "nein"}.get(req.zweiter_radsatz)),
+        ("Reifenzustand", req.reifen_zustand), ("Import", req.import_status),
+        ("Tuning/Umbauten", req.tuning), ("Vorschäden", req.vorschaeden),
+        ("Zustand außen", req.zustand_aussen), ("Zustand innen", req.zustand_innen),
+        ("Technische Mängel", ", ".join(req.technische_maengel)),
+        ("Optische Mängel", ", ".join(req.optische_maengel)),
+        ("PLZ", req.plz), ("Verkaufsziel", req.verkaufsziel),
+        ("Preisuntergrenze", f"{req.preis_untergrenze:,} €".replace(",", ".")
+         if req.preis_untergrenze else None),
+    ):
+        if wert not in (None, ""):
+            lines.append(f"{label + ':':<20}{wert}")
     return "\n".join(lines)
+
+
+def _web_marktrecherche_moeglich(req: VerkaufsCheckRequest) -> bool:
+    """VerkaufsCheck RC1: Die Tavily-Marktrecherche läuft nur, wenn überhaupt eine
+    Quelle für die Preisbildung freigegeben ist.
+
+    Mit der leeren Production-Allowlist (AUTO_KI_ALLOWED_MARKET_SOURCES) verwirft
+    `marktvergleich._bewerte` JEDE Webquelle vor der fachlichen Prüfung. Die bis zu
+    16 Tavily-Calls pro Check konnten also nie einen Median liefern. Sie holten nur
+    Treffer, darunter gezielt Fahrzeugbörsen, die dann als Quellenchips erschienen.
+    Ohne freigegebene Quelle entfällt die Recherche deshalb komplett; die Logik
+    bleibt für eine später ausdrücklich freigegebene Quelle unverändert erhalten."""
+    return bool(TAVILY_API_KEY and req.marke and req.modell and erlaubte_marktquellen())
 
 
 # Kleine Überschreitungen (Rundung, Marktrauschen) sind kein Widerspruch;
@@ -232,8 +292,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     #    am Ergebnis der Baureihe-Erkennung, sind also unabhängig voneinander.
     baureihe_task = asyncio.to_thread(find_baureihe_mit_vertrauen, req.marke, req.modell, req.baujahr)
 
+    web_markt = _web_marktrecherche_moeglich(req)
+    if not web_markt:
+        log.info("Verkaufscheck: keine fuer die Preisbildung freigegebene Quelle, "
+                 "Web-Marktrecherche entfaellt (0 Tavily-Calls).")
+
     web_results_task: asyncio.Task[list[dict]] | None = None
-    if TAVILY_API_KEY and req.marke and req.modell:
+    if web_markt:
         # Marktpreise per Tavily (vergleichbare Angebote) — kaskadierende Queries:
         # spezifisch → breiter, damit auch bei seltenen Modellen Ergebnisse kommen.
         q_spezifisch = " ".join(filter(None, [
@@ -293,7 +358,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
                      get_alle_baureihen_kurz() if baureihe_markt else [],
                      get_alle_motorvarianten_kurz() if baureihe_markt else [])
     identity = VehicleIdentity.from_market_context(baureihe_markt, motor_markt, req)
-    if TAVILY_API_KEY and req.marke and req.modell:
+    if web_markt:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
         # §Phase 0/13: siehe Kommentar in kaufcheck.py — max_results 20 statt 10,
@@ -304,6 +369,19 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_vorstellung)
         diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
+
+    # ── Externe Marktorientierung (optional, Default AUS) ───────────────────────
+    # Läuft parallel zum Gemini-Call. Ohne Freigabe/Key passiert hier gar nichts
+    # (Status "deaktiviert"), und der Check läuft unverändert weiter.
+    kw_fuer_markt, _ps, _q = leistung(req, motor_match)
+    carapi_anfrage = None
+    if identitaet["belastbar"] and baureihe:
+        carapi_anfrage = baue_carapi_anfrage(
+            baureihe.get("marke"), baureihe.get("modell"), req.baujahr,
+            req.kraftstoff or (motor_match or {}).get("kraftstoff"),
+            kw_fuer_markt, req.kilometerstand)
+    markt_task = asyncio.ensure_future(asyncio.gather(
+        hole_bewertung(carapi_anfrage), hole_marktdauer(carapi_anfrage)))
 
     # ── Quality-Gate + Marktpreis-Entkopplung (P1 #2, analog KaufCheck P0-1) ─────
     # `markt_status` bewertet AUSSCHLIESSLICH die Marktrecherche (unverändert:
@@ -368,6 +446,10 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         markt_block = verkaufs_no_market_prompt_block()
         preis_block = ""
         strategie_block = ""
+        # RC1: Liegt eine externe Orientierung vor, wird sie separat angezeigt —
+        # das Modell darf sie weder aufgreifen noch eine eigene Zahl erfinden.
+        if carapi_anfrage is not None and carapi_aktiv():
+            strategie_block = _MARKT_SEPARAT_BLOCK
     user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx,
                                          markt_block, preis_block, strategie_block, evidence_block]))
     result = await call_gemini_json(_SYSTEM, user_msg)
@@ -411,6 +493,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
             result.get("maximal_preis"),
             result.get("marktpreis_max"),
         )
+        # RC1: Sicherheitsnetz nach der Prompt-Regel 8 — verstärkte Verkäufer-
+        # angaben ("lückenloses Scheckheft", "nachweislich unfallfrei") werden
+        # deterministisch auf die tatsächliche Angabe zurückgeführt.
+        result["bericht"], _entschaerft = entschaerfe_verstaerkungen(result["bericht"])
+        if _entschaerft:
+            log.info("Verkaufscheck: %d verstaerkte Verkaeuferangabe(n) entschaerft",
+                     len(_entschaerft))
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
@@ -481,6 +570,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     # separaten Endpoint (Kosten/Geschwindigkeit).
     listing_analyse = build_listing_analyse(req, baureihe, motor_match, insights)
 
+    # RC1: vollständiger Verkaufsfahrplan, deterministisch (kein weiterer LLM-Call).
+    # Providerzahlen stehen ausschließlich unter verkaufsplan["markt"].
+    bewertung, marktdauer = await markt_task
+    verkaufsplan = baue_verkaufsplan(req, baureihe, motor_match, identitaet, insights,
+                                     listing_analyse, bewertung, marktdauer)
+
     return {
         "bericht":                     result.get("bericht", ""),
         "schnellverkaufs_preis":        result.get("schnellverkaufs_preis"),
@@ -512,4 +607,5 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         "key_findings":                key_findings,
         "listing_analyse":             listing_analyse,
         "inserat_optimierung":         None,   # on-demand, separater Endpoint
+        "verkaufsplan":                verkaufsplan,
     }
