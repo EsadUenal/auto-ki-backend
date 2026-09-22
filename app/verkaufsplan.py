@@ -324,15 +324,25 @@ def baue_markt(req, fahrzeug: dict, bewertung: Marktbewertung | None,
                                  "grund": grund}
 
     if dauer and dauer.status == STATUS_OK and dauer.median_tage is not None:
+        hinweis = ("Gemessen wird, wann Inserate vom Markt verschwinden. Das umfasst Verkäufe, "
+                   "aber auch zurückgezogene und abgelaufene Anzeigen. Es ist keine Zusage, "
+                   "wann dein Auto verkauft ist.")
+        # Realtest 2026-09-22 (VW Golf, DE): p25 7, Median 81, p75 81. Fallen zwei
+        # der drei Werte zusammen, ist die Verteilung entartet: die Datenbasis ist
+        # dünn oder grob gebucketet. Dann bleibt die Zahl stehen, aber sie wird
+        # nicht als feine Statistik ausgegeben.
+        grob = dauer.p25_tage == dauer.median_tage or dauer.median_tage == dauer.p75_tage
+        if grob:
+            hinweis += (" Die drei Werte liegen hier teilweise aufeinander. Das spricht für eine "
+                        "grobe oder dünne Datenbasis: nimm die Zahlen nur als grobe Richtung.")
         markt["dauer"] = {
             "status": "ok",
             "p25_tage": dauer.p25_tage, "median_tage": dauer.median_tage, "p75_tage": dauer.p75_tage,
+            "aufloesung": "grob" if grob else "normal",
             "text": (f"Vergleichbare Angebote bleiben typischerweise etwa {dauer.median_tage} Tage "
                      f"online. Ein Viertel verschwindet innerhalb von rund {dauer.p25_tage} Tagen vom "
                      f"Markt, ein Viertel ist nach {dauer.p75_tage} Tagen noch online."),
-            "hinweis": ("Gemessen wird, wann Inserate vom Markt verschwinden. Das umfasst Verkäufe, "
-                        "aber auch zurückgezogene und abgelaufene Anzeigen. Es ist keine Zusage, "
-                        "wann dein Auto verkauft ist."),
+            "hinweis": hinweis,
             "quelle": "CarAPI.dev (Inseratsdauer je Basismodell, Deutschland)",
         }
     return markt

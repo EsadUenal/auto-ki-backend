@@ -326,6 +326,19 @@ check("K2 als Inserats-/Marktdauer formuliert",
       "online" in _d["text"] and "verschwindet" in _d["text"])
 check("K3 keine Verkaufszusage", not re.search(r"wird\s+in\s+\d+\s+tagen\s+verkauft", _d["text"], re.I)
       and "keine Zusage" in _d["hinweis"])
+check("K4 saubere Verteilung gilt als normal aufgeloest", _d["aufloesung"] == "normal")
+
+# Realtest 2026-09-22 (VW Golf, DE): p25 7, Median 81, p75 81 — zwei Werte fallen
+# zusammen. Das darf nicht wie eine feine Statistik aussehen.
+with mit_carapi(lambda url: _Antwort(200, {"make": "vw", "model": "golf", "country": "DE",
+                                           "medianDaysToSell": 81, "p25Days": 7, "p75Days": 81})
+                if "time-to-sell" in url else _Antwort(404, {"error": "keine Daten"})):
+    _res_grob = lauf(golf())
+_d_grob = _res_grob["verkaufsplan"]["markt"]["dauer"]
+check("K5 entartete Verteilung wird als grob gekennzeichnet",
+      _d_grob["aufloesung"] == "grob" and "grobe" in _d_grob["hinweis"])
+check("K6 die Zahlen bleiben trotzdem stehen",
+      _d_grob["median_tage"] == 81 and _d_grob["p25_tage"] == 7)
 
 with mit_carapi(lambda url: _Antwort(404, {"error": "Insufficient market data"})):
     _res_404 = lauf(golf())

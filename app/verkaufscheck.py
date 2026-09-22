@@ -452,7 +452,13 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
             strategie_block = _MARKT_SEPARAT_BLOCK
     user_msg = "\n\n".join(filter(None, [_format_fahrzeug(req), db_ctx, web_ctx,
                                          markt_block, preis_block, strategie_block, evidence_block]))
-    result = await call_gemini_json(_SYSTEM, user_msg)
+    try:
+        result = await call_gemini_json(_SYSTEM, user_msg)
+    except BaseException:
+        # Faellt der LLM-Call aus (Router erstattet dann das Kontingent), darf der
+        # parallel laufende Marktabruf nicht als unbeachtete Task zurueckbleiben.
+        markt_task.cancel()
+        raise
     if result.get("bericht"):
         result["bericht"] = postprocess_answer(result["bericht"])
         # §26: Sicherheitsnetz NACH der Prompt-Regel — entfernt eine konkret erfundene
