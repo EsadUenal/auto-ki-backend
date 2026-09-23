@@ -217,6 +217,67 @@ def entferne_erfundene_verkaufsdauer(text: str) -> str:
     return "".join(zusammengesetzt)
 
 
+# ---------- Aufbereitungs-/Reparaturkosten-Guard (VerkaufsCheck RC1 Live-Closing) --
+# Der echte Live-Bericht behauptete "Professionelle Aufbereitung (ca. 100 bis
+# 150 €)" — ein Eurobetrag ohne jede Quelle: keine Kostendatenbank im System, kein
+# Providerwert, keine Nutzerangabe. `app/verkaufsplan.py` selbst erfindet bewusst
+# NIE einen solchen Betrag (siehe dessen Modul-Docstring); dieser Guard fängt den
+# Fall ab, dass das Modell ihn trotzdem in den Freitext schreibt.
+#
+# Ein Eurobetrag wird nur ersetzt, wenn er UNMITTELBAR (<= 40 Zeichen, kein Satz-
+# ende, kein weiteres "€" dazwischen) auf einen Aufbereitungs-/Reparaturbegriff
+# folgt — der eigene Angebotspreis ("Preisvorstellung: 19.500 €") und echte
+# Marktpreisangaben stehen in anderem Kontext und bleiben unberührt. Ersetzt wird
+# nur der Betrag selbst (nicht der ganze Satz, das bleibt grammatisch näher am
+# Original) — bewusst OHNE die (nachweislich fehlerhafte) Satzgrenzenerkennung
+# `_RE_SATZGRENZE`: die schneidet "(ca." selbst mitten in der Zahl ab, siehe deren
+# eigene Abkürzungs-Ausnahme, die für ein "ca." mit Punkt nicht greift.
+_AUFBEREITUNG_BEGRIFF = (
+    r"(?:professionelle[nr]?\s+)?(?:aufbereitung\w*|lackierung\w*|lackstift\w*|"
+    r"smart\s*repair\w*|polier\w*|reparatur\w*|instandsetzung\w*|kostenvoranschlag\w*|"
+    r"ausbesser\w*|nachlackier\w*)"
+)
+_RE_AUFBEREITUNG_KOSTEN = re.compile(
+    rf"({_AUFBEREITUNG_BEGRIFF})([^.!?€]{{0,40}}"
+    r"\(?\s*(?:ca\.?\s*|etwa\s*|rund\s*)?\d[\d.,]*(?:\s*(?:bis|[-–—])\s*\d[\d.,]*)?\s*€\)?)",
+    re.IGNORECASE,
+)
+
+
+def entferne_erfundene_aufbereitungskosten(text: str) -> str:
+    """Ersetzt einen erfundenen Aufbereitungs-/Reparaturkosten-Betrag im Freitext
+    durch einen neutralen Hinweis — NUR unmittelbar nach einem Aufbereitungs-/
+    Reparaturbegriff (siehe `_RE_AUFBEREITUNG_KOSTEN`). Gibt den Text unverändert
+    zurück, wenn kein Treffer gefunden wird."""
+    if not text:
+        return text
+
+    teile = _CODE_FENCE.split(text)
+    fences = _CODE_FENCE.findall(text)
+
+    def _ersetze(m: re.Match) -> str:
+        log.info("Aufbereitungskosten-Guard: erfundener Eurobetrag im Bericht ersetzt.")
+        return f"{m.group(1)} (vorher ein Angebot einholen)"
+
+    def _bereinige_teil(teil: str) -> str:
+        zeilen = teil.split("\n")
+        neue_zeilen = []
+        for zeile in zeilen:
+            if _IST_TABELLENZEILE.match(zeile):
+                neue_zeilen.append(zeile)
+                continue
+            neue_zeilen.append(_RE_AUFBEREITUNG_KOSTEN.sub(_ersetze, zeile))
+        return "\n".join(neue_zeilen)
+
+    bereinigt = [_bereinige_teil(t) for t in teile]
+    zusammengesetzt: list[str] = []
+    for i, teil in enumerate(bereinigt):
+        zusammengesetzt.append(teil)
+        if i < len(fences):
+            zusammengesetzt.append(fences[i])
+    return "".join(zusammengesetzt)
+
+
 # ---------- Wartungs-Fälligkeits-Guard (P2-5, Bake-off-Nachbesserung) ----------
 # P2-5 (app/laufleistung.py): kein Feld im System kennt den Zeitpunkt des letzten
 # Service, weder im Inserat noch in der Fahrzeugdatenbank. `laufleistung.prompt_block`

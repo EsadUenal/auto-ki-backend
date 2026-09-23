@@ -45,8 +45,11 @@ from app.inserat import finde_widersprueche, pruefe_fakten  # noqa: E402
 from app.models import VerkaufsCheckRequest  # noqa: E402
 from app.verkaufsplan import (  # noqa: E402
     KEINE_ORIENTIERUNG, baue_verkaufsplan, getriebe_bezeichnung, maengel_klassifiziert,
-    entferne_provider_werte, runde_orientierung,
+    entferne_provider_werte, runde_orientierung, _gleich_starke_varianten, ist_verneinung,
+    _antrieb_anzeige,
 )
+from app.rueckruf_titel import rueckruf_kurztitel  # noqa: E402
+from app.postprocess import entferne_erfundene_aufbereitungskosten  # noqa: E402
 
 FEHLER: list[str] = []
 
@@ -450,6 +453,158 @@ check("V3 mehrdeutige Motorvariante wird offengelegt",
 check("V4 Inseratsqualität trennt Vollständigkeit und Transparenz",
       _plan["inseratsqualitaet"]["vollstaendigkeit"]["gesamt"] == 11
       and "label" in _plan["inseratsqualitaet"]["transparenz"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RC1 LIVE-CLOSING-PASS — echter Live-E2E-Befund (Golf VII GTI, EZ 06/2018,
+# Variante "GTI Facelift"), NACHGEBAUT über Fixtures/Stubs. Kein Gemini-/Tavily-/
+# CarAPI-Request in diesem Abschnitt.
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== T) Motorvariante-Auflösung (GTI Facelift vs. Performance) ===")
+
+_baureihe_stub = {"motoren": [
+    {"bezeichnung": "GTI Facelift (169 kW / 230 PS)", "leistung_kw": 169},
+    {"bezeichnung": "GTI Performance (169 kW / 230 PS)", "leistung_kw": 169},
+]}
+check("T1 'GTI Facelift' filtert auf genau eine Zeile",
+      _gleich_starke_varianten(_baureihe_stub, 169, "GTI Facelift")
+      == ["GTI Facelift (169 kW / 230 PS)"])
+check("T2 'GTI Performance' filtert auf genau eine Zeile",
+      _gleich_starke_varianten(_baureihe_stub, 169, "GTI Performance")
+      == ["GTI Performance (169 kW / 230 PS)"])
+check("T3 nur 'GTI' bleibt mehrdeutig (beide Kandidaten enthalten das Wort)",
+      len(_gleich_starke_varianten(_baureihe_stub, 169, "GTI")) == 2)
+check("T4 keine Angabe bleibt mehrdeutig (Altverhalten, siehe V3)",
+      len(_gleich_starke_varianten(_baureihe_stub, 169, None)) == 2)
+check("T5 nicht treffendes Wort fällt auf die volle Menge zurück (kein falsches Leeren)",
+      len(_gleich_starke_varianten(_baureihe_stub, 169, "Facelift Xyz")) == 2)
+
+_res_facelift = lauf(golf(variante="GTI Facelift"))
+check("T6 E2E: GTI Facelift wird NICHT mehr als mehrdeutig gemeldet",
+      not any("nicht eindeutig" in h for h in _res_facelift["verkaufsplan"]["fahrzeug"]["hinweise"]))
+_res_performance = lauf(golf(variante="GTI Performance"))
+check("T7 E2E: GTI Performance wird NICHT mehr als mehrdeutig gemeldet",
+      not any("nicht eindeutig" in h for h in _res_performance["verkaufsplan"]["fahrzeug"]["hinweise"]))
+check("T8 E2E-Regressionsschutz: ohne unterscheidendes Wort bleibt es mehrdeutig (siehe V3)",
+      any("nicht eindeutig" in h for h in _plan["fahrzeug"]["hinweise"]))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== U) 'Keine'/'Keine bekannt' sind kein Wertminderer ===")
+
+check("U1 ist_verneinung erkennt 'Keine bekannt.'", ist_verneinung("Keine bekannt."))
+check("U2 ist_verneinung erkennt 'Keine.'", ist_verneinung("Keine."))
+check("U3 ist_verneinung erkennt 'Nein'", ist_verneinung("Nein"))
+check("U4 ist_verneinung erkennt 'nicht vorhanden'", ist_verneinung("nicht vorhanden"))
+check("U5 ist_verneinung erkennt NICHT 'unbekannt' (Nichtwissen != Verneinung)",
+      not ist_verneinung("unbekannt"))
+
+_res_keine = lauf(golf(vorschaeden="Keine bekannt.", tuning="Keine."))
+_minderer_keine = json.dumps(_res_keine["verkaufsplan"]["wertminderer"], ensure_ascii=False)
+check("U6 'Keine bekannt.' Vorschäden erzeugt keinen Wertminderer",
+      "Vorschäden" not in _minderer_keine and "Nachlackierungen" not in _minderer_keine)
+check("U7 'Keine.' Umbauten erzeugt keinen Wertminderer", "Tuning" not in _minderer_keine)
+check("U8 keine Umbauten -> keine ABE/Gutachten-Pflicht",
+      not any("Umbau" in d["dokument"] for d in _res_keine["verkaufsplan"]["dokumente"]))
+check("U9 kein doppelter Punkt ('Keine bekannt..') irgendwo im Plan",
+      "bekannt.." not in json.dumps(_res_keine["verkaufsplan"], ensure_ascii=False))
+
+_res_echt = lauf(golf(vorschaeden="Heckstoßstange nachlackiert",
+                      tuning="Tieferlegungsfedern, eingetragen"))
+_minderer_echt = json.dumps(_res_echt["verkaufsplan"]["wertminderer"], ensure_ascii=False)
+check("U10 echte Vorschäden bleiben Wertminderer", "Vorschäden" in _minderer_echt)
+check("U11 echtes Tuning bleibt Wertminderer", "Tuning" in _minderer_echt)
+check("U12 echte Umbauten -> ABE/Gutachten-Pflicht erscheint",
+      any("Umbau" in d["dokument"] for d in _res_echt["verkaufsplan"]["dokumente"]))
+
+_res_unbekannt = lauf(golf(vorschaeden="unbekannt"))
+check("U13 'unbekannt' wird NICHT wie 'keine' stillschweigend entfernt",
+      "Vorschäden" in json.dumps(_res_unbekannt["verkaufsplan"]["wertminderer"], ensure_ascii=False))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== W) Evidence-Filter vor dem LLM-Prompt (niedrige Confidence) ===")
+
+from app.models import Insight as _Insight  # noqa: E402
+
+_insights_mix = [
+    _Insight(id="e1", kategorie="schwachstelle", titel="Klimaanlage: gemeldeter Hinweis",
+             beschreibung="x", confidence="niedrig"),
+    _Insight(id="e2", kategorie="schwachstelle", titel="Bekannte Schwachstelle X",
+             beschreibung="x", confidence="hoch"),
+    _Insight(id="e3", kategorie="motorproblem", titel="Motorproblem Y",
+             beschreibung="x", confidence="niedrig"),
+    _Insight(id="e4", kategorie="rueckruf", titel="Rückruf Z",
+             beschreibung="x", confidence="niedrig"),
+]
+_gefiltert = vc._fuer_llm_evidence(_insights_mix)
+_gefiltert_ids = {i.id for i in _gefiltert}
+check("W1 niedrige Schwachstelle fliegt aus dem Prompt-Kontext", "e1" not in _gefiltert_ids)
+check("W2 hohe Schwachstelle bleibt im Prompt-Kontext", "e2" in _gefiltert_ids)
+check("W3 niedriges Motorproblem fliegt ebenfalls raus", "e3" not in _gefiltert_ids)
+check("W4 Rückruf ist NICHT betroffen (eigene Confidence-Achse: Applicability)",
+      "e4" in _gefiltert_ids)
+check("W5 Originalliste bleibt unverändert (nur eine gefilterte Kopie)", len(_insights_mix) == 4)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== X) Claim-Sicherheit: neue Muster ===")
+
+_t1, _ = entschaerfe_verstaerkungen("Lückenlose Dokumentation der Wartungshistorie liegt vor.")
+check("X1 'Lückenlose Dokumentation der Wartungshistorie' wird entschärft",
+      "lückenlos" not in _t1.lower() and "wartungshistorie" in _t1.lower())
+
+_t2, _ = entschaerfe_verstaerkungen("Originalzustand ohne Tuning oder Umbauten.")
+check("X2 'Originalzustand ohne Tuning oder Umbauten' wird entschärft",
+      "originalzustand" not in _t2.lower() and "keine bekannten umbauten" in _t2.lower())
+
+_t3, _ = entschaerfe_verstaerkungen("Das Fahrzeug ist im Originalzustand.")
+check("X3 'ist im Originalzustand' wird grammatisch korrekt entschärft",
+      "originalzustand" not in _t3.lower() and "hat keine bekannten umbauten" in _t3.lower())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== Y) Aufbereitungskosten-Guard ===")
+
+_y1 = entferne_erfundene_aufbereitungskosten(
+    "Professionelle Aufbereitung (ca. 100 bis 150 €) lohnt sich vor dem Verkauf.")
+check("Y1 erfundener Eurobetrag wird entfernt", "100" not in _y1 and "150" not in _y1)
+check("Y2 sicherer Hinweis steht stattdessen da", "vorher ein angebot einholen" in _y1.lower())
+check("Y2b Satz bleibt grammatisch vollständig",
+      _y1 == "Professionelle Aufbereitung (vorher ein Angebot einholen) lohnt sich vor dem Verkauf.")
+
+_y2 = entferne_erfundene_aufbereitungskosten(
+    "Deine Preisvorstellung liegt bei 19.500 €. Das Fahrzeug ist gepflegt.")
+check("Y3 der eigene Angebotspreis bleibt unangetastet", "19.500" in _y2)
+
+_y3 = entferne_erfundene_aufbereitungskosten(
+    "Eine Reparatur der Bremsen kostet laut Werkstatt ca. 350 €. Danach ist alles in Ordnung.")
+check("Y4 Reparaturkosten im Kontext werden ebenfalls entfernt", "350" not in _y3)
+
+check("Y5 Text ohne Treffer bleibt unverändert",
+      entferne_erfundene_aufbereitungskosten("Der Motor läuft ruhig.") == "Der Motor läuft ruhig.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== Z) Kleine Textkorrekturen ===")
+
+check("Z1 Antrieb 'Front' wird zu 'Frontantrieb'", _antrieb_anzeige("Front") == "Frontantrieb")
+check("Z2 Antrieb 'Heck' wird zu 'Heckantrieb'", _antrieb_anzeige("Heck") == "Heckantrieb")
+check("Z3 Antrieb 'Allrad' wird zu 'Allradantrieb'", _antrieb_anzeige("Allrad") == "Allradantrieb")
+check("Z4 unbekannter Wert bleibt unverändert", _antrieb_anzeige("Sonstwas") == "Sonstwas")
+
+_res_front = lauf(golf(antrieb="Front"))
+check("Z5 Fahrzeugblock zeigt 'Frontantrieb' statt 'Front'",
+      any(z["label"] == "Antrieb" and z["wert"] == "Frontantrieb"
+          for z in _res_front["verkaufsplan"]["fahrzeug"]["zeilen"]))
+
+_treiber_vb_text = json.dumps(_plan_std["werttreiber"], ensure_ascii=False)
+check("Z6 Vorbesitzer-Text nennt 'Vorhalter' und trennt Anzahl von Namen",
+      "Vorhalter" in _treiber_vb_text and "nur die letzten Halter" in _treiber_vb_text)
+
+check("Z7 Rückruf-Kurztitel nennt 'Bremsscheiben' statt pauschal 'Rückruf wegen'",
+      rueckruf_kurztitel("Fehlerhaft produzierte Bremsscheiben können im Bereich der inneren "
+                         "Topfanbindung brechen.") == "Bremsscheiben: Bruchgefahr")
 
 print()
 print(f"{len(FEHLER)} FAIL" if FEHLER else "ALLE TESTS GRÜN")

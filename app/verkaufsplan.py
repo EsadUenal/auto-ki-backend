@@ -63,6 +63,16 @@ def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
+# RC1 Live-Closing: "Antrieb: Front" liest sich weniger natürlich als "Frontantrieb".
+# Nur die drei eindeutigen DB-/Formularwerte werden übersetzt (CHECK-Constraint auf
+# motorvariante.antrieb, siehe db/schema.sql); jeder andere Freitext bleibt unverändert.
+_ANTRIEB_ANZEIGE = {"front": "Frontantrieb", "heck": "Heckantrieb", "allrad": "Allradantrieb"}
+
+
+def _antrieb_anzeige(wert: str | None) -> str | None:
+    return _ANTRIEB_ANZEIGE.get(_norm(wert), wert)
+
+
 def runde_orientierung(wert: int) -> int:
     """Rundet einen Einzelwert auf eine ehrliche Orientierungsgröße.
     Unter 5.000 € auf 100, unter 10.000 € auf 250, darüber auf 500 €."""
@@ -134,7 +144,11 @@ def _varianten_rest(req: VerkaufsCheckRequest, baureihe: dict | None) -> str | N
 _OPTISCH = ("kratzer", "steinschl", "delle", "beule", "lack", "felge", "bordstein",
             "schramme", "polster", "sitzbezug", "verfärb", "fleck", "gebrauchsspur",
             "optisch", "innenraum", "himmel", "zierleiste", "stoßstange", "stossstange")
-_VERNEINUNG = re.compile(r"^\s*(?:keine|kein|ohne)\b", re.IGNORECASE)
+# RC1 Live-Closing: "Keine bekannt." und "Nein" beschreiben KEINEN vorhandenen
+# negativen Zustand — anders als "unbekannt"/"weiß ich nicht" (bleibt bewusst
+# NICHT erfasst: das ist Nichtwissen, keine Verneinung). Generisch für jedes
+# Freitextfeld nutzbar (Vorschäden, Tuning, Mängel), kein Feld-Hardcode.
+_VERNEINUNG = re.compile(r"^\s*(?:keine|kein|ohne|nein|nichts|nicht\s+vorhanden)\b", re.IGNORECASE)
 
 
 def ist_verneinung(eintrag: str) -> bool:
@@ -192,11 +206,31 @@ def _monate_seit(mm_jjjj: str | None, heute: dt.date) -> int | None:
 
 # ══ A. Fahrzeug erkannt ══════════════════════════════════════════════════════
 
-def _gleich_starke_varianten(baureihe: dict | None, kw: int | None) -> list[str]:
+def _tokens(s: str | None) -> frozenset[str]:
+    return frozenset(t for t in re.split(r"[^a-z0-9]+", _norm(s)) if t)
+
+
+def _gleich_starke_varianten(baureihe: dict | None, kw: int | None,
+                             nutzer_variante: str | None = None) -> list[str]:
+    """Bezeichnungen mit identischer Leistung, die als DIESES Fahrzeug in Frage
+    kommen — z.B. "GTI Facelift" und "GTI Performance" bei 169 kW.
+
+    RC1 Live-Closing: das Datenmodell führt keine Bauzeiträume je Motorvariante
+    (nur je Baureihen-Generation, siehe app/autofinder_variante.py), ein Baujahr-
+    Abgleich ist hier also nicht belegbar. Stattdessen grenzt die vom Nutzer selbst
+    genannte Ausstattungslinie wortweise ein: nennt er "GTI Facelift", ist eine
+    Bezeichnung ohne das Wort "Facelift" keine gleichwertige Alternative mehr.
+    Nennt er nur ein gemeinsames Wort ("GTI") oder trifft sein Wort auf mehrere
+    Kandidaten zu, bleibt es ehrlich mehrdeutig — kein Raten."""
     if not baureihe or not kw:
         return []
-    return sorted({m.get("bezeichnung") for m in baureihe.get("motoren") or []
+    alle = sorted({m.get("bezeichnung") for m in baureihe.get("motoren") or []
                    if m.get("leistung_kw") == kw and m.get("bezeichnung")})
+    woerter = _tokens(nutzer_variante)
+    if not woerter:
+        return alle
+    engere = [b for b in alle if woerter <= _tokens(b)]
+    return engere or alle
 
 
 def baue_fahrzeug(req, baureihe, motor_match, identitaet) -> dict:
@@ -226,7 +260,8 @@ def baue_fahrzeug(req, baureihe, motor_match, identitaet) -> dict:
     z("Kraftstoff", req.kraftstoff or (motor_match or {}).get("kraftstoff"),
       "angabe" if req.kraftstoff else "db")
     z("Getriebe", getriebe_bezeichnung(req))
-    z("Antrieb", req.antrieb or (motor_match or {}).get("antrieb"), "angabe" if req.antrieb else "db")
+    z("Antrieb", _antrieb_anzeige(req.antrieb or (motor_match or {}).get("antrieb")),
+      "angabe" if req.antrieb else "db")
     z("Karosserie", req.karosserie)
     if generation:
         bz = ""
@@ -241,7 +276,8 @@ def baue_fahrzeug(req, baureihe, motor_match, identitaet) -> dict:
         fehlt = identitaet.get("fehlende_angabe") or "die genaue Modellbezeichnung"
         hinweise.append(f"Fahrzeug nicht eindeutig zugeordnet. Ergänze {fehlt}, dann nutzt ENFAL "
                         f"auch die geprüften Modelldaten.")
-    varianten = _gleich_starke_varianten(baureihe, kw) if identitaet and identitaet.get("belastbar") else []
+    varianten = (_gleich_starke_varianten(baureihe, kw, variante)
+                if identitaet and identitaet.get("belastbar") else [])
     if len(varianten) > 1:
         hinweise.append("Die Motorvariante ist in den Modelldaten nicht eindeutig ("
                         + " oder ".join(varianten) + "). Maßgeblich ist die Angabe in "
@@ -439,7 +475,8 @@ def baue_werttreiber(req, fahrzeug: dict, heute: dt.date) -> list[dict]:
     elif isinstance(req.vorbesitzer, int) and req.vorbesitzer > 1:
         add("Vorbesitzer klar angeben",
             f"{req.vorbesitzer} Vorbesitzer laut deiner Angabe. Eine klare Zahl schafft Vertrauen; "
-            f"die Halter stehen in der Zulassungsbescheinigung Teil II.", "historie")
+            f"die Anzahl der Vorhalter ist in der Zulassungsbescheinigung Teil II angegeben, "
+            f"namentlich aufgeführt sind dort aber nur die letzten Halter.", "historie")
     if _norm(req.unfallfrei) == "ja":
         add("Unfallfrei laut deiner Angabe",
             "Käufer fragen gezielt danach. Wenn du Belege hast (z. B. Rechnungen oder ein "
@@ -486,12 +523,18 @@ def baue_wertminderer(req, maengel: dict, listing_analyse, heute: dt.date) -> li
     if _norm(req.unfallfrei) == "nein":
         add("Unfallschaden", "Art und Reparatur offen beschreiben, Rechnungen oder Gutachten bereitlegen.",
             "hoch")
-    if (req.vorschaeden or "").strip():
-        add("Vorschäden / Nachlackierungen", f"{req.vorschaeden.strip()}. Offen angeben, Belege bereitlegen.",
-            "mittel")
-    if (req.tuning or "").strip():
-        add("Tuning / Umbauten", f"{req.tuning.strip()}. Kann den Käuferkreis einschränken. "
-                                 f"Eintragungen, Gutachten oder ABE bereitlegen.", "mittel")
+    # RC1 Live-Closing: "Keine bekannt." und "Keine." beschreiben KEINEN Wert-
+    # minderer — vorher wurde jede nicht-leere Eingabe blind als Minderer gewertet,
+    # inklusive der eigenen Verneinung ("Keine bekannt.. Offen angeben..."). Die
+    # rstrip(".") verhindert außerdem den doppelten Punkt, wenn die Angabe selbst
+    # schon einen trägt.
+    if (req.vorschaeden or "").strip() and not ist_verneinung(req.vorschaeden):
+        add("Vorschäden / Nachlackierungen",
+            f"{req.vorschaeden.strip().rstrip('.')}. Offen angeben, Belege bereitlegen.", "mittel")
+    if (req.tuning or "").strip() and not ist_verneinung(req.tuning):
+        add("Tuning / Umbauten",
+            f"{req.tuning.strip().rstrip('.')}. Kann den Käuferkreis einschränken. "
+            f"Eintragungen, Gutachten oder ABE bereitlegen.", "mittel")
     if _norm(req.import_status) in ("import", "reimport"):
         add("Import/Reimport" if _norm(req.import_status) == "import" else "Reimport",
             "Offen angeben. Käufer fragen nach Herkunft und Ausstattungsabweichungen.", "gering")
@@ -620,7 +663,7 @@ def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None
     f("Leistung", f"{kw} kW / {ps} PS" if kw else None)
     f("Kraftstoff", req.kraftstoff)
     f("Getriebe", getriebe)
-    f("Antrieb", req.antrieb)
+    f("Antrieb", _antrieb_anzeige(req.antrieb))
     f("Karosserie", req.karosserie)
     f("Farbe", req.farbe)
     f("Vorbesitzer", req.vorbesitzer if req.vorbesitzer is not None else None)
@@ -829,7 +872,8 @@ def baue_dokumente(req) -> list[dict]:
     ]
     if _norm(req.import_status) in ("import", "reimport"):
         d.append({"dokument": "Übereinstimmungsbescheinigung (CoC)", "pflicht": False})
-    if (req.tuning or "").strip():
+    # RC1 Live-Closing: "Keine." Umbauten darf keine ABE/Gutachten-Pflicht auslösen.
+    if (req.tuning or "").strip() and not ist_verneinung(req.tuning):
         d.append({"dokument": "Eintragungen, Gutachten oder ABE zu Umbauten", "pflicht": True})
     if req.zweiter_radsatz is True:
         d.append({"dokument": "Zweiter Radsatz (mit übergeben oder separat vereinbaren)", "pflicht": False})

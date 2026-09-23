@@ -41,6 +41,7 @@ from app.models import VerkaufsCheckRequest
 from app.vehicle_identity import VehicleIdentity
 from app.postprocess import (
     postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_no_market_preisurteil,
+    entferne_erfundene_aufbereitungskosten,
 )
 from app.recall_filter import ausgeschlossene_rueckrufe, gefilterte_rueckrufe
 from app.report_validator import pruefe_bericht
@@ -52,6 +53,21 @@ from app.web_search import (
 _MAX_VERKAUFSCHECK_QUELLEN = 4
 
 log = logging.getLogger(__name__)
+
+
+def _fuer_llm_evidence(insights):
+    """VerkaufsCheck RC1 Live-Closing: niedrig belegte Schwachstellen/Motorprobleme
+    dürfen das Modell nicht zu einer konkreten Handlungsempfehlung verleiten (Live-
+    Befund: "Klimaanlage: gemeldeter Hinweis", Confidence niedrig, floss trotzdem in
+    Vorverkaufs-Empfehlung und Preisoptimierung ein). Gefiltert wird NUR, was dem
+    Modell im Prompt gezeigt wird — die volle Liste bleibt für Pruefhinweise/UI
+    erhalten, wo `app.verkaufsplan.baue_pruefhinweise` ohnehin schon auf hoch/mittel
+    filtert. Rückrufe und der Marktvergleich sind NICHT betroffen: deren Confidence
+    bemisst sich anders (Applicability bzw. eigene Belegkette)."""
+    return [i for i in insights
+            if not (getattr(i, "kategorie", None) in ("schwachstelle", "motorproblem")
+                    and getattr(i, "confidence", None) == "niedrig")]
+
 
 _SYSTEM = """\
 Du bist ein erfahrener KFZ-Verkaufsberater. Du hilfst dem Nutzer, seinen Wagen optimal zu vermarkten und einen fairen Preis zu erzielen.
@@ -429,7 +445,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     # Referenzieren mitgeben (stabile IDs -> anschließend backend-validierbar).
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf",
                               marktanalyse=marktanalyse)
-    evidence_block = format_evidence_for_prompt(insights)
+    evidence_block = format_evidence_for_prompt(_fuer_llm_evidence(insights))
     # PFAD A: verbindliche Markt-/Preis-/Strategie-Blöcke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt aller drei. Ohne ihn würde das
     # Modell die Preisregeln aus _SYSTEM ("leite eine grobe Spanne ab") weiter
@@ -463,6 +479,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         # Verkaufsdauer-Zahl ("innerhalb von 3-4 Wochen"), falls das LLM sie trotz
         # Anweisung erzeugt hat. Nur in Sätzen mit Verkaufs-/Vermarktungskontext.
         result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
+        # RC1 Live-Closing: Sicherheitsnetz gegen erfundene Aufbereitungs-/Reparatur-
+        # kostenbeträge ("Professionelle Aufbereitung (ca. 100 bis 150 €)") — das
+        # System hat keine Kostendatenbank und keinen Provider dafür, jede solche
+        # Zahl im Freitext ist erfunden. Nur in Sätzen mit unmittelbarem Aufbereitungs-
+        # /Reparaturkontext; der eigene Angebotspreis bleibt unberührt.
+        result["bericht"] = entferne_erfundene_aufbereitungskosten(result["bericht"])
         # P1 #2: Sicherheitsnetz NACH dem Call. Im No-Market-Pfad verbietet der
         # Prompt bereits jedes Preisurteil und jede Marktspanne — dieser Guard
         # entfernt eine trotzdem in den Freitext geschriebene Marktpreisbehauptung
