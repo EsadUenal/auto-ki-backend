@@ -44,8 +44,8 @@ from app.claim_sicherheit import entschaerfe_verstaerkungen  # noqa: E402
 from app.inserat import finde_widersprueche, pruefe_fakten  # noqa: E402
 from app.models import VerkaufsCheckRequest  # noqa: E402
 from app.verkaufsplan import (  # noqa: E402
-    baue_verkaufsplan, getriebe_bezeichnung, maengel_klassifiziert, entferne_provider_werte,
-    runde_orientierung,
+    KEINE_ORIENTIERUNG, baue_verkaufsplan, getriebe_bezeichnung, maengel_klassifiziert,
+    entferne_provider_werte, runde_orientierung,
 )
 
 FEHLER: list[str] = []
@@ -343,9 +343,10 @@ check("K6 die Zahlen bleiben trotzdem stehen",
 with mit_carapi(lambda url: _Antwort(404, {"error": "Insufficient market data"})):
     _res_404 = lauf(golf())
 _o404 = _res_404["verkaufsplan"]["markt"]["orientierung"]
-check("F1 404 -> sauberer Fallback", _o404["status"] == "nicht_verfuegbar"
-      and _o404["text"] == vc.KEINE_ORIENTIERUNG if hasattr(vc, "KEINE_ORIENTIERUNG")
-      else _o404["status"] == "nicht_verfuegbar")
+check("F1 404 -> sauberer Fallback mit dem echten Fallback-Text",
+      _o404["status"] == "nicht_verfuegbar" and _o404["text"] == KEINE_ORIENTIERUNG)
+check("F1b 404 -> Grund wird benannt, keine Preiszahl",
+      _o404.get("grund") is not None and "wert_eur" not in _o404)
 check("F2 404 -> Rest des Plans vollständig",
       bool(_res_404["verkaufsplan"]["inserat"]["titel"]) and bool(_res_404["bericht"]))
 
