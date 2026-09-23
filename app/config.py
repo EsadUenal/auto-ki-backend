@@ -409,6 +409,34 @@ CARAPI_PERSISTENZ_ERLAUBT = os.environ.get("AUTO_KI_CARAPI_PERSISTENZ_ERLAUBT", 
 CARAPI_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_CARAPI_TIMEOUT_SECONDS", "8"))
 
 # ---------------------------------------------------------------------------
+# Kraftstoff-Referenzpreis (Autokosten-Rechner)
+# ---------------------------------------------------------------------------
+# Quelle: Europaeische Kommission, Weekly Oil Bulletin — amtliche, oeffentliche
+# woechentliche Verbraucherpreise je Mitgliedstaat. KEIN KI-/Search-Provider,
+# keine Kosten, kein Key. Default deshalb AN (anders als CarAPI).
+#
+# Die History-Datei liegt unter einer stabilen Dokument-URL und wird woechentlich
+# IN PLACE aktualisiert; die datierten Wochendateien bekommen dagegen jede Woche
+# eine neue UUID und taugen nicht als feste Adresse.
+FUEL_REFERENZ_ERLAUBT = os.environ.get("AUTO_KI_FUEL_REFERENZ_ERLAUBT", "1").strip() == "1"
+FUEL_REFERENZ_URL = os.environ.get(
+    "AUTO_KI_FUEL_REFERENZ_URL",
+    "https://energy.ec.europa.eu/document/download/"
+    "906e60ca-8b6a-44e7-8589-652854d2fd3f_en"
+    "?filename=Weekly_Oil_Bulletin_Prices_History_maticni_4web.xlsx",
+).strip()
+FUEL_REFERENZ_TIMEOUT_SECONDS = float(os.environ.get("AUTO_KI_FUEL_REFERENZ_TIMEOUT_SECONDS", "25"))
+# Wie lange ein erfolgreich geholter Wert als frisch gilt, bevor neu geladen wird.
+FUEL_REFERENZ_CACHE_STUNDEN = float(os.environ.get("AUTO_KI_FUEL_REFERENZ_CACHE_STUNDEN", "12"))
+# Ab welchem Alter der amtliche Datenstand NICHT mehr als aktuell ausgegeben wird
+# (Bulletin erscheint woechentlich; 21 Tage = drei verpasste Ausgaben).
+FUEL_REFERENZ_MAX_ALTER_TAGE = int(os.environ.get("AUTO_KI_FUEL_REFERENZ_MAX_ALTER_TAGE", "21"))
+# Optionale, ausdruecklich konfigurierte Notfallwerte (EUR/l). LEER = aus: ohne
+# amtlichen Wert wird KEIN Preis erfunden, das Feld bleibt leer und editierbar.
+FUEL_REFERENZ_FALLBACK_BENZIN = os.environ.get("AUTO_KI_FUEL_REFERENZ_FALLBACK_BENZIN", "").strip()
+FUEL_REFERENZ_FALLBACK_DIESEL = os.environ.get("AUTO_KI_FUEL_REFERENZ_FALLBACK_DIESEL", "").strip()
+
+# ---------------------------------------------------------------------------
 # Source-Policy: Freigabe automatischer Marktpreis-Quellen
 # ---------------------------------------------------------------------------
 # PRODUCTION-DEFAULT: LEER. Keine reale Marktplatz-Domain ist automatisch fuer die
