@@ -1,4 +1,13 @@
 """
+ACHTUNG — LIVE-SKRIPT, KEIN TEST.
+
+Diese Datei loest ECHTE, kostenpflichtige Provider-Aufrufe aus und darf
+niemals in einem Testlauf ueber alle Dateien mitlaufen. Sie hiess frueher
+test_*.py und wurde dadurch zweimal versehentlich ausgefuehrt (einmal rund
+200 ungewollte Gemini-Requests). Der Praefix "live_" ist die Absicherung.
+Nur bewusst und einzeln starten.
+"""
+"""
 Test: Tavily Search Integration — echte Preisabfrage.
 
 Verwendung:
