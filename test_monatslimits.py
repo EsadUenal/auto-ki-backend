@@ -244,10 +244,43 @@ ul_quelle = inspect.getsource(ul)
 check("AP: das Limit-Modul kennt ueberhaupt keine Autokosten-Art",
       "autokosten" not in ul_quelle.lower())
 router_dir = pathlib.Path("app/routers")
-treffer_ak = [p.name for p in router_dir.glob("*.py")
-              if "autokosten" in p.read_text(encoding="utf-8").lower()]
-check("AP: kein Backend-Router kennt Autokosten (rein im Frontend)",
-      not treffer_ak, str(treffer_ak))
+# Seit der amtlichen Kraftstoff-Referenz gibt es EINEN Autokosten-Endpunkt
+# (app/routers/autokosten.py). Die alte Zusicherung "kein Backend kennt
+# Autokosten" ist damit ueberholt. Die Produktzusage ist eine andere und wird
+# jetzt genau so geprueft: der Rechner bleibt kostenlos, ohne Login, ohne
+# Kontingent, ohne Provider.
+ak_datei = router_dir / "autokosten.py"
+check("AP: es gibt genau einen Autokosten-Router", ak_datei.exists())
+ak_quelle = ak_datei.read_text(encoding="utf-8")
+ak_baum = ast.parse(ak_quelle)
+ak_aufrufe = {n.func.id for n in ast.walk(ak_baum)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+ak_attr = {n.func.attr for n in ast.walk(ak_baum)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+check("AP: Autokosten verbraucht kein Kontingent und keine Check-Berechtigung",
+      not ({"require_chat_kontingent", "require_autofinder_kontingent",
+            "require_analyse_frage_kontingent", "verbrauche", "verbrauche_tag",
+            "verbrauche_check_versuch", "entnehme_kaufcheck",
+            "entnehme_verkaufscheck"} & (ak_aufrufe | ak_attr)))
+check("AP: Autokosten verlangt keinen Login (nur den oeffentlichen API-Key)",
+      "get_current_user_id" not in ak_quelle and "verify_api_key" in ak_quelle)
+# Nur AUSFUEHRBARER Code zaehlt: der Docstring des Routers nennt die Provider
+# ausdruecklich ("KEIN Gemini, KEIN Tavily, KEIN CarAPI") — ein Textvergleich
+# wuerde daran scheitern und nichts ueber den Code aussagen.
+ak_namen = set()
+for n in ast.walk(ak_baum):
+    if isinstance(n, ast.Import):
+        ak_namen.update(a.name for a in n.names)
+    elif isinstance(n, ast.ImportFrom):
+        ak_namen.add(n.module or "")
+        ak_namen.update(a.name for a in n.names)
+    elif isinstance(n, ast.Name):
+        ak_namen.add(n.id)
+    elif isinstance(n, ast.Attribute):
+        ak_namen.add(n.attr)
+check("AP: Autokosten ruft keinen KI-/Recherche-Provider",
+      not [x for x in ak_namen
+           if any(w in x.lower() for w in ("gemini", "tavily", "carapi"))])
 
 # AutoFinder-Router: Kontingent verdrahtet, Rate-Limit weiterhin da
 af_quelle = (router_dir / "autofinder.py").read_text(encoding="utf-8")
