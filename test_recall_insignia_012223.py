@@ -227,11 +227,13 @@ with get_conn() as conn:
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
     from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
     from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
+    from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids
     # `_BATCH_A` steht hier fuer ALLE nach dem Gesamtabgleich importierten
-    # Chargen (A, B1 und der Mixed-Target-Import d8e96c2). Die Aussagen unten
-    # betreffen den Bestand des Gesamtabgleichs; jede spaetere Charge gehoert
-    # deshalb ausgeblendet, sonst prueft der Abschnitt einen anderen Bestand.
-    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids()
+    # Chargen (A, B1, der Mixed-Target-Import d8e96c2 und der G20-Nachtrag
+    # 18e0283). Die Aussagen unten betreffen den Bestand des Gesamtabgleichs;
+    # jede spaetere Charge gehoert deshalb ausgeblendet, sonst prueft der
+    # Abschnitt einen anderen Bestand.
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
     _platz = ",".join("?" * len(_BATCH_A))
     # BATCH A traegt ebenfalls Quellenstufe A — jede Zeile mit eigener amtlicher
     # Referenz aus dem KBA-Gesamtexport. Diese Zusicherung gilt dem Bestand
@@ -249,7 +251,8 @@ check("E5 12223 haengt an keiner anderen Baureihe", _fremde_12223 == 0)
 # KBA-GESAMTABGLEICH: Quellenstufe A tragen jetzt genau die 15 kuratierten
 # Faelle des Gesamtabgleichs — jeder einzeln manuell gegen den amtlichen Export
 # geprueft. "Unbemerkt" waere alles darueber hinaus.
-check("E6 Quellenstufe A tragen ausser Batch A/B1 genau die 15 kuratierten Faelle",
+check("E6 Quellenstufe A tragen ausser den importierten Chargen genau die 15 "
+      "kuratierten Faelle",
       _fremde_verif == 14)
 check("E6b jede importierte Zeile traegt Quellenstufe A",
       _batch_a_stufe_a == len(_BATCH_A))

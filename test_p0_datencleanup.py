@@ -152,8 +152,24 @@ for bez in ("318d", "320d xDrive", "330e", "M340d xDrive"):
 vg = q("select vorgaenger from baureihe where id='bmw-3er-g20-g21'")[0]["vorgaenger"]
 check("F5 vorgaenger zeigt auf eine existierende Baureihe",
       bool(q("select 1 from baureihe where id=?", vg)), repr(vg))
-check("F6 die widerspruechlichen Rueckrufe wurden NICHT zusammengeworfen",
-      q("select count(*) n from rueckruf where baureihe_id='bmw-3er-g20-g21'")[0]["n"] == 3)
+# Die Zusicherung lautet: beim Zusammenfuehren der beiden 3er-Datenwelten
+# duerfen die drei WIDERSPRUECHLICHEN Rueckrufe nicht zu einem verschmolzen
+# werden. Geprueft wird deshalb genau das — dass diese drei Zeilen einzeln
+# fortbestehen — und nicht mehr die Gesamtzahl an der Baureihe.
+#
+# Die Gesamtzahl war eine Momentaufnahme: der G20-Nachtrag (18e0283) hat drei
+# amtliche KBA-Rueckrufe ergaenzt, womit aus 3 legitim 6 wurden. Eine Zaehlung
+# haette hier also bei jedem belegten Zuwachs Alarm geschlagen, obwohl die
+# geschuetzte Eigenschaft unveraendert gilt.
+_P0_WIDERSPRUECHLICH = (11, 12, 13)
+_g20_zeilen = q("select id, mangel from rueckruf where baureihe_id='bmw-3er-g20-g21'")
+_vorhanden = {r["id"] for r in _g20_zeilen}
+check("F6 die drei widerspruechlichen Rueckrufe bestehen einzeln fort "
+      "(wurden NICHT zusammengeworfen)",
+      all(i in _vorhanden for i in _P0_WIDERSPRUECHLICH),
+      f"fehlend: {[i for i in _P0_WIDERSPRUECHLICH if i not in _vorhanden]}")
+check("F6b und sie tragen weiterhin drei UNTERSCHIEDLICHE Mangeltexte",
+      len({r["mangel"] for r in _g20_zeilen if r["id"] in _P0_WIDERSPRUECHLICH}) == 3)
 check("F7 der 320d ist genau EINMAL vorhanden",
       len([x for x in m3 if x == "320d"]) == 1)
 

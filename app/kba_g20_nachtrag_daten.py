@@ -119,3 +119,15 @@ ZEILEN: tuple[dict, ...] = (
                "(2019-2021)."),
     ),
 )
+
+
+def zeilen_ids() -> set:
+    """Die IDs, die diese Migration vergibt.
+
+    Gleicher Helfer wie bei Batch A/B1/Mixed-Target. Er fehlte hier, und weil er
+    fehlte, konnten die Bestandstests diesen Nachtrag nicht von ihrem
+    Betrachtungsgegenstand abziehen: vier Suiten zaehlten die drei amtlichen
+    Zeilen faelschlich zum Ergebnis des Gesamtabgleichs und schlugen fehl,
+    obwohl an den Daten nichts falsch war.
+    """
+    return {z["id"] for z in ZEILEN}

@@ -198,6 +198,13 @@ from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids  # noqa: E402
 # prueft das Ergebnis des GESAMTABGLEICHS, nicht den Gesamtbestand.
 from app.kba_mixed_target_daten import ZEILEN as _MIXED_ZEILEN  # noqa: E402
 from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids  # noqa: E402
+# G20-Nachtrag (18e0283, 2026-09-21): drei amtliche BMW-Rueckrufe aus dem
+# KBA-Gesamtexport, die NACH dem Gesamtabgleich hinzukamen. Gleiche Abgrenzung
+# wie Batch A/B1/Mixed — dieser Abschnitt prueft das Ergebnis des Abgleichs,
+# nicht jeden spaeter amtlich belegten Zuwachs. Ohne diese Zeile zaehlte der
+# Abschnitt sie mit und meldete 749 statt 746.
+from app.kba_g20_nachtrag_daten import ZEILEN as _G20_ZEILEN  # noqa: E402
+from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids  # noqa: E402
 
 # Batch B1 kam nach Batch A hinzu: amtliche Rueckrufe auf OFFENEN, aber
 # primaerquellenbestaetigten Generationen. Fuer diesen Abschnitt gilt dieselbe
@@ -205,11 +212,12 @@ from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids  # noqa: E402
 _BATCH_A = _batch_a_ids()
 _BATCH_B1 = _batch_b1_ids()
 _MIXED = _mixed_ids()
-_IMPORTIERT = _BATCH_A | _BATCH_B1 | _MIXED
+_G20 = _g20_ids()
+_IMPORTIERT = _BATCH_A | _BATCH_B1 | _MIXED | _G20
 _abgleich = [r for r in _alle if r["id"] not in _IMPORTIERT]
-check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1 + Mixed-Target",
+check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1 + Mixed-Target + G20-Nachtrag",
       len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN) + len(_BATCH_B1_ZEILEN)
-      + len(_MIXED_ZEILEN))
+      + len(_MIXED_ZEILEN) + len(_G20_ZEILEN))
 check("F1 746 Rueckrufe aus dem Gesamtabgleich (749 minus 3 Dubletten)",
       len(_abgleich) == 746)
 _mit_ref = [r for r in _abgleich if (r["kba_referenz"] or "").strip()]

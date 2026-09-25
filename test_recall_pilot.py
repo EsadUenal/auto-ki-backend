@@ -121,10 +121,12 @@ with get_conn() as conn:
     from app.kba_batch_a_daten import zeilen_ids as _batch_a_ids
     from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
     from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
-    # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2): auch er hat
-    # an den Pilotfahrzeugen Zeilen ergaenzt. `_BATCH_A` meint hier "alles,
-    # was nach dem Pilotbestand importiert wurde".
-    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids()
+    from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids
+    # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2) und den
+    # G20-Nachtrag (18e0283): beide haben an Pilotfahrzeugen Zeilen ergaenzt,
+    # der Nachtrag drei amtliche BMW-Rueckrufe am 3er G20/G21. `_BATCH_A` meint
+    # hier "alles, was nach dem Pilotbestand importiert wurde".
+    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
     _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
     _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
@@ -520,7 +522,7 @@ print("\n--- K) §8 Bestandsintegritaet ---")
 # keine davon an einem Pilotfahrzeug.
 # BATCH A: +271 amtliche Zeilen, davon 20 an Pilotfahrzeugen.
 check(f"K1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
-      f"(746 + {len(_BATCH_A)} aus Batch A und B1)",
+      f"(746 aus dem Gesamtabgleich + {len(_BATCH_A)} spaeter importierte)",
       _gesamt_rueckrufe == 746 + len(_BATCH_A))
 check("K2 keine Dublette an den Pilotfahrzeugen (15 Zeilen, 15 IDs)",
       len(_pilot_rows) == len({r["id"] for r in _pilot_rows}) == 15)
