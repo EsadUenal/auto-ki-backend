@@ -97,6 +97,13 @@ class KaufCheckRequest(BaseModel):
     kilometerstand: int | None = None
     motor: str | None = Field(default=None, max_length=200)   # z.B. "320d", "2.0 TDI 150 PS"
     kraftstoff: str | None = Field(default=None, max_length=100)
+    # Motorleistung in PS. Optional, weil viele Inserate sie nicht klar nennen
+    # und niemand raten soll. Ist sie da, wirkt sie HART: sie loest die
+    # Motorvariante mit auf (app/car_lookup.py) und verwirft im Marktvergleich
+    # Angebote mit abweichender Leistung (app/marktvergleich.py). Genau dafuer
+    # hat die Nutzerangabe dort Vorrang vor der ungeprueften DB-Variante.
+    # Grenzen wie im Textparser `_ps_im_text`: alles ausserhalb waere Tippfehler.
+    leistung_ps: int | None = Field(default=None, ge=30, le=1500)
     preis_eur: int | None = None
     ausstattung: list[str] = Field(default_factory=list, max_length=100)
     beschreibung: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)   # Freitext-Beschreibung aus dem Inserat

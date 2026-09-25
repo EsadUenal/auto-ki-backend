@@ -458,14 +458,14 @@ def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]
         drehmoment = roh.get("drehmoment_nm")
         if drehmoment is not None and drehmoment >= 350:
             score += 2
-            gruende.append(f"{drehmoment} Nm Drehmoment — souverän auf der Langstrecke")
+            gruende.append(f"{drehmoment} Nm Drehmoment, souverän auf der Langstrecke")
         if roh["_verbrauch"] is not None:
             score += 1
             gruende.append(f"Verbrauch belegt ({roh['_verbrauch']:.1f} l/100km)")
     elif req.nutzung == "stadt":
         if roh["_karo"] & {"kleinwagen", "kompakt"}:
             score += 2
-            gruende.append("Kompakte Klasse — wendig im Stadtverkehr")
+            gruende.append("Kompakte Klasse, wendig im Stadtverkehr")
         if roh.get("kraftstoff") in ("Benzin", "Elektro", "Mild-Hybrid"):
             score += 1
             gruende.append(f"{roh['kraftstoff']} passend für überwiegend kurze Strecken")

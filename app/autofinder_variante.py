@@ -338,7 +338,7 @@ VERWERTBARE_FLAGS = (
 )
 
 LEERE_SUCHE_MELDUNG = (
-    "Für eine Empfehlung braucht ENFAL mindestens eine Angabe — zum Beispiel "
+    "Für eine Empfehlung braucht ENFAL mindestens eine Angabe, zum Beispiel "
     "Budget, Karosserie, Kraftstoff, Getriebe oder wofür du das Auto nutzt. "
     "Wähle mindestens ein Kriterium aus und starte die Suche erneut."
 )

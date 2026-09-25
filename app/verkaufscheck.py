@@ -49,6 +49,7 @@ from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
+from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
 _MAX_VERKAUFSCHECK_QUELLEN = 4
 
@@ -165,7 +166,7 @@ REGELN:
 8. Angaben des Verkäufers bleiben Angaben ("laut deiner Angabe") und werden NIE stärker formuliert: "scheckheftgepflegt" heißt NICHT "lückenloses Scheckheft" oder "vollständige Wartungshistorie"; "unfallfrei" (Angabe) heißt NICHT "nachweislich unfallfrei" oder "bestehende Unfallfreiheit"; "2 Vorbesitzer" heißt NICHT "amtlich bestätigt"; "keine bekannten technischen Mängel" heißt NICHT "technisch einwandfrei" oder "mängelfrei".
 9. Übernimm die Getriebebezeichnung so konkret, wie sie angegeben ist: "DSG" bleibt "DSG" (nicht nur "Automatik"), ebenso "S tronic", "PDK" und vergleichbare Bezeichnungen.
 10. Bekannte Schwachstellen der Baureihe sind Prüfhinweise, keine Mängel dieses Fahrzeugs: "vor der Besichtigung selbst prüfen, falls vorhanden offen nennen". Behaupte nie, das Fahrzeug habe ein Problem, das der Verkäufer nicht angegeben hat.
-11. Verwende im nutzerseitigen deutschen Text Gedankenstriche sparsam. Bevorzuge normale deutsche Satzzeichen wie Punkt, Komma, Doppelpunkt oder Klammern. Vermeide den typischen häufigen KI-Stil mit langen Gedankenstrichen.\
+11. [[STILREGEL]]
 """
 
 
@@ -635,3 +636,7 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
         "inserat_optimierung":         None,   # on-demand, separater Endpoint
         "verkaufsplan":                verkaufsplan,
     }
+
+# Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
+# .replace statt f-String: der Prompt enthaelt JSON-Klammern.
+_SYSTEM = _SYSTEM.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

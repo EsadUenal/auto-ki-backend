@@ -98,6 +98,7 @@ _HISTORY_MINDEST_NACHRICHTEN = 2
 _HISTORY_MINDEST_ZEICHEN = 2_000
 
 import chromadb
+from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
 # ---------- Gemini Client ----------
 
@@ -867,6 +868,7 @@ B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Or
 - Fehlt eine Angabe (weder DB noch Web liefern sie): das in einem knappen Nebensatz benennen und SOFORT mit dem Nützlichen weitermachen (Richtwert, Faustregel, gezielte Rückfrage) — keine längere Entschuldigung oder Erklärung, warum die Info fehlt.
 - Bei mehreren Fahrzeugen/Werten in einer Antwort: nicht denselben Satzbau für jeden Punkt wiederholen — natürlich variieren, keine identischen Formulierungsschablonen.
 - Keine Wiederholung derselben Information in zwei Sätzen oder Absätzen.
+- [[STILREGEL]]
 
 — EINFACHE FAKTENFRAGEN (z. B. "Wie groß ist der Tank?", "Wie viel PS hat der 320d?", "Welche Felgengröße ist Serie?") —
 - Antworte kompakt: 1–3 Sätze oder eine kurze Liste. Keine Einleitung, keine Wiederholung der Frage, keine unaufgeforderte Zusatz-Erklärung.
@@ -1350,6 +1352,7 @@ PRINZIP: Im Zweifel hilfreich antworten, NICHT hyperstreng. Frag dich: "Hat das 
 - Standardlänge: kurz, normalerweise 2–5 Absätze (oft reicht weniger). Länger antworten NUR, wenn der Nutzer ausdrücklich mehr Detailtiefe verlangt.
 - Strukturiere mit Markdown, wo es die Antwort klarer macht: **Fettung** für zentrale Begriffe und Kernaussagen, Aufzählungen (mit "- ") für mehrere Punkte, Faktoren oder Schritte, und kurze fette Zwischenüberschriften bei längeren, mehrteiligen Antworten. Eine kurze, einfache Antwort bleibt sauberer Fließtext — erzwinge dort keine Überschriften oder Listen.
 - Erfinde KEINE konkreten modellspezifischen Zahlen, die nicht in der Analyse stehen; allgemeine Orientierungswerte/Faustregeln darfst du nennen und als solche kennzeichnen.
+- [[STILREGEL]]
 
 === DIE ANALYSE ({check_label}) ===
 {analyse_kontext}"""
@@ -1431,3 +1434,11 @@ async def analyse_frage_stream(
 
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
+
+# Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
+# .replace statt f-String: die Prompts enthalten JSON-Klammern.
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)
+
+# Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
+# .replace statt f-String: die Prompts enthalten JSON-Klammern.
+_ANALYSE_SYSTEM = _ANALYSE_SYSTEM.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

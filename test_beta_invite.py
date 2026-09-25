@@ -53,7 +53,9 @@ def check(name, cond):
 
 # ── Helfer ───────────────────────────────────────────────────────────────────
 
-def neuer_user(email: str, kauf: int = 0, verkauf: int = 0, verifiziert: int = 0) -> int:
+def neuer_user(email: str, kauf: int = 0, verkauf: int = 0, verifiziert: int = 1) -> int:
+    """Standard ist BESTAETIGT: das Einloesen verlangt eine bestaetigte Adresse.
+    Der unbestaetigte Fall wird gezielt mit verifiziert=0 geprueft (Block V)."""
     with db.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO users (email, password_hash, kaufchecks_verbleibend, "
@@ -329,18 +331,57 @@ check("Q: Einladung mit Grossbuchstaben/Leerzeichen trifft das normalisierte Kon
 check("Q: keine eigene Gmail-Punkt-/Alias-Regel erfunden",
       beta.normalisiere_email("a.b+x@gmail.com") == "a.b+x@gmail.com")
 
-# ── R) Kein Verifikations-Bypass ─────────────────────────────────────────────
-token_r = beta.erzeuge_einladung("unverifiziert@example.de")
-uid_r = neuer_user("unverifiziert@example.de", verifiziert=0)
-beta.loese_ein(token_r, uid_r)
+# ── V) Bestaetigte Adresse ist Pflicht (Auftrag §1/§2, Faelle A-C) ──────────
+token_v = beta.erzeuge_einladung("unbestaetigt@example.test")
+uid_v = neuer_user("unbestaetigt@example.test", verifiziert=0)
+erg_v = beta.loese_ein(token_v, uid_v)
+check("V-B: richtige Adresse, aber unbestaetigt -> keine Credits", stand(uid_v) == (0, 0))
+check("V-B: eigener Status statt generischer Ablehnung (kein Sackgassen-Text)",
+      erg_v.status == beta.EMAIL_UNBESTAETIGT)
+check("V-B: die Einladung bleibt UNVERBRAUCHT",
+      invite_zeile(token_v)["eingeloest_at"] is None)
+check("V-B: sie wurde auch nicht entwertet oder verkuerzt",
+      invite_zeile(token_v)["entwertet_at"] is None)
+
+# Mehrfaches Oeffnen vor der Bestaetigung darf nichts kaputt machen.
+for _ in range(3):
+    beta.loese_ein(token_v, uid_v)
+check("V-B: auch mehrfaches Oeffnen verbraucht die Einladung nicht",
+      invite_zeile(token_v)["eingeloest_at"] is None and stand(uid_v) == (0, 0))
+
+# ... und nach der Bestaetigung funktioniert DERSELBE Link.
 with db.get_conn() as conn:
-    verif = conn.execute("SELECT email_verified FROM users WHERE id=?", (uid_r,)).fetchone()
-check("R: email_verified bleibt 0 — die Einladung bestaetigt keine Adresse",
-      verif["email_verified"] == 0)
-check("R: die Check-Credits sind trotzdem da (gleiche Regel wie bei Stripe-Kauf)",
-      stand(uid_r) == (1, 1))
-check("R: das Beta-Modul fasst email_verified im Code nirgends an",
-      "email_verified" not in beta_code)
+    conn.execute("UPDATE users SET email_verified=1 WHERE id=?", (uid_v,))
+    conn.commit()
+erg_v2 = beta.loese_ein(token_v, uid_v)
+check("V-C: nach der Bestaetigung loest derselbe Link ein",
+      erg_v2.status == beta.AKTIVIERT and stand(uid_v) == (1, 1))
+check("V-C: es war keine neue Einladung noetig",
+      invite_zeile(token_v)["eingeloest_von"] == uid_v)
+
+# V-D: falsche Adresse schlaegt auch bei bestaetigtem Konto fehl, und zwar
+# GENERISCH — der Unbestaetigt-Status darf kein Orakel fuer fremde Adressen sein.
+token_v2 = beta.erzeuge_einladung("fremd-ziel@example.test")
+uid_v2 = neuer_user("ganz-anders@example.test", verifiziert=1)
+erg_v3 = beta.loese_ein(token_v2, uid_v2)
+check("V-D: falsche Adresse -> 0/0 und generische Ablehnung",
+      erg_v3.status == beta.NICHT_VERWENDBAR and stand(uid_v2) == (0, 0))
+uid_v3 = neuer_user("auch-anders@example.test", verifiziert=0)
+erg_v4 = beta.loese_ein(token_v2, uid_v3)
+check("V-D: falsche Adresse + unbestaetigt -> ebenfalls NUR generisch "
+      "(verraet nicht, dass die Adresse falsch ist)",
+      erg_v4.status == beta.NICHT_VERWENDBAR)
+
+# V-H: kein Bypass — die Einloesung bestaetigt niemals selbst eine Adresse.
+token_v3 = beta.erzeuge_einladung("kein-bypass@example.test")
+uid_v4 = neuer_user("kein-bypass@example.test", verifiziert=0)
+beta.loese_ein(token_v3, uid_v4)
+with db.get_conn() as conn:
+    v = conn.execute("SELECT email_verified FROM users WHERE id=?", (uid_v4,)).fetchone()
+check("V-H: die Einloesung setzt email_verified NICHT selbst", v["email_verified"] == 0)
+check("V-H: das Beta-Modul schreibt email_verified nirgends",
+      "UPDATE users SET email_verified" not in beta_code
+      and "email_verified=1" not in beta_code)
 
 # ── Ergebnis ─────────────────────────────────────────────────────────────────
 print()

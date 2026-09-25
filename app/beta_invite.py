@@ -36,21 +36,21 @@ SICHERHEITSMODELL (identisch zur E-Mail-Verifikation, P2-5)
   Access-Log. Das ist dieselbe Loesung wie beim Bestaetigungslink
   (`app/mailer.py::bestaetigungslink`).
 
-E-MAIL-VERIFIKATION WIRD NICHT AUSGEHEBELT
--------------------------------------------
-Diese Datei fasst `users.email_verified` NICHT an. Das bestehende Modell bleibt
-exakt wie es ist:
+BESTAETIGTE ADRESSE IST PFLICHT
+--------------------------------
+Eingeloest wird nur, wenn `users.email_verified` gesetzt ist. Die Einladung
+haengt an einer ADRESSE — dass jemand den Link oeffnet, beweist aber nur, dass
+er den Link hat. Ein weitergeleiteter Link plus ein selbst angelegtes Konto mit
+derselben Adresse wuerde ohne diese Pruefung genuegen. Die Bestaetigung ist der
+einzige Beleg, dass Konto und eingeladenes Postfach dieselbe Person sind.
 
-  * Die KOSTENLOSEN LLM-Kontingente (Chat, AutoFinder) haengen weiterhin an
-    einer bestaetigten Adresse (`app/usage_limit.py`). Ein Beta-Tester muss
-    seine Mail also genauso bestaetigen wie jeder andere.
-  * CHECK-Berechtigungen haengen dort noch nie an der Bestaetigung — ein per
-    Stripe gekaufter KaufCheck ist ohne bestaetigte Adresse nutzbar. Die
-    Beta-Gutschrift landet im GLEICHEN Topf mit den GLEICHEN Regeln und
-    erzeugt damit keine Sonderstellung.
+Gelesen, aber nie GESCHRIEBEN: `email_verified` wird hier ausschliesslich
+geprueft. Bestaetigt wird eine Adresse weiterhin nur ueber den regulaeren Weg
+(`app/routers/user_auth.py`), die Einladung baut daran keine Abkuerzung.
 
-Kurz: die Einladung verschiebt keine Grenze, sie fuellt nur einen bestehenden
-Topf. Wer Chat und AutoFinder testen will, bestaetigt vorher seine Adresse.
+Eine noch unbestaetigte Adresse ist kein Fehlschlag, sondern ein Zwischenstand:
+die Einladung bleibt offen, es wird nichts beansprucht und nichts teilweise
+gutgeschrieben. Nach der Bestaetigung funktioniert derselbe Link unveraendert.
 
 EXACTLY-ONCE
 ------------
@@ -105,6 +105,12 @@ _SQL_ZEIT = "%Y-%m-%d %H:%M:%S"
 AKTIVIERT = "aktiviert"
 BEREITS_AKTIVIERT = "bereits_aktiviert"
 NICHT_VERWENDBAR = "nicht_verwendbar"
+# Adresse stimmt, ist aber noch nicht bestaetigt. Eigener Status, KEIN
+# Sicherheitsleck: er wird nur an ein angemeldetes Konto ausgegeben, dessen
+# eigene Adresse exakt der eingeladenen entspricht. Wer hier landet, weiss also
+# ohnehin schon alles, was die Antwort verraet — und braucht einen Weg heraus,
+# statt einer Sackgasse ("nicht verwendbar").
+EMAIL_UNBESTAETIGT = "email_unbestaetigt"
 
 
 @dataclass
@@ -245,7 +251,9 @@ def _loese_ein_transaktion(h: str, user_id: int) -> Einloesung:
             log.info("beta_invite_failed grund=bereits_eingeloest user_id=%s", user_id)
             return Einloesung(NICHT_VERWENDBAR)
 
-        konto = conn.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
+        konto = conn.execute(
+            "SELECT email, email_verified FROM users WHERE id=?", (user_id,)
+        ).fetchone()
         if konto is None:
             return Einloesung(NICHT_VERWENDBAR)
 
@@ -255,6 +263,21 @@ def _loese_ein_transaktion(h: str, user_id: int) -> Einloesung:
         if normalisiere_email(konto["email"]) != row["email"]:
             log.info("beta_invite_failed grund=konto_passt_nicht user_id=%s", user_id)
             return Einloesung(NICHT_VERWENDBAR)
+
+        # Bestaetigte Adresse ist Pflicht — ebenfalls VOR dem Anspruch.
+        #
+        # Die Einladung ist an eine ADRESSE gebunden; dass jemand sie oeffnet,
+        # beweist aber nur Zugriff auf den Link, nicht auf das Postfach. Ein
+        # weitergeleiteter Link plus ein selbst angelegtes Konto mit derselben
+        # Adresse wuerde sonst reichen. Die Bestaetigung ist der einzige Beleg,
+        # dass Konto und eingeladenes Postfach wirklich dieselbe Person sind.
+        #
+        # Die Einladung bleibt dabei unangetastet: kein Anspruch, kein Ablauf,
+        # keine Teilgutschrift. Nach der Bestaetigung funktioniert derselbe Link
+        # unveraendert weiter, es braucht keine neue Einladung.
+        if not konto["email_verified"]:
+            log.info("beta_invite_pending grund=email_unbestaetigt user_id=%s", user_id)
+            return Einloesung(EMAIL_UNBESTAETIGT)
 
         # Atomarer Anspruch. Ablauf und Entwertung stehen mit in der
         # WHERE-Klausel, damit zwischen Pruefung und Anspruch keine Luecke

@@ -47,6 +47,7 @@ from typing import Any
 
 from app.car_lookup import call_gemini_json
 from app.gemini_retry import GeminiFehlgeschlagen
+from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +101,8 @@ Für jeden Kandidaten:
 - trade_offs: 2 bis 4 echte, für diesen Nutzer relevante Nachteile oder Einschränkungen (z.B. Verbrauch, Unterhalt, Kofferraum, Wertverlust, Versicherungseinstufung, Eignung fürs Nutzungsmuster) — KEINE behaupteten Defekte.
 - estimated_price_min, estimated_price_max: ganze EUR-Zahlen, min < max, realistische breite Spanne.
 - price_confidence: HIGH | MEDIUM | LOW | UNKNOWN.
+
+[[STILREGEL]]
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne Markdown, ohne Erklärtext:
 {"candidates":[{"candidate_id":"<wie Eingabe>","why_fits":["..."],"trade_offs":["..."],"estimated_price_min":12000,"estimated_price_max":16000,"price_confidence":"MEDIUM"}]}"""
@@ -269,3 +272,7 @@ def deterministischer_fallback(k: Any) -> Enrichment:
         known_points=[],
         estimated_price_min=None, estimated_price_max=None, price_confidence="UNKNOWN",
     )
+
+# Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
+# .replace statt f-String: der Prompt enthaelt ein JSON-Beispiel.
+_SYSTEM_PROMPT = _SYSTEM_PROMPT.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

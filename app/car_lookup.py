@@ -496,8 +496,8 @@ FEHLENDE_ANGABE = {
                        "bekannten Modell dieser Marke)",
     MATCH_SUBSTRING:   "die genaue Modell- und Generationsbezeichnung "
                        "(z.B. \u201eGolf VII\u201c oder \u201e3er G20\u201c)",
-    MATCH_AMBIGUOUS:   "die Generation bzw. den Baureihencode — mehrere Modelle "
-                       "passen gleich gut",
+    MATCH_AMBIGUOUS:   "die Generation bzw. den Baureihencode, weil mehrere Modelle "
+                       "gleich gut passen",
     MATCH_MARKE_ONLY:  "das Modell (bisher liegt nur die Marke vor)",
     MATCH_NONE:        "Marke, Modell und Erstzulassung",
 }
