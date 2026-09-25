@@ -29,6 +29,7 @@ from app import config
 log = logging.getLogger(__name__)
 
 BETREFF_BESTAETIGUNG = "Bitte bestätige deine E-Mail-Adresse für ENFAL"
+BETREFF_BETA_EINLADUNG = "Deine Einladung zur ENFAL Closed Beta"
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 # Markenfarbe (Tailwind orange-500, identisch zu den Buttons im Frontend —
@@ -162,4 +163,119 @@ def sende_bestaetigungsmail(empfaenger: str, token: str, *, user_id: int | None 
         log.error("Bestaetigungsmail fehlgeschlagen (user_id=%s): %s", user_id, type(exc).__name__)
         return False
     log.info("Bestaetigungsmail versendet (user_id=%s).", user_id)
+    return True
+
+
+# ── Closed-Beta-Einladung (Release-Schritt 10) ───────────────────────────────
+#
+# Gleiche Bauart wie die Bestaetigungsmail: Token nur im Fragment, nie im Log,
+# Inline-Styles fuer Outlook, keine Bilder. Der Text bleibt bewusst kurz —
+# Testaufgaben und Feedbackfragen kommen spaeter separat, eine Mail mit einer
+# Anleitung darin wuerde genau das verhindern, was wir sehen wollen: wie sich
+# jemand ohne Anleitung durch ENFAL bewegt.
+
+def _beta_text(link: str) -> str:
+    return (
+        "Hallo,\n\n"
+        "du wurdest eingeladen, ENFAL vor dem öffentlichen Start zu testen.\n\n"
+        "Über deinen persönlichen Link erhältst du nach der Anmeldung:\n"
+        "- 1 KaufCheck\n"
+        "- 1 VerkaufsCheck\n"
+        "- Zugriff auf die übrigen kostenlosen ENFAL-Funktionen\n\n"
+        f"{link}\n\n"
+        "Bitte teile diesen persönlichen Link nicht weiter.\n"
+        "Während der Beta entstehen keine echten Zahlungen.\n\n"
+        "Wir möchten ausdrücklich ehrliches Feedback – auch wenn etwas unklar, "
+        "unnötig oder schlecht gelöst ist.\n\n"
+        "Viele Grüße\n"
+        "ENFAL\n"
+    )
+
+
+def _beta_html(link: str) -> str:
+    sicher = html.escape(link, quote=True)
+    return f"""\
+<!doctype html>
+<html lang="de">
+  <body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;overflow:hidden;">
+            <tr>
+              <td style="padding:32px 32px 8px 32px;text-align:center;">
+                <span style="font-size:22px;font-weight:700;color:{_MARKENFARBE};letter-spacing:0.02em;">ENFAL</span>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 32px 0 32px;color:#111827;font-size:15px;line-height:1.6;">
+                <p style="margin:0 0 16px 0;">Hallo,</p>
+                <p style="margin:0 0 16px 0;">du wurdest eingeladen, ENFAL vor dem öffentlichen Start zu testen.</p>
+                <p style="margin:0 0 8px 0;">Über deinen persönlichen Link erhältst du nach der Anmeldung:</p>
+                <ul style="margin:0 0 24px 0;padding-left:20px;color:#374151;">
+                  <li>1 KaufCheck</li>
+                  <li>1 VerkaufsCheck</li>
+                  <li>Zugriff auf die übrigen kostenlosen ENFAL-Funktionen</li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px;text-align:center;">
+                <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
+                  <tr>
+                    <td style="border-radius:10px;background:{_MARKENFARBE};">
+                      <a href="{sicher}"
+                         style="display:inline-block;padding:14px 32px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">
+                        Closed Beta starten
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 32px 0 32px;color:#6b7280;font-size:13px;line-height:1.6;">
+                <p style="margin:0 0 8px 0;">Falls der Button nicht funktioniert, kopiere diesen Link in deinen Browser:</p>
+                <p style="margin:0 0 24px 0;word-break:break-all;">
+                  <a href="{sicher}" style="color:{_MARKENFARBE};">{sicher}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 32px 32px;color:#9ca3af;font-size:12px;line-height:1.6;border-top:1px solid #f3f4f6;">
+                <p style="margin:16px 0 0 0;">Bitte teile diesen persönlichen Link nicht weiter.</p>
+                <p style="margin:8px 0 0 0;">Während der Beta entstehen keine echten Zahlungen.</p>
+                <p style="margin:8px 0 0 0;">Wir möchten ausdrücklich ehrliches Feedback – auch wenn etwas unklar, unnötig oder schlecht gelöst ist.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
+def sende_beta_einladung(empfaenger: str, link: str) -> bool:
+    """Verschickt eine Closed-Beta-Einladung. True = von Brevo angenommen.
+
+    Bekommt den fertigen LINK, nicht den Token: so gibt es genau eine Stelle,
+    die den Link baut (`app/beta_invite.py::einladungslink`), und der rohe
+    Token wandert nicht durch eine zweite Signatur. Geloggt wird weder Adresse
+    noch Link — beides ist personenbezogen bzw. geheim.
+
+    Wirft nie; der Aufrufer (internes Werkzeug) entscheidet anhand von True/
+    False, ob er den Link zum manuellen Versand ausgibt.
+    """
+    if not config.MAIL_AKTIV:
+        log.error("Beta-Einladung NICHT versendet: kein Mailversand konfiguriert "
+                  "(AUTO_KI_BREVO_API_KEY / AUTO_KI_MAIL_FROM).")
+        return False
+    try:
+        _sende_ueber_brevo(empfaenger, BETREFF_BETA_EINLADUNG, _beta_text(link), _beta_html(link))
+    except Exception as exc:
+        log.error("Beta-Einladung fehlgeschlagen: %s", type(exc).__name__)
+        return False
+    log.info("Beta-Einladung versendet.")
     return True

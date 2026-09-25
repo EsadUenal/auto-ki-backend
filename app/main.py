@@ -22,7 +22,7 @@ from app.config import (
 )
 from app.database import ensure_tables
 from app.db_writer import backup_sqlite_now
-from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage, dealer, autofinder, autokosten
+from app.routers import fahrzeug, chat, admin, kaufcheck, verkaufscheck, user_auth, conversations, checks, payments, posters, ebooks, ersatzteile, analyse_frage, dealer, autofinder, autokosten, beta
 from app.llm import CHROMA_AUFBAU, chroma_neu_laden, warmup_chroma
 from app.utf8 import UTF8JSONResponse
 
@@ -408,6 +408,7 @@ app.include_router(analyse_frage.router, prefix="/api/v1")
 app.include_router(dealer.router,        prefix="/api/v1")
 app.include_router(autofinder.router,    prefix="/api/v1")
 app.include_router(autokosten.router,    prefix="/api/v1")
+app.include_router(beta.router,          prefix="/api/v1")
 
 
 @app.get("/health")

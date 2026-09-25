@@ -90,6 +90,36 @@ CREATE TABLE IF NOT EXISTS email_verifikation (
 );
 CREATE INDEX IF NOT EXISTS idx_email_verifikation_user ON email_verifikation(user_id);
 
+-- Closed-Beta-Einladungen (Schritt 10). Gleiche Bauart wie email_verifikation:
+-- gespeichert wird NUR der SHA-256-Hash des Tokens — wer die Datenbank liest,
+-- haelt damit keinen nutzbaren Einladungslink in der Hand.
+--
+-- `email` ist die bereits kanonisch normalisierte Adresse (strip+lower, exakt
+-- wie app/routers/user_auth.py::_pruefe_email). Nur ein Konto mit GENAU dieser
+-- Adresse kann die Einladung einloesen.
+--
+-- Was das Paket ENTHAELT, steht bewusst NICHT hier, sondern als Konstante in
+-- app/beta_invite.py. In der Zeile steht nur, WELCHES Paket gemeint ist
+-- (`paket`) — sonst waere die Credit-Menge ein aenderbares Datum statt einer
+-- serverseitigen Festlegung.
+--
+-- Drei Endzustaende, bewusst getrennt:
+--   eingeloest_at gesetzt -> Credits wurden vergeben, nie wieder (Welle 1: ein
+--                            Paket pro Adresse)
+--   entwertet_at  gesetzt -> durch eine Neuausstellung ersetzt (Link verloren)
+--   beides NULL, laeuft_ab_at in der Zukunft -> offen
+CREATE TABLE IF NOT EXISTS beta_invite (
+    token_hash     TEXT    PRIMARY KEY,
+    email          TEXT    NOT NULL,
+    paket          TEXT    NOT NULL,
+    erstellt_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    laeuft_ab_at   DATETIME NOT NULL,
+    eingeloest_at  DATETIME,
+    eingeloest_von INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    entwertet_at   DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_beta_invite_email ON beta_invite(email);
+
 -- Zuordnung Stripe-Zahlung -> erteilte Berechtigung (Security Block 3, P2-9).
 -- Ohne sie laesst sich bei einer Rueckerstattung/Chargeback nicht sagen, WELCHE
 -- Berechtigung zurueckzunehmen ist. `status` verhindert ausserdem, dass eine

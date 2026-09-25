@@ -200,21 +200,40 @@ def refund_check_credit(zugriff: CheckZugriff) -> None:
         )
 
 
-def gutschrift(user_id: int, produkt: str, anzahl: int = 1) -> None:
-    """Schreibt eine gekaufte Check-Berechtigung gut (Aufrufer: Stripe-Webhook).
+def gutschrift_in_transaktion(conn, user_id: int, produkt: str, anzahl: int = 1) -> None:
+    """Wie `gutschrift()`, aber INNERHALB einer bereits offenen Transaktion.
 
-    `produkt` ist der serverseitig bestimmte Produktschlüssel — niemals ein vom
+    Gebraucht, sobald mehrere Gutschriften nur GEMEINSAM gelten duerfen. Die
+    Closed-Beta-Einladung vergibt 1 KaufCheck UND 1 VerkaufsCheck: waeren das
+    zwei eigene Transaktionen (wie bei `gutschrift()`), koennte die zweite
+    scheitern, waehrend die erste steht und die Einladung bereits verbraucht
+    ist — der Tester haette dann ein halbes Paket und keinen Weg zurueck.
+
+    Es wird hier bewusst NICHT committet: das entscheidet der Aufrufer, der die
+    Transaktion geoeffnet hat (`app/database.py::get_conn` committet am Ende des
+    `with`-Blocks bzw. rollt bei einer Ausnahme alles zurueck).
+
+    `produkt` ist der serverseitig bestimmte Produktschluessel — niemals ein vom
     Client gesendeter Wert. Unbekannte Produkte werden NICHT gutgeschrieben.
     """
     typ = {"kaufcheck": "kauf", "verkaufscheck": "verkauf"}.get(produkt)
     if typ is None:
         raise ValueError(f"Unbekanntes Check-Produkt: {produkt!r}")
     spalte = _SPALTE[typ]
+    conn.execute(
+        f"UPDATE users SET {spalte} = {spalte} + ? WHERE id=?",
+        (anzahl, user_id),
+    )
+
+
+def gutschrift(user_id: int, produkt: str, anzahl: int = 1) -> None:
+    """Schreibt eine gekaufte Check-Berechtigung gut (Aufrufer: Stripe-Webhook).
+
+    `produkt` ist der serverseitig bestimmte Produktschlüssel — niemals ein vom
+    Client gesendeter Wert. Unbekannte Produkte werden NICHT gutgeschrieben.
+    """
     with get_conn() as conn:
-        conn.execute(
-            f"UPDATE users SET {spalte} = {spalte} + ? WHERE id=?",
-            (anzahl, user_id),
-        )
+        gutschrift_in_transaktion(conn, user_id, produkt, anzahl)
         conn.commit()
 
 
