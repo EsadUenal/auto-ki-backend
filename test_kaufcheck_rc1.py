@@ -405,8 +405,13 @@ def test_closing():
                              BASIS_DOKUMENTE) for e in kat for t in (e[2], e[3], e[4] or "")]
     check("Basis-Katalog frei von Gedankenstrichen",
           not [t for t in katalog if "—" in t], str([t for t in katalog if "—" in t][:2]))
-    check("Stilregel steht im KaufCheck-Prompt",
-          "Gedankenstriche sparsam" in kc._SYSTEM)
+    # Die Regel liegt jetzt zentral in app/schreibstil.py und gilt fuer alle
+    # generierenden Oberflaechen. Geprueft wird deshalb, dass GENAU diese
+    # Fassung im Prompt steht, nicht mehr der frueher lokale Wortlaut
+    # ("Gedankenstriche sparsam") -- sonst faellt ein Prompt still zurueck.
+    from app.schreibstil import STILREGEL_GEDANKENSTRICHE
+    check("Zentrale Stilregel steht im KaufCheck-Prompt",
+          STILREGEL_GEDANKENSTRICHE in kc._SYSTEM)
 
 try:
     test_hu()

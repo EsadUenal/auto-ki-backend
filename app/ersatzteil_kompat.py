@@ -242,4 +242,4 @@ def klassifiziere(fahrzeug: dict, bauteil: dict, produkt_text: str) -> tuple[str
     return ("uncertain", "Kompatibilität nicht abschließend bestätigt")
 
 
-HINWEIS_UNCERTAIN = "Kompatibilität nicht bestätigt – vor Bestellung per FIN/OE-Nummer prüfen."
+HINWEIS_UNCERTAIN = "Kompatibilität nicht bestätigt. Vor der Bestellung bitte per FIN oder OE-Nummer prüfen."

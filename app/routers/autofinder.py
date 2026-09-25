@@ -224,8 +224,8 @@ def _budget_ergebnis_hinweis(body: AutoFinderRequest, *, gemini_aufgerufen: bool
         return "Budget konnte diesmal nicht zusätzlich berücksichtigt werden."
     if gemini_aufgerufen:
         return (
-            "Das Budget wird als grobe Orientierung für die Reihenfolge genutzt "
-            "— keine konkrete Marktpreisangabe und keine Garantie."
+            "Das Budget wird als grobe Orientierung für die Reihenfolge genutzt. "
+            "Es ist keine konkrete Marktpreisangabe und keine Garantie."
         )
     return None
 

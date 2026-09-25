@@ -315,7 +315,7 @@ async def luecken_entwurf(body: LueckenEntwurfRequest, request: Request):
             "baureihe_id": bid,
             "fehlende_felder": [],
             "entwurf": None,
-            "nachricht": "Alle Felder bereits befüllt — kein Entwurf nötig.",
+            "nachricht": "Alle Felder bereits befüllt, kein Entwurf nötig.",
         }
 
     kontext = {

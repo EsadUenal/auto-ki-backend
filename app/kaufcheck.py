@@ -77,6 +77,7 @@ from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
+from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
 # Marktpreis-Quellen für den Kaufcheck: nur so viele wie wirklich nötig, um eine
 # belastbare Preisspanne zu begründen (Final Polish Quellenqualität) — statt
@@ -195,7 +196,7 @@ CHECKLISTE:
 - Ein Geräusch- oder Softwarethema ist kein Bauteil: frage nach Auffälligkeiten und Nachbesserungen, nicht nach "Arbeiten am Bauteil".
 
 STIL:
-- Verwende im nutzerseitigen deutschen Text Gedankenstriche sparsam. Bevorzuge normale deutsche Satzzeichen wie Punkt, Komma, Doppelpunkt oder Klammern. Vermeide den typischen häufigen KI-Stil mit langen Gedankenstrichen.
+- [[STILREGEL]]
 - Nenne den Motorcode exakt so, wie er im DB-Kontext steht: nicht auf eine gröbere Motorfamilie verkürzen und nicht präziser machen, als die Daten es hergeben.
 
 REGELN:
@@ -225,6 +226,7 @@ def _format_inserat(req: KaufCheckRequest) -> str:
     if req.kilometerstand: lines.append(f"Kilometerstand: {req.kilometerstand:,} km".replace(",", "."))
     if req.motor:          lines.append(f"Motor:          {req.motor}")
     if req.kraftstoff:     lines.append(f"Kraftstoff:     {req.kraftstoff}")
+    if req.leistung_ps:    lines.append(f"Leistung:       {req.leistung_ps} PS")
     if req.preis_eur:      lines.append(f"Preis:          {req.preis_eur:,} €".replace(",", "."))
     if req.ausstattung:    lines.append(f"Ausstattung:    {', '.join(req.ausstattung)}")
     if req.beschreibung:   lines.append(f"Beschreibung:   {req.beschreibung}")
@@ -711,3 +713,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                                     if web_recherche and web_recherche.identitaet
                                     and web_recherche.identitaet.belegt else None),
     }
+
+# Die gemeinsame Schreibstil-Regel (app/schreibstil.py) wird hier eingesetzt.
+# .replace statt f-String, weil der Prompt JSON-Klammern enthaelt.
+_SYSTEM = _SYSTEM.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

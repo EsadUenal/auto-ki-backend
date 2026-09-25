@@ -26,6 +26,7 @@ from app.car_lookup import call_gemini_json
 from app.claim_sicherheit import entschaerfe_verstaerkungen
 from app.key_findings import _AUSSTATTUNG_WERTVOLL, _ausstattung_treffer, _kraftstoff_norm
 from app.models import FehlendeAngabe, InseratOptimierung, ListingAnalyse, VerkaufsCheckRequest
+from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
 log = logging.getLogger(__name__)
 
@@ -544,7 +545,8 @@ Aufbau der Beschreibung (nur mit vorhandenen Fakten füllen, leere Punkte weglas
 5. **Bekannte Mängel** (falls angegeben — ehrlich benennen)
 6. Sachlicher Abschluss (z. B. Einladung zur Besichtigung/Probefahrt) — ohne Kontaktdaten zu erfinden
 
-Schreibe auf Deutsch, professionell und vertrauenswürdig.\
+Schreibe auf Deutsch, professionell und vertrauenswürdig.
+[[STILREGEL]]\
 """
 
 
@@ -605,3 +607,7 @@ async def run_inserat_optimierung(req: VerkaufsCheckRequest) -> InseratOptimieru
         generiert_am=datetime.utcnow().isoformat(timespec="seconds") + "Z",
         entfernte_behauptungen=entfernt,
     )
+
+# Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
+# .replace statt f-String: die Prompts enthalten JSON-Klammern.
+_OPT_SYSTEM = _OPT_SYSTEM.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

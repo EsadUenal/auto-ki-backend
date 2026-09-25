@@ -2001,8 +2001,16 @@ def baue_ziel(baureihe: dict | None, motor_match: dict | None, req,
     # 245 PS) wurde damit die Nutzerangabe "150 PS" still auf 245 PS gehoben und
     # anschliessend jedes korrekte Inserat wegen "abweichender Motorleistung"
     # verworfen. Prioritaet: expliziter Userinput > DB-Fallback.
-    leistung_user = _ps_im_text(" ".join(
-        str(getattr(req, f, "") or "") for f in ("motor", "leistung_ps", "modell")))
+    # `_ps_im_text` verlangt die Einheit ("258 PS"), weil eine nackte Zahl im
+    # Freitext auch Baujahr, Hubraum oder Ausstattung sein kann. Das
+    # strukturierte Feld ist dagegen eindeutig eine PS-Angabe und bekommt die
+    # Einheit deshalb hier angehaengt, statt die Regex aufzuweichen.
+    _ps_feld = getattr(req, "leistung_ps", None)
+    leistung_user = _ps_im_text(" ".join((
+        str(getattr(req, "motor", "") or ""),
+        f"{_ps_feld} PS" if _ps_feld else "",
+        str(getattr(req, "modell", "") or ""),
+    )))
     leistung_ps = leistung_user
     if not leistung_ps:
         try:
