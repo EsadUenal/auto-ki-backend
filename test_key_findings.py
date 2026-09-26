@@ -223,7 +223,7 @@ check("8b-B: 30.000 km/Jahr -> keine 'Laufleistung'-Finding",
 check("8b-B: kein negatives Finding allein aus dem Kilometerstand",
       not any("laufleistung" in (f.beschreibung or "").lower() for f in f8b_b))
 
-# C) andere Findings bleiben unverändert -> Scheckheft-Finding entsteht weiter.
+# C) andere Findings bleiben unverändert -> Wartungshistorie-Finding entsteht weiter.
 REQ_SCHECKHEFT = SimpleNamespace(marke="BMW", modell="320d", baujahr=2016, kilometerstand=30000,
                                  motor="320d", kraftstoff="Diesel", preis_eur=18000,
                                  beschreibung=None, freitext=None, scheckheftgepflegt=True,
@@ -231,11 +231,21 @@ REQ_SCHECKHEFT = SimpleNamespace(marke="BMW", modell="320d", baujahr=2016, kilom
 f8b_c = build_key_findings_kauf(REQ_SCHECKHEFT, BAUREIHE_BMW, MOTOR_BMW, [])
 # KAUFCHECK-RC1: das Finding bleibt, ist aber als Inseratsangabe gekennzeichnet
 # und verstärkt sie nicht mehr ("lückenlose Wartungshistorie").
-check("8b-C: Scheckheft-Finding bleibt erhalten",
-      any(f.titel.startswith("Scheckheftgepflegt") for f in f8b_c))
-check("8b-C: Scheckheft-Finding verstärkt die Inseratsangabe nicht",
-      all("lückenlos" not in (f.beschreibung or "").lower()
-          for f in f8b_c if f.titel.startswith("Scheckheftgepflegt")))
+#
+# KaufCheck Inputs Final: die Checkbox `scheckheftgepflegt` ist durch das
+# strukturierte Feld `servicehistorie` ersetzt (app/servicehistorie.py). Das
+# Finding entsteht weiterhin — auch aus der ALTEN Angabe, die hier bewusst
+# gesetzt bleibt und damit den Legacy-Pfad mitprüft. Nur der Titel nennt jetzt
+# die Servicehistorie statt des Scheckhefts. Geprüft wird deshalb die unverändert
+# geltende Anforderung, nicht die alte Wortwahl: das Finding existiert, es ist
+# als Inseratsangabe gekennzeichnet, und es verstärkt sie nicht.
+_sh_findings = [f for f in f8b_c if "servicehistorie" in f.titel.lower()]
+check("8b-C: Wartungshistorie-Finding bleibt erhalten", bool(_sh_findings))
+check("8b-C: Finding ist als Inseratsangabe gekennzeichnet",
+      all("laut inserat" in (f.titel + " " + (f.beschreibung or "")).lower()
+          for f in _sh_findings))
+check("8b-C: Finding verstärkt die Inseratsangabe nicht",
+      all("lückenlos" not in (f.beschreibung or "").lower() for f in _sh_findings))
 
 
 # ── 9/10) Cap 5 + deterministische Sortierung (Betrug > Widerspruch > Preis) ─

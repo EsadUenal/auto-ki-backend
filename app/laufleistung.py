@@ -99,6 +99,10 @@ import re
 from datetime import date
 
 from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshinweis
+from app.servicehistorie import (
+    NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
+    UMFANG_UNKLAR as SH_UMFANG_UNKLAR, status as servicehistorie_status,
+)
 
 log = logging.getLogger(__name__)
 
@@ -484,6 +488,10 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
         # Unveränderlich False, solange es keine Datenquelle für den letzten
         # Service gibt — siehe Modulkopf. Kein Platzhalter, sondern ein Befund.
         letzter_service_bekannt=False,
+        # Die Angabe des Inserats zur Servicehistorie — sie ersetzt kein
+        # Servicedatum, verschiebt aber die Grenze des Sagbaren (siehe
+        # `prompt_block`).
+        servicehistorie=servicehistorie_status(req),
     )
     return ctx if ctx.hat_inhalt() else None
 
@@ -518,14 +526,39 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
         zeilen.append(f"Wartungspunkt „{w.bauteil}“ (Beleg {w.evidence_id}): {w.hinweis}")
     if not zeilen:
         return ""
+    # Die Servicehistorie-Angabe verschiebt genau EINEN Satz dieses Blocks. Ohne sie
+    # gilt weiterhin das pauschale Verbot, ein Fehlen der Servicehistorie zu
+    # behaupten. Gibt das Inserat AUSDRÜCKLICH an, dass keine Historie vorliegt,
+    # wäre dieses Verbot falsch: es würde eine belegte Angabe des Inserats
+    # unterdrücken. Erlaubt wird deshalb genau die Wiedergabe DIESER Angabe — die
+    # Fälligkeits-Verbote bleiben in jedem Fall unverändert bestehen.
+    if ctx.servicehistorie == SH_NICHT_VORHANDEN:
+        service_satz = (
+            "Der Zeitpunkt des letzten Service ist NICHT bekannt. Das Inserat gibt "
+            "allerdings an, dass keine Servicehistorie vorliegt: diese ANGABE darfst "
+            "du wiedergeben und als Unsicherheit in der Wartungsbewertung benennen — "
+            "nicht als geprüften Befund und nicht als festgestellten Mangel. Schreibe "
+            "trotzdem NIEMALS, ein Service sei fällig, überfällig oder versäumt: ohne "
+            "Servicedatum ist das durch nichts gedeckt. Ein Wartungspunkt heißt "
+            "ausschließlich: an dieser Stelle den NACHWEIS verlangen.")
+    elif ctx.servicehistorie in (SH_TEILWEISE, SH_UMFANG_UNKLAR):
+        service_satz = (
+            "Der Zeitpunkt des letzten Service ist NICHT bekannt: das Inserat nennt "
+            "zur Servicehistorie nur einen Umfang, kein Datum und keinen "
+            "Kilometerstand. Schreibe deshalb NIEMALS, ein Service sei fällig, "
+            "überfällig, versäumt oder nicht durchgeführt worden. Ein Wartungspunkt "
+            "heißt ausschließlich: an dieser Stelle den NACHWEIS verlangen.")
+    else:
+        service_satz = (
+            "Der Zeitpunkt des letzten Service ist NICHT bekannt: es existiert dazu "
+            "keine Angabe, weder im Inserat noch in der Fahrzeugdatenbank. Schreibe "
+            "deshalb NIEMALS, ein Service sei fällig, überfällig, versäumt oder nicht "
+            "durchgeführt worden, und behaupte nie, die Servicehistorie fehle. Ein "
+            "Wartungspunkt heißt ausschließlich: an dieser Stelle den NACHWEIS "
+            "verlangen.")
     kopf = [
         "## Laufleistung und Wartung (deterministisch berechnet)",
-        "Der Zeitpunkt des letzten Service ist NICHT bekannt: es existiert dazu "
-        "keine Angabe, weder im Inserat noch in der Fahrzeugdatenbank. Schreibe "
-        "deshalb NIEMALS, ein Service sei fällig, überfällig, versäumt oder nicht "
-        "durchgeführt worden, und behaupte nie, die Servicehistorie fehle. Ein "
-        "Wartungspunkt heißt ausschließlich: an dieser Stelle den NACHWEIS "
-        "verlangen.",
+        service_satz,
         "Die durchschnittliche Fahrleistung ist ein Mittelwert über die gesamte "
         "Fahrzeuglebensdauer, keine gemessene Jahresleistung eines Vorbesitzers. "
         "Bewerte sie NICHT als gut oder schlecht: nenne nur die Zahl, es gibt "

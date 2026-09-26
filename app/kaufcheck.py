@@ -78,6 +78,18 @@ from app.web_search import (
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
 from app.schreibstil import STILREGEL_GEDANKENSTRICHE
+from app.getriebe import (
+    aus_request as getriebe_aus_request, prompt_zeile as getriebe_prompt_zeile,
+)
+from app.verkaeuferart import (
+    aus_request as verkaeuferart_aus_request,
+    prompt_zeile as verkaeuferart_prompt_zeile,
+)
+from app.servicehistorie import (
+    neutralisiere_claims as servicehistorie_neutralisieren,
+    prompt_zeile as servicehistorie_prompt_zeile,
+    status as servicehistorie_status,
+)
 
 # Marktpreis-Quellen für den Kaufcheck: nur so viele wie wirklich nötig, um eine
 # belastbare Preisspanne zu begründen (Final Polish Quellenqualität) — statt
@@ -185,6 +197,9 @@ Markdown-Checkboxen, priorisiert: kritische Prüfpunkte (die im schlimmsten Fall
 
 INSERAT-ANGABEN SIND ANGABEN, KEINE TATSACHEN:
 - Gib Verkäuferangaben immer als solche wieder ("laut Inserat …") und formuliere sie NIE stärker als eingegeben: "scheckheftgepflegt" heißt NICHT "lückenlose Wartungshistorie"; "unfallfrei laut Inserat" heißt NICHT "nachweislich unfallfrei"; "HU neu" heißt NICHT "Prüfbericht gesehen"; "2 Vorbesitzer" heißt NICHT "amtlich bestätigt".
+- SERVICEHISTORIE: Die Zeile "Servicehistorie" nennt AUSSCHLIESSLICH, was das Inserat behauptet. "vollständig angegeben" heißt NICHT, dass die Historie vollständig IST — es wurde kein Serviceheft, keine Rechnung und kein Herstellerdatensatz geprüft. Erlaubt: "Laut Inserat wird eine vollständige Servicehistorie angegeben."; "Die Servicehistorie ist laut Inserat nur teilweise vorhanden."; "Zur Servicehistorie enthält das Inserat keine klare Angabe." Verboten: "Das Fahrzeug ist lückenlos scheckheftgepflegt."; "Die Wartungen wurden vollständig durchgeführt."; "Die Historie ist nachweislich vollständig." Auch die beste Angabe entfernt kein Risiko: verlange in jedem Fall die Nachweise (Serviceheft, digitales Serviceprotokoll, Rechnungen).
+- VERKÄUFERART: Sie sagt NICHTS über Technik, Motorisierung, Rückrufbetroffenheit oder Marktwert — nutze sie ausschließlich für Unterlagen, Nachfragen und die Kaufvorbereitung. Keine Pauschalwertung ("Händler = sicher", "Privat = riskant"). KEINE rechtlichen Aussagen: kein Wort zu Gewährleistung, Sachmängelhaftung, Garantie, Widerruf oder Haftungsausschluss — auch nicht einschränkend oder allgemein.
+- GETRIEBE: Die Getriebeart steuert nur, WELCHE Prüfungen sinnvoll sind (Kupplung und Greifpunkt beim Schaltgetriebe, Schaltverhalten und Fahrstufen bei der Automatik). Leite aus ihr NIEMALS einen typischen Defekt, ein Wartungsintervall oder eine Lebensdauer ab: "Automatik" allein belegt kein Problem. Solche Aussagen dürfen ausschließlich aus dem DB-PROFIL kommen.
 - Datum: Das aktuelle Datum steht im Nutzerteil ("HEUTIGES DATUM"). Rechne ausschließlich damit, nie mit einem angenommenen anderen Jahr.
 
 PREIS OHNE MARKTBASIS:
@@ -233,9 +248,19 @@ def _format_inserat(req: KaufCheckRequest) -> str:
     if req.unfallfrei:     lines.append(f"Unfallfrei:     {req.unfallfrei}")
     if req.vorbesitzer is not None: lines.append(f"Vorbesitzer:    {req.vorbesitzer}")
     if req.tuev_bis:       lines.append(f"TÜV bis:        {req.tuev_bis}")
-    if req.scheckheftgepflegt is not None:
-        lines.append(f"Scheckheftgepflegt: {'ja' if req.scheckheftgepflegt else 'nein'}")
-    return "\n".join(lines)
+    # Getriebe / Verkäufer / Servicehistorie: die kanonischen Zeilen aus den
+    # jeweiligen Modulen — dieselbe Formulierung wie in Checkliste und Key Findings,
+    # inklusive des "laut Inserat" IM Satz. `getriebe_aus_request` löst dabei in
+    # derselben Rangfolge auf wie der Prüfplan (Nutzerangabe > Freitext > DB), damit
+    # Bericht und Checkliste nie von verschiedenen Getriebearten ausgehen.
+    #
+    # Die alte Zeile "Scheckheftgepflegt: ja/nein" ist ersetzt: `servicehistorie_status`
+    # liest das neue Feld UND bildet die alte Checkbox ab, ein gespeicherter Alt-Check
+    # erzeugt also weiterhin eine Servicehistorie-Zeile.
+    lines.append(getriebe_prompt_zeile(getriebe_aus_request(req)))
+    lines.append(verkaeuferart_prompt_zeile(verkaeuferart_aus_request(req)))
+    lines.append(servicehistorie_prompt_zeile(servicehistorie_status(req)))
+    return "\n".join(z for z in lines if z)
 
 
 async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
@@ -502,6 +527,16 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # letzten Service, ein "faellig"/"ueberfaellig"/"versaeumt" ist deshalb IMMER
         # unbelegt, egal welches Modell den Bericht geschrieben hat.
         result["bericht"] = neutralisiere_wartungs_faelligkeit(result["bericht"])
+        # Servicehistorie-Claim-Netz: der Prompt verbietet die Verstärkung oben
+        # bereits, dies ist das deterministische Netz DANACH. Bewusst eng gebaut —
+        # es fängt nur die ZUSICHERUNG ("ist lückenlos scheckheftgepflegt"), nicht
+        # die Aufforderung ("Vollständigkeit der Servicehistorie prüfen"), und es
+        # läuft unabhängig vom gewählten Status: auch "vollständig angegeben" ist
+        # unbelegt, solange ENFAL keine Unterlagen gesehen hat.
+        result["bericht"], _sh_ersetzt = servicehistorie_neutralisieren(result["bericht"])
+        if _sh_ersetzt:
+            log.info("Kaufcheck: %d Servicehistorie-Zusicherung(en) entschaerft: %s",
+                     len(_sh_ersetzt), _sh_ersetzt[:3])
         # P1-b (KaufCheck-Backend-Freeze): PFAD B (kein belastbarer Markt) verbietet
         # dem Modell im Prompt bereits jedes Preisurteil (no_market_prompt_block) —
         # dieser Guard ist das Sicherheitsnetz NACH dem Call. NUR im No-Market-Pfad

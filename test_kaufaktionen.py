@@ -88,6 +88,12 @@ class Req:
         self.vorbesitzer = kw.get("vorbesitzer")
         self.tuev_bis = kw.get("tuev_bis")
         self.scheckheftgepflegt = kw.get("scheckheftgepflegt")
+        # KaufCheck Inputs Final: die drei strukturierten Angaben. Der Stub muss
+        # sie kennen, sonst liest `getattr(req, ...)` sie als fehlend — und der
+        # Test würde eine Wirkung prüfen, die er selbst nie übergeben hat.
+        self.getriebe = kw.get("getriebe")
+        self.verkaeuferart = kw.get("verkaeuferart")
+        self.servicehistorie = kw.get("servicehistorie")
 
 
 def baureihe(schwachstellen=None, rueckrufe=None, verified=True):
@@ -323,9 +329,26 @@ check("F5 fehlende Angabe wird zur FRAGE, nicht zur Feststellung",
 check("F6 fehlende Angabe erzeugt keine Scheckheft-Mangelaussage",
       all(not a.id.endswith("scheckheft") for a in ka_f2.dokumente.fahrzeugspezifisch))
 
+# KaufCheck Inputs Final: `scheckheftgepflegt=False` gilt jetzt als KEINE ANGABE.
+# Grund: das Formular konnte diesen Wert nie senden (eine nicht angekreuzte Box
+# ging als fehlendes Feld raus), "nicht angekreuzt" und "nicht angegeben" waren
+# also nicht unterscheidbar — aus dieser Nichtunterscheidung eine Aussage über das
+# Inserat zu machen, wäre eine Behauptung. Aus F5/F6 folgt damit die offene Frage.
 ka_f3, _ = aktionen(Req(baujahr=2020, scheckheftgepflegt=False), baureihe())
-check("F7 scheckheftgepflegt=False verlangt Einzelnachweise",
-      any("einzeln" in a.aktion.lower() for a in ka_f3.dokumente.fahrzeugspezifisch if a.id.endswith("scheckheft")))
+check("F7 scheckheftgepflegt=False wird zur FRAGE, nicht zur Feststellung",
+      any(a.id.endswith("scheckheft") and a.titel.rstrip().endswith("?")
+          for a in ka_f3.verkaeuferfragen.fahrzeugspezifisch)
+      and all(not a.id.endswith("scheckheft") for a in ka_f3.dokumente.fahrzeugspezifisch))
+
+# Die Forderung nach Einzelnachweisen hängt jetzt an der AUSDRÜCKLICHEN Angabe
+# "keine Servicehistorie" — dem einzigen Zustand, der sie trägt.
+ka_f4, _ = aktionen(Req(baujahr=2020, servicehistorie="nicht_vorhanden"), baureihe())
+check("F8 servicehistorie=nicht_vorhanden verlangt Einzelnachweise",
+      any("einzelnen werkstattrechnungen" in a.aktion.lower()
+          for a in ka_f4.dokumente.fahrzeugspezifisch if a.id.endswith("scheckheft")))
+check("F9 auch dieser Zustand behauptet keinen Mangel am Fahrzeug",
+      all("versäumt" not in a.aktion.lower() and "nicht gewartet" not in a.aktion.lower()
+          for a in ka_f4.dokumente.fahrzeugspezifisch))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -112,7 +112,30 @@ class KaufCheckRequest(BaseModel):
     unfallfrei: str | None = Field(default=None, max_length=20)      # "ja" | "nein" | "unbekannt"
     vorbesitzer: int | None = None     # Anzahl Vorbesitzer laut Inserat
     tuev_bis: str | None = Field(default=None, max_length=20)        # z.B. "06/2027"
+    # LEGACY (bleibt erhalten): die alte Scheckheft-Checkbox. Sie ist aus der
+    # Oberfläche verschwunden, aber gespeicherte Checks und ältere Clients senden
+    # sie weiter. `app/servicehistorie.status()` bildet sie auf den neuen Status ab.
     scheckheftgepflegt: bool | None = None
+
+    # ── Strukturierte Angaben, die im KaufCheck fachlich wirken ───────────────
+    # Alle drei additiv mit Default None: ältere Clients und gespeicherte Formulare
+    # laden unverändert. Auswahlwerte werden an der Eingabegrenze auf einen
+    # kanonischen Wert normalisiert; ein unbekannter Wert wird None statt 422
+    # (dieselbe Konvention wie bei den optionalen VerkaufsCheck-Feldern).
+    #
+    # `getriebe` wirkt auf die Probefahrt-Prüftexte (Kupplung vs. Fahrstufen,
+    # app/kaufaktionen.py) und auf die Widerspruchsprüfung gegen Inseratstext und
+    # erkannte Motorvariante. Es wirkt NICHT auf die Variantenauflösung: die
+    # Getriebe-Optionen der Tabelle `motorvariante` trennen keine einzige
+    # Variantengruppe (gemessen, siehe app/getriebe.py).
+    getriebe: str | None = Field(default=None, max_length=40)
+    # `verkaeuferart` wirkt AUSSCHLIESSLICH auf Unterlagen- und Nachfrage-Aktionen.
+    # Keine technische Wirkung, keine Rechtsaussage (siehe app/verkaeuferart.py).
+    verkaeuferart: str | None = Field(default=None, max_length=30)
+    # `servicehistorie` ersetzt die Aussagekraft der alten Checkbox durch vier
+    # Zustände. Immer eine ANGABE des Inserats, nie ein geprüfter Befund
+    # (siehe app/servicehistorie.py).
+    servicehistorie: str | None = Field(default=None, max_length=40)
 
     @field_validator("tuev_bis")
     @classmethod
@@ -121,6 +144,24 @@ class KaufCheckRequest(BaseModel):
         # An der Eingabegrenze auf "MM/JJJJ" bringen; Unlesbares bleibt unverändert.
         from app.hu_termin import normalisiere_hu
         return normalisiere_hu(v)
+
+    @field_validator("getriebe")
+    @classmethod
+    def _getriebe_normalisieren(cls, v):
+        from app.getriebe import normalisiere
+        return normalisiere(v)
+
+    @field_validator("verkaeuferart")
+    @classmethod
+    def _verkaeuferart_normalisieren(cls, v):
+        from app.verkaeuferart import normalisiere
+        return normalisiere(v)
+
+    @field_validator("servicehistorie")
+    @classmethod
+    def _servicehistorie_normalisieren(cls, v):
+        from app.servicehistorie import normalisiere
+        return normalisiere(v)
 
     # Alternativ: Volltext des Inserats (Copy-Paste von mobile.de / AutoScout)
     freitext: str | None = Field(default=None, max_length=_MAX_TEXT_LEN)
@@ -723,8 +764,17 @@ class Laufleistungskontext(BaseModel):
     # Frontend und Prompt die Unwissenheit ausdrücken können, statt sie zu
     # verschweigen.
     letzter_service_bekannt: bool = False
+    # Die Servicehistorie-ANGABE des Inserats (app/servicehistorie.py) — der einzige
+    # Hinweis, den es auf den Wartungsstand überhaupt gibt. Sie macht
+    # `letzter_service_bekannt` NICHT True: eine Behauptung im Inserat ist kein
+    # Servicedatum. Sie steuert aber, wie streng die Wartungsbewertung formuliert
+    # werden darf (siehe app/laufleistung.py::prompt_block).
+    servicehistorie: str | None = None
 
     def hat_inhalt(self) -> bool:
+        # `servicehistorie` steht hier BEWUSST nicht: allein aus einer Angabe zur
+        # Servicehistorie entsteht kein Laufleistungskontext. Sie schärft einen
+        # vorhandenen Kontext, sie erzeugt keinen neuen.
         return any((self.kilometerstand, self.fahrzeugalter_jahre,
                     self.km_pro_jahr, self.wartungshinweise))
 

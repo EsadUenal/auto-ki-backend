@@ -159,7 +159,13 @@ def test_claims():
     print("\n[C] 'scheckheftgepflegt' wird nicht zu 'lückenlos' verstärkt")
     texte = " ".join(f"{_dump(f)['titel']} {_dump(f)['beschreibung']}" for f in ERG["key_findings"])
     check("Kein 'lückenlos' in den Key Findings", "lückenlos" not in texte.lower(), texte[:200])
-    check("Als Inseratsangabe gekennzeichnet", "Laut Inserat scheckheftgepflegt" in texte)
+    # Die Wartungsangabe heißt seit "KaufCheck Inputs Final" nicht mehr
+    # "scheckheftgepflegt", sondern trägt den kanonischen Satz aus
+    # app/servicehistorie.py. Geprüft wird weiterhin dasselbe: die Angabe ist als
+    # ANGABE DES INSERATS gekennzeichnet und nicht als Befund formuliert.
+    check("Als Inseratsangabe gekennzeichnet",
+          "Laut Inserat wird eine vollständige Servicehistorie angegeben." in texte,
+          texte[:300])
     check("Regel gegen Verstärkung steht im System-Prompt",
           "NICHT \"lückenlose Wartungshistorie\"" in kc._SYSTEM)
 
