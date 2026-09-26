@@ -76,6 +76,18 @@ import logging
 import re
 
 from app.evidence import titel_bauteil
+from app.getriebe import (
+    AUTOMATIK, MANUELL, AUTOMATIK_WORTE as _AUTOMATIK_WORTE,
+    MANUELL_WORTE as _MANUELL_WORTE, aus_request as _getriebe_aus_request,
+)
+from app.servicehistorie import (
+    NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
+    UMFANG_UNKLAR as SH_UMFANG_UNKLAR, VOLLSTAENDIG_ANGEGEBEN as SH_VOLLSTAENDIG,
+    status as servicehistorie_status,
+)
+from app.verkaeuferart import (
+    HAENDLER as VK_HAENDLER, PRIVAT as VK_PRIVAT, aus_request as verkaeuferart_aus_request,
+)
 
 from app.models import Insight, Kaufaktion, Kaufaktionen, Pruefliste
 from app.pruefplan_basis import (
@@ -684,13 +696,12 @@ def _fahrzeug_kurzbezeichnung(req, baureihe: dict | None) -> str | None:
 # achten, bei Automatik …") — bis hin zu "Die Kupplung darf nicht durchrutschen"
 # bei einem Automatik-BMW. Ist das Getriebe bekannt, wird genau die passende
 # Formulierung verwendet; ist es unbekannt, bleibt der neutrale Katalogtext.
-AUTOMATIK, MANUELL = "automatik", "manuell"
-
-_AUTOMATIK_WORTE = ("automatik", "steptronic", "tiptronic", "dsg", "s tronic", "s-tronic",
-                    "dkg", "doppelkupplung", "pdk", "cvt", "wandler", "multitronic",
-                    "powershift", "edc", "g-tronic")
-_MANUELL_WORTE = ("schaltgetriebe", "handschalt", "manuell")
-
+#
+# Die ERKENNUNG der Getriebeart liegt jetzt in app/getriebe.py — dort gewinnt die
+# strukturierte Nutzerangabe vor dem Freitext. Bis dahin war sie geraten: ohne
+# Getriebewort im Inserat blieb sie unbekannt, und die Texte unten wurden nie
+# eingesetzt. Namen und Werte bleiben unverändert, damit bestehende Aufrufer und
+# Tests (`from app.kaufaktionen import AUTOMATIK, getriebe_art`) weiterlaufen.
 _BASIS_GETRIEBE: dict[tuple[str, str], dict[str, str]] = {
     ("probefahrt", "anfahren"): {
         AUTOMATIK: "Mehrmals aus dem Stand anfahren: Das Automatikgetriebe soll ohne "
@@ -725,26 +736,57 @@ _BASIS_GETRIEBE: dict[tuple[str, str], dict[str, str]] = {
 
 
 def getriebe_art(req, motor_match: dict | None) -> str | None:
-    """automatik | manuell | None — aus der Nutzerangabe, sonst eindeutig aus der DB."""
-    text = " ".join(str(getattr(req, f, None) or "") for f in ("motor", "beschreibung",
-                                                                "freitext")).lower()
-    auto = any(w in text for w in _AUTOMATIK_WORTE)
-    manu = any(w in text for w in _MANUELL_WORTE)
-    if auto != manu:
-        return AUTOMATIK if auto else MANUELL
-    optionen = (motor_match or {}).get("getriebe")
-    if isinstance(optionen, str):
-        optionen = [optionen]
-    optionen = [str(o).lower() for o in (optionen or [])]
-    if optionen and all(any(w in o for w in _AUTOMATIK_WORTE) for o in optionen):
-        return AUTOMATIK
-    if optionen and all(any(w in o for w in _MANUELL_WORTE) for o in optionen):
-        return MANUELL
-    return None
+    """automatik | manuell | None.
+
+    Rangfolge jetzt: strukturierte Nutzerangabe > eindeutiger Freitext >
+    eindeutige DB-Optionen (app/getriebe.py). Die beiden hinteren Stufen sind
+    unverändert; die erste ist neu.
+    """
+    return _getriebe_aus_request(req, motor_match)
+
+
+# ── Verkäuferabhängige Basistexte ────────────────────────────────────────────
+#
+# Dieselbe Bauart wie `_BASIS_GETRIEBE`: die Verkäuferart ERSETZT den Text eines
+# bereits vorhandenen Basis-Punktes, sie fügt KEINEN neuen hinzu. Der Prüfplan
+# wird dadurch genauer, nicht länger (§20 des Auftrags).
+#
+# Streng auf Unterlagen und Fragen begrenzt. KEINE Rechtsaussagen (Gewährleistung,
+# Sachmängelhaftung, Garantie, Widerruf) — dafür hat ENFAL keine geprüfte
+# fachliche Grundlage, siehe app/verkaeuferart.py. Und keine Pauschalwertung:
+# beide Zweige sagen dasselbe, nämlich "Angaben mit Unterlagen abgleichen".
+_BASIS_VERKAEUFER: dict[tuple[str, str], dict[str, str]] = {
+    ("dokumente", "ausweis"): {
+        VK_PRIVAT: "Der Name im Ausweis muss zum Halter in Teil II passen: sonst eine "
+                   "schriftliche Vollmacht verlangen.",
+        VK_HAENDLER: "Firmenname und Anschrift auf Kaufvertrag und Rechnung müssen zum "
+                     "Betrieb vor Ort passen. Verkauft der Händler nur in Vermittlung, "
+                     "steht der Verkäufer weiterhin in Teil II.",
+    },
+    ("dokumente", "kaufvertrag"): {
+        VK_PRIVAT: "Auch beim Privatkauf einen schriftlichen Vertrag verwenden: "
+                   "Zusicherungen zu Unfallfreiheit, Laufleistung und bekannten Mängeln "
+                   "müssen darin stehen, mündliche Aussagen sind später nicht belegbar.",
+        VK_HAENDLER: "Kaufvertrag und Rechnung vor der Unterschrift zusammen lesen: "
+                     "Zusagen aus dem Verkaufsgespräch zu Aufbereitung, Reparaturen und "
+                     "mitgeliefertem Zubehör müssen schriftlich darin auftauchen.",
+    },
+    ("verkaeuferfragen", "eigentuemer"): {
+        VK_PRIVAT: "Klärt die Verkaufsberechtigung: bei Verkauf im Auftrag Vollmacht und "
+                   "Ausweis zeigen lassen.",
+        VK_HAENDLER: "Klärt, ob der Betrieb im eigenen Namen oder in Vermittlung verkauft: "
+                     "bei Vermittlung ist der eingetragene Halter der Verkäufer.",
+    },
+    ("verkaeuferfragen", "reparaturen"): {
+        VK_HAENDLER: "Nach Bauteil, Werkstatt und Kilometerstand fragen und die Rechnungen "
+                     "zeigen lassen — auch die der eigenen Aufbereitung vor dem Verkauf.",
+    },
+}
 
 
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
-                 fahrzeug: str | None, getriebe: str | None = None) -> list[Kaufaktion]:
+                 fahrzeug: str | None, getriebe: str | None = None,
+                 verkaeufer: str | None = None) -> list[Kaufaktion]:
     """Baut die Basis-Checkliste eines Bereichs aus dem Katalog.
 
     Dedup über die Ebenen hinweg (§18): Ein Basis-Punkt entfällt, wenn ein
@@ -765,6 +807,8 @@ def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
         rang = _R_BASIS - n
         if getriebe:
             aktion = _BASIS_GETRIEBE.get((bereich, schluessel), {}).get(getriebe, aktion)
+        if verkaeufer:
+            aktion = _BASIS_VERKAEUFER.get((bereich, schluessel), {}).get(verkaeufer, aktion)
         out.append(Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-basis-{schluessel}",
             bereich=bereich, typ=TYP_BASIS, titel=titel, aktion=aktion,
@@ -825,6 +869,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
 
     fahrzeug = _fahrzeug_kurzbezeichnung(req, baureihe)
     getriebe = getriebe_art(req, motor_match)
+    verkaeufer = verkaeuferart_aus_request(req)
     kataloge = {
         BESICHTIGUNG:     BASIS_BESICHTIGUNG,
         PROBEFAHRT:       BASIS_PROBEFAHRT,
@@ -839,7 +884,8 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
             export_title=EXPORT_TITEL[bereich],
             fahrzeug=fahrzeug,
             fahrzeugspezifisch=spezifisch,
-            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug, getriebe),
+            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug,
+                               getriebe, verkaeufer),
         )
     return Kaufaktionen(
         besichtigung=listen[BESICHTIGUNG],
@@ -1291,22 +1337,45 @@ def _aus_inserat(s: _Sammler, req) -> None:
     """Dokumenten- und Nachfrage-Aktionen aus den Inserat-Angaben.
 
     Strikte Regel (§8): Es wird NIE behauptet, ein Dokument fehle, wenn die Daten das
-    nicht hergeben. `scheckheftgepflegt=True` erzeugt eine PRÜF-Aktion ("Lückenlosigkeit
-    kontrollieren"), niemals eine Mangel-Aussage. Fehlt eine Angabe ganz (None), ist
-    das eine offene FRAGE — keine Feststellung.
+    nicht hergeben. Die beste Servicehistorie-Angabe erzeugt eine PRÜF-Aktion
+    ("Nachweise ansehen"), niemals eine Mangel-Aussage — und sie entfernt kein
+    Risiko. Fehlt eine Angabe ganz (None), ist das eine offene FRAGE — keine
+    Feststellung.
     """
-    scheckheft = getattr(req, "scheckheftgepflegt", None)
-    if scheckheft is True:
-        s.add(DOKUMENTE, "scheckheft", "Scheckheft auf Lückenlosigkeit prüfen",
-              "Das Inserat gibt das Fahrzeug als scheckheftgepflegt an. Serviceheft bzw. "
-              "digitale Servicehistorie durchsehen und auf durchgehende Einträge mit Stempel, "
-              "Datum und Kilometerstand achten.",
+    # Servicehistorie: vier Zustände statt eines Ja/Nein. Jeder Zustand führt zu
+    # einer ANDEREN Handlung — genau das war mit einer Checkbox nicht möglich.
+    # `servicehistorie_status` liest das neue Feld und bildet die alte Checkbox ab,
+    # gespeicherte Checks verhalten sich also unverändert.
+    sh = servicehistorie_status(req)
+    if sh == SH_VOLLSTAENDIG:
+        # Kein Risiko-Abzug: "vollständig angegeben" ist eine Behauptung des
+        # Inserats. Die Aktion prüft genau diese Behauptung.
+        s.add(DOKUMENTE, "scheckheft", "Angegebene Servicehistorie belegen lassen",
+              "Laut Inserat wird eine vollständige Servicehistorie angegeben. Serviceheft "
+              "bzw. digitales Serviceprotokoll durchsehen und auf durchgehende Einträge mit "
+              "Stempel, Datum und Kilometerstand achten; die passenden Rechnungen dazu "
+              "zeigen lassen.",
               _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
-    elif scheckheft is False:
-        s.add(DOKUMENTE, "scheckheft", "Einzelnachweise zur Wartung verlangen",
-              "Das Inserat gibt das Fahrzeug als nicht scheckheftgepflegt an: nach einzelnen "
-              "Werkstattrechnungen fragen, um die Wartungshistorie trotzdem nachvollziehen zu können.",
+    elif sh == SH_TEILWEISE:
+        s.add(DOKUMENTE, "scheckheft", "Fehlende Zeiträume der Servicehistorie klären",
+              "Die Servicehistorie ist laut Inserat nur teilweise vorhanden. Vorhandene "
+              "Einträge und Rechnungen chronologisch durchgehen und festhalten, welche "
+              "Zeiträume und Kilometerstände nicht belegt sind — diese Lücken vor dem Kauf "
+              "ansprechen.",
               _R_DOKUMENT_STANDARD + 20, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+    elif sh == SH_UMFANG_UNKLAR:
+        s.add(VERKAEUFERFRAGEN, "scheckheft",
+              "Welche Serviceunterlagen liegen konkret vor?",
+              "Laut Inserat ist eine Servicehistorie vorhanden, ihr Umfang bleibt offen: vor "
+              "der Besichtigung erfragen, ob Serviceheft, digitales Serviceprotokoll oder "
+              "einzelne Rechnungen vorliegen, und die Unterlagen vor Ort zeigen lassen.",
+              _R_ANGABE_FEHLT + 30, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+    elif sh == SH_NICHT_VORHANDEN:
+        s.add(DOKUMENTE, "scheckheft", "Wartung ohne Serviceunterlagen einschätzen",
+              "Laut Inserat liegt keine Servicehistorie vor. Damit ist der Wartungsstand "
+              "dieses Fahrzeugs nicht nachvollziehbar: nach einzelnen Werkstattrechnungen "
+              "fragen und offene Wartungspunkte im Kaufpreis berücksichtigen.",
+              _R_DOKUMENT_STANDARD + 40, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(VERKAEUFERFRAGEN, "scheckheft",
               "Gibt es ein durchgehend geführtes Scheckheft oder eine digitale Servicehistorie?",

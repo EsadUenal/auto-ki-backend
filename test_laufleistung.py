@@ -417,8 +417,11 @@ check("I1 keine 'Servicehistorie fehlt'-Aussage bei scheckheftgepflegt=True",
       and _treffer(aktionstexte(_ak_i, nur_wartung=True), VERBOTEN_FAELLIGKEIT) == [])
 _scheck = [a for a in _ak_i.dokumente.fahrzeugspezifisch if a.id.endswith("scheckheft")]
 check("I2 die Scheckheft-Angabe erscheint als Inserat-Angabe", len(_scheck) == 1)
+# KaufCheck Inputs Final: der Text stammt jetzt aus app/servicehistorie.py und
+# lautet "Laut Inserat wird eine vollständige Servicehistorie angegeben." Geprüft
+# wird weiter dasselbe: die Zuschreibung an das Inserat steht IM Satz.
 check("I3 sie wird als Angabe des Inserats gekennzeichnet, nicht als Tatsache",
-      "Das Inserat gibt" in _scheck[0].aktion)
+      "Laut Inserat" in _scheck[0].aktion or "Das Inserat gibt" in _scheck[0].aktion)
 check("I4 sie bleibt eine PRÜF-Aktion", "prüfen" in _scheck[0].titel.lower()
       or "durchsehen" in _scheck[0].aktion)
 check("J1 Nachweisprüfung bleibt trotz scheckheftgepflegt=True möglich",

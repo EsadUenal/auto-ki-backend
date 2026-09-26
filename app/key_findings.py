@@ -20,7 +20,16 @@ import logging
 import re
 from datetime import date
 
+from app.getriebe import (
+    anzeige as getriebe_anzeige, aus_db as getriebe_aus_db,
+    aus_text as getriebe_aus_text, normalisiere as getriebe_normalisiere,
+)
 from app.models import Insight, KeyFinding, PriceAssessment
+from app.servicehistorie import (
+    NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
+    UMFANG_UNKLAR as SH_UMFANG_UNKLAR, VOLLSTAENDIG_ANGEGEBEN as SH_VOLLSTAENDIG,
+    satz as servicehistorie_satz, status as servicehistorie_status,
+)
 from app.preisurteil import bewerte_preis
 
 log = logging.getLogger(__name__)
@@ -50,6 +59,10 @@ _P_SCHWACH_HOCH  = 620
 _P_RUECKRUF_UNKLAR = 360
 _P_VORTEIL_PREIS = 500   # (nur falls kein eigenes Preis-Finding entstand)
 _P_MOTOR_OK      = 400
+# Servicehistorie-Pruefpunkt: ueber dem allgemeinen Vorteil (er ist konkret
+# handlungsrelevant), aber klar unter Rueckruf und Schwachstelle — eine
+# unbelegte Wartungshistorie ist eine Unsicherheit, kein Befund am Fahrzeug.
+_P_SERVICEHISTORIE = 420
 _P_VORTEIL       = 380
 _P_PREIS_INFO    = 250
 
@@ -310,6 +323,9 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     # ── D) Inserat-Widersprüche (rein deterministisch, keine Evidence) ──────────
     findings += _widerspruch_findings(req, baureihe, motor_match)
 
+    # ── D2) Servicehistorie als Prüfpunkt (Angabe des Inserats, kein Befund) ────
+    findings += _servicehistorie_finding(req)
+
     # ── B) Relevante Rückrufe ───────────────────────────────────────────────────
     findings += _rueckruf_findings(insights)
 
@@ -356,8 +372,81 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     return _finalisiere(findings)
 
 
+def _strukturiert_vs_inserat(req) -> list[KeyFinding]:
+    """Strukturierte Auswahl gegen den Inseratstext.
+
+    Die bisherigen Widerspruchsprüfungen verglichen die Eingabe immer gegen die
+    DATENBANK. Der häufigere Fall ist ein Widerspruch INNERHALB der Eingabe:
+    im Auswahlfeld steht "Benzin", im eingefügten Inseratstext steht "Diesel";
+    im Auswahlfeld steht "Automatik", im Text steht "6-Gang Handschaltung".
+
+    ENFAL löst das NICHT still auf. Die strukturierte Angabe bleibt die harte
+    Eingabe (sie hat der Nutzer bewusst gesetzt), aber der Widerspruch wird
+    sichtbar gemeldet und muss geklärt werden. Genau deshalb steht hier keine
+    Korrektur, sondern ein Finding.
+    """
+    out: list[KeyFinding] = []
+    text = " ".join(filter(None, [getattr(req, "beschreibung", None),
+                                  getattr(req, "freitext", None)]))
+    if not text.strip():
+        return out
+
+    feld_kraft = _kraftstoff_norm(getattr(req, "kraftstoff", None))
+    text_kraft = _kraftstoff_norm(text)
+    if feld_kraft and text_kraft and feld_kraft != text_kraft:
+        out.append(KeyFinding(
+            id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
+            titel="Kraftstoff-Angabe widerspricht dem Inseratstext",
+            beschreibung=f"Im Formular ist {feld_kraft.capitalize()} ausgewählt, der "
+                         f"Inseratstext deutet auf {text_kraft.capitalize()} hin. Die "
+                         f"Auswertung folgt der Auswahl im Formular.",
+            wert=f"Auswahl: {feld_kraft.capitalize()} · Inseratstext: {text_kraft.capitalize()}",
+            aktion="Kraftstoff im Inserat nachlesen und die Auswahl gegebenenfalls korrigieren.",
+            prioritaet=_P_WIDERSPRUCH + 10))
+
+    feld_getriebe = getriebe_normalisiere(getattr(req, "getriebe", None))
+    text_getriebe = getriebe_aus_text(text)
+    if feld_getriebe and text_getriebe and feld_getriebe != text_getriebe:
+        out.append(KeyFinding(
+            id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
+            titel="Getriebe-Angabe widerspricht dem Inseratstext",
+            beschreibung=f"Im Formular ist {getriebe_anzeige(feld_getriebe)} ausgewählt, der "
+                         f"Inseratstext nennt {getriebe_anzeige(text_getriebe)}. Die "
+                         f"Prüfhinweise zur Probefahrt folgen der Auswahl im Formular.",
+            wert=f"Auswahl: {getriebe_anzeige(feld_getriebe)} · "
+                 f"Inseratstext: {getriebe_anzeige(text_getriebe)}",
+            aktion="Getriebeart im Inserat nachlesen und vor der Probefahrt klären.",
+            prioritaet=_P_WIDERSPRUCH))
+    return out
+
+
+def _getriebe_widerspruch(req, motor_match: dict | None) -> list[KeyFinding]:
+    """Strukturierte Getriebe-Auswahl gegen die erkannte Motorvariante.
+
+    Wirkt nur, wenn die Variante EINDEUTIG eine Getriebeart anbietet. Varianten,
+    die Schalter und Automatik anbieten, sagen über das konkrete Fahrzeug nichts
+    und erzeugen hier bewusst kein Finding.
+    """
+    feld = getriebe_normalisiere(getattr(req, "getriebe", None))
+    db = getriebe_aus_db(motor_match)
+    if not feld or not db or feld == db:
+        return []
+    variante = (motor_match or {}).get("bezeichnung", "erkannte Motorisierung")
+    return [KeyFinding(
+        id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
+        titel="Getriebeart passt nicht zur erkannten Motorisierung",
+        beschreibung=f"Angegeben ist {getriebe_anzeige(feld)}; für {variante} ist im "
+                     f"Datensatz nur {getriebe_anzeige(db)} hinterlegt. Entweder ist die "
+                     f"Motorisierung eine andere, oder der Datensatz ist unvollständig.",
+        wert=f"Angabe: {getriebe_anzeige(feld)} · Daten: {getriebe_anzeige(db)}",
+        aktion="Genaue Motor- und Getriebevariante im Inserat prüfen.",
+        prioritaet=_P_WIDERSPRUCH - 20)]
+
+
 def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) -> list[KeyFinding]:
     out: list[KeyFinding] = []
+    out += _strukturiert_vs_inserat(req)
+    out += _getriebe_widerspruch(req, motor_match)
 
     # Kraftstoff-Widerspruch: Inserat-Kraftstoff vs. erkannte Motorisierung.
     ins_kraft = _kraftstoff_norm(getattr(req, "kraftstoff", None)) \
@@ -417,17 +506,61 @@ def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding
     """
     out: list[KeyFinding] = []
 
-    if getattr(req, "scheckheftgepflegt", None) is True:
+    # Nur die BESTE Servicehistorie-Angabe ist ein (vorsichtiger) Vorteil. Die
+    # drei anderen Zustände sind Prüfpunkte und stehen in `_servicehistorie_finding`.
+    # RC1-Regel bleibt: keine Verstärkung der Verkäuferangabe. "Vollständig
+    # angegeben" belegt weder Lückenlosigkeit noch den Umfang der Wartung —
+    # deshalb bleibt die Prüfaufforderung im selben Satz stehen.
+    if servicehistorie_status(req) == SH_VOLLSTAENDIG:
         out.append(KeyFinding(
             id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
-            titel="Scheckheftgepflegt (laut Inserat)",
-            # RC1: keine Verstaerkung der Verkaeuferangabe. "scheckheftgepflegt"
-            # belegt weder Lueckenlosigkeit noch den Umfang der Wartung.
-            beschreibung="Laut Inserat scheckheftgepflegt. Vollständigkeit der Servicehistorie "
-                         "und Belege vor dem Kauf prüfen.",
+            titel="Servicehistorie laut Inserat vollständig angegeben",
+            beschreibung=servicehistorie_satz(SH_VOLLSTAENDIG) + " Belege und "
+                         "Vollständigkeit vor dem Kauf prüfen: ENFAL hat keine Unterlagen "
+                         "gesehen.",
             prioritaet=_P_VORTEIL))
 
     return out
+
+
+def _servicehistorie_finding(req) -> list[KeyFinding]:
+    """Servicehistorie-Angaben, die einen PRÜFPUNKT ergeben (nicht "vorteil").
+
+    §9 des Auftrags: jeder Zustand verändert den Bericht anders — und keiner
+    entfernt ein Risiko. "Nicht angegeben" erzeugt bewusst KEIN Finding: daraus
+    eine Aussage zu machen wäre eine Behauptung über ein Inserat, das nichts
+    behauptet hat. Diese Lücke ist schon als Verkäuferfrage abgedeckt
+    (app/kaufaktionen.py).
+    """
+    status = servicehistorie_status(req)
+    if status == SH_TEILWEISE:
+        return [KeyFinding(
+            id="", kategorie="angaben", stufe=STUFE_WARNUNG, icon="📋",
+            titel="Servicehistorie laut Inserat nur teilweise vorhanden",
+            beschreibung=servicehistorie_satz(SH_TEILWEISE) + " Welche Zeiträume und "
+                         "Kilometerstände nicht belegt sind, lässt sich nur an den "
+                         "Unterlagen selbst feststellen.",
+            aktion="Vorhandene Einträge und Rechnungen chronologisch durchgehen und die "
+                   "Lücken vor dem Kauf ansprechen.",
+            prioritaet=_P_SERVICEHISTORIE)]
+    if status == SH_UMFANG_UNKLAR:
+        return [KeyFinding(
+            id="", kategorie="angaben", stufe=STUFE_INFO, icon="📋",
+            titel="Umfang der Servicehistorie laut Inserat offen",
+            beschreibung=servicehistorie_satz(SH_UMFANG_UNKLAR),
+            aktion="Vor der Besichtigung erfragen, welche Unterlagen konkret vorliegen.",
+            prioritaet=_P_SERVICEHISTORIE - 20)]
+    if status == SH_NICHT_VORHANDEN:
+        return [KeyFinding(
+            id="", kategorie="angaben", stufe=STUFE_WARNUNG, icon="📋",
+            titel="Keine Servicehistorie laut Inserat",
+            beschreibung=servicehistorie_satz(SH_NICHT_VORHANDEN) + " Der Wartungsstand "
+                         "dieses Fahrzeugs ist damit nicht nachvollziehbar — das ist eine "
+                         "Unsicherheit, kein festgestellter Mangel.",
+            aktion="Nach einzelnen Werkstattrechnungen fragen und offene Wartungspunkte im "
+                   "Kaufpreis berücksichtigen.",
+            prioritaet=_P_SERVICEHISTORIE + 20)]
+    return []
 
 
 # ══ VERKAUFSCHECK ════════════════════════════════════════════════════════════

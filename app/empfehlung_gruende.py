@@ -18,6 +18,12 @@ dass er NICHT bewertet wurde.
 """
 from __future__ import annotations
 
+from app.servicehistorie import (
+    NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
+    UMFANG_UNKLAR as SH_UMFANG_UNKLAR, VOLLSTAENDIG_ANGEGEBEN as SH_VOLLSTAENDIG,
+    satz as servicehistorie_satz, status as servicehistorie_status,
+)
+
 _HOCH = ("hoch", "kritisch", "sehr hoch")
 
 
@@ -62,9 +68,20 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
                        "Fahrzeug betroffen ist, klärt eine FIN-Abfrage.")
 
     # 4) Inseratsangaben — ausdrücklich als Angaben, nicht als Tatsachen
-    if getattr(req, "scheckheftgepflegt", None) is True:
-        gruende.append("Laut Inserat scheckheftgepflegt. Vollständigkeit und Belege "
+    # Servicehistorie: der kanonische Satz aus app/servicehistorie.py, damit dieselbe
+    # Angabe hier nicht anders (und nicht stärker) klingt als im Key Finding oder in
+    # der Checkliste. Auch die Bestangabe bleibt eine Angabe — deshalb steht die
+    # Prüfaufforderung im selben Grund.
+    _sh = servicehistorie_status(req)
+    if _sh == SH_VOLLSTAENDIG:
+        gruende.append(servicehistorie_satz(_sh) + " Vollständigkeit und Belege "
                        "vor dem Kauf prüfen.")
+    elif _sh in (SH_TEILWEISE, SH_NICHT_VORHANDEN):
+        gruende.append(servicehistorie_satz(_sh) + " Der Wartungsstand ist damit nicht "
+                       "belegt und bleibt vor dem Kauf zu klären.")
+    elif _sh == SH_UMFANG_UNKLAR:
+        gruende.append(servicehistorie_satz(_sh) + " Welche Unterlagen vorliegen, "
+                       "bleibt zu erfragen.")
     if hu is not None and getattr(hu, "status", None) == "plausibel":
         gruende.append(f"HU laut Inserat gültig bis {hu.anzeige}. Prüfbericht ansehen.")
 
