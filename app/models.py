@@ -770,6 +770,11 @@ class Laufleistungskontext(BaseModel):
     # Servicedatum. Sie steuert aber, wie streng die Wartungsbewertung formuliert
     # werden darf (siehe app/laufleistung.py::prompt_block).
     servicehistorie: str | None = None
+    # Eine im Inseratstext AUSDRÜCKLICH genannte letzte Wartung
+    # (app/wartungsangabe.py), z.B. "bei rund 72.000 km". Wie `servicehistorie`
+    # eine Angabe des Inserats: sie macht `letzter_service_bekannt` NICHT True,
+    # verschiebt aber die Grenze des Sagbaren.
+    letzte_wartung_angabe: str | None = None
 
     def hat_inhalt(self) -> bool:
         # `servicehistorie` steht hier BEWUSST nicht: allein aus einer Angabe zur

@@ -153,8 +153,12 @@ check("B1 Teilweise erzeugt eine Luecken-Aktion",
       "Fehlende Zeiträume der Servicehistorie klären" in dok_b, dok_b[:300])
 check("B2 Teilweise behauptet keinen Mangel",
       "nicht gewartet" not in dok_b.lower() and "versäumt" not in dok_b.lower())
+# Live-Run-Closing: der Wortlaut hat sich geändert ("zeigen lassen" statt
+# "verlangen", und ohne die Behauptung, eine Namensübereinstimmung belege
+# Eigentum). Die Anforderung ist unverändert: der Privat-Zweig fragt nach
+# Ausweis und Vollmacht.
 check("B3 Privat-Zweig verlangt Ausweis/Vollmacht",
-      "schriftliche Vollmacht verlangen" in dok_b, dok_b[:400])
+      "schriftliche Vollmacht" in dok_b and "Ausweis" in dok_b, dok_b[:400])
 check("B4 Privat-Zweig nennt KEINE Firmendaten",
       "Firmenname und Anschrift" not in dok_b)
 check("B5 Privat-Frage bleibt bei Halter/Auftrag",

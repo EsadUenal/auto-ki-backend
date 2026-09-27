@@ -316,10 +316,16 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      "Welche größeren Reparaturen wurden in den letzten zwei Jahren gemacht?",
      "Nach Bauteil, Werkstatt und Kilometerstand fragen und die Rechnungen zeigen lassen.",
      None, ()),
+    # `deckt`: nennt das Inserat bereits eine konkrete letzte Wartung, entsteht
+    # dafür ein eigener, konkreter Punkt (Schlüssel "wartung-inserat",
+    # app/kaufaktionen.py) — dann darf diese allgemeine Frage nicht daneben
+    # stehen bleiben. Genau das ist im echten Lauf passiert: der Inseratstext
+    # nannte 72.000 km, der Bericht fragte trotzdem "Wann war die letzte
+    # Wartung?".
     ("wartung", "Wartung und Technik",
      "Wann war die letzte Wartung, und was wurde dabei gemacht?",
      "Datum, Kilometerstand und Umfang erfragen und den passenden Beleg dazu ansehen.",
-     None, ()),
+     None, ("wartung-inserat",)),
     ("fluessigkeit", "Wartung und Technik",
      "Verliert das Fahrzeug Öl oder andere Flüssigkeiten?",
      "Die Antwort mit dem eigenen Blick unter das Fahrzeug und in den Motorraum abgleichen.",
@@ -366,10 +372,18 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
      "Im Fahrzeugschein Halterdaten, Erstzulassung, technische Daten und den nächsten "
      "HU-Termin prüfen.",
      None, ()),
+    # LIVE-RUN-BEFUND: hier stand "Der Fahrzeugbrief weist das Eigentum nach".
+    # Das ist fachlich falsch. Die Zulassungsbescheinigung Teil II weist den
+    # HALTER aus, nicht den Eigentümer, und sie belegt auch nicht, dass die
+    # Person vor einem verkaufsberechtigt ist. Der Punkt bleibt inhaltlich
+    # gleich wichtig (ohne Teil II kein Kauf), behauptet aber nicht mehr, was
+    # das Dokument nicht leistet. Bewusst KEINE Ersatz-Rechtsberatung: es wird
+    # nur gesagt, was zu vergleichen ist.
     ("zb2", "Fahrzeugpapiere",
      "Zulassungsbescheinigung Teil II zeigen lassen",
-     "Der Fahrzeugbrief weist das Eigentum nach und nennt die Zahl der Vorhalter: ohne "
-     "ihn sollte kein Kauf stattfinden.",
+     "Teil II nennt den letzten Halter und die Zahl der Vorhalter. Ein "
+     "Eigentumsnachweis ist das Dokument nicht: Angaben mit Fahrzeug, Teil I und "
+     "dem Vertragspartner abgleichen. Ohne Teil II sollte kein Kauf stattfinden.",
      None, ()),
     ("fin", "Fahrzeugpapiere",
      "FIN in den Papieren mit dem Fahrzeug abgleichen",
@@ -378,8 +392,9 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
      None, ()),
     ("ausweis", "Fahrzeugpapiere",
      "Ausweis des Verkäufers mit den Papieren abgleichen",
-     "Der Name im Ausweis muss zum Halter in Teil II passen: sonst eine schriftliche "
-     "Vollmacht verlangen.",
+     "Weicht der Name im Ausweis vom letzten Halter in Teil II ab, nach der "
+     "Verkaufsberechtigung fragen und sich eine schriftliche Vollmacht zeigen "
+     "lassen. Eine Übereinstimmung allein belegt noch kein Eigentum.",
      None, ()),
     ("hu", "Prüfungen und Wartung",
      "Letzten HU-Bericht ansehen",

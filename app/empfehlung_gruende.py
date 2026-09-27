@@ -88,7 +88,7 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     # 5) Warum "nach Besichtigung"
     if empfehlung == "kaufen_nach_besichtigung":
         gruende.append("Zustand, Unfallfreiheit und Wartung sind Inseratsangaben. "
-                       "sie lassen sich erst bei der Besichtigung bestätigen.")
+                       "Sie lassen sich erst bei der Besichtigung bestätigen.")
 
     # 6) Preis als eigene Dimension
     if markt_verfuegbar and preis_label:

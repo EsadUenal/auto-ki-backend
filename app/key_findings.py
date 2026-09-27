@@ -20,6 +20,7 @@ import logging
 import re
 from datetime import date
 
+from app.fin_hinweis import HINWEIS_FIN
 from app.getriebe import (
     anzeige as getriebe_anzeige, aus_db as getriebe_aus_db,
     aus_text as getriebe_aus_text, normalisiere as getriebe_normalisiere,
@@ -270,7 +271,7 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
             titel=f"{n} Rückruf{'e' if n > 1 else ''} mit unklarer Betroffenheit",
             beschreibung="Für die Baureihe hinterlegt, betrifft aber bestimmte Varianten. "
                          + "; ".join(_mangel_kurz(i) for i in unklar[:3]),
-            aktion="Ob dein Fahrzeug betroffen ist, anhand der FIN beim Hersteller/KBA prüfen.",
+            aktion=HINWEIS_FIN,
             evidence_ids=[i.id for i in unklar],
             prioritaet=_P_RUECKRUF_UNKLAR,
         ))
@@ -513,7 +514,12 @@ def _positive_findings_kauf(req, preis_finding_erzeugt: bool) -> list[KeyFinding
     # deshalb bleibt die Prüfaufforderung im selben Satz stehen.
     if servicehistorie_status(req) == SH_VOLLSTAENDIG:
         out.append(KeyFinding(
-            id="", kategorie="vorteil", stufe=STUFE_CHANCE, icon="✅",
+            # LIVE-RUN-BEFUND: als kategorie="vorteil" trug die Karte im Frontend
+            # das Label "Pluspunkt". Das bewertet eine Behauptung des Inserats
+            # bereits als geprüfte Qualität — ENFAL hat kein einziges Dokument
+            # gesehen. Eigene Kategorie, damit die Oberfläche sie als das
+            # ausweisen kann, was sie ist: eine positive ANGABE.
+            id="", kategorie="inseratangabe", stufe=STUFE_CHANCE, icon="✅",
             titel="Servicehistorie laut Inserat vollständig angegeben",
             beschreibung=servicehistorie_satz(SH_VOLLSTAENDIG) + " Belege und "
                          "Vollständigkeit vor dem Kauf prüfen: ENFAL hat keine Unterlagen "
@@ -555,7 +561,7 @@ def _servicehistorie_finding(req) -> list[KeyFinding]:
             id="", kategorie="angaben", stufe=STUFE_WARNUNG, icon="📋",
             titel="Keine Servicehistorie laut Inserat",
             beschreibung=servicehistorie_satz(SH_NICHT_VORHANDEN) + " Der Wartungsstand "
-                         "dieses Fahrzeugs ist damit nicht nachvollziehbar — das ist eine "
+                         "dieses Fahrzeugs ist damit nicht nachvollziehbar. Das ist eine "
                          "Unsicherheit, kein festgestellter Mangel.",
             aktion="Nach einzelnen Werkstattrechnungen fragen und offene Wartungspunkte im "
                    "Kaufpreis berücksichtigen.",

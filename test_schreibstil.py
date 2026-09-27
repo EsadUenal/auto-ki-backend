@@ -91,6 +91,75 @@ treffer = [p.name for p in pathlib.Path("app").glob("*.py")
            if alt_formulierung in code_ohne_doku(p)]
 check("keine alte, abweichende Stilregel mehr im Code", not treffer)
 
+
+# ── Die Regel gilt auch fuer ENFALS EIGENE Texte ────────────────────────────
+#
+# LIVE-RUN-BEFUND: im echten Bericht stand "... Rechnungen zeigen lassen — auch
+# die der eigenen Aufbereitung ...". Dieser Satz kam NICHT vom Modell, sondern
+# aus einem deterministischen Katalogtext. Dieser Test prueft bisher nur, dass
+# die Regel in den PROMPTS steht. Genau deshalb ist die Verletzung durchgerutscht:
+# fuer ENFALs eigene Saetze gab es keine Pruefung.
+#
+# Geprueft werden die Module, deren Strings woertlich im Bericht landen.
+# Bewusst NICHT alle: Logmeldungen, Verifikationsnotizen der Datenmodule und
+# Prompt-Bausteine (die die Regel selbst zitieren muessen) sind keine
+# Nutzertexte und wuerden den Test zu einem Rauschmelder machen.
+import re   # noqa: E402
+
+NUTZERTEXT_MODULE = (
+    "pruefplan_basis.py",      # Basis-Checklisten
+    "kaufaktionen.py",         # fahrzeugspezifische Aktionen + Ersatztexte
+    "key_findings.py",         # "Das solltest du wissen"
+    "empfehlung_gruende.py",   # "Warum diese Empfehlung?"
+    "servicehistorie.py",      # kanonische Saetze
+    "getriebe.py",
+    "verkaeuferart.py",
+    "fin_hinweis.py",
+    "wartungsangabe.py",
+    "rueckruf_konsistenz.py",
+)
+
+# Rhetorisch = von Leerzeichen umgeben. "2019–2021" und "E-Mail" bleiben erlaubt,
+# ein alleinstehender Strich als Platzhalter ("—" fuer "kein Wert") ebenso.
+RE_RHETORISCH = re.compile(r"\s[—–]\s")
+# Logmeldungen erkennt man zuverlaessig am Formatplatzhalter.
+RE_LOGZEILE = re.compile(r"%[sdrif]")
+
+
+def nutzertexte(pfad):
+    baum = ast.parse(io.open(pfad, encoding="utf-8").read())
+    doku = {id(k.value) for k in ast.walk(baum)
+            if isinstance(k, ast.Expr) and isinstance(k.value, ast.Constant)
+            and isinstance(k.value.value, str)}
+    for k in ast.walk(baum):
+        if isinstance(k, ast.Constant) and isinstance(k.value, str) and id(k) not in doku:
+            if not RE_LOGZEILE.search(k.value):
+                yield k.lineno, k.value
+
+
+stil_treffer = []
+for name in NUTZERTEXT_MODULE:
+    pfad = pathlib.Path("app") / name
+    if not pfad.exists():
+        stil_treffer.append(f"{name}: Modul fehlt")
+        continue
+    for lineno, text in nutzertexte(pfad):
+        if RE_RHETORISCH.search(text):
+            stil_treffer.append(f"{name}:{lineno} {text[:90]}")
+
+check("keine rhetorischen Gedankenstriche in ENFALs eigenen Nutzertexten",
+      not stil_treffer)
+for t in stil_treffer[:6]:
+    print("        ", t)
+
+# Gegenprobe: der Scanner darf nicht einfach immer gruen sein.
+check("der Scanner erkennt einen rhetorischen Gedankenstrich",
+      bool(RE_RHETORISCH.search("Rechnungen zeigen lassen — auch die der Aufbereitung.")))
+check("der Scanner laesst Zahlenbereiche in Ruhe",
+      not RE_RHETORISCH.search("Bauzeitraum 2019–2023, Motor B48."))
+check("der Scanner laesst normale Bindestriche in Ruhe",
+      not RE_RHETORISCH.search("KBA-Referenz 10009 und E-Mail-Adresse."))
+
 print()
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER:")
