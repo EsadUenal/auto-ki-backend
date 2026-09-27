@@ -123,12 +123,13 @@ with get_conn() as conn:
     from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
     from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids
     from app.kba_batch_c_daten import zeilen_ids as _batch_c_ids
+    from app.kba_batch_d_daten import zeilen_ids as _batch_d_ids
     # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2), den
-    # G20-Nachtrag (18e0283) und das KBA-Paar-Closing Batch C: alle haben an
+    # G20-Nachtrag (18e0283) und das KBA-Paar-Closing Batch C/D: alle haben an
     # Pilotfahrzeugen Zeilen ergaenzt. `_BATCH_A` meint hier "alles, was nach
     # dem Pilotbestand importiert wurde".
     _BATCH_A = (_batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
-               | _batch_c_ids())
+               | _batch_c_ids() | _batch_d_ids())
     _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
     _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(

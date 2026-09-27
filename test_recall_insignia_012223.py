@@ -229,13 +229,14 @@ with get_conn() as conn:
     from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
     from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids
     from app.kba_batch_c_daten import zeilen_ids as _batch_c_ids
+    from app.kba_batch_d_daten import zeilen_ids as _batch_d_ids
     # `_BATCH_A` steht hier fuer ALLE nach dem Gesamtabgleich importierten
     # Chargen (A, B1, der Mixed-Target-Import d8e96c2, der G20-Nachtrag
-    # 18e0283 und das KBA-Paar-Closing Batch C). Die Aussagen unten betreffen
-    # den Bestand des Gesamtabgleichs; jede spaetere Charge gehoert deshalb
-    # ausgeblendet, sonst prueft der Abschnitt einen anderen Bestand.
+    # 18e0283 und das KBA-Paar-Closing Batch C/D). Die Aussagen unten
+    # betreffen den Bestand des Gesamtabgleichs; jede spaetere Charge gehoert
+    # deshalb ausgeblendet, sonst prueft der Abschnitt einen anderen Bestand.
     _BATCH_A = (_batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
-               | _batch_c_ids())
+               | _batch_c_ids() | _batch_d_ids())
     _platz = ",".join("?" * len(_BATCH_A))
     # BATCH A traegt ebenfalls Quellenstufe A — jede Zeile mit eigener amtlicher
     # Referenz aus dem KBA-Gesamtexport. Diese Zusicherung gilt dem Bestand
@@ -371,7 +372,7 @@ check("F2f die IDs stimmen exakt mit den 29 real geprueften Zeilen ueberein",
 print("\n--- G) Bestandsintegritaet ---")
 # KBA-GESAMTABGLEICH: 3 wortgleiche Dubletten entfernt (G-Klasse, A1, TT RS).
 check(f"G1 Rueckrufbestand {746 + len(_BATCH_A)} Zeilen "
-      f"(746 + Batch A + Batch B1 + Mixed-Target + G20-Nachtrag + Batch C)",
+      f"(746 + Batch A + Batch B1 + Mixed-Target + G20-Nachtrag + Batch C/D)",
       _gesamt == 746 + len(_BATCH_A))
 _insignia_alt = [r for r in _insignia if r["id"] not in _BATCH_A]
 check("G2 opel-insignia-b hat 6 Zeilen aus dem Altbestand (5 + 1 Nachtrag)",

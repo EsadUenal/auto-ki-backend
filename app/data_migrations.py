@@ -1805,6 +1805,147 @@ MARKER_BATCH_C = "kba_batch_c_v1"
 SCHRITTE_BATCH_C = (schritt_batch_c_zeilen, schritt_batch_c_verifikation)
 
 
+# -- BATCH D: KBA-Paar-Closing, offene Zielgeneration, Herstellerquelle ------
+#
+# Fortsetzung von Batch C: die verlorenen Paare mit OFFENER Zielgeneration
+# (290 von 625). Dieselbe Kaskade wie Batch B1 — Fachaudit
+# (app/kba_generation_audit.py) plus Herstellerquelle (Stufe 1,
+# app/kba_generation_quellen.py) — angewandt auf die neue, paarweise
+# Kandidatenmenge, die Batch B1 (rueckrufweite Entscheidung) nicht sehen
+# konnte. Ergebnis: 52 Zeilen aus 44 Rueckrufen auf 15 Baureihen; 238 Paare
+# bleiben in app/kba_batch_d_daten.REVIEW dokumentiert. Siehe
+# app/kba_import_batch_d.py fuer die Herleitung und die fuenf D-Tore.
+
+def _batch_d_notiz(z: dict) -> str:
+    from app.kba_import_batch_a import QUELLENVERMERK
+
+    teile = [f"Amtlicher Datensatz: Modelle {z['amtliche_modelle']!r}, "
+             f"Produktionszeitraum {z['amtlicher_zeitraum']}, "
+             f"Veroeffentlichung {z['amtliches_datum']}."]
+    if z["betroffene_baujahre"] != z["amtlicher_zeitraum"]:
+        teile.append(f"Baujahre auf den Bauzeitraum der Baureihe verengt "
+                     f"({z['betroffene_baujahre']}).")
+    if z["datum"] is None:
+        teile.append("Datum nicht uebernommen: amtlicher Sammelstempel "
+                     "2008-01-01 des Erstbefuellungslaufs.")
+    teile.append(f"Generationszuordnung: {z['generationsbeleg']}")
+    teile.append(QUELLENVERMERK)
+    return " ".join(teile)
+
+
+def schritt_batch_d_zeilen(conn, apply_):
+    """Legt die Batch-D-Rueckrufe an bzw. stellt sie wieder her."""
+    from app.kba_batch_d_daten import ZEILEN
+
+    neu = repariert = unveraendert = uebersprungen = 0
+    spalten_sql = ", ".join(_BATCH_A_SPALTEN)
+    for z in ZEILEN:
+        fid, bid = z["id"], z["baureihe_id"]
+        soll = {s: z[s] for s in _BATCH_A_SPALTEN}
+
+        if conn.execute("select 1 from baureihe where id=?", (bid,)).fetchone() is None:
+            uebersprungen += 1
+            log(f"  [D] Baureihe {bid} fehlt - #{fid} uebersprungen")
+            continue
+
+        zeile = conn.execute(f"select {spalten_sql} from rueckruf where id=?",
+                             (fid,)).fetchone()
+        if zeile is None:
+            fremd = conn.execute(
+                "select id from rueckruf where baureihe_id=? and kba_referenz=?",
+                (bid, z["kba_referenz"])).fetchone()
+            if fremd:
+                uebersprungen += 1
+                log(f"  [D] KBA {z['kba_referenz']} steht auf {bid} bereits unter "
+                    f"#{fremd[0]} - keine Dublette angelegt")
+                continue
+            neu += 1
+            if apply_:
+                conn.execute(
+                    f"insert into rueckruf (id, {spalten_sql}) values (?,?,?,?,?,?,?)",
+                    (fid, *[soll[s] for s in _BATCH_A_SPALTEN]))
+            log(f"  [D] #{fid} ({bid}, KBA {z['kba_referenz']}) angelegt: "
+                f"{z['mangel'][:60]}")
+            continue
+
+        ist = dict(zip(_BATCH_A_SPALTEN, zeile))
+        if ist["baureihe_id"] != bid or ist["mangel"] != z["mangel"]:
+            uebersprungen += 1
+            log(f"  [D] ID {fid} ist von einem anderen Fakt belegt "
+                f"({ist['baureihe_id']}) - NICHTS geschrieben")
+            continue
+        abweichend = {s: soll[s] for s in _BATCH_A_SPALTEN if ist[s] != soll[s]}
+        if not abweichend:
+            unveraendert += 1
+            continue
+        repariert += 1
+        if apply_:
+            sql = ", ".join(f"{s}=?" for s in abweichend)
+            conn.execute(f"update rueckruf set {sql} where id=?",
+                         (*abweichend.values(), fid))
+        log(f"  [D] #{fid} wiederhergestellt: "
+            + ", ".join(f"{s}: {ist[s]!r} -> {v!r}" for s, v in abweichend.items()))
+    log(f"  [D] Zeilen: {neu} neu, {repariert} wiederhergestellt, "
+        f"{unveraendert} unveraendert, {uebersprungen} uebersprungen")
+
+
+def schritt_batch_d_verifikation(conn, apply_):
+    """Schreibt je Batch-D-Zeile genau eine `verified`-Verifikation (Stufe A)."""
+    from app.fakt_verifikation import FAKT_ARTEN, fingerprint
+    from app.kba_batch_d_daten import GEPRUEFT_AM, ZEILEN
+    from app.kba_import_batch_a import KBA_QUELLE, KBA_URL
+
+    if "fakt_verifikation" not in {r[0] for r in conn.execute(
+            "select name from sqlite_master where type='table'")}:
+        log("  [D] fakt_verifikation-Tabelle fehlt - Verifikationen uebersprungen")
+        return
+
+    tabelle, idspalte, _sp = FAKT_ARTEN["rueckruf"]
+    neu = aktualisiert = fehlend = 0
+    for z in ZEILEN:
+        fid = z["id"]
+        zeile = conn.execute(f'select * from "{tabelle}" where {idspalte}=?',
+                             (fid,)).fetchone()
+        if zeile is None:
+            fehlend += 1
+            continue
+        spalten = [d[0] for d in conn.execute(
+            f'select * from "{tabelle}" limit 1').description]
+        ist = dict(zip(spalten, zeile))
+        if ist["baureihe_id"] != z["baureihe_id"] or ist["mangel"] != z["mangel"]:
+            fehlend += 1
+            continue
+        fp = fingerprint("rueckruf", ist)
+        code = z["herstellercode"]
+        referenz = (f"{z['kba_referenz']} (Herstellercode {code})" if code
+                    else z["kba_referenz"])
+        werte = (fp, "verified", KBA_QUELLE, "A", KBA_URL, referenz,
+                 GEPRUEFT_AM, _batch_d_notiz(z))
+        bestand = conn.execute(
+            "select id from fakt_verifikation where fakt_art='rueckruf' and fakt_id=?",
+            (fid,)).fetchone()
+        if bestand:
+            aktualisiert += 1
+            if apply_:
+                conn.execute(
+                    "update fakt_verifikation set fingerprint=?, status=?, quelle=?, "
+                    "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+                    "where fakt_art='rueckruf' and fakt_id=?", (*werte, fid))
+        else:
+            neu += 1
+            if apply_:
+                conn.execute(
+                    "insert into fakt_verifikation (fakt_art, fakt_id, fingerprint, "
+                    "status, quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+                    "values ('rueckruf',?,?,?,?,?,?,?,?,?)", (fid, *werte))
+    log(f"  [D] Verifikationen: {neu} neu, {aktualisiert} aktualisiert, "
+        f"{fehlend} ohne eigene Zeile")
+
+
+MARKER_BATCH_D = "kba_batch_d_v1"
+SCHRITTE_BATCH_D = (schritt_batch_d_zeilen, schritt_batch_d_verifikation)
+
+
 # -- MIXED TARGET: 32 einzeln auditierte, sichere Zielpaare -------------------
 #
 # Batch A und B1 haben einen KBA-Fall bisher vollstaendig verworfen, sobald
@@ -2320,6 +2461,10 @@ MIGRATIONEN = (
     # Batch A/B1/Mixed-Target laufen, damit deren Bestand beim eigenen
     # Dublettengate (C3) bereits steht.
     (MARKER_BATCH_C, SCHRITTE_BATCH_C),
+    # KBA-Paar-Closing, Fortsetzung: dieselben verlorenen Paare mit OFFENER
+    # Zielgeneration, herstellerquellenbestaetigt. Muss nach Batch C laufen
+    # (eigenes Dublettengate D3).
+    (MARKER_BATCH_D, SCHRITTE_BATCH_D),
     # AutoFinder Consumer-Release-Audit: RS4-Motorzeile in der zivilen
     # A4-B9-Baureihe, identisch zur eigenen RS-4-Avant-B9-Baureihe.
     (MARKER_A4_B9_RS4, SCHRITTE_A4_B9_RS4),

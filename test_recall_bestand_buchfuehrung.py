@@ -52,6 +52,7 @@ IMPORT_MODULE = (
     "app.kba_mixed_target_daten",
     "app.kba_g20_nachtrag_daten",
     "app.kba_batch_c_daten",
+    "app.kba_batch_d_daten",
 )
 
 

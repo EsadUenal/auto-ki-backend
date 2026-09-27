@@ -182,9 +182,16 @@ def zweite_generation(kand, idx: dict):
     ausgeschlossen und wuerden sonst z.B. jeden Mercedes-G-Klasse-Rueckruf
     ueber die seit Jahrzehnten offene W461 blockieren.
     """
+    # sortiert: `_modelltokens()` liefert ein `set`, dessen Reihenfolge je
+    # Prozessstart per Hash-Seed variiert (derselbe Nichtdeterminismus wie in
+    # app/kba_import_kandidaten.py, hier gefunden bei Batch D). Ohne Sortierung
+    # haengt bei einem Gleichstand zweier Token-Alternativen (identische
+    # Ueberdeckung `ua`) davon ab, WELCHE Alternative als "schlimmster" Grund
+    # gemeldet wird — die Entscheidung selbst (Alternative gefunden: ja/nein)
+    # bleibt zwar stabil, die Begruendung im Review-Datensatz aber nicht.
     ziel = set(kand.ziel_ids)
     schlimmster = None
-    for tok in _modelltokens(kand.modell):
+    for tok in sorted(_modelltokens(kand.modell)):
         gewinner: list = []
         alternativen: list = []
         for b in idx.get((kand.marke.upper(), tok), []):
