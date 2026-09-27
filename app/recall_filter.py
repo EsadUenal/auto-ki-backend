@@ -63,6 +63,8 @@ import logging
 import re
 
 from app.database import get_rueckruf_referenzen_kurz
+# Wo eine INDIVIDUELLE FIN-Abfrage moeglich ist — eine Quelle (app/fin_hinweis.py).
+from app.fin_hinweis import HINWEIS_FIN as _HINWEIS_FIN
 
 log = logging.getLogger(__name__)
 
@@ -441,7 +443,6 @@ _HAT_HOCHVOLT = {"phev", "elektro"}
 #                        die belastbarste Kombination aus Variante+Referenz.
 #   unclear           — Betroffenheit nicht bestimmbar.
 #   incompatible       — Antriebs-/Variantenwiderspruch, wird vollständig ausgeblendet.
-_HINWEIS_FIN = "Betroffenheit anhand der FIN beim Hersteller/KBA prüfen."
 
 RUECKRUF_APPLICABILITY_TEXT: dict[str, str] = {
     "confirmed_by_vin": "Für dieses Fahrzeug per FIN bestätigt",

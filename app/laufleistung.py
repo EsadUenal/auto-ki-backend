@@ -99,6 +99,7 @@ import re
 from datetime import date
 
 from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshinweis
+from app.wartungsangabe import aus_request as wartungsangabe_aus_request
 from app.servicehistorie import (
     NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
     UMFANG_UNKLAR as SH_UMFANG_UNKLAR, status as servicehistorie_status,
@@ -492,6 +493,10 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
         # Servicedatum, verschiebt aber die Grenze des Sagbaren (siehe
         # `prompt_block`).
         servicehistorie=servicehistorie_status(req),
+        # Nennt das Inserat eine konkrete letzte Wartung, ist das die einzige
+        # Zahl zum Wartungsstand, die es überhaupt gibt. Sie bleibt eine Angabe.
+        letzte_wartung_angabe=(lambda w: w.anzeige() if w else None)(
+            wartungsangabe_aus_request(req)),
     )
     return ctx if ctx.hat_inhalt() else None
 
@@ -532,11 +537,27 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
     # wäre dieses Verbot falsch: es würde eine belegte Angabe des Inserats
     # unterdrücken. Erlaubt wird deshalb genau die Wiedergabe DIESER Angabe — die
     # Fälligkeits-Verbote bleiben in jedem Fall unverändert bestehen.
-    if ctx.servicehistorie == SH_NICHT_VORHANDEN:
+    #
+    # LIVE-RUN-BEFUND: nennt das Inserat eine konkrete letzte Wartung, war der
+    # pauschale Satz "Der Zeitpunkt des letzten Service ist NICHT bekannt"
+    # schlicht falsch — der Nutzer hatte ihn gerade eingegeben. Diese Angabe
+    # steht deshalb ganz vorn und hat Vorrang vor den Servicehistorie-Varianten.
+    # Ein GEPRÜFTES Servicedatum ist sie trotzdem nicht: die Fälligkeits-Verbote
+    # bleiben Wort für Wort bestehen.
+    if ctx.letzte_wartung_angabe:
+        service_satz = (
+            f"Das Inserat gibt eine letzte Wartung {ctx.letzte_wartung_angabe} an. Das "
+            f"ist eine ANGABE des Inserats, kein geprüfter Nachweis: gib sie als Angabe "
+            f"wieder und frage nach dem Beleg, statt zu fragen, wann die letzte Wartung "
+            f"war. Ein Servicedatum, das über diese Angabe hinausgeht, existiert nicht. "
+            f"Schreibe deshalb weiterhin NIEMALS, ein Service sei fällig, überfällig, "
+            f"versäumt oder nicht durchgeführt worden. Ein Wartungspunkt heißt "
+            f"ausschließlich: an dieser Stelle den NACHWEIS verlangen.")
+    elif ctx.servicehistorie == SH_NICHT_VORHANDEN:
         service_satz = (
             "Der Zeitpunkt des letzten Service ist NICHT bekannt. Das Inserat gibt "
             "allerdings an, dass keine Servicehistorie vorliegt: diese ANGABE darfst "
-            "du wiedergeben und als Unsicherheit in der Wartungsbewertung benennen — "
+            "du wiedergeben und als Unsicherheit in der Wartungsbewertung benennen, "
             "nicht als geprüften Befund und nicht als festgestellten Mangel. Schreibe "
             "trotzdem NIEMALS, ein Service sei fällig, überfällig oder versäumt: ohne "
             "Servicedatum ist das durch nichts gedeckt. Ein Wartungspunkt heißt "

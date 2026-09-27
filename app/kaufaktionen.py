@@ -85,6 +85,9 @@ from app.servicehistorie import (
     UMFANG_UNKLAR as SH_UMFANG_UNKLAR, VOLLSTAENDIG_ANGEGEBEN as SH_VOLLSTAENDIG,
     status as servicehistorie_status,
 )
+from app.wartungsangabe import (
+    aus_request as wartungsangabe_aus_request, widerspruch_km as wartung_widerspruch_km,
+)
 from app.verkaeuferart import (
     HAENDLER as VK_HAENDLER, PRIVAT as VK_PRIVAT, aus_request as verkaeuferart_aus_request,
 )
@@ -752,16 +755,25 @@ def getriebe_art(req, motor_match: dict | None) -> str | None:
 # wird dadurch genauer, nicht länger (§20 des Auftrags).
 #
 # Streng auf Unterlagen und Fragen begrenzt. KEINE Rechtsaussagen (Gewährleistung,
-# Sachmängelhaftung, Garantie, Widerruf) — dafür hat ENFAL keine geprüfte
+# Sachmängelhaftung, Garantie, Widerruf): dafür hat ENFAL keine geprüfte
 # fachliche Grundlage, siehe app/verkaeuferart.py. Und keine Pauschalwertung:
 # beide Zweige sagen dasselbe, nämlich "Angaben mit Unterlagen abgleichen".
+#
+# LIVE-RUN-BEFUND: die erste Fassung setzte Halter, Eigentümer und Verkäufer
+# gleich ("bei Vermittlung ist der eingetragene Halter der Verkäufer", "steht der
+# Verkäufer weiterhin in Teil II"). Das sind vier verschiedene Rollen, und welche
+# davon zusammenfallen, steht in keinem Dokument, das ENFAL kennt. Beide
+# Händler-Texte fragen jetzt danach, statt es zu behaupten.
 _BASIS_VERKAEUFER: dict[tuple[str, str], dict[str, str]] = {
     ("dokumente", "ausweis"): {
-        VK_PRIVAT: "Der Name im Ausweis muss zum Halter in Teil II passen: sonst eine "
-                   "schriftliche Vollmacht verlangen.",
-        VK_HAENDLER: "Firmenname und Anschrift auf Kaufvertrag und Rechnung müssen zum "
-                     "Betrieb vor Ort passen. Verkauft der Händler nur in Vermittlung, "
-                     "steht der Verkäufer weiterhin in Teil II.",
+        VK_PRIVAT: "Weicht der Name im Ausweis vom letzten Halter in Teil II ab, nach der "
+                   "Verkaufsberechtigung fragen und sich eine schriftliche Vollmacht zeigen "
+                   "lassen.",
+        VK_HAENDLER: "Firmenname und Anschrift auf Kaufvertrag und Rechnung mit dem Betrieb "
+                     "vor Ort abgleichen. Getrennt davon klären, wer als Vertragspartner "
+                     "unterschreibt, wer in Teil II als Halter steht und wer laut den "
+                     "vorgelegten Unterlagen Eigentümer ist. Diese Rollen müssen nicht "
+                     "dieselbe Person sein.",
     },
     ("dokumente", "kaufvertrag"): {
         VK_PRIVAT: "Auch beim Privatkauf einen schriftlichen Vertrag verwenden: "
@@ -769,24 +781,62 @@ _BASIS_VERKAEUFER: dict[tuple[str, str], dict[str, str]] = {
                    "müssen darin stehen, mündliche Aussagen sind später nicht belegbar.",
         VK_HAENDLER: "Kaufvertrag und Rechnung vor der Unterschrift zusammen lesen: "
                      "Zusagen aus dem Verkaufsgespräch zu Aufbereitung, Reparaturen und "
-                     "mitgeliefertem Zubehör müssen schriftlich darin auftauchen.",
+                     "mitgeliefertem Zubehör müssen schriftlich darin auftauchen. Im Vertrag "
+                     "muss erkennbar sein, wer der Vertragspartner ist.",
     },
     ("verkaeuferfragen", "eigentuemer"): {
         VK_PRIVAT: "Klärt die Verkaufsberechtigung: bei Verkauf im Auftrag Vollmacht und "
                    "Ausweis zeigen lassen.",
-        VK_HAENDLER: "Klärt, ob der Betrieb im eigenen Namen oder in Vermittlung verkauft: "
-                     "bei Vermittlung ist der eingetragene Halter der Verkäufer.",
+        VK_HAENDLER: "Verkauft der Betrieb im eigenen Namen oder im Auftrag eines Dritten? "
+                     "Danach klären, wer der Vertragspartner ist und wer laut Papieren "
+                     "Halter ist. Wird im Auftrag verkauft, eine nachvollziehbare Vollmacht "
+                     "oder Verkaufsberechtigung vorlegen lassen.",
     },
     ("verkaeuferfragen", "reparaturen"): {
         VK_HAENDLER: "Nach Bauteil, Werkstatt und Kilometerstand fragen und die Rechnungen "
-                     "zeigen lassen — auch die der eigenen Aufbereitung vor dem Verkauf.",
+                     "zeigen lassen, auch die der eigenen Aufbereitung vor dem Verkauf.",
     },
 }
 
 
+def _inserat_basistexte(req) -> dict[tuple[str, str], str]:
+    """Basis-Punkte, die eine KONKRETE Inseratsangabe schärfen kann.
+
+    Dieselbe Bauart wie `_BASIS_GETRIEBE` und `_BASIS_VERKAEUFER`, nur hängt der
+    Text hier an einem Wert statt an einer Kategorie — deshalb wird die Tabelle
+    pro Check gebaut.
+
+    LIVE-RUN-BEFUND (Vorbesitzer): die Angabe "2 Vorbesitzer" erzeugte zwar eine
+    eigene Dokumentenaktion, kam beim echten Fahrzeug aber trotzdem nicht im
+    Bericht an. Gemessen: der Bereich DOKUMENTE ist auf
+    MAX_SPEZIFISCH_PRO_BEREICH (6) begrenzt, und drei Rückrufe (Rang 900),
+    HU-Bericht (560), Wartungsangabe und Servicehistorie füllen ihn vollständig.
+    Die Vorbesitzer-Aktion (Rang 340) fiel als letzte heraus — bei JEDEM
+    Fahrzeug mit drei Rückrufen, also ausgerechnet bei den kritischen.
+
+    Der Basis-Katalog kennt diese Obergrenze nicht. Die Angabe schärft deshalb
+    den Punkt, an dem sie ohnehin geprüft wird (Zulassungsbescheinigung Teil II
+    nennt die Zahl der Vorhalter), statt um einen Listenplatz zu konkurrieren.
+    Das ist zugleich ein Punkt WENIGER statt einem mehr.
+
+    Bewusst ohne Wertung: ob zwei Vorbesitzer viel oder wenig sind, kann ENFAL
+    nicht belegen. Geprüft wird nur die Konsistenz.
+    """
+    texte: dict[tuple[str, str], str] = {}
+    n = getattr(req, "vorbesitzer", None)
+    if n is not None:
+        texte[("dokumente", "zb2")] = (
+            f"Teil II nennt den letzten Halter und die Zahl der Vorhalter. Das Inserat "
+            f"gibt {n} Vorbesitzer an: Beides muss zusammenpassen, sonst nach dem Grund "
+            f"fragen. Ein Eigentumsnachweis ist das Dokument nicht. Ohne Teil II sollte "
+            f"kein Kauf stattfinden.")
+    return texte
+
+
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
                  fahrzeug: str | None, getriebe: str | None = None,
-                 verkaeufer: str | None = None) -> list[Kaufaktion]:
+                 verkaeufer: str | None = None,
+                 inserat: dict[tuple[str, str], str] | None = None) -> list[Kaufaktion]:
     """Baut die Basis-Checkliste eines Bereichs aus dem Katalog.
 
     Dedup über die Ebenen hinweg (§18): Ein Basis-Punkt entfällt, wenn ein
@@ -809,6 +859,10 @@ def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
             aktion = _BASIS_GETRIEBE.get((bereich, schluessel), {}).get(getriebe, aktion)
         if verkaeufer:
             aktion = _BASIS_VERKAEUFER.get((bereich, schluessel), {}).get(verkaeufer, aktion)
+        # Zuletzt, damit eine konkrete Inseratszahl die allgemeineren
+        # Varianten schlaegt: sie ist die spezifischste Information.
+        if inserat:
+            aktion = inserat.get((bereich, schluessel), aktion)
         out.append(Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-basis-{schluessel}",
             bereich=bereich, typ=TYP_BASIS, titel=titel, aktion=aktion,
@@ -870,6 +924,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     fahrzeug = _fahrzeug_kurzbezeichnung(req, baureihe)
     getriebe = getriebe_art(req, motor_match)
     verkaeufer = verkaeuferart_aus_request(req)
+    inserat_texte = _inserat_basistexte(req)
     kataloge = {
         BESICHTIGUNG:     BASIS_BESICHTIGUNG,
         PROBEFAHRT:       BASIS_PROBEFAHRT,
@@ -885,7 +940,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
             fahrzeug=fahrzeug,
             fahrzeugspezifisch=spezifisch,
             basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug,
-                               getriebe, verkaeufer),
+                               getriebe, verkaeufer, inserat_texte),
         )
     return Kaufaktionen(
         besichtigung=listen[BESICHTIGUNG],
@@ -1083,7 +1138,7 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
     """Rückruf -> FIN-Prüfung + Durchführungsnachweis. KEINE Besichtigungsaktion.
 
     Ein Rückruf ist vor Ort nicht sichtbar prüfbar — die einzig belastbare Handlung
-    ist die FIN-Abfrage beim Hersteller/KBA bzw. der Nachweis der Werkstatt. Die
+    ist die FIN-Abfrage beim Hersteller bzw. der Nachweis der Werkstatt. Die
     Formulierung folgt strikt der vorhandenen `applicability`-Stufe; die bestehende
     Recall-Pipeline wird nicht verändert.
     """
@@ -1110,19 +1165,21 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
         if passend:
             frage = f"Wurde die Rückrufaktion zu „{mangel}“ bereits durchgeführt?"
             frage_aktion = ("Für diese Variante ist eine Rückrufaktion gemeldet. Nach dem "
-                            "Werkstattnachweis fragen und zusätzlich die FIN beim Hersteller "
-                            "oder KBA auf offene Rückrufaktionen prüfen lassen.")
+                            "Werkstattnachweis fragen und zusätzlich die FIN beim Hersteller oder "
+                            "einer Vertragswerkstatt der Marke auf offene Rückrufaktionen "
+                            "prüfen lassen.")
         else:
             frage = f"Ist bekannt, ob dieses Fahrzeug von der Rückrufaktion zu „{mangel}“ betroffen ist?"
             frage_aktion = ("Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. Ob genau "
                             "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
-                            "Hersteller oder KBA klären.")
+                            "Hersteller oder einer Vertragswerkstatt der Marke klären.")
         s.add(VERKAEUFERFRAGEN, schluessel, frage, frage_aktion, rang,
               evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
 
         s.add(DOKUMENTE, schluessel, f"Rückrufaktion „{mangel}“",
-              f"FIN beim Hersteller oder KBA auf offene Rückrufaktionen prüfen{kba_zusatz} und, "
+              f"FIN beim Hersteller oder einer Vertragswerkstatt der Marke auf offene "
+              f"Rückrufaktionen prüfen lassen{kba_zusatz} und, "
               f"falls bereits erledigt, den Durchführungsnachweis der Werkstatt vorlegen lassen.",
               rang, evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
@@ -1225,14 +1282,16 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   f"Ist bekannt, ob für dieses Fahrzeug eine Rückrufaktion offen ist?",
                   "Eine Webrecherche nennt für dieses Modell eine Rückrufaktion. Ob genau "
                   "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
-                  "Hersteller oder KBA klären: nach einem Werkstattnachweis fragen.",
+                  "Hersteller oder einer Vertragswerkstatt der Marke klären: nach einem "
+                  "Werkstattnachweis fragen.",
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Rückrufaktion")
             s.add(DOKUMENTE, f"rueckruf-web-{schluessel}",
                   "Rückrufstatus über die FIN prüfen lassen",
                   "Laut Webrecherche existiert für dieses Modell eine Rückrufaktion. FIN beim "
-                  "Hersteller oder KBA auf offene Rückrufaktionen prüfen und, falls bereits "
-                  "erledigt, den Durchführungsnachweis der Werkstatt vorlegen lassen.",
+                  "Hersteller oder einer Vertragswerkstatt der Marke auf offene "
+                  "Rückrufaktionen prüfen lassen und, falls bereits erledigt, den "
+                  "Durchführungsnachweis der Werkstatt vorlegen lassen.",
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Prüfungen und Wartung")
             continue
@@ -1360,7 +1419,7 @@ def _aus_inserat(s: _Sammler, req) -> None:
         s.add(DOKUMENTE, "scheckheft", "Fehlende Zeiträume der Servicehistorie klären",
               "Die Servicehistorie ist laut Inserat nur teilweise vorhanden. Vorhandene "
               "Einträge und Rechnungen chronologisch durchgehen und festhalten, welche "
-              "Zeiträume und Kilometerstände nicht belegt sind — diese Lücken vor dem Kauf "
+              "Zeiträume und Kilometerstände nicht belegt sind. Diese Lücken vor dem Kauf "
               "ansprechen.",
               _R_DOKUMENT_STANDARD + 20, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     elif sh == SH_UMFANG_UNKLAR:
@@ -1382,6 +1441,47 @@ def _aus_inserat(s: _Sammler, req) -> None:
               "Die Wartungshistorie geht aus dem Inserat nicht hervor: vor der Besichtigung "
               "klären und die Nachweise vor Ort zeigen lassen.",
               _R_ANGABE_FEHLT, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+
+    # LIVE-RUN-BEFUND: nennt das Inserat eine konkrete letzte Wartung
+    # ("bei ca. 72.000 km"), darf der Bericht nicht weiter fragen, wann sie war.
+    # Der Schlüssel "wartung-inserat" blendet die allgemeine Katalogfrage aus
+    # (app/pruefplan_basis.py, `deckt`). Die Angabe bleibt eine ANGABE: geprüft
+    # wird der Beleg, nicht behauptet, dass gewartet wurde.
+    wartung = wartungsangabe_aus_request(req)
+    if wartung is not None:
+        km_jetzt = getattr(req, "kilometerstand", None)
+        if wartung_widerspruch_km(wartung, km_jetzt):
+            # Wartung oberhalb des aktuellen Tachostands: kein Nachweiswunsch,
+            # sondern ein Widerspruch im Inserat. Er wird benannt, nicht geglättet.
+            s.add(VERKAEUFERFRAGEN, "wartung-inserat",
+                  "Wie passt die genannte Wartung zum angegebenen Kilometerstand?",
+                  f"Das Inserat nennt eine letzte Wartung {wartung.anzeige()}, der "
+                  f"angegebene Kilometerstand liegt mit "
+                  f"{km_jetzt:,} km darunter. ".replace(",", ".") +
+                  "Eine der beiden Angaben stimmt nicht: vor der Besichtigung klären "
+                  "und am Beleg nachvollziehen.",
+                  _R_DOKUMENT_KERN, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+        else:
+            # Die ANGABE nennt Kilometerstand bzw. Datum, aber nie den Umfang.
+            # Deshalb wird die allgemeine Katalogfrage nicht ersatzlos gestrichen,
+            # sondern durch die geschärfte ersetzt: nicht mehr "wann war sie",
+            # sondern "was wurde gemacht und wo ist der Beleg". Derselbe
+            # Schlüssel blendet den Katalogpunkt aus.
+            s.add(VERKAEUFERFRAGEN, "wartung-inserat",
+                  f"Was umfasste die im Inserat genannte Wartung {wartung.anzeige()}?",
+                  f"Das Inserat nennt eine letzte Wartung {wartung.anzeige()}. Offen bleibt "
+                  f"der Umfang: nach den ausgeführten Arbeiten, der Werkstatt und dem Beleg "
+                  f"fragen und beides bei der Besichtigung zeigen lassen.",
+                  _R_ANGABE_FEHLT + 40, kategorie="inserat",
+                  gruppe="Angaben aus dem Inserat")
+            s.add(DOKUMENTE, "wartung-inserat",
+                  "Beleg zur angegebenen letzten Wartung ansehen",
+                  f"Im Inserat wird eine letzte Wartung {wartung.anzeige()} angegeben. "
+                  f"Datum, Umfang und Kilometerstand am Beleg nachvollziehen: Rechnung, "
+                  f"Serviceheft-Eintrag oder digitales Serviceprotokoll zeigen lassen. "
+                  f"Die Angabe allein belegt nicht, dass die Arbeiten ausgeführt wurden.",
+                  _R_DOKUMENT_STANDARD + 30, kategorie="inserat",
+                  gruppe="Angaben aus dem Inserat")
 
     tuev = (getattr(req, "tuev_bis", None) or "").strip()
     if tuev:
@@ -1420,8 +1520,6 @@ def _aus_inserat(s: _Sammler, req) -> None:
               "Die Zahl der Vorbesitzer fehlt im Inserat: vor Ort mit Teil II der "
               "Zulassungsbescheinigung (Fahrzeugbrief) abgleichen.",
               _R_ANGABE_FEHLT, kategorie="inserat", gruppe="Angaben aus dem Inserat")
-    else:
-        s.add(DOKUMENTE, "vorbesitzer", "Zulassungsbescheinigung mit der Inseratangabe abgleichen",
-              f"Das Inserat nennt {req.vorbesitzer} Vorbesitzer: mit Teil II der "
-              f"Zulassungsbescheinigung abgleichen und prüfen, ob der Verkäufer dort eingetragen ist.",
-              _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+    # Ist die Zahl der Vorbesitzer angegeben, entsteht hier KEINE eigene Aktion:
+    # sie schärft stattdessen den Basis-Punkt zur Zulassungsbescheinigung
+    # (`_inserat_basistexte`). Grund ist gemessen, nicht ästhetisch — siehe dort.

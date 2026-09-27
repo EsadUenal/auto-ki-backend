@@ -85,6 +85,11 @@ from app.verkaeuferart import (
     aus_request as verkaeuferart_aus_request,
     prompt_zeile as verkaeuferart_prompt_zeile,
 )
+from app.wartungsangabe import (
+    aus_request as wartungsangabe_aus_request,
+    prompt_zeile as wartungsangabe_prompt_zeile,
+)
+from app.rueckruf_konsistenz import ergaenze_fehlende_rueckrufe
 from app.servicehistorie import (
     neutralisiere_claims as servicehistorie_neutralisieren,
     prompt_zeile as servicehistorie_prompt_zeile,
@@ -174,7 +179,7 @@ Kurzzeile: Was wurde identifiziert (Baureihe, Motor, Baujahr).
 Risikostufe in Fettdruck (z.B. **NUR MIT WERKSTATTPRÜFUNG**), darunter 2–4 Sätze technische Begründung: gestützt auf konkrete Fakten (Schwachstellen, Marktpreis-Abweichung, Plausibilität), nie Marketing-Formulierungen ("toller Wagen", "beliebtes Modell").
 
 ## Kritische Risiken
-Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher Schweregrad, KBA-Rückrufe), dann mittlere, zuletzt geringe/kosmetische Punkte. Maximal 3–5 wichtigste Punkte, keine erschöpfende Liste. Motorspezifische Punkte nur gemäß Regel oben.
+Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher Schweregrad, KBA-Rückrufe), dann mittlere, zuletzt geringe/kosmetische Punkte. JEDER Rückruf, der im DB-Profil bzw. in der Evidence steht, gehört in diesen Abschnitt — vollzählig und mit seiner KBA-Referenz. Die Obergrenze von 3–5 Punkten gilt ERST DANACH, also nur noch für Schwachstellen und sonstige Punkte. Ein Software-, Komfort- oder Kosmetikthema darf einen Rückruf NIEMALS aus der Liste verdrängen. Motorspezifische Punkte nur gemäß Regel oben.
 
 ## Preis-Einschätzung
 - Kategorie (siehe oben) + Marktspanne, Quelle transparent machen ("laut aktueller Websuche")
@@ -190,7 +195,7 @@ Plausibilität, vier Stufen, NICHT vermischen:
   - ✏️ Vermutlich Tippfehler: Wert weicht minimal/erkennbar von einem naheliegenden korrekten Wert ab.
   - ⚠ Selten (aber möglich): ungewöhnlich, kommt aber real vor. NICHT als unplausibel werten.
   - ❌ Unmöglich: technisch ausgeschlossen.
-Mindest-Kriterien: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, Getriebe (falls bekannt).
+Mindest-Kriterien: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, Getriebe (falls bekannt), Vorbesitzer (falls angegeben), letzte Wartung (falls im Inserat genannt). Nimm JEDE strukturierte Angabe des Inserats als eigene Zeile auf: eine Angabe, die der Nutzer gemacht hat und die in der Tabelle fehlt, wirkt, als wäre sie ignoriert worden.
 
 ## Besichtigungs-Checkliste
 Markdown-Checkboxen, priorisiert: kritische Prüfpunkte (die im schlimmsten Fall den Kauf verhindern sollten) ZUERST, allgemeine Hinweise (Kosmetik, übliche Verschleißteile) DANACH.
@@ -200,6 +205,7 @@ INSERAT-ANGABEN SIND ANGABEN, KEINE TATSACHEN:
 - SERVICEHISTORIE: Die Zeile "Servicehistorie" nennt AUSSCHLIESSLICH, was das Inserat behauptet. "vollständig angegeben" heißt NICHT, dass die Historie vollständig IST — es wurde kein Serviceheft, keine Rechnung und kein Herstellerdatensatz geprüft. Erlaubt: "Laut Inserat wird eine vollständige Servicehistorie angegeben."; "Die Servicehistorie ist laut Inserat nur teilweise vorhanden."; "Zur Servicehistorie enthält das Inserat keine klare Angabe." Verboten: "Das Fahrzeug ist lückenlos scheckheftgepflegt."; "Die Wartungen wurden vollständig durchgeführt."; "Die Historie ist nachweislich vollständig." Auch die beste Angabe entfernt kein Risiko: verlange in jedem Fall die Nachweise (Serviceheft, digitales Serviceprotokoll, Rechnungen).
 - VERKÄUFERART: Sie sagt NICHTS über Technik, Motorisierung, Rückrufbetroffenheit oder Marktwert — nutze sie ausschließlich für Unterlagen, Nachfragen und die Kaufvorbereitung. Keine Pauschalwertung ("Händler = sicher", "Privat = riskant"). KEINE rechtlichen Aussagen: kein Wort zu Gewährleistung, Sachmängelhaftung, Garantie, Widerruf oder Haftungsausschluss — auch nicht einschränkend oder allgemein.
 - GETRIEBE: Die Getriebeart steuert nur, WELCHE Prüfungen sinnvoll sind (Kupplung und Greifpunkt beim Schaltgetriebe, Schaltverhalten und Fahrstufen bei der Automatik). Leite aus ihr NIEMALS einen typischen Defekt, ein Wartungsintervall oder eine Lebensdauer ab: "Automatik" allein belegt kein Problem. Solche Aussagen dürfen ausschließlich aus dem DB-PROFIL kommen.
+- KEINE FRAGE NACH BEREITS GENANNTEM: Was im Inseratsblock oder im Inseratstext ausdrücklich dasteht, darf die Checkliste NICHT als offene Frage zurückgeben. Nennt das Inserat z.B. eine letzte Wartung mit Kilometerstand oder Datum, dann frage nicht "Wann war die letzte Wartung?", sondern nach Umfang und Beleg. Die Angabe bleibt dabei eine Angabe: sie belegt nicht, dass die Arbeiten ausgeführt wurden.
 - Datum: Das aktuelle Datum steht im Nutzerteil ("HEUTIGES DATUM"). Rechne ausschließlich damit, nie mit einem angenommenen anderen Jahr.
 
 PREIS OHNE MARKTBASIS:
@@ -260,6 +266,9 @@ def _format_inserat(req: KaufCheckRequest) -> str:
     lines.append(getriebe_prompt_zeile(getriebe_aus_request(req)))
     lines.append(verkaeuferart_prompt_zeile(verkaeuferart_aus_request(req)))
     lines.append(servicehistorie_prompt_zeile(servicehistorie_status(req)))
+    # LIVE-RUN-BEFUND: eine im Inseratstext ausdruecklich genannte letzte Wartung
+    # kam nirgends strukturiert an — der Bericht fragte danach, obwohl sie dastand.
+    lines.append(wartungsangabe_prompt_zeile(wartungsangabe_aus_request(req)))
     return "\n".join(z for z in lines if z)
 
 
@@ -570,6 +579,19 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                 _erlaubt = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, req.baujahr,
                                                 marke=baureihe.get("marke"))
                 result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
+
+        # LIVE-RUN-BEFUND (BMW 330i G20): oben standen drei Rückrufe, unter
+        # "## Kritische Risiken" nur noch zwei plus ein Softwarethema — der
+        # Brandgefahr-Rückruf zum Starterrelais war verschwunden. Ursache ist die
+        # Obergrenze "maximal 3–5 Punkte" zusammen mit der freien Auswahl des
+        # Modells (siehe app/rueckruf_konsistenz.py).
+        #
+        # Reihenfolge ist wichtig: dieses Netz läuft NACH `pruefe_bericht`, damit es
+        # nur Rückrufe ergänzt, die dessen Ausschluss- und Sperrfilter überlebt
+        # haben. Vorher ergänzte Zeilen könnte der Validator anschließend wieder
+        # entfernen. Ergänzt werden ausschließlich Rückruf-Insights DIESES Laufs.
+        result["bericht"], _rk_ergaenzt = ergaenze_fehlende_rueckrufe(
+            result["bericht"], [i for i in insights if i.kategorie == "rueckruf"])
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,

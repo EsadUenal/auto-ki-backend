@@ -500,7 +500,7 @@ _WEB_EINFLUSS = {
     "schwachstelle": "Aus Webquellen belegt, nicht aus der "
                      "Fahrzeugdatenbank: vor dem Kauf gezielt prüfen.",
     "rueckruf": "Aus Webquellen belegt. Betroffenheit ausschließlich anhand der "
-                "FIN beim Hersteller/KBA klären.",
+                "FIN beim Hersteller oder einer Vertragswerkstatt der Marke klären.",
     "wartung": "Aus Webquellen belegte Intervallangabe. Nachweis der Durchführung "
                "verlangen.",
 }
