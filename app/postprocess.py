@@ -319,6 +319,18 @@ _RE_NICHT_DURCHGEFUEHRT = re.compile(
     r"\bnicht\s+durchgef[üu]hrt(\s+worden)?\b", re.IGNORECASE)
 
 
+# "werden fällig" / "wird fällig": das Verb muss mitwechseln, sonst entstünde
+# "werden jetzt zu prüfen".
+_RE_WERDEN_FAELLIG = re.compile(
+    r"\b(werden|wird)\s+((?:jetzt|nun|bald|demnächst|dann)\s+)?(?:über)?f[äa]llig\b",
+    re.IGNORECASE)
+
+
+def _ersetze_werden_faellig(match: re.Match) -> str:
+    verb = "sind" if match.group(1).lower() == "werden" else "ist"
+    return f"{verb} {match.group(2) or ''}zu prüfen"
+
+
 def _ersetze_faellig(match: re.Match) -> str:
     return _FAELLIG_ERSATZ.get(match.group(1), "zu prüfen")
 
@@ -327,19 +339,26 @@ def _ersetze_versaeumt(match: re.Match) -> str:
     return _VERSAEUMT_ERSATZ.get(match.group(1), "nicht nachgewiesen")
 
 
-def neutralisiere_wartungs_faelligkeit(text: str) -> str:
+def neutralisiere_wartungs_faelligkeit(text: str, zusatz_kontext=()) -> str:
     """Neutralisiert Fälligkeits-Behauptungen zu Wartungspunkten im Freitext —
     NUR in Sätzen mit erkennbarem Wartungskontext (siehe `_WARTUNG_KONTEXT_WORTE`).
-    Sätze ohne diesen Kontext (z.B. eine fällige Zahlung) bleiben unverändert."""
+    Sätze ohne diesen Kontext (z.B. eine fällige Zahlung) bleiben unverändert.
+
+    `zusatz_kontext` (Root-Cause-Closing): die Bauteile der technischen Hinweise
+    DIESES Checks. Im M4-Bericht stand "Kurbelnabe und Pleuellager werden jetzt
+    fällig": ein Satz ohne eines der festen Wartungswörter, der aus einem
+    ungeprüften Hinweis eine Pflichtarbeit machte. Welche Bauteile hier Kontext
+    sind, kommt aus den Daten des Laufs, nicht aus einer Fahrzeugliste."""
     if not text:
         return text
 
     teile = _CODE_FENCE.split(text)
     fences = _CODE_FENCE.findall(text)
+    kontext = tuple(_WARTUNG_KONTEXT_WORTE) + tuple(w.lower() for w in zusatz_kontext if w)
 
     def _hat_wartungskontext(satz: str) -> bool:
         low = satz.lower()
-        return any(w in low for w in _WARTUNG_KONTEXT_WORTE)
+        return any(w in low for w in kontext)
 
     def _bereinige_teil(teil: str) -> str:
         zeilen = teil.split("\n")
@@ -352,7 +371,8 @@ def neutralisiere_wartungs_faelligkeit(text: str) -> str:
             neue_saetze = []
             for satz in saetze:
                 if _hat_wartungskontext(satz):
-                    neu = _RE_FAELLIG.sub(_ersetze_faellig, satz)
+                    neu = _RE_WERDEN_FAELLIG.sub(_ersetze_werden_faellig, satz)
+                    neu = _RE_FAELLIG.sub(_ersetze_faellig, neu)
                     neu = _RE_VERSAEUMT.sub(_ersetze_versaeumt, neu)
                     neu = _RE_NICHT_DURCHGEFUEHRT.sub("nicht nachweisbar", neu)
                     if neu != satz:

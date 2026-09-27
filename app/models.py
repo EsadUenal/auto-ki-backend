@@ -437,6 +437,28 @@ class Insight(BaseModel):
     # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch
     # berechnete Marktvergleich (Median, robuste Spanne, verwendete Datenpunkte).
     marktanalyse: Marktanalyse | None = None
+    # ── KaufCheck Root-Cause-Closing: technische Identität und Herkunft ───────
+    # Alle additiv mit Default: gespeicherte Checks laden unverändert.
+    #
+    # Das Bauteil, über das die Aussage spricht. Vorher musste es jeder
+    # Konsument aus dem Titel zurückgewinnen, und jeder tat es anders.
+    bauteil: str | None = None
+    # Herkunftszeile in der Fahrzeugdatenbank, z.B. "schwachstelle_motor#6".
+    fakt_ref: str | None = None
+    # Nur Wartungseinträge: "regulaer" | "vorbeugend" | "zustand" | "modifikation"
+    # (app/risikothemen.py). Entscheidet, welche Frage der Prüfplan stellt.
+    wartungsart: str | None = None
+    # Aussagen zum SELBEN technischen Thema aus anderen Datenpfaden, die in
+    # dieses Insight zusammengeführt wurden (app/risikothemen.py::kanonisiere),
+    # als nachvollziehbare Herkunft, z.B. ["wartung:kritische_wartung#2"].
+    zusammengefuehrt: list[str] = Field(default_factory=list)
+    # Die zusammengeführten Insights selbst, nur für die Verarbeitung im selben
+    # Lauf (z.B. ein geprüftes Wartungsintervall für den Laufleistungskontext).
+    # Nicht Teil der Antwort: sichtbar ist die zusammengeführte Aussage.
+    nebenbelege: list["Insight"] = Field(default_factory=list, exclude=True)
+
+
+Insight.model_rebuild()
 
 
 class KeyFinding(BaseModel):

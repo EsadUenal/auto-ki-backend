@@ -133,8 +133,14 @@ def test_hu():
     b = ERG["bericht"]
     for verboten in ("Tippfehler", "unmöglich", "unplausible TÜV", "092028", "Maximal 2 Jahre ab Prüfung"):
         check(f"Bericht enthält nicht '{verboten}'", verboten not in b)
-    check("Tabellenzeile TÜV zeigt 09/2028 und ✓ Plausibel",
-          "| TÜV-Gültigkeit | 09/2028 |" in b and "✓ Plausibel |" in b.split("TÜV-Gültigkeit")[1][:160])
+    # Seit dem Root-Cause-Closing schreibt ENFAL die Vergleichstabelle selbst
+    # (app/vergleichstabelle.py) und ersetzt die Tabelle des Modells. Geprüft
+    # wird dasselbe wie zuvor: 09/2028 sauber formatiert und als passend
+    # eingeordnet, jetzt mit der gesetzlichen Regel als Herkunft.
+    zeile_hu = next((z for z in b.splitlines() if z.startswith("| HU |")), "")
+    check("Tabellenzeile HU zeigt 09/2028 und ✓ passt (gesetzliche Regel)",
+          "| bis 09/2028 |" in zeile_hu and "(gesetzliche Regel)" in zeile_hu
+          and zeile_hu.endswith("| ✓ passt |"), zeile_hu)
     titel = [a["titel"] for a in map(_dump, _alle_aktionen("dokumente"))]
     check("Dokumenten-Checkliste nennt 09/2028, nie 092028",
           any("09/2028" in t for t in titel) and not any("092028" in t for t in titel), str(titel[:4]))

@@ -407,7 +407,13 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
     """
     gesehen: set[str] = set()
     out: list[Wartungshinweis] = []
-    for i in insights:
+    # Root-Cause-Closing: ein Wartungseintrag kann in eine Schwachstellen-Aussage
+    # zum selben Bauteil zusammengeführt sein (app/risikothemen.py). Sein
+    # Intervall zählt trotzdem; als Beleg steht die ID der sichtbaren,
+    # zusammengeführten Aussage, denn nur sie existiert in `insights`.
+    kandidaten = [(i, i.id) for i in insights]
+    kandidaten += [(n, i.id) for i in insights for n in getattr(i, "nebenbelege", None) or []]
+    for i, beleg_id in kandidaten:
         herkunft = _QUELLEN_KATEGORIEN.get(i.kategorie)
         if herkunft is None:
             continue
@@ -433,7 +439,7 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             intervall_text=(roh or "").strip(),
             hinweis=_formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft),
             herkunft=herkunft,
-            evidence_id=i.id,
+            evidence_id=beleg_id,
             quellen=[EvidenceQuelle(**q.model_dump()) for q in i.quellen],
         ))
 

@@ -32,6 +32,7 @@ from app.servicehistorie import (
     satz as servicehistorie_satz, status as servicehistorie_status,
 )
 from app.preisurteil import bewerte_preis
+from app.risikothemen import ist_bekannt
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +231,19 @@ def _mangel_kurz(insight) -> str:
     return (teil[:60].rstrip() + "…") if len(teil) > 61 else teil
 
 
+def _enthaelt_kategorie(insight: Insight, kategorie: str) -> bool:
+    """True, wenn das Insight selbst oder eine in es zusammengeführte Aussage
+    (app/risikothemen.py) diese Kategorie hat."""
+    return (insight.kategorie == kategorie
+            or any(n.kategorie == kategorie for n in getattr(insight, "nebenbelege", None) or []))
+
+
+def _bauteilname(insight: Insight) -> str:
+    from app.evidence import titel_bauteil
+    return (getattr(insight, "bauteil", None) or titel_bauteil(insight.titel)
+            or insight.titel).strip()
+
+
 def _finalisiere(findings: list[KeyFinding]) -> list[KeyFinding]:
     """Stabil nach Priorität sortieren, auf MAX_FINDINGS kürzen, IDs vergeben."""
     findings.sort(key=lambda f: f.prioritaet, reverse=True)
@@ -331,25 +345,51 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     findings += _rueckruf_findings(insights)
 
     # ── C) Motorproblem / hohe Schwachstelle / "keine schweren Motorprobleme" ───
-    motorprobleme = [i for i in insights if i.kategorie == "motorproblem"]
+    # Root-Cause-Closing (Befund E/J): dieselbe kanonische Risikomenge wie die
+    # Evidence-Karten und die Empfehlungsgründe (app/risikothemen.py). Ein
+    # Motorproblem kann in eine Baureihen-Schwachstelle zusammengeführt sein; es
+    # zählt trotzdem als Motorthema. Und "bekannt" heißt nur, was belegt ist: ein
+    # ungeprüfter Hinweis wird als gemeldeter Hinweis benannt, nicht als
+    # "Bekanntes Motorproblem".
+    motorprobleme = [i for i in insights if _enthaelt_kategorie(i, "motorproblem")]
     schwach_hoch = [i for i in insights if i.kategorie == "schwachstelle"
                     and (i.schweregrad or "").lower() in ("hoch", "kritisch", "sehr hoch")]
     if motorprobleme:
-        m = motorprobleme[0]
-        weitere = f" (+{len(motorprobleme) - 1} weitere)" if len(motorprobleme) > 1 else ""
-        findings.append(KeyFinding(
-            id="", kategorie="motorproblem", stufe=STUFE_WARNUNG, icon="🔧",
-            titel="Bekanntes Motorproblem",
-            beschreibung=(m.titel + weitere + ". " + (m.einfluss or "")).strip(),
-            aktion="Bauteil bei der Werkstattprüfung gezielt kontrollieren lassen.",
-            evidence_ids=[i.id for i in motorprobleme], prioritaet=_P_MOTORPROBLEM))
+        bekannte = [i for i in motorprobleme if ist_bekannt(i)]
+        if bekannte:
+            m = bekannte[0]
+            weitere = f" (+{len(motorprobleme) - 1} weitere)" if len(motorprobleme) > 1 else ""
+            findings.append(KeyFinding(
+                id="", kategorie="motorproblem", stufe=STUFE_WARNUNG, icon="🔧",
+                titel="Bekanntes Motorproblem",
+                beschreibung=(m.titel + weitere + ". " + (m.einfluss or "")).strip(),
+                aktion="Bauteil bei der Werkstattprüfung gezielt kontrollieren lassen.",
+                evidence_ids=[i.id for i in motorprobleme], prioritaet=_P_MOTORPROBLEM))
+        else:
+            n = len(motorprobleme)
+            namen = ", ".join(_bauteilname(i) for i in motorprobleme[:4])
+            if n > 4:
+                namen += f" und {n - 4} weitere"
+            findings.append(KeyFinding(
+                id="", kategorie="motorproblem", stufe=STUFE_INFO, icon="🔧",
+                titel=("Gemeldeter Hinweis zum Motor" if n == 1
+                       else f"{n} gemeldete Hinweise zum Motor"),
+                beschreibung=(f"{namen}. Ungeprüfte Einträge der Fahrzeugdatenbank "
+                              f"(Datenqualität niedrig): Sie zeigen, wonach gezielt zu fragen "
+                              f"ist, sind aber kein festgestellter Mangel."),
+                aktion="Gezielt nachfragen und bei einer Werkstattprüfung ansprechen.",
+                evidence_ids=[i.id for i in motorprobleme], prioritaet=_P_MOTORPROBLEM))
     if schwach_hoch:
-        from app.evidence import titel_bauteil
-        namen = ", ".join(titel_bauteil(i.titel) for i in schwach_hoch[:3])
+        namen = ", ".join(_bauteilname(i) for i in schwach_hoch[:3])
         n = len(schwach_hoch)
+        if all(ist_bekannt(i) for i in schwach_hoch):
+            titel_sh = f"{n} bekannte Schwachstelle{'n' if n > 1 else ''} (hoher Schweregrad)"
+        else:
+            titel_sh = (f"{n} gemeldete{'r' if n == 1 else ''} Hinweis{'e' if n > 1 else ''} "
+                        f"mit hohem Schweregrad")
         findings.append(KeyFinding(
             id="", kategorie="schwachstelle", stufe=STUFE_WARNUNG, icon="⚙️",
-            titel=f"{n} bekannte Schwachstelle{'n' if n > 1 else ''} (hoher Schweregrad)",
+            titel=titel_sh,
             beschreibung=namen,
             aktion="Bei der Besichtigung gezielt prüfen.",
             evidence_ids=[i.id for i in schwach_hoch], prioritaet=_P_SCHWACH_HOCH))

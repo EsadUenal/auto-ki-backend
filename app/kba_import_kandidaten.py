@@ -73,6 +73,22 @@ SICHERHEITSGRUPPEN = frozenset({
     "fahrwerk", "rad", "hochvolt", "elektrik_brand", "kraftstoff",
 })
 
+# Root-Cause-Closing (Befund M): die Bauteilgruppen allein verloren amtliche
+# Sicherheitsrückrufe, deren Bauteil in keiner Gruppe steht, obwohl der Text die
+# Sicherheitsfolge selbst nennt:
+#   "Verschraubung des Hinterachsträgers kann zu kritischen Fahrsituationen führen"
+#   "Nicht richtig verschraubte Sitzmechanik ... kann bei einem Unfall das
+#    Verletzungsrisiko erhöhen"
+# Beide sind vom KBA überwacht und betreffen u.a. den BMW M4 F82. Maßgeblich ist
+# deshalb zusätzlich die im amtlichen Text genannte FOLGE. Kein Rückruf und kein
+# Fahrzeug steht hier namentlich: die Muster beschreiben Unfall-, Verletzungs-,
+# Brand- und Kontrollfolgen.
+_SICHERHEITSFOLGE = re.compile(
+    r"unfall|verletz|kritische[nrm]? fahrsituation|kontrollverlust"
+    r"|kontrolle über das fahrzeug|brand|feuer|stromschlag|lebensgefahr"
+    r"|sicherheitsrisiko|fahrstabilit|lösen|ablösen|abfallen",
+    re.IGNORECASE)
+
 # Woerter im Feld "Moegliche Eingrenzung der betroffenen Modelle", die eine
 # MOTOR-/ANTRIEBSbedingung ausdruecken. VIRA kann eine Rueckrufzeile nur ueber
 # den Kraftstoff-Klammerzusatz eingrenzen (app/recall_filter.py) — alles
@@ -162,7 +178,7 @@ class ImportKandidat:
     """Ein amtlicher Rueckruf, der im VIRA-Bestand fehlt."""
 
     __slots__ = ("kba", "ziele", "klasse", "begruendung", "generation_eindeutig",
-                 "variantenbeschraenkung", "duplikate", "applicability")
+                 "variantenbeschraenkung", "duplikate", "applicability", "paare")
 
     def __init__(self, kba: dict):
         self.kba = kba
@@ -173,6 +189,12 @@ class ImportKandidat:
         self.variantenbeschraenkung = False
         self.duplikate: list[dict] = []
         self.applicability = "series_only"
+        # Root-Cause-Closing (Befund M): die Entscheidung JE PAAR
+        # (Rueckruf, Baureihe) als [(baureihe_id, klasse, begruendung)]. `klasse`
+        # oben bleibt die strengste Klasse ueber alle Ziele: so wurden die
+        # historischen Chargen A/B1 entschieden, und ihre eingefrorenen Daten
+        # verweisen darauf.
+        self.paare: list[tuple[str, str, str]] = []
 
     # ── Bequeme Sicht auf die amtlichen Felder ──────────────────────────────
     @property
@@ -223,7 +245,15 @@ class ImportKandidat:
 
     @property
     def sicherheitsrelevant(self) -> bool:
+        return self.sicherheitsrelevant_ueber_bauteil or self.sicherheitsrelevant_ueber_folge
+
+    @property
+    def sicherheitsrelevant_ueber_bauteil(self) -> bool:
         return bool(bauteilgruppen(self.mangel) & SICHERHEITSGRUPPEN)
+
+    @property
+    def sicherheitsrelevant_ueber_folge(self) -> bool:
+        return bool(_SICHERHEITSFOLGE.search(f"{self.mangel} {self.massnahme}"))
 
     @property
     def ziel_ids(self) -> list[str]:
@@ -332,6 +362,8 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
                 f"{bester:.0%} des amtlichen Produktionsfensters "
                 f"{kand.prod_von}-{kand.prod_bis} ab — die gemeinte Generation "
                 f"fehlt in VIRA oder liegt in einer Bestandsluecke")
+            kand.paare = [(b["id"], AMBIGUOUS_GENERATION, "nur Randueberlappung")
+                          for _t, b in randlage]
             return kand
         if ueberdehnt:
             # Es GAEBE ein Ziel, aber nur ueber ein offenes Generationsende
@@ -346,6 +378,8 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
                 f"amtliche Produktionsfenster beginnt {kand.prod_von}, also mehr "
                 f"als {MEDIAN_GENERATIONSDAUER} Jahre spaeter — ein "
                 f"Generationswechsel ist wahrscheinlicher als die Fortsetzung")
+            kand.paare = [(b["id"], AMBIGUOUS_GENERATION, "offene Generation ueberdehnt")
+                          for _t, b in ueberdehnt]
             return kand
         kand.klasse = UNSUPPORTED_MODEL_MAPPING
         kand.begruendung = (
@@ -372,8 +406,35 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
         kand.variantenbeschraenkung = _kraftstoff_qualifier(eingr) is None
 
     # ── Dublettenverdacht ───────────────────────────────────────────────────
+    dubletten_je_ziel: dict[str, list[dict]] = {}
     for z in kand.ziele:
-        kand.duplikate += _moegliche_dubletten(kand, z, recalls_je_baureihe)
+        dubletten_je_ziel[z["id"]] = _moegliche_dubletten(kand, z, recalls_je_baureihe)
+        kand.duplikate += dubletten_je_ziel[z["id"]]
+
+    # ── Entscheidung JE PAAR (Root-Cause-Closing, Befund M) ─────────────────
+    # Die Klassifikation unten entscheidet fuer den GANZEN Rueckruf nach der
+    # strengsten Bedingung irgendeines Ziels. Damit ging jedes Paar verloren,
+    # sobald ein ANDERES Ziel eine Dublette oder eine offene Generationsfrage
+    # hatte: KBA 14133R (Takata, 2016-2017) galt als Dublette, weil drei andere
+    # BMW-Baureihen bereits eine Airbag-Zeile trugen, und fehlte deshalb auch
+    # beim M4 F82, der keine hatte. Die Importidentitaet ist das Paar
+    # (Rueckruf, Baureihe); jedes Paar wird fuer sich entschieden.
+    paar_ids: set[str] = set()
+    for tok, b in kandidaten_ziele:
+        if b["id"] in paar_ids:
+            continue
+        paar_ids.add(b["id"])
+        if dubletten_je_ziel.get(b["id"]):
+            gruende = sorted({d["_grund"] for d in dubletten_je_ziel[b["id"]]})
+            kand.paare.append((b["id"], POSSIBLE_DUPLICATE, "; ".join(gruende)))
+        elif tok in mehrdeutig:
+            kand.paare.append((b["id"], AMBIGUOUS_GENERATION,
+                               f"{tok}: mehrere Generationen im Produktionsfenster"))
+        elif kand.variantenbeschraenkung:
+            kand.paare.append((b["id"], VARIANT_SCOPE_UNCLEAR,
+                               "amtliche Eingrenzung nicht abbildbar"))
+        else:
+            kand.paare.append((b["id"], SAFE_IMPORT, "eindeutig, keine Dublette"))
 
     # ── Klassifikation, strengste Bedingung zuerst ──────────────────────────
     if kand.duplikate:
@@ -420,6 +481,11 @@ def import_kandidaten(kba: list[dict], recalls: list[dict],
     gedeckt = {normalisiere_referenz(r.get("kba_referenz"))
                for r in recalls if (r.get("kba_referenz") or "").strip()}
     gedeckt.discard("")
+    # Root-Cause-Closing (Befund M): "schon im Bestand" gilt JE PAAR. Vorher fiel
+    # ein amtlicher Rueckruf komplett heraus, sobald seine Referenz bei IRGENDEINER
+    # Baureihe stand, auch wenn sie bei den uebrigen betroffenen Baureihen fehlte.
+    gedeckte_paare = {(normalisiere_referenz(r.get("kba_referenz")), r.get("baureihe_id"))
+                      for r in recalls if (r.get("kba_referenz") or "").strip()}
 
     ziel_idx = _ziel_index(baureihen)
     vira_marken = {kba_marke(b["marke"]) for b in baureihen}
@@ -435,11 +501,16 @@ def import_kandidaten(kba: list[dict], recalls: list[dict],
             continue
         if nur_sicherheitsrelevant and not kand.sicherheitsrelevant:
             continue
-        if normalisiere_referenz(kand.referenz) in gedeckt:
-            continue
         if kand.marke.upper() not in vira_marken:
             continue
-        out.append(klassifiziere_kandidat(kand, ziel_idx, je_baureihe))
+        kand = klassifiziere_kandidat(kand, ziel_idx, je_baureihe)
+        ref = normalisiere_referenz(kand.referenz)
+        # Ganz im Bestand (jede aufgeloeste Baureihe traegt die Referenz schon)
+        # oder ohne aufloesbares Ziel und irgendwo gefuehrt: kein Kandidat.
+        if ref in gedeckt and (not kand.ziel_ids
+                               or all((ref, z) in gedeckte_paare for z in kand.ziel_ids)):
+            continue
+        out.append(kand)
 
     out.sort(key=lambda x: (x.klasse, x.referenz))
     return out
@@ -453,3 +524,36 @@ def zeilen_bei_import(kandidaten: list[ImportKandidat],
     erzeugt je Baureihe eine Zeile.
     """
     return sum(len(k.ziel_ids) for k in kandidaten if k.klasse == klasse)
+
+
+def paare_bei_import(kandidaten: list[ImportKandidat],
+                     klasse: str = SAFE_IMPORT) -> list[tuple[str, str]]:
+    """Die (Referenz, Baureihe)-Paare mit dieser PAAR-Klasse (Root-Cause-Closing).
+
+    Das ist die Importeinheit für künftige Chargen: ein Paar wird importiert,
+    wenn ES sicher ist, unabhängig davon, was bei anderen Zielbaureihen
+    desselben Rückrufs gilt.
+    """
+    return sorted((k.referenz, bid) for k in kandidaten
+                  for bid, kl, _g in k.paare if kl == klasse)
+
+
+def verlorene_paare(kandidaten: list[ImportKandidat]) -> list[dict]:
+    """Paare, die für sich SICHER sind, aber durch die alte Entscheidung pro
+    Rückruf nicht importierbar waren: die Rückruf-Klasse war strenger, oder der
+    Rückruf galt nur über seine Sicherheitsfolge, nicht über ein Bauteil, als
+    sicherheitsrelevant (vorher gar kein Kandidat)."""
+    out = []
+    for k in kandidaten:
+        for bid, kl, _g in k.paare:
+            if kl != SAFE_IMPORT:
+                continue
+            if k.klasse != SAFE_IMPORT:
+                grund = f"Rueckruf-Klasse {k.klasse}"
+            elif not k.sicherheitsrelevant_ueber_bauteil:
+                grund = "nur ueber die Sicherheitsfolge sicherheitsrelevant"
+            else:
+                continue
+            out.append({"referenz": k.referenz, "baureihe_id": bid, "grund": grund,
+                        "mangel": k.mangel, "prod_von": k.prod_von, "prod_bis": k.prod_bis})
+    return sorted(out, key=lambda x: (x["baureihe_id"], x["referenz"]))

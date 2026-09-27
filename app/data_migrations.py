@@ -2047,6 +2047,77 @@ MARKER_KBA_G20_NACHTRAG = "kba_g20_nachtrag_v1"
 SCHRITTE_KBA_G20_NACHTRAG = (schritt_kba_g20_nachtrag,)
 
 
+# -- TEXTKORREKTUREN IN FAHRZEUGDATEN (KaufCheck Root-Cause-Closing) ----------
+#
+# Datenfehler, die der Production-Run BMW M4 F82 sichtbar gemacht hat. Es sind
+# DATENKORREKTUREN einzelner Datensätze, keine Systemlogik: die generische
+# Schreibstil-Regel (app/schreibstil.py) erfasst Datenbanktexte zur Laufzeit
+# ohnehin, die Korrektur stellt zusätzlich den Bestand selbst richtig.
+#
+#   baureihe bmw-m4-f82, facelift_merkmale
+#     Stand: "LCI 2017: LED-Scheinwerfer serienmäßig, OLED-Rückleuchten."
+#     Fachlich falsch: das reguläre F82-LCI hat LED-Rückleuchten. OLED-
+#     Rückleuchten waren ein Merkmal von Sondermodellen; im eigenen Bestand
+#     steht das bereits so (ausstattungslinie "M4 GTS (2016)": "Wassereinspritzung,
+#     OLED, limitiert"). Quelle der Korrektur: fachliche Vorgabe aus dem
+#     Production-Review vom 2026-09-27.
+#     Redundanzsuche: sonst kein OLED-Text zum F82 im Bestand (die übrigen
+#     Treffer betreffen Audi-Baureihen mit tatsächlich angebotenen OLED-Leuchten
+#     und die GTS-Ausstattungslinie). Abgeleitete Kopie: der Chroma-Vektorstore
+#     des KI-Chats enthält den alten Text, bis er neu aufgebaut wird
+#     (`python rebuild_chroma.py`).
+#
+#   baureihe bmw-m4-f82, erkennung_generation
+#     Stand: "... KLEINE Niere — klarer Unterschied zum G82."
+#     Rhetorischer Gedankenstrich und Großschreibung als Betonung in einem
+#     Text, der wörtlich im Fahrzeugprofil erscheint.
+#
+# PRECONDITION wie bei den übrigen Korrekturen: angefasst wird nur der exakt
+# bekannte Ausgangstext. Wurde der Datensatz inzwischen anders gepflegt, bricht
+# die Migration ab, statt zu überschreiben.
+TEXTKORREKTUREN = (
+    ("baureihe", "bmw-m4-f82", "facelift_merkmale",
+     "LCI 2017: LED-Scheinwerfer serienmäßig, OLED-Rückleuchten.",
+     "LCI 2017: LED-Scheinwerfer serienmäßig, neu gestaltete LED-Rückleuchten. "
+     "OLED-Rückleuchten gab es nur bei Sondermodellen wie dem M4 GTS."),
+    ("baureihe", "bmw-m4-f82", "erkennung_generation",
+     "Basiert auf 4er F32. Powerdome-Haube, breite Kotflügel, vier Endrohre (zwei "
+     "Doppelrohre), CFK-Dach. KLEINE Niere — klarer Unterschied zum G82.",
+     "Basiert auf 4er F32. Powerdome-Haube, breite Kotflügel, vier Endrohre (zwei "
+     "Doppelrohre), CFK-Dach. Kleine Niere: klarer Unterschied zum G82."),
+)
+_TEXTKORREKTUR_SPALTEN = {"baureihe": ("facelift_merkmale", "erkennung_generation")}
+
+
+def schritt_textkorrekturen(conn, apply_):
+    for tabelle, zeilen_id, spalte, erwartet, korrigiert in TEXTKORREKTUREN:
+        # Tabellen- und Spaltennamen kommen ausschließlich aus der festen
+        # Allowlist oben, nie aus Daten: das f-String-SQL ist deshalb sicher.
+        if spalte not in _TEXTKORREKTUR_SPALTEN.get(tabelle, ()):
+            raise RuntimeError(f"[TEXT] ABBRUCH: {tabelle}.{spalte} nicht freigegeben")
+        zeile = conn.execute(f"select {spalte} from {tabelle} where id=?",
+                             (zeilen_id,)).fetchone()
+        if zeile is None:
+            log(f"  [TEXT] {tabelle} {zeilen_id}: nicht im Bestand — uebersprungen")
+            continue
+        ist = zeile[0]
+        if ist == korrigiert:
+            log(f"  [TEXT] {tabelle} {zeilen_id}.{spalte}: bereits korrigiert (idempotent)")
+            continue
+        if ist != erwartet:
+            raise RuntimeError(
+                f"[TEXT] ABBRUCH: {tabelle} {zeilen_id}.{spalte} traegt {ist!r}, erwartet "
+                f"war {erwartet!r} — Datensatz wurde zwischenzeitlich geaendert")
+        log(f"  [TEXT] {tabelle} {zeilen_id}.{spalte}: korrigiert")
+        if apply_:
+            conn.execute(f"update {tabelle} set {spalte}=? where id=?",
+                         (korrigiert, zeilen_id))
+
+
+MARKER_TEXTKORREKTUREN = "fahrzeugtexte_korrekturen_v1"
+SCHRITTE_TEXTKORREKTUREN = (schritt_textkorrekturen,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2099,6 +2170,10 @@ MIGRATIONEN = (
     # KaufCheck RC1: amtlich belegte, fuer den BMW 3er G20/G21 einschlaegige
     # Rueckrufe (KBA 10009, 9839, 15632R) — siehe app/kba_g20_nachtrag_daten.py.
     (MARKER_KBA_G20_NACHTRAG, SCHRITTE_KBA_G20_NACHTRAG),
+    # KaufCheck Root-Cause-Closing: einzelne fachlich falsche Datenbanktexte
+    # (F82-LCI "OLED-Rückleuchten", rhetorischer Gedankenstrich) — siehe
+    # TEXTKORREKTUREN.
+    (MARKER_TEXTKORREKTUREN, SCHRITTE_TEXTKORREKTUREN),
 )
 
 

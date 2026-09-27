@@ -697,9 +697,71 @@ def find_motor(baureihe: dict, hint: str | None, modell: str | None = None) -> d
 
 # ---------- DB-Kontext ----------
 
+_RISIKO_ART_LABEL = {
+    "schwachstelle": "Schwachstelle der Baureihe",
+    "motorproblem": "Motorhinweis",
+    "web_schwachstelle": "Hinweis aus der Webrecherche",
+    "wartung": "Wartungshinweis",
+    "web_wartung": "Wartungsangabe aus der Webrecherche",
+}
+_WARTUNGSART_LABEL = {
+    "regulaer": "reguläre Wartung",
+    "verschleiss": "Verschleiß",
+    "vorbeugend": "vorbeugender Tausch",
+    "zustand": "Zustandsprüfung",
+    "modifikation": "Umbau oder Nachrüstung",
+}
+
+
+def _kanonischer_risikoblock(risiken: list, motor_match: dict | None) -> list[str]:
+    """Die kanonische technische Risikomenge als Prompt-Block, je Thema EIN Eintrag
+    mit Art, Beleglage und Schwere als getrennten Achsen."""
+    from app.risikothemen import RISIKO_KATEGORIEN, ist_bekannt
+
+    eintraege = [i for i in risiken if getattr(i, "kategorie", None) in RISIKO_KATEGORIEN]
+    if not eintraege:
+        return []
+    kosten_je_ref = {f"schwachstelle_motor#{s.get('id')}": s.get("kosten_ca")
+                     for s in ((motor_match or {}).get("schwachstellen_motor") or [])}
+    out = [
+        "### Technische Hinweise (je Thema zusammengeführt, mit Beleglage)",
+        "Beleglage \"belegt\" heißt: durch eine geprüfte Quelle gestützt. \"Gemeldeter "
+        "Hinweis\" heißt: ungeprüfter Eintrag der Fahrzeugdatenbank, oft Werkstatt- oder "
+        "Community-Erfahrung. Einen gemeldeten Hinweis nennst du ausschließlich als solchen: "
+        "keine festgestellte Tatsache, keine Pflichtwartung, kein Intervall als "
+        "Herstellervorgabe, keine Fälligkeit bei diesem Kilometerstand, und nie als "
+        "alleinige Begründung der Kaufempfehlung.",
+    ]
+    for i in eintraege:
+        art = _RISIKO_ART_LABEL.get(i.kategorie, i.kategorie)
+        if getattr(i, "wartungsart", None):
+            art += f", {_WARTUNGSART_LABEL.get(i.wartungsart, i.wartungsart)}"
+        beleg = ("belegt" if ist_bekannt(i) else "gemeldeter Hinweis") + \
+                f", Datenqualität {i.confidence}"
+        schwere = i.schweregrad or "nicht erfasst"
+        kosten = kosten_je_ref.get(getattr(i, "fakt_ref", None) or "")
+        kosten_text = (f" Hinterlegte Kostenangabe: {kosten}."
+                       if kosten and re.search(r"\d", str(kosten)) else "")
+        bauteil = getattr(i, "bauteil", None) or i.titel
+        out.append(f"  - {bauteil} [{art} | Beleglage: {beleg} | Schweregrad: {schwere}]: "
+                   f"{i.beschreibung}{kosten_text}")
+    out.append("")
+    return out
+
+
 def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: int | None = None,
-                     fahrzeugkontext=None) -> str:
+                     fahrzeugkontext=None, risiken: list | None = None) -> str:
     """Baut den strukturierten DB-Kontext-String (Specs, Schwachstellen, Rückrufe).
+
+    Root-Cause-Closing — `risiken` (optional, nur KaufCheck): die kanonische
+    Risikomenge aus `app/evidence.py::build_insights`. Ist sie übergeben, ersetzt
+    EIN Block mit Beleglage je Thema die drei Rohlisten "Motorprobleme",
+    "Kritische Wartung" und "Schwachstellen Baureihe". Vorher sah das Modell
+    dasselbe Bauteil bis zu dreimal, ohne Beleglage, unter der Überschrift
+    "Kritische Wartung", und der Systemprompt nannte das DB-Profil "geprüfte
+    Fakten". So entstand im M4-Bericht aus einem ungeprüften Community-Hinweis
+    ("vorbeugender Wechsel ~50-80 tkm") eine fällige Pflichtarbeit. Ohne den
+    Parameter (Verkaufscheck, Tests) bleibt die Ausgabe unverändert.
 
     §Phase 7 (Reliability-Sprint 4): Rückrufe laufen NICHT mehr ungefiltert aus der
     DB in den Prompt — das war der Hauptleck-Punkt, durch den z.B. ein Hochvolt-/
@@ -784,17 +846,31 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
         # (nur ein eindeutiges False schließt aus — "Alle"/unklar/fehlend bleibt).
         motorprobleme = [s for s in (m.get("schwachstellen_motor") or [])
                          if _baujahr_passt(s.get("baujahre"), baujahr) is not False]
+        if risiken is not None and motor_match:
+            # KaufCheck mit erkanntem Motor: Motorprobleme und Wartungshinweise
+            # stehen zusammengeführt und mit Beleglage im kanonischen Block unten.
+            lines.append("")
+            continue
+        if risiken is not None:
+            # KaufCheck ohne erkannten Motor: die Rohlisten bleiben (für bedingte
+            # Aussagen "falls Motor X"), aber mit ehrlicher Beleglage.
+            titel_mp = "Motorprobleme (ungeprüfte Datenbankhinweise, nur bedingt gültig):"
+            titel_w = "Wartungshinweise (ungeprüft, keine Herstellervorgabe):"
+            trenner = ": "
+        else:
+            titel_mp, titel_w, trenner = "Motorprobleme:", "Kritische Wartung:", " — "
         if motorprobleme:
-            lines.append("Motorprobleme:")
+            lines.append(titel_mp)
             for s in motorprobleme:
                 lines.append(
                     f"  {s.get('bauteil','?')}: {s.get('beschreibung','?')} "
                     f"(Baujahre: {s.get('baujahre','?')}, Kosten ca.: {s.get('kosten_ca','?')})"
                 )
         if m.get("kritische_wartung"):
-            lines.append("Kritische Wartung:")
+            lines.append(titel_w)
             for w in m["kritische_wartung"]:
-                lines.append(f"  - {w.get('bauteil','?')}: {w.get('intervall','?')} — {w.get('hinweis','?')}")
+                lines.append(f"  - {w.get('bauteil','?')}: {w.get('intervall','?')}"
+                             f"{trenner}{w.get('hinweis','?')}")
         lines.append("")
 
     # schwachstelle_baureihe HAT schweregrad — trotzdem .get() für Robustheit
@@ -811,7 +887,9 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
             baureihe.get("schwachstellen_baureihe"), motor_match, baureihe)
         if _baujahr_passt(s.get("betroffene_baujahre"), baujahr) is not False
     ]
-    if schwachstellen_baureihe:
+    if risiken is not None:
+        lines += _kanonischer_risikoblock(risiken, motor_match)
+    elif schwachstellen_baureihe:
         lines.append("### Schwachstellen Baureihe:")
         for s in schwachstellen_baureihe:
             schweregrad = s.get("schweregrad")

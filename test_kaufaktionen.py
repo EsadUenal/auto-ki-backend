@@ -456,11 +456,20 @@ br_j2 = baureihe([{"bauteil": "Zündspulen (Benziner)", "beschreibung": "Zündau
 # unveraendert pruefbar.
 mo_j2 = motor([{"bauteil": "Zündspulen", "beschreibung": "Defekte Zündspulen führen zu Aussetzern.",
                 "baujahre": None, "kosten_ca": None}], kraftstoff="Benzin")
-ka_j2b, _ = aktionen(Req(baujahr=2020), br_j2, mo_j2)
+ka_j2b, ins_j2b = aktionen(Req(baujahr=2020), br_j2, mo_j2)
 check("J7 'Zündspulen' + 'Zündspulen (Benziner)' ergeben EINE Probefahrt-Aktion",
       len(ka_j2b.probefahrt.fahrzeugspezifisch) == 1)
-check("J8 und EINE Besichtigungsaktion mit beiden Evidence-IDs",
-      len(ka_j2b.besichtigung.fahrzeugspezifisch) == 1 and len(ka_j2b.besichtigung.fahrzeugspezifisch[0].evidence_ids) == 2)
+# Seit dem Root-Cause-Closing (Befund C) führt schon die kanonische Risikomenge
+# (app/risikothemen.py) beide Datensätze zu EINEM Insight zusammen: dasselbe
+# Bauteil ist ein Thema. Die Aktion trägt deshalb genau die eine, gültige
+# Evidence-ID; der zweite Datensatz bleibt als Herkunft im Insight erhalten
+# (`zusammengefuehrt`), statt als eigene ID auf ein Insight zu zeigen, das es
+# nicht mehr gibt (vgl. K: nur gültige Evidence-IDs).
+_bes_j2 = ka_j2b.besichtigung.fahrzeugspezifisch
+_ins_j2 = {i.id: i for i in ins_j2b}
+check("J8 und EINE Besichtigungsaktion, deren Evidence beide Datensätze trägt",
+      len(_bes_j2) == 1 and len(_bes_j2[0].evidence_ids) == 1
+      and len(_ins_j2[_bes_j2[0].evidence_ids[0]].zusammengefuehrt) == 1)
 check("J9 Umlaut-Bauteile nutzen den Tabellentext statt des Fallbacks",
       "volllast" in ka_j2b.probefahrt.fahrzeugspezifisch[0].aktion.lower())
 

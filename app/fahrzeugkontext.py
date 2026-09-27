@@ -53,6 +53,7 @@ import json
 import re
 
 from app.models import Fahrzeugkontext
+from app.schreibstil import entferne_gedankenstriche
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,10 @@ def _text(wert) -> str | None:
     t = str(wert).strip()
     if not t or t in ("-", "—", "n/a", "N/A", "null", "None", "?"):
         return None
-    return t
+    # Root-Cause-Closing (Befund K): Datenbanktexte laufen durch dieselbe
+    # Schreibstil-Regel wie erzeugte Texte. "KLEINE Niere — klarer Unterschied"
+    # stand sonst wörtlich im Fahrzeugprofil und im Prompt.
+    return entferne_gedankenstriche(t)
 
 
 def _kuerze(wert: str | None, maxlen: int = MAX_FREITEXT) -> str | None:

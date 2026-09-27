@@ -72,6 +72,37 @@ _JAHR = re.compile(r"\b(?:19|20)\d{2}\b")
 _BEREICH = re.compile(r"[-–]|bis")
 _ALLGEMEIN = {"", "alle", "alle baujahre", "-", "n/a", "unbekannt", "diverse"}
 
+# ── Offene Grenzen und Tendenzangaben (KaufCheck Root-Cause-Closing) ─────────
+#
+# Die Baujahresangaben der Schwachstellen-Tabellen sind Freitext. Die erste
+# Fassung kannte nur "Bereich" (min..max aller Jahreszahlen) und "Einzeljahr"
+# (exakte Mitgliedschaft). Damit wurden offene Grenzen falsch gelesen und
+# Datensätze verschwanden für genau die Fahrzeuge, die sie betreffen:
+#
+#   "ab 2015"          2016 -> False   (nur 2015 selbst passte)
+#   "bis 2012"         2009 -> False   ("bis" galt als Bereich 2012..2012)
+#   "v.a. 2014-2015"   2016 -> False   ("vor allem" ist keine Grenze)
+#
+# Gemessen: 36 Schwachstellenzeilen mit offener Einzeljahr-Grenze, dazu
+# Tendenzangaben wie "v.a." und "insbesondere". Rückrufzeilen sind nicht
+# betroffen: die amtlichen Produktionszeiträume sind durchgehend echte Bereiche
+# oder Einzeljahre und laufen unverändert durch den alten Pfad.
+_MONAT_VOR_JAHR = r"(?:\d{1,2}\s*[./]\s*)?"
+_UNGEFAEHR = re.compile(r"\b(?:ca\.?|circa|etwa|ungef[äa]hr)(?=\s|\d|$)")
+_AB_GRENZE = re.compile(rf"\b(?:ab|seit)\b[^\d;]{{0,25}}?{_MONAT_VOR_JAHR}((?:19|20)\d{{2}})\b")
+_BIS_GRENZE = re.compile(rf"\bbis\b[^\d;]{{0,25}}?{_MONAT_VOR_JAHR}((?:19|20)\d{{2}})\b")
+# "vor allem" ist eine Tendenz, keine Grenze, deshalb ausdrücklich ausgenommen.
+_VOR_GRENZE = re.compile(
+    rf"\bvor\b(?!\s+allem)[^\d;]{{0,25}}?{_MONAT_VOR_JAHR}((?:19|20)\d{{2}})\b")
+# Eine Tendenz beschreibt, wo ein Problem gehäuft auftritt, nicht, wo es endet.
+# Sie darf ein Baujahr deshalb nie hart ausschließen.
+_TENDENZ = re.compile(
+    r"\bv\.\s?a\.|\b(?:vor allem|insbesondere|haupts[äa]chlich|[üu]berwiegend|besonders"
+    r"|meist(?:ens)?|vorwiegend|vermehrt|h[äa]ufig)\b")
+_ALLE_BAUJAHRE = re.compile(r"\balle\s+baujahre\b")
+_ECHTER_BEREICH = re.compile(
+    rf"(?:19|20)\d{{2}}\s*(?:[-–]|bis)\s*(?:ca\.?\s*)?{_MONAT_VOR_JAHR}(?:19|20)\d{{2}}")
+
 
 # ── KBA-Referenz-Plausibilität ────────────────────────────────────────────────
 #
@@ -338,9 +369,61 @@ def _baujahr_passt(betroffene: str | None, baujahr: int | None) -> bool | None:
     jahre = _jahre(betroffene)
     if not jahre:
         return None
+
+    unten, oben = _grenzen(t, jahre)
+    if unten is None and oben is None:
+        # Einzeljahr(e) ohne Grenzwort: exakte Mitgliedschaft, wie bisher.
+        drin = baujahr in jahre
+    else:
+        drin = ((unten is None or baujahr >= unten)
+                and (oben is None or baujahr <= oben))
+
+    # Weiche Angaben schließen nie hart aus: "v.a. 2014-2015" heißt nicht
+    # "nur 2014-2015", und "Alle Baujahre, besonders bis 2001" gilt für alle.
+    # Die Tendenz zählt nur, wenn sie VOR der Jahresangabe steht und damit die
+    # Jahre selbst einschränkt. In "2009-2014 (insbesondere frühe Baujahre)"
+    # ist der Bereich hart, das "insbesondere" betrifft nur einen Teil davon.
+    tendenz = _TENDENZ.search(t)
+    erstes_jahr = _JAHR.search(t)
+    if ((tendenz and erstes_jahr and tendenz.start() < erstes_jahr.start())
+            or _ALLE_BAUJAHRE.search(t)):
+        return True if drin else None
+    if drin:
+        return True
+    # "bis ca. 2013": ein Jahr daneben ist unklar, nicht ausgeschlossen.
+    if _UNGEFAEHR.search(t) and (unten is not None or oben is not None):
+        abstand = (unten - baujahr) if (unten is not None and baujahr < unten) \
+            else (baujahr - oben)
+        if abstand <= 1:
+            return None
+    return False
+
+
+def _grenzen(t: str, jahre: list[int]) -> tuple[int | None, int | None]:
+    """Untere/obere Grenze einer Baujahresangabe, None = offen.
+
+    Rückgabe (None, None) heißt: keine Grenze erkennbar, die Angabe nennt
+    einzelne Jahre (exakte Mitgliedschaft).
+    """
+    if len(jahre) >= 2 and (_ECHTER_BEREICH.search(t) or _BEREICH.search(t)):
+        return min(jahre), max(jahre)
+    unten = oben = None
+    m = _AB_GRENZE.search(t)
+    if m:
+        unten = int(m.group(1))
+    m = _BIS_GRENZE.search(t)
+    if m:
+        oben = int(m.group(1))
+    else:
+        m = _VOR_GRENZE.search(t)
+        if m:
+            oben = int(m.group(1)) - 1
+    if unten is not None or oben is not None:
+        return unten, oben
     if _BEREICH.search(t):
-        return min(jahre) <= baujahr <= max(jahre)
-    return baujahr in jahre
+        # Bisheriges Verhalten für Restformen wie "2014-" bleibt erhalten.
+        return min(jahre), max(jahre)
+    return None, None
 
 
 # Signalwörter, die einen Rückruf auf Hochvolt-/Hybrid-/Elektro-Antrieb eingrenzen.

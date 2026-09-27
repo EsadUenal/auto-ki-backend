@@ -92,11 +92,19 @@ from app.verkaeuferart import (
     HAENDLER as VK_HAENDLER, PRIVAT as VK_PRIVAT, aus_request as verkaeuferart_aus_request,
 )
 
+from app.bekannte_fakten import (
+    aus_request as bekannte_fakten_aus_request, basistexte as bekannte_fakten_basistexte,
+    wartung_frage,
+)
 from app.models import Insight, Kaufaktion, Kaufaktionen, Pruefliste
 from app.pruefplan_basis import (
     BASIS_BESICHTIGUNG, BASIS_PROBEFAHRT, BASIS_VERKAEUFERFRAGEN, BASIS_DOKUMENTE,
 )
 from app.recall_filter import _baujahr_passt
+from app.risikothemen import (
+    WARTUNG_MODIFIKATION, WARTUNG_REGULAER, WARTUNG_VERSCHLEISS, WARTUNG_VORBEUGEND,
+    WARTUNG_ZUSTAND, ist_bekannt, risikoarten,
+)
 
 log = logging.getLogger(__name__)
 
@@ -246,7 +254,9 @@ def _slug(text: str | None, maxlen: int = 40) -> str:
 # 'getriebe', alles vor dem generischen 'motor').
 _KOMPONENTEN: tuple[dict, ...] = (
     # ── Sicherheit / Fahrwerk ────────────────────────────────────────────────
-    dict(schluessel="bremsen", muster=("brems",), sicherheit=True,
+    # "Elektronik (Feststellbremse, Lenksäulensteuergerät)" ist ein Elektronikthema:
+    # die Bremsscheibenprüfung sagt darüber nichts.
+    dict(schluessel="bremsen", muster=("brems",), ausschluss=("elektronik",), sicherheit=True,
          besichtigung="Bremsscheiben auf Riefen, Rostkanten und Mindeststärke prüfen, "
                       "Belagstärke an allen vier Rädern ansehen.",
          probefahrt="Bremsverhalten prüfen: Bremsweg, Rubbeln in Lenkrad oder Pedal, "
@@ -256,9 +266,19 @@ _KOMPONENTEN: tuple[dict, ...] = (
                       "Schleifen achten.",
          probefahrt="Lenkverhalten prüfen: Geradeauslauf, Rückstellung nach der Kurve und "
                     "Geräusche beim Rangieren mit vollem Einschlag."),
+    # Root-Cause-Closing (Befund D): "Hinterachsträger-Buchse" und "EDC-Dämpfer"
+    # fielen durch die Tabelle und bekamen den generischen Rückfalltext. Beides
+    # sind Fahrwerksteile mit fahrbarem Symptom.
     dict(schluessel="fahrwerk",
          muster=("fahrwerk", "vorderachse", "hinterachse", "querlenker", "stossdaempfer",
-                 "domlager", "federbein", "radaufhaengung", "achse", "koppelstange"),
+                 "domlager", "federbein", "radaufhaengung", "achse", "koppelstange",
+                 "achstraeger", "achslager", "achsaufhaengung", "gummibuchse",
+                 "lagerbuchse", "stabilisator", "daempfer", "ride control"),
+         # Eine Ladebuchse ist kein Fahrwerksteil, ein Heckklappendämpfer auch nicht,
+         # und der Schwingungsdämpfer der Kurbelwelle sitzt am Motor.
+         ausschluss=("ladebuchse", "ladedose", "ladeanschluss", "steckdose", "heckklappe",
+                     "motorhaube", "kofferraum", "schwingungsdaempfer", "torsionsdaempfer",
+                     "riemenscheibe"),
          sicherheit=True,
          besichtigung="Fahrwerk sichtprüfen: Federn, Dämpfer und Achsmanschetten auf Bruch, "
                       "Ölaustritt und Risse; Fahrzeug an jeder Ecke einfedern lassen.",
@@ -279,7 +299,10 @@ _KOMPONENTEN: tuple[dict, ...] = (
          besichtigung="Airbag-Kontrollleuchte beim Einschalten der Zündung beobachten: sie muss "
                       "aufleuchten und wieder erlöschen.",
          probefahrt=None),
-    dict(schluessel="rost", muster=("rost", "korrosion", "durchrostung"), sicherheit=False,
+    # Substring-Falle: "Hydrostößel" enthält "rost" und bekam die Rostprüfung der
+    # Radläufe. Der Stößel sitzt im Motor (siehe `motor_innen`).
+    dict(schluessel="rost", muster=("rost", "korrosion", "durchrostung"),
+         ausschluss=("stoessel",), sicherheit=False,
          besichtigung="Radläufe, Schweller, Türunterkanten, Kofferraumboden und Unterboden auf "
                       "Rost prüfen: auch unter Bodenmatte und Reserveradmulde.",
          probefahrt=None),
@@ -287,32 +310,47 @@ _KOMPONENTEN: tuple[dict, ...] = (
     # ── Antrieb / Getriebe ───────────────────────────────────────────────────
     dict(schluessel="automatikgetriebe",
          muster=("automatikgetriebe", "getriebe automatik", "automatik", "dsg", "dkg",
-                 "s tronic", "multitronic", "wandler", "cvt", "powershift"),
+                 "s tronic", "multitronic", "wandler", "cvt", "powershift", "mechatronik",
+                 "doppelkupplung"),
          sicherheit=False,
          besichtigung="Getriebe und Getriebeglocke auf Ölaustritt prüfen, soweit von außen "
                       "einsehbar.",
          probefahrt="Schaltverhalten prüfen: Schaltschläge, Ruckeln, verzögerte Gangwechsel und "
                     "Verhalten beim Anfahren aus dem Stand sowie beim Rückwärtseinlegen."),
-    dict(schluessel="getriebe", muster=("getriebe", "schaltung"), sicherheit=False,
-         besichtigung="Getriebe auf Ölaustritt prüfen und die Schaltung im Stand durchschalten.",
-         probefahrt="Alle Gänge inklusive Rückwärtsgang durchschalten und auf Hakeln, Kratzen "
-                    "und Herausspringen unter Last achten."),
-    dict(schluessel="kupplung", muster=("kupplung",), sicherheit=False,
+    # Die Kupplung steht VOR dem Getriebe: "Kupplung (bei Schaltgetriebe)" ist ein
+    # Kupplungsthema. Haldex- und Viskokupplung gehören zum Allradantrieb, die
+    # Kompressorkupplung zum mechanischen Lader: keine davon hat ein Kupplungspedal.
+    dict(schluessel="kupplung", muster=("kupplung",),
+         ausschluss=("haldex", "visko", "kompressor"), sicherheit=False,
          besichtigung=None,
          probefahrt="Kupplung prüfen: Greifpunkt, Rupfen beim Anfahren und Durchrutschen unter "
                     "Last (im hohen Gang kräftig beschleunigen)."),
+    # "Zylinderabschaltung" enthält "schaltung", Verteiler- und Achsgetriebe haben
+    # keine Schaltung: für diese Fälle passt die Schaltprüfung nicht.
+    dict(schluessel="getriebe", muster=("getriebe", "schaltung"),
+         ausschluss=("abschaltung", "verteilergetriebe", "achsgetriebe"), sicherheit=False,
+         besichtigung="Getriebe auf Ölaustritt prüfen und die Schaltung im Stand durchschalten.",
+         probefahrt="Alle Gänge inklusive Rückwärtsgang durchschalten und auf Hakeln, Kratzen "
+                    "und Herausspringen unter Last achten."),
     dict(schluessel="zweimassenschwungrad", muster=("zweimassenschwungrad", "zms", "schwungrad"),
          sicherheit=False, besichtigung=None,
          probefahrt="Auf Rasseln im Leerlauf und beim Auskuppeln sowie auf Vibrationen beim "
                     "Anlassen und Abstellen des Motors achten."),
     dict(schluessel="allradantrieb",
-         muster=("haldex", "allrad", "differential", "kardan", "antriebswelle", "verteilergetriebe"),
+         muster=("haldex", "allrad", "differential", "kardan", "antriebswelle", "verteilergetriebe",
+                 "achsgetriebe", "visko", "syncro"),
          sicherheit=False, besichtigung=None,
          probefahrt="Beim Rangieren mit vollem Lenkeinschlag auf Knacken und Rupfen im "
                     "Antriebsstrang achten."),
 
     # ── Motor / Abgas ────────────────────────────────────────────────────────
-    dict(schluessel="turbolader", muster=("turbolader", "turbo", "lader", "ladedruck"),
+    # "Charge-Pipe / J-Pipe" ist die Ladeluftleitung: Teil des Ladesystems.
+    # "Kompressor" heißt hier der mechanische Lader; der Klimakompressor gehört
+    # zur Klimaanlage und ist deshalb ausgeschlossen.
+    dict(schluessel="turbolader",
+         muster=("turbolader", "turbo", "lader", "ladedruck", "charge pipe", "chargepipe",
+                 "j pipe", "ladeluftrohr", "ladeluftschlauch", "wastegate", "kompressor"),
+         ausschluss=("klima",),
          sicherheit=False,
          besichtigung="Ladeluftschläuche und den Bereich um den Turbolader auf Ölnebel und "
                       "Ölspuren prüfen.",
@@ -339,7 +377,8 @@ _KOMPONENTEN: tuple[dict, ...] = (
          probefahrt=None),
     dict(schluessel="einspritzung",
          muster=("injektor", "einspritzdues", "einspritzpumpe", "hochdruckpumpe", "common rail",
-                 "einspritzanlage", "tandempumpe"),
+                 "einspritzanlage", "tandempumpe", "pumpe duese", "pd element", "vergaser",
+                 "kraftstoffpumpe"),
          sicherheit=False,
          besichtigung="Motor kalt starten lassen und auf unrunden Lauf sowie auf Rußspuren an den "
                       "Injektorsitzen achten.",
@@ -348,11 +387,25 @@ _KOMPONENTEN: tuple[dict, ...] = (
     # Steuerkette bewusst OHNE Probefahrt: das aussagekräftige Symptom (Rasseln) tritt
     # in den ersten Sekunden nach dem KALTSTART auf — das ist eine Besichtigungs-, keine
     # Fahrbeobachtung.
-    dict(schluessel="steuerkette", muster=("steuerkette", "kettenspanner", "steuertrieb"),
+    dict(schluessel="steuerkette",
+         muster=("steuerkette", "kettenspanner", "steuertrieb", "kettentrieb", "kettenrad"),
          sicherheit=False,
          besichtigung="Motor KALT starten lassen (vorher nicht warmlaufen lassen) und in den "
                       "ersten Sekunden auf Rasseln aus dem Steuerkettenbereich achten.",
          probefahrt=None),
+    # Root-Cause-Closing (Befund D): die Nockenwellenverstellung sitzt im Motor und
+    # ist nicht einsehbar. Ihr beobachtbares Symptom ist dasselbe Kaltstartrasseln
+    # plus Fehlerspeicher, keine Sichtprüfung. Steht VOR dem Motorinneren, weil
+    # "Nockenwellenversteller" auch "nockenwelle" enthält.
+    dict(schluessel="nockenwellenverstellung",
+         muster=("nockenwellenversteller", "nockenwellenverstell", "vanos", "valvetronic",
+                 "exzenterwelle"),
+         sicherheit=False,
+         besichtigung="Motor kalt starten lassen und in den ersten Sekunden auf Rasseln oder "
+                      "Klappern achten; die Motorkontrollleuchte beachten und den Fehlerspeicher "
+                      "auslesen lassen. Die Verstellung selbst ist ohne Zerlegen nicht einsehbar.",
+         probefahrt="Auf unrunden Lauf, Ruckeln und Leistungsverlust bei niedriger Drehzahl "
+                    "achten."),
     dict(schluessel="zahnriemen", muster=("zahnriemen", "riementrieb", "keilrippenriemen"),
          sicherheit=False,
          besichtigung="Nachweis über den letzten Zahnriemenwechsel prüfen und den Riemen, soweit "
@@ -364,9 +417,13 @@ _KOMPONENTEN: tuple[dict, ...] = (
                       "abhören.",
          probefahrt="Unter Volllast beschleunigen und auf Zündaussetzer, Ruckeln und "
                     "Leistungseinbrüche achten."),
+    # Dichtungen am Motor verraten sich über Ölspuren: "Ventildeckel-/
+    # Ölfiltergehäusedichtung" ist genau dieser Fall und fiel bisher durch.
     dict(schluessel="oelverlust",
          muster=("oelverbrauch", "oelverlust", "kolbenring", "ventilschaftdicht",
-                 "kurbelgehaeuseentlueftung", "kge", "oelpumpe", "oelwanne", "oellec"),
+                 "kurbelgehaeuseentlueftung", "kge", "oelpumpe", "oelwanne", "oellec",
+                 "ventildeckel", "ventilgehaeusedeckel", "oelfiltergehaeuse", "simmerring",
+                 "wellendichtring", "pcv", "oelschlamm", "oelkuehler"),
          sicherheit=False,
          besichtigung="Motorölstand nach Herstellervorgabe prüfen (Peilstab oder "
                       "elektronische Anzeige im Fahrzeugmenü), Motor und Stellplatz auf "
@@ -377,17 +434,47 @@ _KOMPONENTEN: tuple[dict, ...] = (
          besichtigung="Kühlmittel auf Ölspuren und den Öldeckel auf mayonnaiseartige Emulsion "
                       "prüfen; nach dem Kaltstart auf weißen Rauch achten.",
          probefahrt=None),
+    # Root-Cause-Closing (Befund D): Bauteile im MOTORINNEREN. Der Rückfalltext
+    # verlangte hier "Pleuellager und den umliegenden Bereich auf ... Leckagen
+    # prüfen": eine Sichtprüfung, die bei einer Besichtigung physisch nicht
+    # möglich ist. Prüfbar sind nur Symptome (Geräusche, Warnmeldungen) und
+    # Belege; das Bauteil selbst beurteilt nur eine Fachwerkstatt. Der Text nennt
+    # das Bauteil, deshalb gilt der Dedup-Schlüssel je Bauteil (`je_bauteil`).
+    # Steht HINTER `oelverlust`, damit "Kurbelwellensimmerring" und "Kolbenring"
+    # bei der Ölspurenprüfung bleiben, und schließt Sensoren aus
+    # ("Kurbelwellensensor" ist Elektrik).
+    dict(schluessel="motor_innen",
+         muster=("pleuel", "kurbelwelle", "kurbelnabe", "kurbeltrieb", "hauptlager",
+                 "lagerschale", "kolben", "zylinderlaufbahn", "laufbuchse", "nikasil",
+                 "nockenwelle", "ausgleichswelle", "kipphebel", "stoessel", "ventilfeder",
+                 "ventilfuehrung", "ventilspiel", "einlassventil", "verkokung", "ventilsitz",
+                 "ventiltrieb"),
+         ausschluss=("sensor", "geber"),
+         je_bauteil=True,
+         sicherheit=False,
+         besichtigung="„{bauteil}“ liegt im Motorinneren und ist bei einer Besichtigung nicht "
+                      "einsehbar. Den Motor kalt starten lassen, im Leerlauf und beim Gasgeben "
+                      "auf Klopf-, Rassel- oder Schlaggeräusche achten und prüfen, ob "
+                      "Warnleuchten dauerhaft leuchten. Den Zustand des Bauteils kann nur eine "
+                      "Fachwerkstatt beurteilen.",
+         probefahrt="Auf Klopf- oder Rasselgeräusche aus dem Motor achten, besonders unter Last "
+                    "und beim Gaswegnehmen, und Warnmeldungen im Kombiinstrument beachten."),
     dict(schluessel="kuehlung",
          muster=("wasserpumpe", "kuehlmittel", "kuehlsystem", "thermostat", "kuehler",
-                 "ladeluftkuehler", "kuehlung"),
+                 "ladeluftkuehler", "kuehlung", "kuehlwasser"),
          sicherheit=False,
          besichtigung="Kühlmittelstand und den Kühlerbereich auf Leckagen, Trockenspuren und "
                       "Dichtmittelreste prüfen.",
          probefahrt="Kühlmitteltemperatur während der Fahrt beobachten: sie sollte nach dem "
                     "Warmlaufen konstant bleiben."),
+    # Kein nacktes "sonde": es steckt in "insbesondere". Die Lambdasonde trifft
+    # über "lambda". Zylinderabschaltung und Ansaugkrümmer (Drallklappen) zeigen
+    # sich über Fehlerspeicher und Motorlauf, der Krümmer gehört nicht zur
+    # Abgasanlage.
     dict(schluessel="sensorik",
          muster=("sensor", "luftmassenmesser", "lmm", "drosselklappe", "drallklappen",
-                 "steuergeraet", "motorsteuer"),
+                 "steuergeraet", "motorsteuer", "lambda", "sekundaerluft", "leerlaufregel",
+                 "zylinderabschaltung", "ansaugkruemmer", "saugrohr"),
          sicherheit=False,
          besichtigung="Fehlerspeicher auslesen lassen und auf eine aktive Motorkontrollleuchte "
                       "achten: auch auf sporadisch gespeicherte Einträge.",
@@ -414,7 +501,9 @@ _KOMPONENTEN: tuple[dict, ...] = (
          probefahrt=None),
     dict(schluessel="infotainment",
          muster=("infotainment", "idrive", "mmi", "navi", "display", "bordcomputer",
-                 "software", "elektronik", "elektrik", "bussystem"),
+                 "software", "elektronik", "elektrik", "bussystem", "kabelbaum",
+                 "zentralverriegelung", "wegfahrsperre", "kombiinstrument",
+                 "elektrische heckklappe"),
          sicherheit=False,
          besichtigung="Alle elektrischen Funktionen im Stand durchtesten: Display/Infotainment, "
                       "Bedienelemente, Fensterheber, Beleuchtung: auf Neustarts und Aussetzer achten.",
@@ -423,9 +512,14 @@ _KOMPONENTEN: tuple[dict, ...] = (
          besichtigung="Klimaanlage einschalten und prüfen, ob sie spürbar und dauerhaft kühlt; "
                       "auf Geruch und Kompressorgeräusch achten.",
          probefahrt=None),
+    # Root-Cause-Closing (Befund B): hier stand das nackte Muster "dach". Damit
+    # bekam "CFK-Dach Klarlack", ein festes Dach mit einem Lackthema, die
+    # Öffnungs- und Dichtungsprüfung eines Schiebedachs. Die Prüfung gilt nur für
+    # Dächer und Fenster, die sich öffnen lassen, und für Wassereintritt.
     dict(schluessel="dach_fenster",
-         muster=("fensterheber", "panoramadach", "schiebedach", "dach", "wasserablauf",
-                 "undicht", "wassereinbruch", "feuchtigkeit"),
+         muster=("fensterheber", "panoramadach", "schiebedach", "glasdach", "hubdach",
+                 "faltdach", "sonnendach", "verdeck", "hardtop", "wasserablauf",
+                 "undicht", "wassereinbruch", "wassereintritt", "feuchtigkeit"),
          sicherheit=False,
          besichtigung="Fenster und Dach mehrfach öffnen und schließen; Dichtungen, Wasserabläufe, "
                       "Fußräume und Innenhimmel auf Feuchtigkeit und Wasserränder prüfen.",
@@ -441,6 +535,20 @@ _KOMPONENTEN: tuple[dict, ...] = (
          sicherheit=False,
          besichtigung="Sitze, Verkleidungen und Bedienelemente auf Verschleiß, Risse und "
                       "Feuchtigkeit prüfen. Abnutzung muss zur angegebenen Laufleistung passen.",
+         probefahrt=None),
+    # Root-Cause-Closing (Befund B): Oberflächen- und Materialthemen (Klarlack,
+    # CFK, Chrom, Beschichtung) brauchen eine Sichtprüfung auf Risse, Ablösung
+    # und Trübung, keine Spaltmaßprüfung. Steht VOR `karosserie`, weil
+    # "Klarlack" auch "lack" enthält.
+    dict(schluessel="oberflaeche",
+         muster=("klarlack", "lackabl", "lackschad", "abblaetter", "oberflaeche", "cfk",
+                 "carbon", "kohlefaser", "chrom", "zierleiste", "folierung", "truebung",
+                 "verblass", "ausbleich"),
+         je_bauteil=True,
+         sicherheit=False,
+         besichtigung="„{bauteil}“ bei Tageslicht aus mehreren Blickwinkeln ansehen: auf Risse, "
+                      "Ablösungen, Blasen, Trübungen und Spuren einer Nachlackierung oder "
+                      "Reparatur achten.",
          probefahrt=None),
     dict(schluessel="karosserie", muster=("lack", "karosserie", "tuer", "haube", "spaltmass"),
          sicherheit=False,
@@ -463,9 +571,87 @@ def _komponente(bauteil: str | None) -> dict | None:
     if not n:
         return None
     for eintrag in _KOMPONENTEN:
+        if any(a in n for a in eintrag.get("ausschluss", ())):
+            continue
         if any(m in n for m in eintrag["muster"]):
             return eintrag
     return None
+
+
+# ── Prüfklassen (Root-Cause-Closing, Befund B/D) ─────────────────────────────
+#
+# WIE sich ein Bauteil bei einem Gebrauchtwagenkauf überhaupt prüfen lässt. Die
+# Klasse beschreibt die Prüfbarkeit, nicht das Fahrzeug: ein Bremsbelag ist
+# sichtbar, ein Pleuellager nicht. Sie macht die Regel "keine unmögliche
+# Sichtprüfung" für jede Tabellenzeile testbar.
+KLASSE_SICHTBAR = "sichtbar"          # direkt ansehbar (Bremsen, Reifen, Leuchten)
+KLASSE_FAHRWERK = "fahrwerk"          # teils einsehbar, dazu fahrbares Symptom
+KLASSE_FLUESSIGKEIT = "fluessigkeit"  # Dichtungen, Öl, Kühlung: Spuren sind sichtbar
+KLASSE_ELEKTRONIK = "elektronik"      # Funktionstest, Warnleuchten, Fehlerspeicher
+KLASSE_INTERN = "intern"              # Motorinneres: nur Symptome, Diagnose, Belege
+KLASSE_ANTRIEB = "antrieb"            # Getriebe, Kupplung, Allrad: Fahrverhalten
+KLASSE_ANBAUTEIL = "anbauteil"        # Motoranbauteil, teilweise einsehbar
+KLASSE_ABGAS = "abgas"
+KLASSE_OBERFLAECHE = "oberflaeche"    # Lack, Material, Rost, Karosserie
+KLASSE_KOMFORT = "komfort"            # Klima, Dach/Fenster, Innenraum
+KLASSE_UNBEKANNT = "unbekannt"        # nicht in der Tabelle: KEINE Sichtprüfung
+
+_KLASSE_JE_EINTRAG: dict[str, str] = {
+    "bremsen": KLASSE_SICHTBAR, "lenkung": KLASSE_FAHRWERK, "fahrwerk": KLASSE_FAHRWERK,
+    "luftfederung": KLASSE_FAHRWERK, "raeder": KLASSE_SICHTBAR, "airbag": KLASSE_ELEKTRONIK,
+    "rost": KLASSE_OBERFLAECHE, "automatikgetriebe": KLASSE_ANTRIEB, "getriebe": KLASSE_ANTRIEB,
+    "kupplung": KLASSE_ANTRIEB, "zweimassenschwungrad": KLASSE_ANTRIEB,
+    "allradantrieb": KLASSE_ANTRIEB, "turbolader": KLASSE_ANBAUTEIL,
+    "partikelfilter": KLASSE_ABGAS, "agr": KLASSE_ABGAS, "adblue": KLASSE_ABGAS,
+    "einspritzung": KLASSE_ANBAUTEIL, "steuerkette": KLASSE_INTERN,
+    "nockenwellenverstellung": KLASSE_INTERN, "zahnriemen": KLASSE_ANBAUTEIL,
+    "zuendung": KLASSE_ELEKTRONIK, "oelverlust": KLASSE_FLUESSIGKEIT,
+    "zylinderkopf": KLASSE_INTERN, "motor_innen": KLASSE_INTERN,
+    "kuehlung": KLASSE_FLUESSIGKEIT, "sensorik": KLASSE_ELEKTRONIK, "abgasanlage": KLASSE_ABGAS,
+    "hochvoltbatterie": KLASSE_ELEKTRONIK, "starterbatterie": KLASSE_ELEKTRONIK,
+    "infotainment": KLASSE_ELEKTRONIK, "klimaanlage": KLASSE_KOMFORT,
+    "dach_fenster": KLASSE_KOMFORT, "beleuchtung": KLASSE_SICHTBAR,
+    "innenraum": KLASSE_KOMFORT, "oberflaeche": KLASSE_OBERFLAECHE,
+    "karosserie": KLASSE_OBERFLAECHE, "motor": KLASSE_ANBAUTEIL,
+}
+
+
+def pruefklasse(bauteil: str | None) -> str:
+    """Prüfklasse eines Bauteils; `KLASSE_UNBEKANNT`, wenn die Tabelle es nicht kennt."""
+    komp = _komponente(bauteil)
+    return _KLASSE_JE_EINTRAG.get(komp["schluessel"], KLASSE_UNBEKANNT) if komp \
+        else KLASSE_UNBEKANNT
+
+
+def _schluessel(komp: dict | None, bauteil: str) -> str:
+    """Dedup-Schlüssel einer Aktion.
+
+    Einträge, deren Text das Bauteil selbst nennt (`je_bauteil`), dürfen NICHT
+    zusammenfallen: sonst verschluckte "Pleuellager" die Kurbelnabe, weil beide
+    zum Motorinneren gehören.
+    """
+    if not komp:
+        return _slug(bauteil)
+    if komp.get("je_bauteil"):
+        return f"{komp['schluessel']}-{_slug(bauteil)}"
+    return komp["schluessel"]
+
+
+def _besichtigung(komp: dict | None, bauteil: str) -> str | None:
+    """Besichtigungstext eines Bauteils — oder None, wenn keiner sinnvoll ist.
+
+    Root-Cause-Closing (Befund D): für Bauteile, die die Tabelle nicht kennt,
+    stand hier "<Bauteil> und den umliegenden Bereich auf erkennbare
+    Auffälligkeiten prüfen (Zustand, Leckagen, Geräusche, Warnmeldungen)". Das
+    unterstellt, dass jedes Bauteil sichtbar und undicht werden kann, und
+    erzeugte beim BMW M4 eine Sichtprüfung der Pleuellager. Ohne bekannte
+    Prüfklasse entsteht jetzt KEINE Besichtigungsaktion: Verkäuferfrage und
+    Nachweis entstehen weiterhin, und eine erfundene Prüfung ist schlechter als
+    keine. Gemessen: 607 Bauteilzeilen landeten im Rückfall, die häufigsten
+    davon stehen jetzt in der Tabelle.
+    """
+    text = (komp or {}).get("besichtigung")
+    return text.format(bauteil=bauteil) if text else None
 
 
 # ── Zweites Probefahrt-Tor: explizites Fahrsymptom im Evidence-TEXT (§6) ──────
@@ -522,6 +708,8 @@ def _bauteil_aus_schwachstelle(i: Insight) -> str:
     `"<Bauteil> — bekannte Schwachstelle"`. Primär wird `ref` gelesen (belastbar),
     der Titel dient nur als Rückfallebene.
     """
+    if getattr(i, "bauteil", None):
+        return i.bauteil.strip()
     for q in i.quellen:
         if q.typ == "datenbank" and q.ref:
             return q.ref.strip()
@@ -529,14 +717,18 @@ def _bauteil_aus_schwachstelle(i: Insight) -> str:
 
 
 def _bauteil_aus_motorproblem(i: Insight) -> str:
-    """Bauteil eines Motorproblems aus dem Insight-Titel.
+    """Bauteil eines Motorproblems.
 
-    `build_insights` bildet `"<Bauteil> (<Motorbezeichnung>)"` — die Motorbezeichnung
-    steht immer als LETZTE Klammergruppe. Bauteile mit eigener Klammer
-    ("Dieselpartikelfilter (DPF)") bleiben dadurch erhalten. Nur Rückfallebene:
-    bevorzugt wird das Rohdaten-Pairing in `_motorproblem_paare`.
+    Seit dem Root-Cause-Closing trägt das Insight das Bauteil selbst. Für ältere
+    Insights bleibt der Titel die Rückfallebene: `"<Bauteil> (<Motor>)"`, neu mit
+    angehängter Beleglage (`": gemeldeter Hinweis"`). Die Motorbezeichnung steht
+    immer als LETZTE Klammergruppe; Bauteile mit eigener Klammer
+    ("Dieselpartikelfilter (DPF)") bleiben dadurch erhalten.
     """
-    return re.sub(r"\s*\([^()]*\)\s*$", "", i.titel).strip() or "Motorproblem"
+    if getattr(i, "bauteil", None):
+        return i.bauteil.strip()
+    titel = re.sub(r":\s*(?:gemeldeter Hinweis|bekanntes Motorproblem)\s*$", "", i.titel or "")
+    return re.sub(r"\s*\([^()]*\)\s*$", "", titel).strip() or "Motorproblem"
 
 
 def _motorproblem_paare(insights: list[Insight], motor_match: dict | None,
@@ -556,10 +748,23 @@ def _motorproblem_paare(insights: list[Insight], motor_match: dict | None,
     mp = [i for i in insights if i.kategorie == "motorproblem"]
     if not mp or not motor_match:
         return []
-    roh = [s for s in (motor_match.get("schwachstellen_motor") or [])
-           if _baujahr_passt(s.get("baujahre"), baujahr) is not False]
+    alle = motor_match.get("schwachstellen_motor") or []
+    # Root-Cause-Closing: Insights aus `build_insights` tragen ihre Herkunftszeile
+    # (`fakt_ref`). Das Paaren darüber ist robust gegen die kanonische
+    # Zusammenführung, die einzelne Motorproblem-Insights entfernt und damit die
+    # Positionen verschiebt.
+    je_id = {s.get("id"): s for s in alle if s.get("id") is not None}
+    roh = [s for s in alle if _baujahr_passt(s.get("baujahre"), baujahr) is not False]
     paare: list[tuple[Insight, dict]] = []
     for n, insight in enumerate(mp):
+        ref = getattr(insight, "fakt_ref", None) or ""
+        if ref.startswith("schwachstelle_motor#"):
+            try:
+                satz_ref = je_id.get(int(ref.split("#", 1)[1]))
+            except ValueError:
+                satz_ref = None
+            paare.append((insight, satz_ref or {}))
+            continue
         satz = roh[n] if n < len(roh) else None
         if satz is not None and (satz.get("beschreibung") or "").strip() == insight.beschreibung:
             paare.append((insight, satz))
@@ -621,11 +826,15 @@ class _Sammler:
     def __init__(self) -> None:
         self._pro_bereich: dict[str, dict[str, Kaufaktion]] = {
             BESICHTIGUNG: {}, PROBEFAHRT: {}, VERKAEUFERFRAGEN: {}, DOKUMENTE: {}}
+        # Root-Cause-Closing: welches Bauteil eine Aktion zuerst benannt hat und
+        # welche weiteren Bauteile unter demselben Schlüssel zusammengefallen sind.
+        self._erstes_bauteil: dict[tuple[str, str], str] = {}
+        self._weitere_bauteile: dict[tuple[str, str], list[str]] = {}
 
     def add(self, bereich: str, schluessel: str, titel: str, aktion: str, rang: int,
             *, evidence_ids: list[str] | None = None, kategorie: str | None = None,
             schweregrad: str | None = None, kostenhinweis: str | None = None,
-            gruppe: str | None = None) -> None:
+            gruppe: str | None = None, bauteil: str | None = None) -> None:
         if not aktion:
             return
         vorhanden = self._pro_bereich[bereich].get(schluessel)
@@ -638,6 +847,14 @@ class _Sammler:
                 vorhanden.prioritaet = _prioritaet(rang)
             if kostenhinweis and not vorhanden.kostenhinweis:
                 vorhanden.kostenhinweis = kostenhinweis
+            # Zwei verschiedene Bauteile derselben Prüfklasse ("Hinterachsträger-
+            # Buchse" und "EDC-Dämpfer" -> Fahrwerk) ergeben EINE Aktion. Der Text
+            # nannte bisher nur das erste Bauteil, das zweite verschwand still.
+            erstes = self._erstes_bauteil.get((bereich, schluessel))
+            if bauteil and erstes and _norm(bauteil) != _norm(erstes):
+                weitere = self._weitere_bauteile.setdefault((bereich, schluessel), [])
+                if all(_norm(bauteil) != _norm(w) for w in weitere):
+                    weitere.append(bauteil)
             return
         self._pro_bereich[bereich][schluessel] = Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-{schluessel}",
@@ -646,12 +863,21 @@ class _Sammler:
             evidence_ids=list(evidence_ids or []), kategorie=kategorie,
             schweregrad=schweregrad, kostenhinweis=kostenhinweis, gruppe=gruppe,
         )
+        if bauteil:
+            self._erstes_bauteil[(bereich, schluessel)] = bauteil
 
     def liste(self, bereich: str) -> list[Kaufaktion]:
         """Höchste Relevanz zuerst; bei Ranggleichheit stabil nach ID (§12)."""
         aktionen = sorted(self._pro_bereich[bereich].values(),
                           key=lambda a: (-a.rang, a.id))
-        return aktionen[:MAX_SPEZIFISCH_PRO_BEREICH]
+        out: list[Kaufaktion] = []
+        for a in aktionen[:MAX_SPEZIFISCH_PRO_BEREICH]:
+            weitere = self._weitere_bauteile.get((bereich, a.id.split("-", 1)[1]))
+            if weitere:
+                a = a.model_copy(update={"aktion": a.aktion + " Gilt auch für: "
+                                         + ", ".join(f"„{w}“" for w in weitere) + "."})
+            out.append(a)
+        return out
 
     def schluessel(self, bereich: str) -> set[str]:
         """Themen-/Bauteilschlüssel, die in diesem Bereich fahrzeugspezifisch belegt
@@ -799,7 +1025,7 @@ _BASIS_VERKAEUFER: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
-def _inserat_basistexte(req) -> dict[tuple[str, str], str]:
+def _inserat_basistexte(req) -> dict[tuple[str, str], tuple[str | None, str]]:
     """Basis-Punkte, die eine KONKRETE Inseratsangabe schärfen kann.
 
     Dieselbe Bauart wie `_BASIS_GETRIEBE` und `_BASIS_VERKAEUFER`, nur hängt der
@@ -821,22 +1047,23 @@ def _inserat_basistexte(req) -> dict[tuple[str, str], str]:
 
     Bewusst ohne Wertung: ob zwei Vorbesitzer viel oder wenig sind, kann ENFAL
     nicht belegen. Geprüft wird nur die Konsistenz.
+
+    ROOT-CAUSE-CLOSING (BMW M4 F82): dieselbe Falle hat danach die Wartungsangabe
+    getroffen. Die geschärfte Frage "Was umfasste die Wartung bei rund 64.000 km?"
+    fiel mit Rang 340 aus dem Limit, und der Katalog fragte wieder "Wann war die
+    letzte Wartung?". Die Regel gilt deshalb jetzt für JEDEN bekannten Fakt (Wartung,
+    HU, Unfall, Vorbesitzer, Servicehistorie) und liegt zentral in
+    app/bekannte_fakten.py: Titel und Text des Katalogpunkts werden geschärft,
+    unabhängig davon, ob eine spezifische Aktion das Limit überlebt.
     """
-    texte: dict[tuple[str, str], str] = {}
-    n = getattr(req, "vorbesitzer", None)
-    if n is not None:
-        texte[("dokumente", "zb2")] = (
-            f"Teil II nennt den letzten Halter und die Zahl der Vorhalter. Das Inserat "
-            f"gibt {n} Vorbesitzer an: Beides muss zusammenpassen, sonst nach dem Grund "
-            f"fragen. Ein Eigentumsnachweis ist das Dokument nicht. Ohne Teil II sollte "
-            f"kein Kauf stattfinden.")
-    return texte
+    return bekannte_fakten_basistexte(bekannte_fakten_aus_request(req))
 
 
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
                  fahrzeug: str | None, getriebe: str | None = None,
                  verkaeufer: str | None = None,
-                 inserat: dict[tuple[str, str], str] | None = None) -> list[Kaufaktion]:
+                 inserat: dict[tuple[str, str], tuple[str | None, str]] | None = None,
+                 ) -> list[Kaufaktion]:
     """Baut die Basis-Checkliste eines Bereichs aus dem Katalog.
 
     Dedup über die Ebenen hinweg (§18): Ein Basis-Punkt entfällt, wenn ein
@@ -860,9 +1087,12 @@ def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
         if verkaeufer:
             aktion = _BASIS_VERKAEUFER.get((bereich, schluessel), {}).get(verkaeufer, aktion)
         # Zuletzt, damit eine konkrete Inseratszahl die allgemeineren
-        # Varianten schlaegt: sie ist die spezifischste Information.
-        if inserat:
-            aktion = inserat.get((bereich, schluessel), aktion)
+        # Varianten schlaegt: sie ist die spezifischste Information. Ein bekannter
+        # Fakt ersetzt auch den TITEL, wenn der Katalogtitel ihn als unbekannt
+        # erfragt ("Wann war die letzte Wartung?").
+        if inserat and (bereich, schluessel) in inserat:
+            neuer_titel, aktion = inserat[(bereich, schluessel)]
+            titel = neuer_titel or titel
         out.append(Kaufaktion(
             id=f"{_ID_PREFIX[bereich]}-basis-{schluessel}",
             bereich=bereich, typ=TYP_BASIS, titel=titel, aktion=aktion,
@@ -1005,14 +1235,33 @@ def _herkunft_satz(i: Insight) -> str:
             else "Für diese Baureihe gemeldeter Punkt")
 
 
-def verkaeuferfrage(bauteil: str, art: str) -> str:
+def verkaeuferfrage(bauteil: str, art: str, umbau: bool = False) -> str:
     if art == GERAEUSCH:
         return (f"Sind Ihnen Auffälligkeiten zum Thema „{bauteil}“ bekannt, und wurde "
                 f"deswegen schon etwas nachgebessert oder ersetzt?")
     if art == SOFTWARE:
         return (f"Gab es Störungen im Bereich „{bauteil}“, und ist der aktuelle "
                 f"Software-Stand eingespielt?")
+    if umbau:
+        return f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet, etwas ersetzt oder umgebaut?"
     return f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?"
+
+
+def _nachweis(bauteil: str, umbau: bool) -> tuple[str, str]:
+    """(Titel, Text) des Nachweises zu einer Schwachstelle.
+
+    Befund F: eine Schwachstelle oder ein Umbau hat keine "Durchführung" und
+    bekommt deshalb nie einen "Wartungsnachweis", sondern den Beleg zu
+    Arbeiten, die daran tatsächlich gemacht wurden.
+    """
+    if umbau:
+        return (f"Nachweis zu Arbeiten und Umbauten an „{bauteil}“",
+                f"Falls an „{bauteil}“ gearbeitet, etwas ersetzt oder umgebaut wurde: "
+                f"Rechnung oder Werkstattbeleg mit Datum, Kilometerstand und Grund vorlegen "
+                f"lassen.")
+    return (f"Reparaturnachweis {bauteil}",
+            f"Falls an „{bauteil}“ gearbeitet oder etwas ersetzt wurde: Rechnung oder "
+            f"Werkstattbeleg mit Datum und Kilometerstand vorlegen lassen.")
 
 
 def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
@@ -1031,47 +1280,46 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
         # Innenraum" über das Wort "Innenraum" auf die Verschleißprüfung der Sitze
         # abbilden — fachlich eine andere Prüfung.
         komp = None if art == GERAEUSCH else _komponente(bauteil)
-        schluessel = komp["schluessel"] if komp else _slug(bauteil)
+        schluessel = _schluessel(komp, bauteil)
         rang = _rang_schwachstelle(i.schweregrad, komp)
         gruppe = _gruppe(i)
+        umbau = WARTUNG_MODIFIKATION in risikoarten(i)
 
-        # Besichtigung: Tabellentext, sonst der evidenzgebundene Fallback auf das
-        # konkrete Bauteil (§5 — kein generischer 30-Punkte-Katalog).
+        # Besichtigung: der Prüftext der Bauteilklasse. Kennt die Tabelle das
+        # Bauteil nicht, entsteht KEINE Besichtigungsaktion (Befund D, siehe
+        # `_besichtigung`): Frage und Nachweis entstehen trotzdem.
         if art == GERAEUSCH:
             besichtigung = (f"Auf den gemeldeten Punkt „{bauteil}“ achten: im Stand die "
                             f"betroffenen Verkleidungen und Bedienelemente bewegen, bei der "
                             f"Probefahrt auf schlechter Fahrbahn hinhören.")
         else:
-            besichtigung = (komp or {}).get("besichtigung") or (
-                f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
-                f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
-            )
-        s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
-              evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe=gruppe)
+            besichtigung = _besichtigung(komp, bauteil)
+        if besichtigung:
+            s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
+                  evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
+                  gruppe=gruppe, bauteil=bauteil)
 
         # Probefahrt NUR über eines der beiden Tore (§6).
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe=gruppe)
+              gruppe=gruppe, bauteil=bauteil)
 
         s.add(VERKAEUFERFRAGEN, schluessel,
-              verkaeuferfrage(bauteil, art),
+              verkaeuferfrage(bauteil, art, umbau),
               f"{_herkunft_satz(i)}: nach durchgeführten Reparaturen oder Updates fragen "
               "und Rechnungen bzw. Werkstattbelege zeigen lassen.",
               rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe=gruppe)
+              gruppe=gruppe, bauteil=bauteil)
 
         # Dokumentenebene nur bei wirklich teuren/schweren Punkten — sonst würde die
         # Dokumentenliste mit jeder Kleinigkeit volllaufen.
         if (i.schweregrad or "").strip().lower() in _HOHE_SCHWERE:
-            s.add(DOKUMENTE, schluessel, f"Reparaturnachweis {bauteil}",
-                  f"Falls wegen „{bauteil}“ gearbeitet wurde: Rechnung oder Werkstattbeleg "
-                  f"mit Datum und Kilometerstand vorlegen lassen.",
+            titel_n, text_n = _nachweis(bauteil, umbau)
+            s.add(DOKUMENTE, schluessel, titel_n, text_n,
                   rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
-              gruppe=gruppe)
+                  gruppe=gruppe, bauteil=bauteil)
 
 
 # ── 2) Motorprobleme ─────────────────────────────────────────────────────────
@@ -1084,40 +1332,49 @@ def _aus_motorproblemen(s: _Sammler, insights: list[Insight], motor_match: dict 
     erkannter Motorvariante — es gibt hier also keine Aktion "falls Motor X".
     """
     for i, satz in _motorproblem_paare(insights, motor_match, baujahr):
-        bauteil = (satz.get("bauteil") or "").strip() or _bauteil_aus_motorproblem(i)
+        bauteil = (getattr(i, "bauteil", None) or (satz.get("bauteil") or "").strip()
+                   or _bauteil_aus_motorproblem(i))
         komp = _komponente(bauteil)
-        schluessel = komp["schluessel"] if komp else _slug(bauteil)
+        schluessel = _schluessel(komp, bauteil)
         kosten = _kostenhinweis(satz.get("kosten_ca"))
         rang = _R_MOTORPROBLEM + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0) \
             + (_BONUS_KOSTEN if kosten else 0)
+        # Root-Cause-Closing (Befund E): "Bekanntes Motorproblem" stand an jedem
+        # Motorhinweis, auch an ungeprüften ("vorbeugender Wechsel diskutiert").
+        # Die Gruppe und der Herkunftssatz folgen jetzt der Beleglage.
+        bekannt = ist_bekannt(i)
+        gruppe = "Bekanntes Motorproblem" if bekannt else "Gemeldeter Motorhinweis"
+        herkunft = ("Bekanntes Problem dieser Motorisierung" if bekannt
+                    else "Für diese Motorisierung gemeldeter Punkt")
+        umbau = WARTUNG_MODIFIKATION in risikoarten(i)
 
-        besichtigung = (komp or {}).get("besichtigung") or (
-            f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
-            f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
-        )
-        s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
-              evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
-              gruppe="Bekanntes Motorproblem")
+        besichtigung = _besichtigung(komp, bauteil)
+        if besichtigung:
+            s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
+                  evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
+                  gruppe=gruppe, bauteil=bauteil)
 
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
                   evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
-              gruppe="Bekanntes Motorproblem")
+                  gruppe=gruppe, bauteil=bauteil)
 
-        kosten_satz = f" Bekannte Reparaturkosten laut Datenlage: {kosten}." if kosten else ""
+        if kosten:
+            kosten_satz = (f" Bekannte Reparaturkosten laut Datenlage: {kosten}." if bekannt
+                           else f" Hinterlegte Kostenangabe (nicht geprüft): {kosten}.")
+        else:
+            kosten_satz = ""
         s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wurde „{bauteil}“ bei diesem Motor bereits repariert oder ersetzt?",
-              f"Bekanntes Problem dieser Motorisierung: nach Reparatur, Datum, Kilometerstand "
-              f"und Rechnung fragen.{kosten_satz}",
+              verkaeuferfrage(bauteil, BAUTEIL, umbau),
+              f"{herkunft}: nach Grund, Datum, Kilometerstand und Rechnung fragen.{kosten_satz}",
               rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
-              gruppe="Bekanntes Motorproblem")
+              gruppe=gruppe, bauteil=bauteil)
 
-        s.add(DOKUMENTE, schluessel, f"Reparaturnachweis {bauteil}",
-              f"Falls „{bauteil}“ bereits bearbeitet wurde: Rechnung oder Werkstattbeleg mit "
-              f"Datum und Kilometerstand vorlegen lassen.",
+        titel_n, text_n = _nachweis(bauteil, umbau)
+        s.add(DOKUMENTE, schluessel, titel_n, text_n,
               rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
-              gruppe="Bekanntes Motorproblem")
+              gruppe=gruppe, bauteil=bauteil)
 
 
 # ── 3) Rückrufe (§10 — konservativ, nie "dein Auto ist betroffen") ───────────
@@ -1193,13 +1450,61 @@ _WARTUNG_TITEL = re.compile(r"^(?P<bauteil>.+?)(?:\s+—\s+|:\s+)kritischer Wart
 
 
 def _bauteil_aus_wartung(i: Insight) -> str:
-    """Bauteil eines Wartungs-Insights. `quellen[0].ref` trägt es direkt (von
-    build_insights gesetzt); der Titel ist nur die Rückfallebene."""
+    """Bauteil eines Wartungs-Insights. `bauteil` bzw. `quellen[0].ref` trägt es
+    direkt (von build_insights gesetzt); der Titel ist nur die Rückfallebene."""
+    if getattr(i, "bauteil", None):
+        return i.bauteil.strip()
     for q in i.quellen:
         if q.typ == "motorvarianten" and q.ref:
             return q.ref.strip()
     m = _WARTUNG_TITEL.match(i.titel)
     return (m.group("bauteil").strip() if m else i.titel.strip()) or "Wartungspunkt"
+
+
+# Root-Cause-Closing (Befund F): Frage und Nachweis hängen an der ART des
+# Wartungseintrags (app/risikothemen.py::wartungsart). Vorher bekam jeder
+# Eintrag "Wann wurde X zuletzt gemacht?" und "Beleg über die letzte
+# Durchführung von X": bei einer Kurbelnabe oder einem Umbau sinnlos. Nur die
+# reguläre Wartung hat eine "Durchführung" und einen "Wartungsnachweis".
+# Je Art: (Frage, Nachfrage, Nachweistitel, Nachweistext, Gruppe des Nachweises).
+_WARTUNG_VORLAGEN: dict[str, tuple[str, str, str, str, str]] = {
+    WARTUNG_REGULAER: (
+        "Wann wurde „{b}“ zuletzt gemacht: bei welchem Kilometerstand?",
+        "Nach Datum, Kilometerstand und Beleg fragen.",
+        "Wartungsnachweis {b}",
+        "Rechnung oder Eintrag im Serviceheft zu „{b}“ zeigen lassen, mit Datum und "
+        "Kilometerstand der letzten Ausführung.",
+        "Prüfungen und Wartung"),
+    WARTUNG_VERSCHLEISS: (
+        "Wann wurde „{b}“ zuletzt erneuert, und wie ist der aktuelle Zustand?",
+        "Nach Datum, Kilometerstand und Rechnung des letzten Tauschs fragen.",
+        "Tauschnachweis {b}",
+        "Falls „{b}“ bereits erneuert wurde: Rechnung mit Datum und Kilometerstand zeigen "
+        "lassen.",
+        "Prüfungen und Wartung"),
+    WARTUNG_VORBEUGEND: (
+        "Wurde „{b}“ bereits vorsorglich erneuert oder instand gesetzt?",
+        "Falls ja: nach Datum, Kilometerstand, Umfang und Rechnung fragen.",
+        "Nachweis zu Arbeiten an „{b}“",
+        "Falls an „{b}“ vorsorglich gearbeitet wurde: Rechnung oder Werkstattbeleg mit "
+        "Datum, Kilometerstand und Umfang zeigen lassen.",
+        "Reparaturen und Umbauten"),
+    WARTUNG_ZUSTAND: (
+        "Wurde „{b}“ bereits geprüft oder daran gearbeitet?",
+        "Falls ja: nach Datum, Kilometerstand, Befund und Beleg fragen.",
+        "Nachweis zu Prüfungen oder Arbeiten an „{b}“",
+        "Falls „{b}“ geprüft oder daran gearbeitet wurde: Werkstattbeleg mit Datum, "
+        "Kilometerstand und Befund zeigen lassen.",
+        "Reparaturen und Umbauten"),
+    WARTUNG_MODIFIKATION: (
+        "Wurde an „{b}“ etwas umgebaut, nachgerüstet oder verändert?",
+        "Falls ja: was, wann, von welcher Werkstatt und aus welchem Grund; bei "
+        "eintragungspflichtigen Änderungen die Eintragung zeigen lassen.",
+        "Nachweis zu Umbauten an „{b}“",
+        "Falls an „{b}“ etwas umgebaut oder nachgerüstet wurde: Rechnung, Teilebeleg und, "
+        "falls erforderlich, die Eintragung zeigen lassen.",
+        "Reparaturen und Umbauten"),
+}
 
 
 def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
@@ -1223,21 +1528,26 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
             continue
         bauteil = _bauteil_aus_wartung(i)
         komp = _komponente(bauteil)
-        schluessel = f"wartung-{komp['schluessel'] if komp else _slug(bauteil)}"
-        intervall_satz = f" {i.beschreibung}" if i.beschreibung else ""
+        schluessel = f"wartung-{_schluessel(komp, bauteil)}"
+        art = getattr(i, "wartungsart", None) or WARTUNG_REGULAER
+        frage, nachfrage, dok_titel, dok_text, dok_gruppe = _WARTUNG_VORLAGEN.get(
+            art, _WARTUNG_VORLAGEN[WARTUNG_REGULAER])
+        # Befund E: "mit erhöhter Bedeutung" behauptete für jeden, auch ungeprüften
+        # Eintrag eine Wichtigkeit. Der Satz folgt jetzt der Beleglage.
+        herkunft = ("Hinterlegter Punkt für diese Motorisierung" if ist_bekannt(i)
+                    else "Für diese Motorisierung hinterlegter, ungeprüfter Hinweis")
+        # Das Intervall gehört nur zur regulären Wartung in die Frage; bei den
+        # übrigen Arten steht die Aussage auf der Evidence-Karte.
+        satz = f" {i.beschreibung}" if (art == WARTUNG_REGULAER and i.beschreibung) else ""
 
-        s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wann wurde „{bauteil}“ zuletzt gemacht: bei welchem Kilometerstand?",
-              f"Wartungspunkt mit erhöhter Bedeutung für diese Motorisierung.{intervall_satz} "
-              f"Nach Datum, Kilometerstand und Beleg fragen.",
+        s.add(VERKAEUFERFRAGEN, schluessel, frage.format(b=bauteil),
+              f"{herkunft}.{satz} {nachfrage}",
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe="Wartung und Technik")
+              gruppe="Wartung und Technik", bauteil=bauteil)
 
-        s.add(DOKUMENTE, schluessel, f"Wartungsnachweis {bauteil}",
-              f"Beleg über die letzte Durchführung von „{bauteil}“ zeigen lassen. "
-              f"Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand.",
+        s.add(DOKUMENTE, schluessel, dok_titel.format(b=bauteil), dok_text.format(b=bauteil),
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe="Prüfungen und Wartung")
+              gruppe=dok_gruppe, bauteil=bauteil)
 
 
 # ── 4b) Technischer Web-Fallback ─────────────────────────────────────────────
@@ -1275,7 +1585,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         art = i.kategorie.removeprefix("web_")
         bauteil = _web_bauteil(i)
         komp = _komponente(bauteil)
-        schluessel = komp["schluessel"] if komp else _slug(bauteil)
+        schluessel = _schluessel(komp, bauteil)
 
         if art == "rueckruf":
             s.add(VERKAEUFERFRAGEN, f"rueckruf-web-{schluessel}",
@@ -1302,25 +1612,25 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                  gruppe="Wartung und Technik")
+                  gruppe="Wartung und Technik", bauteil=bauteil)
+            # Web-Wartungsfakten sind geprüfte Intervallangaben
+            # (app/technical_research.py), also reguläre Wartung.
             s.add(DOKUMENTE, f"wartung-web-{schluessel}", f"Wartungsnachweis {bauteil}",
-                  f"Beleg über die letzte Durchführung von „{bauteil}“ zeigen lassen. "
-                  f"Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand.",
+                  _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil),
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                  gruppe="Prüfungen und Wartung")
+                  gruppe="Prüfungen und Wartung", bauteil=bauteil)
             continue
 
-        # art == "schwachstelle"
-        besichtigung = (komp or {}).get("besichtigung") or (
-            f"{bauteil} und den umliegenden Bereich auf erkennbare Auffälligkeiten prüfen "
-            f"(Zustand, Leckagen, Geräusche, Warnmeldungen)."
-        )
-        s.add(BESICHTIGUNG, schluessel, bauteil,
-              f"{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
-              f"ENFAL-Fahrzeugdatenbank.)",
-              _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
-              evidence_ids=[i.id], kategorie="web_schwachstelle",
-              gruppe="Hinweis aus der Webrecherche")
+        # art == "schwachstelle". Ohne bekannte Prüfklasse keine Besichtigung
+        # (Befund D, siehe `_besichtigung`).
+        besichtigung = _besichtigung(komp, bauteil)
+        if besichtigung:
+            s.add(BESICHTIGUNG, schluessel, bauteil,
+                  f"{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
+                  f"ENFAL-Fahrzeugdatenbank.)",
+                  _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
+                  evidence_ids=[i.id], kategorie="web_schwachstelle",
+                  gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
@@ -1333,7 +1643,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   f"ENFAL-Fahrzeugdatenbank.)",
                   _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
-                  gruppe="Hinweis aus der Webrecherche")
+                  gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
@@ -1341,7 +1651,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
               f"Modells: nach durchgeführten Reparaturen fragen und Rechnungen bzw. "
               f"Werkstattbelege zeigen lassen.",
               _R_WEB_SCHWACH, evidence_ids=[i.id], kategorie="web_schwachstelle",
-              gruppe="Hinweis aus der Webrecherche")
+              gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
 
 # ── 4c) Laufleistungsbezogene Wartungspunkte (P2-5) ──────────────────────────
@@ -1372,7 +1682,8 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
         return
     for w in getattr(kontext, "wartungshinweise", None) or []:
         komp = _komponente(w.bauteil)
-        basis = komp["schluessel"] if komp else _slug(w.bauteil)
+        # Derselbe Schlüssel wie `_aus_wartung`, sonst entstünde ein zweiter Punkt.
+        basis = _schluessel(komp, w.bauteil)
         schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
         rang = (_R_WARTUNG_RELEVANT if w.status in ("im_bereich", "darueber")
                 else _R_WARTUNG)
@@ -1381,13 +1692,13 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
               f"Wurde „{w.bauteil}“ bereits gemacht, und wenn ja, wann und bei welchem Kilometerstand?",
               f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-              gruppe="Wartung und Technik")
+              gruppe="Wartung und Technik", bauteil=w.bauteil)
 
         s.add(DOKUMENTE, schluessel, f"Wartungsnachweis {w.bauteil}",
               f"{w.hinweis} Rechnung oder Eintrag im Serviceheft mit Datum und "
               f"Kilometerstand zeigen lassen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-              gruppe="Prüfungen und Wartung")
+              gruppe="Prüfungen und Wartung", bauteil=w.bauteil)
 
 
 # ── 5) Inserat-Angaben (§8 — nur was der Nutzer tatsächlich angegeben hat) ───
@@ -1450,16 +1761,14 @@ def _aus_inserat(s: _Sammler, req) -> None:
     wartung = wartungsangabe_aus_request(req)
     if wartung is not None:
         km_jetzt = getattr(req, "kilometerstand", None)
+        # Frage und Text aus EINER Quelle (app/bekannte_fakten.py): dieselbe
+        # Fassung steht auch im Katalogpunkt, falls diese Aktion das Limit nicht
+        # überlebt.
+        frage, erlaeuterung = wartung_frage(bekannte_fakten_aus_request(req))
         if wartung_widerspruch_km(wartung, km_jetzt):
             # Wartung oberhalb des aktuellen Tachostands: kein Nachweiswunsch,
             # sondern ein Widerspruch im Inserat. Er wird benannt, nicht geglättet.
-            s.add(VERKAEUFERFRAGEN, "wartung-inserat",
-                  "Wie passt die genannte Wartung zum angegebenen Kilometerstand?",
-                  f"Das Inserat nennt eine letzte Wartung {wartung.anzeige()}, der "
-                  f"angegebene Kilometerstand liegt mit "
-                  f"{km_jetzt:,} km darunter. ".replace(",", ".") +
-                  "Eine der beiden Angaben stimmt nicht: vor der Besichtigung klären "
-                  "und am Beleg nachvollziehen.",
+            s.add(VERKAEUFERFRAGEN, "wartung-inserat", frage, erlaeuterung,
                   _R_DOKUMENT_KERN, kategorie="inserat", gruppe="Angaben aus dem Inserat")
         else:
             # Die ANGABE nennt Kilometerstand bzw. Datum, aber nie den Umfang.
@@ -1467,11 +1776,7 @@ def _aus_inserat(s: _Sammler, req) -> None:
             # sondern durch die geschärfte ersetzt: nicht mehr "wann war sie",
             # sondern "was wurde gemacht und wo ist der Beleg". Derselbe
             # Schlüssel blendet den Katalogpunkt aus.
-            s.add(VERKAEUFERFRAGEN, "wartung-inserat",
-                  f"Was umfasste die im Inserat genannte Wartung {wartung.anzeige()}?",
-                  f"Das Inserat nennt eine letzte Wartung {wartung.anzeige()}. Offen bleibt "
-                  f"der Umfang: nach den ausgeführten Arbeiten, der Werkstatt und dem Beleg "
-                  f"fragen und beides bei der Besichtigung zeigen lassen.",
+            s.add(VERKAEUFERFRAGEN, "wartung-inserat", frage, erlaeuterung,
                   _R_ANGABE_FEHLT + 40, kategorie="inserat",
                   gruppe="Angaben aus dem Inserat")
             s.add(DOKUMENTE, "wartung-inserat",

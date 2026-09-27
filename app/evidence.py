@@ -30,9 +30,19 @@ from app.recall_filter import (
 # DATA-SAFETY-RUNTIME-GATE: zentrale Allowed-List für Baureihen-Schwachstellen,
 # geteilt mit build_db_context (car_lookup.py) — analog zu recall_filter.
 from app.motor_applicability import gefilterte_schwachstellen
+from app.risikothemen import WARTUNG_REGULAER, WARTUNG_VERSCHLEISS, kanonisiere, wartungsart
 from app.verification import is_verified
 
 log = logging.getLogger(__name__)
+
+
+def _als_satz(text: str | None) -> str:
+    """Freitext aus der Datenbank als Satz: großer Anfang, Satzzeichen am Ende."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = t[0].upper() + t[1:]
+    return t if t.endswith((".", "!", "?")) else t + "."
 
 # ── Trust-Stufen (siehe models.Insight.trust) ────────────────────────────────
 TRUST_VERIFIED = "verified"
@@ -143,15 +153,32 @@ def _typen(quellen: list[EvidenceQuelle]) -> list[str]:
     return out
 
 
-def _einfluss_schwachstelle(schweregrad: str | None, check_typ: str) -> str:
+def _einfluss_schwachstelle(schweregrad: str | None, check_typ: str,
+                            bekannt: bool = True) -> str:
     s = (schweregrad or "").strip().lower()
     if check_typ == "verkauf":
         return "Wertmindernd: beim Verkauf offen kommunizieren."
+    # Root-Cause-Closing (Befund E/J): ein ungeprüfter Hinweis darf nicht wie ein
+    # festgestelltes Risiko klingen. Schwere und Beleglage bleiben getrennte
+    # Achsen; der Satz nennt deshalb beide, statt die Schwere allein sprechen zu
+    # lassen.
+    if not bekannt:
+        if s in ("hoch", "kritisch", "sehr hoch"):
+            return ("Laut Datenbank potenziell schwerwiegend, aber nicht geprüft: gezielt "
+                    "nachfragen und prüfen lassen, nicht als festgestellten Mangel werten.")
+        return ("Gemeldeter Hinweis, nicht geprüft: gezielt nachfragen, nicht als "
+                "festgestellten Mangel werten.")
     if s in ("hoch", "kritisch", "sehr hoch"):
         return "Erhöht das technische Kaufrisiko deutlich."
     if s in ("mittel", "moderat"):
         return "Moderates technisches Risiko."
     return "Zu beachtender Schwachpunkt vor dem Kauf."
+
+
+def _fakt_ref(tabelle: str, fakt: dict | None) -> str | None:
+    """Herkunftszeile eines DB-Fakts, z.B. "schwachstelle_motor#6"."""
+    fid = (fakt or {}).get("id")
+    return f"{tabelle}#{fid}" if fid is not None else None
 
 
 def build_insights(
@@ -231,7 +258,9 @@ def build_insights(
             confidence=datenqualitaet(s, trust_schwachstelle, passt, beschreibung_s),
             schweregrad=(s.get("schweregrad") or None),
             trust=trust_schwachstelle,
-            einfluss=_einfluss_schwachstelle(s.get("schweregrad"), check_typ),
+            einfluss=_einfluss_schwachstelle(s.get("schweregrad"), check_typ, bekannt),
+            bauteil=(s.get("bauteil") or None),
+            fakt_ref=_fakt_ref("schwachstelle_baureihe", s),
         ))
 
     # ── 2) Rückrufe (KBA-Daten) ────────────────────────────────────────────────
@@ -352,21 +381,39 @@ def build_insights(
                                       titel=_db_quellentitel("ENFAL-Motorvariantendaten",
                                                              trust_motorproblem))]
             kosten = s.get("kosten_ca")
+            # "—" oder "Herstellergarantie" sind keine Kostenangabe: vorher entstand
+            # daraus "Mögliche Reparaturkosten ca. —.".
+            kosten = kosten if kosten and re.search(r"\d", str(kosten)) else None
+            titel_mp = (f"{s.get('bauteil') or 'Motorproblem'} "
+                        f"({motor_match.get('bezeichnung') or 'Motor'})")
             if check_typ == "verkauf":
                 einfluss = "Wertrelevant. Zustand des Bauteils belegen."
             else:
-                einfluss = (f"Mögliche Reparaturkosten ca. {kosten}. Das erhöht das technische Risiko."
-                            if kosten else "Erhöht das technische Risiko.")
+                # Root-Cause-Closing (Befund E/J): dieselbe Trennung wie bei den
+                # Baureihen-Schwachstellen. Ein ungeprüfter Motorhinweis heißt
+                # "gemeldeter Hinweis" und klingt nicht wie ein festgestelltes Risiko.
+                bekannt_mp = (trust_motorproblem == TRUST_VERIFIED
+                              and not _EINZELBERICHT.search(s.get("beschreibung") or ""))
+                titel_mp += f": {'bekanntes Motorproblem' if bekannt_mp else 'gemeldeter Hinweis'}"
+                if bekannt_mp:
+                    einfluss = (f"Mögliche Reparaturkosten ca. {kosten}. Das erhöht das "
+                                f"technische Risiko." if kosten else "Erhöht das technische Risiko.")
+                else:
+                    einfluss = ("Gemeldeter Hinweis, nicht geprüft: gezielt nachfragen, nicht "
+                                "als festgestellten Mangel werten."
+                                + (f" Hinterlegte Kostenangabe: ca. {kosten}." if kosten else ""))
             insights.append(Insight(
                 id=_id("motorproblem"),
                 kategorie="motorproblem",
-                titel=f"{s.get('bauteil') or 'Motorproblem'} ({motor_match.get('bezeichnung') or 'Motor'})",
+                titel=titel_mp,
                 beschreibung=(s.get("beschreibung") or "").strip(),
                 quellen_typen=_typen(quellen),
                 quellen=quellen,
                 confidence=datenqualitaet(s, trust_motorproblem, passt, s.get("beschreibung")),
                 trust=trust_motorproblem,
                 einfluss=einfluss,
+                bauteil=(s.get("bauteil") or None),
+                fakt_ref=_fakt_ref("schwachstelle_motor", s),
             ))
 
     # ── 4) Kritische Wartungspunkte der erkannten Motorvariante ────────────────
@@ -409,7 +456,11 @@ def build_insights(
             quellen = [EvidenceQuelle(typ="motorvarianten", ref=bauteil,
                                       titel=_db_quellentitel("ENFAL-Wartungsdaten",
                                                              trust_wartung))]
-            teile = [(w.get("hinweis") or "").strip()]
+            art = wartungsart(w.get("intervall"), w.get("hinweis"), bauteil)
+            # Der Hinweis ist Freitext ("thermisch hoch belastet") und stand
+            # bisher ohne Satzzeichen vor dem Intervallsatz: "... belastet
+            # Hinterlegter Wartungshinweis: ...".
+            teile = [_als_satz(w.get("hinweis"))]
             if w.get("intervall"):
                 # §8 DATA-SAFETY-RUNTIME-GATE: "Vorgesehenes Intervall" behauptet eine
                 # Herstellervorgabe. Der Audit hat gemessen, dass 284 von 1.497
@@ -422,19 +473,48 @@ def build_insights(
                 wortlaut = ("Vorgesehenes Intervall" if trust_wartung == TRUST_VERIFIED
                             else "Hinterlegter Wartungshinweis")
                 teile.append(f"{wortlaut}: {str(w['intervall']).strip()}.")
+            beschreibung_w = " ".join(t for t in teile if t).strip()
+            bekannt_w = (trust_wartung == TRUST_VERIFIED
+                         and not _EINZELBERICHT.search(beschreibung_w))
+            motor_name = motor_match.get("bezeichnung") or "Motor"
+            # Root-Cause-Closing (Befund E): der Titel lautete für JEDEN Eintrag
+            # "kritischer Wartungspunkt", auch für ungeprüfte Community-Hinweise
+            # ("cheap insurance"). Ob ein Punkt kritisch ist, sagt die Tabelle
+            # nicht, sie heißt nur so. Der Titel nennt jetzt Art und Beleglage.
+            if art == WARTUNG_REGULAER:
+                art_titel = "Wartungspunkt" if bekannt_w else "hinterlegter Wartungshinweis"
+            else:
+                art_titel = "Hinweis" if bekannt_w else "gemeldeter Hinweis"
+            if art == WARTUNG_REGULAER:
+                einfluss_w = "Vor dem Kauf Durchführung und Nachweis klären."
+            elif art == WARTUNG_VERSCHLEISS:
+                einfluss_w = "Vor dem Kauf Zustand und letzten Tausch klären."
+            else:
+                einfluss_w = ("Vor dem Kauf klären, ob daran bereits gearbeitet wurde, und "
+                              "Belege zeigen lassen.")
+            if not bekannt_w:
+                einfluss_w += " Nicht als Herstellervorgabe belegt."
             insights.append(Insight(
                 id=_id("wartung"),
                 kategorie="wartung",
-                titel=f"{bauteil}: kritischer Wartungspunkt ({motor_match.get('bezeichnung') or 'Motor'})",
-                beschreibung=" ".join(t for t in teile if t).strip(),
+                titel=f"{bauteil}: {art_titel} ({motor_name})",
+                beschreibung=beschreibung_w,
                 quellen_typen=_typen(quellen),
                 quellen=quellen,
-                # Provenance: die Daten hängen direkt an der eindeutig erkannten
-                # Motorvariante -> "hoch". Kein Bezug zum Schweregrad (den gibt es
-                # für Wartungspunkte gar nicht).
-                confidence="hoch",
+                # Root-Cause-Closing (Befund E): hier stand pauschal "hoch", weil die
+                # Daten an der erkannten Motorvariante hängen. Das ist die
+                # ZUORDNUNG, nicht die BELEGLAGE, und machte jeden der 1.476
+                # ungeprüften Einträge zur scheinbar belastbaren Angabe (gemessen:
+                # 0 davon verifiziert). Jetzt dieselbe Regel wie für Schwachstellen
+                # und Motorprobleme. Die Variantenzuordnung ist die Applicability:
+                # sie steht als `passt=True` darin, weil ein Wartungseintrag nur bei
+                # eindeutig erkanntem Motor überhaupt entsteht.
+                confidence=datenqualitaet(w, trust_wartung, True, beschreibung_w),
                 trust=trust_wartung,
-                einfluss="Vor dem Kauf Durchführung und Nachweis klären.",
+                einfluss=einfluss_w,
+                bauteil=bauteil,
+                fakt_ref=_fakt_ref("kritische_wartung", w),
+                wartungsart=art,
             ))
 
     # ── 5) Marktvergleich (Marktvergleich 2.0 — deterministisch) ───────────────
@@ -483,7 +563,18 @@ def build_insights(
                 # siehe Begründung in app/empfehlungs_floor.py.
                 trust=TRUST_WEB,
                 einfluss=_WEB_EINFLUSS[fakt.kategorie],
+                bauteil=((fakt.bauteil or "").replace("_", " ") or None),
             ))
+
+    # ── 7) Kanonische Risikomenge (Root-Cause-Closing, Befund C/J) ─────────────
+    # Dasselbe technische Thema aus verschiedenen Tabellen wird hier zu EINEM
+    # Insight zusammengeführt, bevor irgendein Konsument es sieht: Evidence-
+    # Karten, Key Findings, Prüfplan, Empfehlungsgründe, Laufleistung und der
+    # LLM-Kontext arbeiten damit auf derselben finalen Menge. Die Evidenz wird
+    # dabei nie erhöht (app/risikothemen.py). Nur KaufCheck: der Verkaufscheck
+    # hat einen eigenen Evidence-Filter und bleibt unverändert.
+    if check_typ == "kauf":
+        insights = kanonisiere(insights)
 
     return insights
 
@@ -647,13 +738,31 @@ def _marktvergleich_insight(_id, web_quellen, marktanalyse, marktpreis_min, mark
 # bleibt Source of Truth: gelieferte IDs werden gegen die echten Insight-IDs
 # gefiltert (Halluzinationen verworfen). Confidence/Provenance ändert das LLM nicht.
 
+# Root-Cause-Closing (Befund E): hier stand "(DB, geprüft)" an JEDER
+# Datenbank-Aussage, auch an den 1.476 ungeprüften Wartungseinträgen und den
+# ungeprüften Motorproblemen. Das Modell bekam einen Community-Hinweis damit als
+# geprüfte Tatsache mit "Confidence: hoch" geliefert und begründete darauf die
+# Kaufempfehlung. Das Label folgt jetzt der tatsächlichen Beleglage.
 _EVIDENCE_TYP_LABEL = {
-    "schwachstelle": "Schwachstelle (DB, geprüft)",
+    "schwachstelle": "Schwachstelle",
     "rueckruf":      "Rückruf (KBA)",
-    "motorproblem":  "Motorproblem (DB, geprüft)",
+    "motorproblem":  "Motorproblem",
     "marktvergleich": "Marktvergleich (Websuche)",
-    "wartung":       "Kritischer Wartungspunkt (DB, geprüft)",
+    "wartung":       "Wartungshinweis",
+    "web_schwachstelle": "Schwachstelle (Webrecherche)",
+    "web_wartung":   "Wartungsangabe (Webrecherche)",
+    "web_rueckruf":  "Rückruf-Hinweis (Webrecherche)",
 }
+_DB_AUSSAGEN = ("schwachstelle", "motorproblem", "wartung")
+
+
+def _evidence_label(i: Insight) -> str:
+    basis = _EVIDENCE_TYP_LABEL.get(i.kategorie, i.kategorie)
+    if i.kategorie in _DB_AUSSAGEN:
+        herkunft = ("ENFAL-DB, geprüft" if i.trust == TRUST_VERIFIED
+                    else "ENFAL-DB, ungeprüft: nur als gemeldeter Hinweis verwenden")
+        return f"{basis} ({herkunft})"
+    return basis
 
 
 # §27/§28: Wording, das das LLM WÖRTLICH für die jeweilige Rückruf-Betroffenheits-
@@ -670,13 +779,17 @@ def format_evidence_for_prompt(insights: list[Insight]) -> str:
     if not insights:
         return ""
     lines = [
-        "=== VERFÜGBARE EVIDENCE (Schicht A, Backend-geprüft) ===",
+        "=== VERFÜGBARE EVIDENCE (Schicht A, vom Backend bereitgestellt) ===",
         "Referenziere in den *_evidence_ids-Feldern NUR IDs aus dieser Liste: sonst leere Liste.",
         "Bei Rückrufen (kategorie=rueckruf) gilt die angegebene Betroffenheits-Formulierung "
         "WÖRTLICH: schreibe NIEMALS 'betrifft dein Fahrzeug' ohne FIN-Prüfung.",
+        "Confidence ist die BELEGLAGE der Aussage (hoch/mittel/niedrig), nicht ihre Schwere. "
+        "Eine Aussage mit Confidence niedrig ist ein ungeprüfter, gemeldeter Hinweis: nenne "
+        "sie so, stelle sie nie als festgestellte Tatsache, Pflichtwartung oder "
+        "Herstellervorgabe dar und stütze die Kaufempfehlung nicht auf sie.",
     ]
     for i in insights:
-        label = _EVIDENCE_TYP_LABEL.get(i.kategorie, i.kategorie)
+        label = _evidence_label(i)
         zeile = f"[{i.id}] {label} | Confidence: {i.confidence} | {i.titel}"
         if i.kategorie == "rueckruf" and i.applicability:
             wortlaut = RUECKRUF_APPLICABILITY_TEXT.get(i.applicability, i.applicability)

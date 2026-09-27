@@ -77,7 +77,18 @@ from app.web_search import (
     tavily_search_with_fallback, results_to_context, results_to_belege, curate_results,
     KATEGORIE_MARKTPREISE, US_QUELLEN_AUSSCHLUSS,
 )
-from app.schreibstil import STILREGEL_GEDANKENSTRICHE
+from app.schreibstil import (
+    STILREGEL_GEDANKENSTRICHE, bereinige_nutzertexte, entferne_gedankenstriche,
+)
+from app.bekannte_fakten import (
+    aus_request as bekannte_fakten_aus_request,
+    bereinige_bericht as bekannte_fakten_bereinige_bericht,
+)
+from app.risikothemen import RISIKO_KATEGORIEN, bauteil_kern
+from app.vergleichstabelle import (
+    als_markdown as vergleich_als_markdown, baue_zeilen as baue_vergleichszeilen,
+    setze_in_bericht as setze_vergleichstabelle,
+)
 from app.getriebe import (
     aus_request as getriebe_aus_request, prompt_zeile as getriebe_prompt_zeile,
 )
@@ -114,7 +125,7 @@ Du bist ein erfahrener KFZ-Kaufberater. Du analysierst ein Fahrzeug-Inserat und 
 
 Du erhältst:
 1. INSERAT-DATEN: Angaben aus dem Inserat
-2. DB-PROFIL: geprüfte Fakten (Schwachstellen, Rückrufe, Specs), zuverlässig
+2. DB-PROFIL: Fahrzeugdaten der ENFAL-Datenbank. Technische Daten (Specs) und die dort aufgeführten Rückrufe sind Referenzdaten. Schwachstellen und Wartungshinweise tragen dagegen eine eigene BELEGLAGE (siehe Abschnitt "Technische Hinweise"): ein "gemeldeter Hinweis" ist ein ungeprüfter Eintrag, oft Werkstatt- oder Community-Erfahrung, und KEINE Herstellervorgabe.
 3. WEB-ERGEBNISSE: aktuelle Marktpreise aus Tavily, nur zur Orientierung
 
 AUSGABE: Ausschließlich gültiges JSON, kein Text davor oder danach.
@@ -165,6 +176,11 @@ KAUFEMPFEHLUNG: sechs Risikostufen statt Ja/Nein:
   - "hohes_risiko": mehrere Risikofaktoren gleichzeitig (z.B. hohe Laufleistung + bekannte teure Schwachstelle + fehlende Angaben) ODER Preis "extrem_guenstig" ohne plausible Erklärung im Inserat.
   - "finger_weg": Inserat unplausibel/widersprüchlich, Betrugsverdacht, oder gravierende bekannte Mängel ohne Kompensation im Preis.
 
+BELEGLAGE UND KAUFEMPFEHLUNG:
+- Stützt du eine strengere Stufe ("nur_mit_werkstattpruefung" oder strenger) auf konkrete technische Punkte, müssen diese BELEGT sein (Beleglage "belegt" bzw. Confidence mindestens "mittel"). Eine Werkstattprüfung darfst du auch aus allgemeinen Gründen empfehlen (Alter, Leistungsklasse, lückenhafte Nachweise); dann nenne genau diese Gründe.
+- Ein gemeldeter Hinweis (Datenqualität niedrig) darf ergänzend erscheinen, aber nie allein die Empfehlung begründen. Schreibe nie, ein Bauteil sei "bei dieser Laufleistung fällig", "jetzt zu tauschen" oder "vorgeschrieben", wenn dafür nur ein gemeldeter Hinweis vorliegt.
+- Übernimm Szene-Begriffe aus der Datenbank (z.B. englische Werkstattjargon-Wendungen) nicht als Empfehlung von ENFAL.
+
 MOTORSPEZIFISCHE SCHWACHSTELLEN NUR MIT BEKANNTEM MOTOR:
 Der Kontext enthält eine Zeile "MOTOR-STATUS: erkannt (...)" oder "MOTOR-STATUS: nicht erkannt".
 - Nicht erkannt, aber DB-Kontext zeigt Schwachstellen mehrerer Motorvarianten: NICHT als feststehende Risiken für DAS Inserat ausgeben. Entweder klar als bedingt kennzeichnen ("Falls Motor X: ...") oder zuerst nach der genauen Motorisierung fragen, wenn die Schwachstellen stark zwischen Varianten abweichen.
@@ -179,7 +195,7 @@ Kurzzeile: Was wurde identifiziert (Baureihe, Motor, Baujahr).
 Risikostufe in Fettdruck (z.B. **NUR MIT WERKSTATTPRÜFUNG**), darunter 2–4 Sätze technische Begründung: gestützt auf konkrete Fakten (Schwachstellen, Marktpreis-Abweichung, Plausibilität), nie Marketing-Formulierungen ("toller Wagen", "beliebtes Modell").
 
 ## Kritische Risiken
-Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher Schweregrad, KBA-Rückrufe), dann mittlere, zuletzt geringe/kosmetische Punkte. JEDER Rückruf, der im DB-Profil bzw. in der Evidence steht, gehört in diesen Abschnitt — vollzählig und mit seiner KBA-Referenz. Die Obergrenze von 3–5 Punkten gilt ERST DANACH, also nur noch für Schwachstellen und sonstige Punkte. Ein Software-, Komfort- oder Kosmetikthema darf einen Rückruf NIEMALS aus der Liste verdrängen. Motorspezifische Punkte nur gemäß Regel oben.
+Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher Schweregrad, KBA-Rückrufe), dann mittlere, zuletzt geringe/kosmetische Punkte. JEDER Rückruf, der im DB-Profil bzw. in der Evidence steht, gehört in diesen Abschnitt — vollzählig und mit seiner KBA-Referenz. Die Obergrenze von 3–5 Punkten gilt ERST DANACH, also nur noch für Schwachstellen und sonstige Punkte. Ein Software-, Komfort- oder Kosmetikthema darf einen Rückruf NIEMALS aus der Liste verdrängen. Motorspezifische Punkte nur gemäß Regel oben. Einen gemeldeten Hinweis kennzeichnest du hier ausdrücklich als "gemeldeter Hinweis" und stellst ihn nie als festgestellte Tatsache dar.
 
 ## Preis-Einschätzung
 - Kategorie (siehe oben) + Marktspanne, Quelle transparent machen ("laut aktueller Websuche")
@@ -188,14 +204,7 @@ Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher 
 - marktpreis_min und marktpreis_max als Integer-Zahlen befüllen (nur wenn aus Web ableitbar)
 
 ## Inserat im Vergleich
-Tabelle mit mindestens 6 Zeilen:
-| Kriterium | Inserat-Angabe | DB-/Markterwartung | Plausibilität |
-Plausibilität, vier Stufen, NICHT vermischen:
-  - ✓ Plausibel: passt zur DB-/Markterwartung.
-  - ✏️ Vermutlich Tippfehler: Wert weicht minimal/erkennbar von einem naheliegenden korrekten Wert ab.
-  - ⚠ Selten (aber möglich): ungewöhnlich, kommt aber real vor. NICHT als unplausibel werten.
-  - ❌ Unmöglich: technisch ausgeschlossen.
-Mindest-Kriterien: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, Getriebe (falls bekannt), Vorbesitzer (falls angegeben), letzte Wartung (falls im Inserat genannt). Nimm JEDE strukturierte Angabe des Inserats als eigene Zeile auf: eine Angabe, die der Nutzer gemacht hat und die in der Tabelle fehlt, wirkt, als wäre sie ignoriert worden.
+Schreibe hier NUR diese Überschrift, keine Tabelle. ENFAL setzt die Vergleichstabelle selbst ein, aus Inseratsangaben, berechneten Werten und Datenbank-Spezifikationen, jeweils mit Herkunft: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, Getriebe (falls bekannt), Vorbesitzer (falls angegeben), letzte Wartung (falls im Inserat genannt), Servicehistorie und HU. Erfinde an keiner Stelle des Berichts eine "Markterwartung", eine Verteilung (z.B. "üblich sind 1-3 Vorbesitzer") oder eine Plausibilitätsbewertung ohne echte Vergleichsdaten.
 
 ## Besichtigungs-Checkliste
 Markdown-Checkboxen, priorisiert: kritische Prüfpunkte (die im schlimmsten Fall den Kauf verhindern sollten) ZUERST, allgemeine Hinweise (Kosmetik, übliche Verschleißteile) DANACH.
@@ -209,7 +218,7 @@ INSERAT-ANGABEN SIND ANGABEN, KEINE TATSACHEN:
 - Datum: Das aktuelle Datum steht im Nutzerteil ("HEUTIGES DATUM"). Rechne ausschließlich damit, nie mit einem angenommenen anderen Jahr.
 
 PREIS OHNE MARKTBASIS:
-- Steht im Nutzerteil kein belastbarer Marktpreis, gibt es KEINE Preiswertung, auch nicht indirekt über die Plausibilitätsspalte. In der Tabellenzeile "Preis" steht dann als Erwartung "keine belastbare Marktbasis" und als Plausibilität "— nicht bewertbar", niemals "selten", "günstig", "fair", "marktgerecht" oder "teuer".
+- Steht im Nutzerteil kein belastbarer Marktpreis, gibt es KEINE Preiswertung, auch nicht indirekt: niemals "selten", "günstig", "fair", "marktgerecht" oder "teuer" zum Preis.
 - Die Kaufempfehlung ist dann eine rein TECHNISCHE Einschätzung. Formuliere sie so, dass der Angebotspreis nicht als bestätigt erscheint.
 
 CHECKLISTE:
@@ -392,8 +401,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         if label and label != baureihe.get("generation"):
             baureihe = {**baureihe, "generation": label}
     fahrzeugkontext = build_fahrzeugkontext(baureihe)
-    db_ctx = build_db_context(baureihe, motor_match, req.baujahr,
-                              fahrzeugkontext=fahrzeugkontext)
+    # Der DB-Kontext für das Modell entsteht weiter unten, NACH `build_insights`:
+    # er zeigt die kanonische Risikomenge mit Beleglage (Root-Cause-Closing).
     # RC1: HU-Termin deterministisch gegen HEUTE bewerten (nie im Modell).
     heute = _heute()
     hu = bewerte_hu(req.tuev_bis, heute=heute, baujahr=req.baujahr)
@@ -492,6 +501,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
                               marktanalyse=marktanalyse, web_recherche=web_recherche)
     evidence_block = format_evidence_for_prompt(insights)
+    # Root-Cause-Closing (Befund C/E, 4.5): der DB-Kontext zeigt dem Modell die
+    # KANONISCHE Risikomenge mit Beleglage, nicht mehr die drei Rohlisten. Der
+    # Stilfilter läuft über den ganzen Block, damit Datenbanktexte mit
+    # Gedankenstrich nicht als Vorlage in den Bericht wandern.
+    db_ctx = entferne_gedankenstriche(build_db_context(
+        baureihe, motor_match, req.baujahr, fahrzeugkontext=fahrzeugkontext,
+        risiken=insights))
     # P2-5: Laufleistungs- und Wartungskontext. Bekommt NUR Request und Insights —
     # weder Marktanalyse noch Preis (§13), damit eine Preisaussage aus der
     # Laufleistung strukturell unmoeglich bleibt und PFAD B (`completed_no_market`)
@@ -535,7 +551,12 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # geltendes Sicherheitsnetz — kein Feld im System kennt den Zeitpunkt des
         # letzten Service, ein "faellig"/"ueberfaellig"/"versaeumt" ist deshalb IMMER
         # unbelegt, egal welches Modell den Bericht geschrieben hat.
-        result["bericht"] = neutralisiere_wartungs_faelligkeit(result["bericht"])
+        # Root-Cause-Closing: die Bauteile der technischen Hinweise dieses Laufs
+        # zählen als Wartungskontext ("Kurbelnabe und Pleuellager werden fällig").
+        result["bericht"] = neutralisiere_wartungs_faelligkeit(
+            result["bericht"],
+            zusatz_kontext=sorted({w for i in insights if i.kategorie in RISIKO_KATEGORIEN
+                                   for w in bauteil_kern(i.bauteil).kern if len(w) >= 5}))
         # Servicehistorie-Claim-Netz: der Prompt verbietet die Verstärkung oben
         # bereits, dies ist das deterministische Netz DANACH. Bewusst eng gebaut —
         # es fängt nur die ZUSICHERUNG ("ist lückenlos scheckheftgepflegt"), nicht
@@ -592,6 +613,26 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # entfernen. Ergänzt werden ausschließlich Rückruf-Insights DIESES Laufs.
         result["bericht"], _rk_ergaenzt = ergaenze_fehlende_rueckrufe(
             result["bericht"], [i for i in insights if i.kategorie == "rueckruf"])
+
+        # ROOT-CAUSE-CLOSING (Befund A, 4.2): ein bekannter Fakt darf auch im
+        # Freitext des Modells nicht wieder als unbekannt erfragt werden ("Wann
+        # war die letzte Wartung?" trotz "bei ca. 64.000 km" im Inserat). Ersetzt
+        # wird nur die Frage selbst, durch die geschärfte Fassung.
+        _fakten = bekannte_fakten_aus_request(req)
+        result["bericht"], _bf_ersetzt = bekannte_fakten_bereinige_bericht(
+            result["bericht"], _fakten)
+        if _bf_ersetzt:
+            log.info("Kaufcheck: %d Frage(n) nach bekannten Fakten ersetzt: %s",
+                     len(_bf_ersetzt), _bf_ersetzt[:3])
+
+        # ROOT-CAUSE-CLOSING (Befund G/H/I, 4.6): die Vergleichstabelle entsteht
+        # deterministisch, jeder Wert mit Herkunft. Eine "Markterwartung" gibt es
+        # nur mit belastbarem Marktvergleich, eine Einordnung nur mit Referenz.
+        result["bericht"] = setze_vergleichstabelle(result["bericht"], vergleich_als_markdown(
+            baue_vergleichszeilen(req, baureihe, motor_match, hu=hu,
+                                  laufleistungskontext=laufleistungskontext,
+                                  price_assessment=price_assessment,
+                                  markt_verfuegbar=markt_verfuegbar, fakten=_fakten)))
 
     # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
     # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,
@@ -710,6 +751,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Empfehlung angehoben, SIND seine Belege der Grund (unten wieder ergänzt).
     empfehlung_evidence_ids = [i for i in empfehlung_evidence_ids
                                if i not in set(risiko_evidence_ids)]
+    # ROOT-CAUSE-CLOSING (4.4): "Belege zur Empfehlung" zeigt nur, was eine
+    # Empfehlung tragen darf. Ein ungeprüfter technischer Hinweis (Datenqualität
+    # niedrig) bleibt als Risiko sichtbar, erscheint aber nicht als Beleg der
+    # Kaufempfehlung. Sonst würde er sie unbemerkt begründen.
+    _schwach_belegt = {i.id for i in insights
+                       if i.kategorie in RISIKO_KATEGORIEN and i.confidence == "niedrig"}
+    empfehlung_evidence_ids = [i for i in empfehlung_evidence_ids if i not in _schwach_belegt]
     if floor_befund is not None:
         for _fid in floor_befund.evidence_ids:
             empfehlung_evidence_ids = ergaenze_id(empfehlung_evidence_ids, _fid)
@@ -738,7 +786,11 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
         generation=(baureihe or {}).get("generation"))
 
-    return {
+    # ROOT-CAUSE-CLOSING (Befund K, 4.7): die Schreibstil-Regel gilt für JEDEN
+    # Nutzertext des Ergebnisses: Bericht des Modells, Datenbanktexte, Key
+    # Findings, Prüfplan, Empfehlungsgründe, Fahrzeugkontext. Quellen und Belege
+    # fremder Seiten bleiben unverändert (app/schreibstil.py).
+    return bereinige_nutzertexte({
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
         "preis_bewertung":  preis_wert,
@@ -769,7 +821,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "web_identitaet":          (web_recherche.identitaet
                                     if web_recherche and web_recherche.identitaet
                                     and web_recherche.identitaet.belegt else None),
-    }
+    })
 
 # Die gemeinsame Schreibstil-Regel (app/schreibstil.py) wird hier eingesetzt.
 # .replace statt f-String, weil der Prompt JSON-Klammern enthaelt.

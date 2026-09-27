@@ -18,6 +18,7 @@ dass er NICHT bewertet wurde.
 """
 from __future__ import annotations
 
+from app.risikothemen import WARTUNG_REGULAER, ist_bekannt, risikoart
 from app.servicehistorie import (
     NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
     UMFANG_UNKLAR as SH_UMFANG_UNKLAR, VOLLSTAENDIG_ANGEGEBEN as SH_VOLLSTAENDIG,
@@ -25,6 +26,78 @@ from app.servicehistorie import (
 )
 
 _HOCH = ("hoch", "kritisch", "sehr hoch")
+_VORSICHT = ("nur_mit_werkstattpruefung", "hohes_risiko", "finger_weg")
+
+
+def _technische_risiken(insights: list) -> list:
+    """Die technischen Aussagen der kanonischen Risikomenge.
+
+    Ein regulärer Wartungspunkt ("Zündkerzen alle 60.000 km") ist kein Risiko,
+    sondern ein Plan; vorbeugende, zustands- und umbaubezogene Hinweise sind es.
+    """
+    out = []
+    for i in insights:
+        kategorie = getattr(i, "kategorie", None)
+        if kategorie in ("schwachstelle", "motorproblem", "web_schwachstelle"):
+            out.append(i)
+        elif kategorie in ("wartung", "web_wartung") and risikoart(i) != WARTUNG_REGULAER:
+            out.append(i)
+    return out
+
+
+def _mehrzahl(n: int, einzahl: str, mehrzahl: str) -> str:
+    return f"{n} {einzahl if n == 1 else mehrzahl}"
+
+
+def _technische_datenlage(insights: list, empfehlung: str) -> list[str]:
+    risiken = _technische_risiken(insights)
+    if not risiken:
+        return ["Im Datensatz ist für diese Variante keine Schwachstelle hinterlegt. Das "
+                "schließt Defekte nicht aus."]
+    bekannt = [i for i in risiken if ist_bekannt(i)]
+    gemeldet = [i for i in risiken if not ist_bekannt(i)]
+    schwer_bekannt = [i for i in bekannt
+                      if (getattr(i, "schweregrad", None) or "").lower() in _HOCH]
+    saetze: list[str] = []
+    if schwer_bekannt:
+        namen = ", ".join(_name(i) for i in schwer_bekannt[:3])
+        saetze.append(f"Belegte Schwachstelle mit hohem Schweregrad: {namen}. Vor dem Kauf "
+                      f"gezielt prüfen lassen.")
+    elif bekannt and all((getattr(i, "schweregrad", None) or "").lower() in ("gering", "mittel",
+                                                                                 "moderat")
+                         for i in bekannt) and not gemeldet:
+        # Die alte Aussage bleibt dort, wo sie stimmt: alle Punkte belegt, alle
+        # mit erfasster, nicht hoher Schwere.
+        saetze.append("Im Datensatz keine schwerwiegende bekannte Schwachstelle für diese "
+                      "Variante.")
+    elif bekannt:
+        saetze.append(f"Für diese Variante sind {_mehrzahl(len(risiken), 'technischer Hinweis', 'technische Hinweise')} "
+                      f"hinterlegt, davon {len(bekannt)} belegt.")
+    if gemeldet:
+        n = len(gemeldet)
+        if n == len(risiken):
+            saetze.append(f"Für diese Variante {'ist' if n == 1 else 'sind'} "
+                          f"{_mehrzahl(n, 'technischer Hinweis', 'technische Hinweise')} "
+                          f"hinterlegt, {'er ist' if n == 1 else 'alle sind'} ungeprüft "
+                          f"(Datenqualität niedrig): gezielt nachfragen, für sich allein kein "
+                          f"festgestellter Mangel.")
+        else:
+            saetze.append(f"{_mehrzahl(n, 'weiterer Hinweis ist', 'weitere Hinweise sind')} "
+                          f"ungeprüft (Datenqualität niedrig) und für sich allein kein "
+                          f"festgestellter Mangel.")
+        # Low-Evidence darf die Empfehlung nicht unbemerkt tragen. Ist sie streng
+        # und ist KEIN technischer Punkt belegt, wird das ausdrücklich gesagt.
+        if (empfehlung or "") in _VORSICHT and not bekannt:
+            saetze.append("Keine der hinterlegten technischen Schwachstellen ist belegt: die "
+                          "strengere Empfehlung ist eine Vorsichtsmaßnahme, keine Feststellung "
+                          "eines Mangels.")
+    return saetze
+
+
+def _name(insight) -> str:
+    from app.evidence import titel_bauteil
+    return (getattr(insight, "bauteil", None) or titel_bauteil(getattr(insight, "titel", ""))
+            or "Schwachstelle").strip()
 
 
 def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None,
@@ -55,12 +128,16 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
                        "und erkannter Variante gefunden.")
 
     # 3) Technische Datenlage
-    schwach = [i for i in insights or []
-               if getattr(i, "kategorie", None) in ("schwachstelle", "motorproblem")]
+    #
+    # ROOT-CAUSE-CLOSING (Befund J): hier wurde nur `schweregrad` geprüft. Das Feld
+    # gibt es ausschließlich bei Baureihen-Schwachstellen; Motorprobleme und
+    # Wartungshinweise haben keins. Beim BMW M4 stand deshalb "keine
+    # schwerwiegende bekannte Schwachstelle" direkt über Karten zu Kurbelnabe
+    # ("Motorschaden >10.000 €") und Pleuellager. Die Aussage entsteht jetzt aus
+    # derselben kanonischen Risikomenge wie die Karten, und sie trennt die drei
+    # Achsen: Beleglage (bekannt/gemeldet), Schwere (nur wo erfasst) und Art.
     if baureihe:
-        if not any((getattr(i, "schweregrad", None) or "").lower() in _HOCH for i in schwach):
-            gruende.append("Im Datensatz keine schwerwiegende bekannte Schwachstelle für "
-                           "diese Variante.")
+        gruende += _technische_datenlage(insights or [], empfehlung)
     rueckrufe = [i for i in insights or [] if getattr(i, "kategorie", None) == "rueckruf"]
     if rueckrufe and all(getattr(i, "applicability", None) in ("series_only", "unclear")
                          for i in rueckrufe):
