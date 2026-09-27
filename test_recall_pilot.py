@@ -122,11 +122,13 @@ with get_conn() as conn:
     from app.kba_batch_b1_daten import zeilen_ids as _batch_b1_ids
     from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids
     from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids
-    # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2) und den
-    # G20-Nachtrag (18e0283): beide haben an Pilotfahrzeugen Zeilen ergaenzt,
-    # der Nachtrag drei amtliche BMW-Rueckrufe am 3er G20/G21. `_BATCH_A` meint
-    # hier "alles, was nach dem Pilotbestand importiert wurde".
-    _BATCH_A = _batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
+    from app.kba_batch_c_daten import zeilen_ids as _batch_c_ids
+    # Dieselbe Abgrenzung fuer den Mixed-Target-Import (d8e96c2), den
+    # G20-Nachtrag (18e0283) und das KBA-Paar-Closing Batch C: alle haben an
+    # Pilotfahrzeugen Zeilen ergaenzt. `_BATCH_A` meint hier "alles, was nach
+    # dem Pilotbestand importiert wurde".
+    _BATCH_A = (_batch_a_ids() | _batch_b1_ids() | _mixed_ids() | _g20_ids()
+               | _batch_c_ids())
     _pilot_rows = [r for r in _alle_rows if r["id"] not in _BATCH_A]
     _batch_a_rows = [r for r in _alle_rows if r["id"] in _BATCH_A]
     _verifs = {r["fakt_id"]: dict(r) for r in conn.execute(
@@ -457,11 +459,15 @@ _ERWARTET = {
     # (marke, hint): Anzahl sichtbarer Rueckruf-Insights
     ("BMW", "320d"):           2 if _G20_NACHTRAG else 0,   # vorher 2 unbelegte (#11, #12)
     # 1 Nachtrag (KBA 12223) + 1 aus Batch A + 1 aus dem Mixed-Target-Import
-    # (KBA 10383, Radverschraubung, Baujahre 2019-2020, verified) — dieser
-    # Rueckruf trifft das Pilotfahrzeug (2.0 Diesel, 2019) tatsaechlich.
-    ("Opel", "2.0 Diesel"):    3,
+    # (KBA 10383, Radverschraubung, Baujahre 2019-2020, verified) + 2 aus dem
+    # KBA-Paar-Closing (Batch C: KBA 9382 Sitzstruktur, KBA 9470 Motoroel,
+    # beide Baujahr 2019 zutreffend) — alle treffen das Pilotfahrzeug
+    # (2.0 Diesel, 2019) tatsaechlich.
+    ("Opel", "2.0 Diesel"):    5,
     ("Audi", "2.0 FSI 150 PS"): 0,  # vorher 1: unbelegter Altbestand #282
-    ("Mercedes-Benz", "C220d"): 4,  # 4 aus Batch A; der unbelegte Altbestand entfaellt
+    # 4 aus Batch A + 6 aus dem KBA-Paar-Closing (Batch C: KBA 10453, 11446,
+    # 6380, 6984, 10683, 13523 — alle mit Baujahr 2016 zutreffend).
+    ("Mercedes-Benz", "C220d"): 10,
 }
 for _m, _mo, _g, _h, _bj, _k in PILOT_FAHRZEUGE:
     _b, _mm, _req, _i = _check(_m, _mo, _g, _h, _bj, _k)

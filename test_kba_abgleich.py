@@ -205,6 +205,12 @@ from app.kba_mixed_target_daten import zeilen_ids as _mixed_ids  # noqa: E402
 # Abschnitt sie mit und meldete 749 statt 746.
 from app.kba_g20_nachtrag_daten import ZEILEN as _G20_ZEILEN  # noqa: E402
 from app.kba_g20_nachtrag_daten import zeilen_ids as _g20_ids  # noqa: E402
+# KBA-Paar-Closing (Batch C): die durch den alten, rueckrufweiten Import
+# verlorenen, fuer sich sicheren Paare mit geschlossener Zielgeneration.
+# Gleiche Abgrenzung wie Batch A/B1/Mixed/G20 — dieser Abschnitt prueft das
+# Ergebnis des GESAMTABGLEICHS, nicht den Gesamtbestand.
+from app.kba_batch_c_daten import ZEILEN as _BATCH_C_ZEILEN  # noqa: E402
+from app.kba_batch_c_daten import zeilen_ids as _batch_c_ids  # noqa: E402
 
 # Batch B1 kam nach Batch A hinzu: amtliche Rueckrufe auf OFFENEN, aber
 # primaerquellenbestaetigten Generationen. Fuer diesen Abschnitt gilt dieselbe
@@ -213,11 +219,13 @@ _BATCH_A = _batch_a_ids()
 _BATCH_B1 = _batch_b1_ids()
 _MIXED = _mixed_ids()
 _G20 = _g20_ids()
-_IMPORTIERT = _BATCH_A | _BATCH_B1 | _MIXED | _G20
+_BATCH_C = _batch_c_ids()
+_IMPORTIERT = _BATCH_A | _BATCH_B1 | _MIXED | _G20 | _BATCH_C
 _abgleich = [r for r in _alle if r["id"] not in _IMPORTIERT]
-check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1 + Mixed-Target + G20-Nachtrag",
+check("F0 Gesamtbestand = Abgleichsstand + Batch A + Batch B1 + Mixed-Target + "
+      "G20-Nachtrag + Batch C",
       len(_alle) == len(_abgleich) + len(_BATCH_A_ZEILEN) + len(_BATCH_B1_ZEILEN)
-      + len(_MIXED_ZEILEN) + len(_G20_ZEILEN))
+      + len(_MIXED_ZEILEN) + len(_G20_ZEILEN) + len(_BATCH_C_ZEILEN))
 check("F1 746 Rueckrufe aus dem Gesamtabgleich (749 minus 3 Dubletten)",
       len(_abgleich) == 746)
 _mit_ref = [r for r in _abgleich if (r["kba_referenz"] or "").strip()]

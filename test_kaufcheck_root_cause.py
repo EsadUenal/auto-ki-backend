@@ -319,8 +319,24 @@ check("A22 kein 'Wartungsnachweis Kurbelnabe', keine 'letzte Durchführung'",
 check("A23 CFK-Dach: Oberflächenprüfung statt Öffnungsprüfung",
       "CFK-Dach Klarlack" in bes_m4 and "Ablösungen" in bes_m4["CFK-Dach Klarlack"]
       and "öffnen und schließen" not in bes_m4["CFK-Dach Klarlack"], bes_m4.get("CFK-Dach Klarlack"))
-check("A24 zusammengelegte Fahrwerksfrage nennt beide Bauteile",
-      "EDC-Dämpfer" in fragen_m4 and "Hinterachsträger-Buchse" in fragen_m4)
+check("A24 EDC-Dämpfer und Hinterachsträger-Buchse landen auf demselben "
+      "Fahrwerks-Schlüssel (Grundlage der Zusammenlegung)",
+      _komponente("EDC-Dämpfer")["schluessel"] == "fahrwerk"
+      and _komponente("Hinterachsträger-Buchse")["schluessel"] == "fahrwerk")
+# Root-Cause-Closing (KBA-Paar-Closing): der F82 hat inzwischen 5 zusaetzliche,
+# echte amtliche Rueckrufe (vorher fuer sich sicher, aber verloren, siehe
+# app/kba_import_batch_c.py). Deren Verkaeuferfragen sind sicherheitsrelevant
+# und rangieren vor der zusammengelegten Fahrwerksfrage — das Limit
+# MAX_SPEZIFISCH_PRO_BEREICH verdraengt sie deshalb jetzt aus der sichtbaren
+# Liste. Das ist die bekannte, dokumentierte Cap-Falle (siehe
+# project_enfal_kaufcheck_inputs), keine Regression der Zusammenlegung selbst
+# (siehe A24 oben): mehr echte Sicherheitsrueckrufe verdraengen zu Recht eine
+# einzelne Verschleissfrage.
+check("A24b die drei hoechstrangigen Rueckrufe verdraengen die Fahrwerksfrage "
+      "aus den sichtbaren sechs Verkaeuferfragen (erwartete Cap-Folge)",
+      sum(1 for a in dm4["ka"].verkaeuferfragen.fahrzeugspezifisch
+          if a.id.startswith("frage-rueckruf")) == 3
+      and "EDC-Dämpfer" not in fragen_m4)
 
 # Befund J/4.4
 gruende_m4 = " ".join(erg_m4["empfehlung_gruende"])

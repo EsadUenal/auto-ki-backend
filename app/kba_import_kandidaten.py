@@ -325,7 +325,14 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
                            recalls_je_baureihe: dict) -> ImportKandidat:
     """Ordnet EINEN amtlichen Rueckruf genau einer Import-Klasse zu."""
     km = kand.marke.upper()
-    tokens = _modelltokens(kand.modell)
+    # sortiert: `tokens` ist ein `set`, dessen Iterationsreihenfolge je
+    # Prozessstart per Hash-Seed variiert. Ein Baureihen-Datensatz kann ueber
+    # MEHRERE Token erreichbar sein (z.B. "audi-rs-3-sportback-8v" sowohl ueber
+    # "A3" als auch ueber "RS3", wenn der amtliche Datensatz "A3, S3, Q2, RS3"
+    # nennt). Die Sortierung macht `kandidaten_ziele` unten reproduzierbar;
+    # die Ambiguitaetsentscheidung selbst haengt seit dem Root-Cause-Closing
+    # ohnehin nicht mehr an "zuerst gesehen" (siehe unten).
+    tokens = sorted(_modelltokens(kand.modell))
 
     # ── Zielbaureihen bestimmen ─────────────────────────────────────────────
     kandidaten_ziele = []
@@ -387,17 +394,37 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
             f"{kand.prod_von}-{kand.prod_bis}")
         return kand
 
-    kand.ziele = [b for _t, b in kandidaten_ziele]
+    # Dieselbe Baureihe kann ueber MEHRERE Token erreichbar sein (siehe oben);
+    # `kand.ziele` fuehrt sie deshalb nur einmal — sonst wuerden Dubletten- und
+    # Kostenzaehler unten denselben Treffer doppelt zaehlen.
+    ziele_je_id = {b["id"]: b for _t, b in kandidaten_ziele}
+    kand.ziele = [ziele_je_id[bid] for bid in sorted(ziele_je_id)]
 
     # ── Generationseindeutigkeit: mehrere Generationen DESSELBEN Modells? ────
     # Ein Rueckruf ueber "X5, X6" trifft zwei MODELLE — das ist eindeutig und
     # ergibt zwei VIRA-Zeilen. Trifft er dagegen zwei GENERATIONEN des X5,
     # laesst sich ohne weitere Angabe nicht sagen, welche gemeint ist.
-    je_token = collections.defaultdict(set)
+    #
+    # Root-Cause-Closing (KBA-Paar-Closing): eine Baureihe gilt als eindeutig,
+    # wenn WENIGSTENS EINER der Token, ueber die sie erreichbar ist, sie ALLEIN
+    # trifft — auch wenn ein ANDERER, breiterer Token (z.B. "A3" fuer die
+    # RS3-Baureihe) mehrdeutig waere. Der amtliche Datensatz nennt den
+    # spezifischeren Namen ja selbst ("... RS3"); ihn zu ignorieren, nur weil
+    # zufaellig der breitere Token zuerst verarbeitet wurde, war der Kern eines
+    # nicht-deterministischen Bugs: `tokens` ist ein `set`, und je nachdem,
+    # welcher Token zuerst an der Reihe war, entschied golden derselbe Paar mal
+    # SAFE_IMPORT, mal AMBIGUOUS_GENERATION — bei GLEICHEN Eingabedaten,
+    # zwischen zwei Prozeduraufrufen. Betroffen u.a. RS3/RS6/RS7/M2 (11 amtliche
+    # Datensaetze im KBA-Gesamtexport vom 2026-08-27).
+    je_token: dict[str, set[str]] = collections.defaultdict(set)
     for tok, b in kandidaten_ziele:
         je_token[tok].add(b["id"])
-    mehrdeutig = {tok: ids for tok, ids in je_token.items() if len(ids) > 1}
-    kand.generation_eindeutig = not mehrdeutig
+    toks_je_ziel: dict[str, set[str]] = collections.defaultdict(set)
+    for tok, b in kandidaten_ziele:
+        toks_je_ziel[b["id"]].add(tok)
+    mehrdeutige_ids = {bid for bid, toks in toks_je_ziel.items()
+                       if not any(len(je_token[t]) == 1 for t in toks)}
+    kand.generation_eindeutig = not mehrdeutige_ids
 
     # ── Variantenbeschraenkung ──────────────────────────────────────────────
     eingr = kand.eingrenzung
@@ -419,22 +446,19 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
     # BMW-Baureihen bereits eine Airbag-Zeile trugen, und fehlte deshalb auch
     # beim M4 F82, der keine hatte. Die Importidentitaet ist das Paar
     # (Rueckruf, Baureihe); jedes Paar wird fuer sich entschieden.
-    paar_ids: set[str] = set()
-    for tok, b in kandidaten_ziele:
-        if b["id"] in paar_ids:
-            continue
-        paar_ids.add(b["id"])
-        if dubletten_je_ziel.get(b["id"]):
-            gruende = sorted({d["_grund"] for d in dubletten_je_ziel[b["id"]]})
-            kand.paare.append((b["id"], POSSIBLE_DUPLICATE, "; ".join(gruende)))
-        elif tok in mehrdeutig:
-            kand.paare.append((b["id"], AMBIGUOUS_GENERATION,
-                               f"{tok}: mehrere Generationen im Produktionsfenster"))
+    for bid in sorted(ziele_je_id):
+        if dubletten_je_ziel.get(bid):
+            gruende = sorted({d["_grund"] for d in dubletten_je_ziel[bid]})
+            kand.paare.append((bid, POSSIBLE_DUPLICATE, "; ".join(gruende)))
+        elif bid in mehrdeutige_ids:
+            kand.paare.append((bid, AMBIGUOUS_GENERATION,
+                               f"{sorted(toks_je_ziel[bid])}: keiner der erreichenden "
+                               f"Token trifft nur diese Baureihe"))
         elif kand.variantenbeschraenkung:
-            kand.paare.append((b["id"], VARIANT_SCOPE_UNCLEAR,
+            kand.paare.append((bid, VARIANT_SCOPE_UNCLEAR,
                                "amtliche Eingrenzung nicht abbildbar"))
         else:
-            kand.paare.append((b["id"], SAFE_IMPORT, "eindeutig, keine Dublette"))
+            kand.paare.append((bid, SAFE_IMPORT, "eindeutig, keine Dublette"))
 
     # ── Klassifikation, strengste Bedingung zuerst ──────────────────────────
     if kand.duplikate:
@@ -445,10 +469,11 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
             f"denselben Vorgang ({'; '.join(sorted(gruende))})")
         return kand
 
-    if mehrdeutig:
+    if mehrdeutige_ids:
         kand.klasse = AMBIGUOUS_GENERATION
-        details = "; ".join(f"{tok}: {len(ids)} Generationen"
-                            for tok, ids in sorted(mehrdeutig.items()))
+        details = "; ".join(f"{bid}: erreichbar nur ueber mehrdeutige Token "
+                            f"{sorted(toks_je_ziel[bid])}"
+                            for bid in sorted(mehrdeutige_ids))
         kand.begruendung = (
             f"amtliches Produktionsfenster {kand.prod_von}-{kand.prod_bis} "
             f"ueberdeckt mehrere VIRA-Generationen ({details})")

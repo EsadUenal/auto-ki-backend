@@ -14,6 +14,7 @@ gegen die echte Datenbank — und auch das nur, wenn ein Export bereitliegt.
   E) Variantenbeschraenkung
   F) Dublettenschutz — vorhandene Rueckrufe werden nicht erneut importiert
   G) Reale Bezugsfaelle (nur mit Export)
+  H) Mehrfach erreichbare Baureihen — Determinismus bei Alias-Token
 
     python test_kba_import_dryrun.py [pfad/zum/kba_export.csv]
 """
@@ -262,6 +263,57 @@ else:
     check("G6 jede SAFE_IMPORT-Vorhersage ist series_only (nie confirmed_by_vin)",
           all(k.applicability == "series_only" for k in _real.values()
               if k.klasse == SAFE_IMPORT))
+
+
+# ══ H) Mehrfach erreichbare Baureihen (Determinismus, KBA-Paar-Closing) ═══════
+print("\n--- H) Mehrfach erreichbare Baureihen ---")
+# Realer Fall aus dem KBA-Gesamtexport (u.a. KBA 13099, Modell "A3, S3, Q2, RS3"):
+# `MODELL_MAP[("AUDI", "RS 3 SPORTBACK")] = {"RS 3", "RS3", "A3"}` indiziert die
+# RS3-Baureihe zusaetzlich unter dem breiten Alias "A3". Der Token "A3" trifft
+# dadurch ZWEI Baureihen (mehrdeutig), der Token "RS3" trifft NUR die RS3
+# (eindeutig) — dieselbe Baureihe ist also ueber zwei Token erreichbar, von
+# denen nur einer mehrdeutig ist. Vor dem Fix entschied die zufaellige
+# Set-Iterationsreihenfolge von `_modelltokens()`, WELCHER der beiden Token
+# zuerst verarbeitet wurde, und damit ob das Paar (KBA-Referenz, RS3) als
+# SAFE_IMPORT oder als AMBIGUOUS_GENERATION galt — bei GLEICHEN Eingabedaten,
+# je nach Prozessstart (PYTHONHASHSEED). Gemessen: 11 amtliche Datensaetze im
+# KBA-Gesamtexport vom 2026-08-27 sind auf diese Weise betroffen.
+_a3 = br(id="audi-a3-8v", marke="Audi", modell="A3", generation="8V",
+         bauzeitraum_von=2012, bauzeitraum_bis=2020)
+_rs3 = br(id="audi-rs-3-sportback-8v", marke="Audi", modell="RS 3 Sportback",
+          generation="8V", bauzeitraum_von=2015, bauzeitraum_bis=2020)
+_rs3_kba = kba_zeile(Marke="AUDI", Modell="A3, S3, Q2, RS3",
+                     **{"Produktionszeitraum von": "2018",
+                        "Produktionszeitraum bis": "2019"})
+
+
+def _paare_von(kba_rows, baureihen):
+    k = import_kandidaten(kba_rows, [], baureihen)
+    return {bid: kl for bid, kl, _g in k[0].paare} if k else {}
+
+
+_paare_h = _paare_von([_rs3_kba], [_a3, _rs3])
+check("H1 die A3-Baureihe bleibt mehrdeutig (nur ueber 'A3' erreichbar)",
+      _paare_h.get("audi-a3-8v") == AMBIGUOUS_GENERATION)
+check("H2 die RS3-Baureihe ist SAFE_IMPORT (zusaetzlich ueber 'RS3' eindeutig "
+      "erreichbar)",
+      _paare_h.get("audi-rs-3-sportback-8v") == SAFE_IMPORT)
+
+# Dieselben Daten, Modell-Token in umgekehrter Reihenfolge im amtlichen Text:
+# das Ergebnis muss BYTEGLEICH bleiben (Determinismus ist keine Frage der
+# Eingabereihenfolge und keine Frage des Zufalls).
+_paare_h_rev = _paare_von(
+    [kba_zeile(Marke="AUDI", Modell="RS3, Q2, S3, A3",
+              **{"Produktionszeitraum von": "2018",
+                 "Produktionszeitraum bis": "2019"})],
+    [_a3, _rs3])
+check("H3 gleiches Ergebnis bei umgekehrter Token-Reihenfolge im amtlichen Text",
+      _paare_h == _paare_h_rev)
+
+# Zehn Wiederholungen im selben Prozess: die Aggregation ist jetzt
+# mengenbasiert (nicht mehr "wer zuerst kommt"), das Ergebnis darf nie kippen.
+check("H4 zehn Wiederholungen liefern immer dasselbe Ergebnis",
+      all(_paare_von([_rs3_kba], [_a3, _rs3]) == _paare_h for _ in range(10)))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
