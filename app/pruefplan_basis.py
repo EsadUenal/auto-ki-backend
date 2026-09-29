@@ -418,10 +418,6 @@ BASIS_DOKUMENTE: tuple[_Eintrag, ...] = (
      "Die Kilometerstände aus HU-Bericht, Serviceheft und Rechnungen chronologisch "
      "vergleichen: sie müssen durchgehend ansteigen.",
      None, ()),
-    ("rueckruf", "Prüfungen und Wartung",
-     "Nach Nachweisen zu durchgeführten Rückrufaktionen fragen",
-     "Werkstattbelege oder eine Bestätigung des Herstellers zeigen lassen.",
-     None, ("rueckruf-*",)),
     ("schluessel", "Übergabe",
      "Anzahl der Schlüssel und Fernbedienungen festhalten",
      "Im Kaufvertrag schriftlich vermerken, wie viele Schlüssel übergeben werden.",

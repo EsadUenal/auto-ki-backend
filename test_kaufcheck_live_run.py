@@ -184,11 +184,11 @@ gleich3, ergaenzt4 = ergaenze_fehlende_rueckrufe(BERICHT_LIVE, SCHWACH)
 check("A8 Nur Rueckrufe werden ergaenzt, keine Schwachstellen",
       gleich3 == BERICHT_LIVE and ergaenzt4 == [])
 
-# Der Prompt traegt die Regel jetzt selbst mit.
-check("B3 Prompt stellt Rueckrufe ueber die 3-5-Obergrenze",
-      "Die Obergrenze von 3–5 Punkten gilt ERST DANACH" in kc._SYSTEM)
-check("B4 Prompt verbietet die Verdraengung durch Softwarethemen",
-      "darf einen Rückruf NIEMALS" in kc._SYSTEM)
+# Das LLM sieht nur noch die kanonische Menge und kann keine Rückrufe ergänzen.
+check("B3 Prompt bindet die Darstellung an das Canonical Risk Set",
+      "Canonical Risk Set sind verbindlich" in kc._SYSTEM)
+check("B4 Prompt verbietet neue Rückrufe und Risiken",
+      "Keine neuen Risiken, Rückrufe" in kc._SYSTEM)
 
 
 # ══ C) Vorbesitzer ══════════════════════════════════════════════════════════
@@ -214,8 +214,8 @@ check("C4 Keine Wertung der Vorbesitzerzahl",
       not any(w in vb_text.lower() for w in ("wenig", "viele", "gut", "schlecht",
                                              "vorteilhaft", "ungewöhnlich hoch")),
       vb_text)
-check("C5 Prompt nimmt Vorbesitzer in die Vergleichstabelle auf",
-      "Vorbesitzer (falls angegeben)" in kc._SYSTEM)
+check("C5 Der aktuelle Inseratskontext enthält die Vorbesitzerangabe",
+      "Vorbesitzer:    2" in kc._format_inserat(REQ))
 # Ohne Angabe bleibt es bei der offenen Frage und beim neutralen Basistext.
 ohne_vb = ka.build_kaufaktionen(
     KaufCheckRequest(marke="BMW", modell="330i", baujahr=2019), BAUREIHE, MOTOR, [])
@@ -273,8 +273,9 @@ check("D8 Die Faelligkeits-Verbote bleiben",
 check("D9 letzter_service_bekannt bleibt False", ctx.letzter_service_bekannt is False)
 check("D10 Der Prompt fuehrt die Angabe im Inseratsblock",
       "Letzte Wartung laut Inserat: bei rund 72.000 km" in kc._format_inserat(REQ))
-check("D11 Prompt verbietet Fragen nach bereits Genanntem",
-      "KEINE FRAGE NACH BEREITS GENANNTEM" in kc._SYSTEM)
+check("D11 Bekannte Wartung bleibt im Kontext und wird nicht erneut erfragt",
+      "Letzte Wartung laut Inserat: bei rund 72.000 km" in kc._format_inserat(REQ)
+      and "Wann war die letzte Wartung" not in fragen)
 
 # Widerspruch: Wartung oberhalb des Tachostands wird gemeldet, nicht geglaettet.
 REQ_WIDER = KaufCheckRequest(
@@ -402,8 +403,8 @@ for quelle, text in ([(a.id, f"{a.titel}\n{a.aktion}\n{a.hinweis or ''}") for a 
         treffer_i.append((quelle, text[max(0, m.start() - 45):m.start() + 45]))
 check("I1 Kein kleingeschriebener Satzanfang", not treffer_i,
       "\n        ".join(t[1] for t in treffer_i[:4]))
-check("I2 Der konkrete Satz aus dem echten Report ist korrigiert",
-      any("Inseratsangaben. Sie lassen sich" in g for g in GRUENDE), str(GRUENDE))
+check("I2 Unbekannte Unfallhistorie wird ausdrücklich als offen benannt",
+      any("Unfallhistorie nicht vollständig bekannt" in g for g in GRUENDE), str(GRUENDE))
 # Gegenprobe: der Scanner darf nicht einfach immer grün sein.
 _fehlerprobe = "Zustand und Wartung sind Inseratsangaben. sie lassen sich prüfen."
 check("I3 Der Scanner schlaegt beim echten Fehlermuster an",

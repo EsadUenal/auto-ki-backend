@@ -44,6 +44,36 @@ from app.wartungsangabe import (
 
 UNFALLFREI = "unfallfrei"
 UNFALL = "unfall"
+UNKNOWN = "unknown"
+
+
+def unfall_status(req) -> str:
+    value = (getattr(req, "unfallfrei", None) or "").strip().lower()
+    text = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
+    # Explicit uncertainty also prevents a stale checkbox from claiming accident-free.
+    if re.search(r"unfall(?:historie|status)?[^.!?]{0,60}(?:unbekannt|unklar|nicht vollständig bekannt)", text, re.I):
+        return UNKNOWN
+    if value in _UNFALL_WERTE:
+        return _UNFALL_WERTE[value]
+    if re.search(r"\b(?:unfallschaden|unfallwagen|unfall repariert)\b", text, re.I):
+        return UNFALL
+    if re.search(r"\bunfallfrei\b", text, re.I) and not re.search(r"nicht\s+unfallfrei", text, re.I):
+        return UNFALLFREI
+    return UNKNOWN
+
+
+def tuning_status(req) -> str:
+    value = (getattr(req, "tuning", None) or "").strip().lower()
+    if value in ("nein", "kein", "keines", "serie", "serienzustand", "kein tuning"):
+        return "absent"
+    if value and value not in ("unbekannt", "unknown", "keine angaben", "keine angaben zu tuning"):
+        return "present"
+    text = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
+    if re.search(r"\b(?:kein tuning|nicht getunt|keine leistungssteigerung)\b", text, re.I):
+        return "absent"
+    if re.search(r"\b(?:chiptuning|stage\s*[123]|leistungssteigerung durchgeführt|tuning vorhanden)\b", text, re.I):
+        return "present"
+    return UNKNOWN
 
 _UNFALL_WERTE = {"nein": UNFALL, "false": UNFALL, "unfallschaden": UNFALL, "unfall": UNFALL,
                  "ja": UNFALLFREI, "true": UNFALLFREI}
@@ -54,7 +84,7 @@ class BekannteFakten:
     letzte_wartung: Wartungsangabe | None = None
     kilometerstand: int | None = None
     hu_bis: str | None = None
-    unfall: str | None = None          # UNFALLFREI | UNFALL | None
+    unfall: str = UNKNOWN
     vorbesitzer: int | None = None
     servicehistorie: str | None = None
 
@@ -65,7 +95,7 @@ class BekannteFakten:
 
 def aus_request(req) -> BekannteFakten:
     km = getattr(req, "kilometerstand", None)
-    unfall = _UNFALL_WERTE.get((getattr(req, "unfallfrei", None) or "").strip().lower())
+    unfall = unfall_status(req)
     return BekannteFakten(
         letzte_wartung=wartungsangabe_aus_request(req),
         kilometerstand=km if isinstance(km, int) else None,
@@ -138,6 +168,14 @@ def basistexte(f: BekannteFakten) -> dict[tuple[str, str], tuple[str | None, str
             "Welcher Schaden lag vor, und wie und wo wurde er repariert?",
             "Das Inserat weist das Fahrzeug als nicht unfallfrei aus. Schadensumfang, "
             "Werkstatt und Reparaturweg erfragen und die Unterlagen dazu zeigen lassen.")
+    else:
+        texte[("verkaeuferfragen", "unfall")] = (
+            "Welche Schäden, Nachlackierungen oder Reparaturen gab es?",
+            "Die Unfallhistorie ist nicht vollständig bekannt. Vor dem Kauf Schäden, "
+            "Nachlackierungen und Reparaturhistorie klären und vorhandene Unterlagen zeigen lassen.")
+        texte[("dokumente", "kaufvertrag")] = (
+            None, "Die unklare Unfallhistorie und alle zugesicherten Angaben im Kaufvertrag "
+                  "festhalten. Vorhandene Schadensgutachten und Reparaturrechnungen prüfen.")
 
     if f.servicehistorie == SH_NICHT_VORHANDEN:
         texte[("dokumente", "serviceheft")] = (

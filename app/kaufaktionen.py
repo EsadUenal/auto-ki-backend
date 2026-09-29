@@ -1155,10 +1155,19 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     getriebe = getriebe_art(req, motor_match)
     verkaeufer = verkaeuferart_aus_request(req)
     inserat_texte = _inserat_basistexte(req)
+    from app.bekannte_fakten import tuning_status
+    tuning = tuning_status(req)
+    tuning_frage = ()
+    if tuning != "absent":
+        tuning_frage = (("tuning", "Historie",
+            ("Ist oder war das Fahrzeug software- oder hardwareseitig verändert bzw. leistungsgesteigert?"
+             if tuning == "unknown" else "Welche Tuningänderungen und Rückrüstungen wurden durchgeführt?"),
+            "Art und Umfang der Änderungen sowie Rückrüstungen klären. Rechnungen, Gutachten "
+            "und Eintragungen zeigen lassen.", None, ()),)
     kataloge = {
         BESICHTIGUNG:     BASIS_BESICHTIGUNG,
         PROBEFAHRT:       BASIS_PROBEFAHRT,
-        VERKAEUFERFRAGEN: BASIS_VERKAEUFERFRAGEN,
+        VERKAEUFERFRAGEN: BASIS_VERKAEUFERFRAGEN + tuning_frage,
         DOKUMENTE:        BASIS_DOKUMENTE,
     }
     listen = {}
@@ -1419,25 +1428,20 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
         rang = _R_RUECKRUF_VARIANTE if (passend or amtlich_belegt) else _R_RUECKRUF_SERIE
         kba_zusatz = f" (KBA-Referenz {kba})" if kba else ""
 
-        if passend:
+        from app.fin_hinweis import recall_handlung, recall_status
+        status = i.recall_status or recall_status(i.applicability)
+        if status["vehicle_affected"] == "confirmed":
             frage = f"Wurde die Rückrufaktion zu „{mangel}“ bereits durchgeführt?"
-            frage_aktion = ("Für diese Variante ist eine Rückrufaktion gemeldet. Nach dem "
-                            "Werkstattnachweis fragen und zusätzlich die FIN beim Hersteller oder "
-                            "einer Vertragswerkstatt der Marke auf offene Rückrufaktionen "
-                            "prüfen lassen.")
+            frage_aktion = recall_handlung(status)
         else:
             frage = f"Ist bekannt, ob dieses Fahrzeug von der Rückrufaktion zu „{mangel}“ betroffen ist?"
-            frage_aktion = ("Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. Ob genau "
-                            "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
-                            "Hersteller oder einer Vertragswerkstatt der Marke klären.")
+            frage_aktion = "Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. " + recall_handlung(status)
         s.add(VERKAEUFERFRAGEN, schluessel, frage, frage_aktion, rang,
               evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
 
         s.add(DOKUMENTE, schluessel, f"Rückrufaktion „{mangel}“",
-              f"FIN beim Hersteller oder einer Vertragswerkstatt der Marke auf offene "
-              f"Rückrufaktionen prüfen lassen{kba_zusatz} und, "
-              f"falls bereits erledigt, den Durchführungsnachweis der Werkstatt vorlegen lassen.",
+              recall_handlung(status) + kba_zusatz,
               rang, evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
 
@@ -1588,20 +1592,16 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         schluessel = _schluessel(komp, bauteil)
 
         if art == "rueckruf":
+            from app.fin_hinweis import recall_handlung, recall_status
+            handlung = recall_handlung(i.recall_status or recall_status(i.applicability))
             s.add(VERKAEUFERFRAGEN, f"rueckruf-web-{schluessel}",
-                  f"Ist bekannt, ob für dieses Fahrzeug eine Rückrufaktion offen ist?",
-                  "Eine Webrecherche nennt für dieses Modell eine Rückrufaktion. Ob genau "
-                  "dieses Fahrzeug betroffen ist, lässt sich nur anhand der FIN beim "
-                  "Hersteller oder einer Vertragswerkstatt der Marke klären: nach einem "
-                  "Werkstattnachweis fragen.",
+                  "Ist bekannt, ob dieses Fahrzeug von der gemeldeten Rückrufaktion betroffen ist?",
+                  "Eine Webrecherche nennt für dieses Modell eine Rückrufaktion. " + handlung,
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Rückrufaktion")
             s.add(DOKUMENTE, f"rueckruf-web-{schluessel}",
                   "Rückrufstatus über die FIN prüfen lassen",
-                  "Laut Webrecherche existiert für dieses Modell eine Rückrufaktion. FIN beim "
-                  "Hersteller oder einer Vertragswerkstatt der Marke auf offene "
-                  "Rückrufaktionen prüfen lassen und, falls bereits erledigt, den "
-                  "Durchführungsnachweis der Werkstatt vorlegen lassen.",
+                  handlung,
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Prüfungen und Wartung")
             continue
@@ -1801,20 +1801,21 @@ def _aus_inserat(s: _Sammler, req) -> None:
               "fällige Hauptuntersuchung kann kurzfristig Kosten verursachen.",
               _R_ANGABE_FEHLT + 20, kategorie="inserat", gruppe="Angaben aus dem Inserat")
 
-    unfall = (getattr(req, "unfallfrei", None) or "").strip().lower()
-    if unfall in ("nein", "false", "unfallschaden", "unfall"):
+    from app.bekannte_fakten import unfall_status, UNFALL, UNFALLFREI
+    unfall = unfall_status(req)
+    if unfall == UNFALL:
         s.add(DOKUMENTE, "unfall", "Unfallreparatur dokumentieren lassen",
               "Das Inserat weist das Fahrzeug als nicht unfallfrei aus. Reparaturrechnungen, "
               "Schadensumfang und, falls vorhanden, ein Gutachten zeigen lassen.",
               _R_DOKUMENT_KERN + 40, kategorie="inserat", gruppe="Angaben aus dem Inserat")
-    elif unfall in ("ja", "true"):
+    elif unfall == UNFALLFREI:
         s.add(DOKUMENTE, "unfall", "Unfallfreiheit schriftlich festhalten",
               "Das Inserat gibt das Fahrzeug als unfallfrei an: diese Zusicherung in den "
               "Kaufvertrag aufnehmen statt sie nur mündlich zu vereinbaren.",
               _R_DOKUMENT_STANDARD, kategorie="inserat", gruppe="Angaben aus dem Inserat")
     else:
         s.add(VERKAEUFERFRAGEN, "unfall",
-              "Ist das Fahrzeug unfallfrei, und gab es lackierte oder ersetzte Teile?",
+              "Welche Schäden, Nachlackierungen oder Reparaturen gab es?",
               "Das Inserat macht dazu keine eindeutige Angabe: vor der Besichtigung klären "
               "und die Antwort später im Kaufvertrag festhalten.",
               _R_ANGABE_FEHLT + 10, kategorie="inserat", gruppe="Angaben aus dem Inserat")

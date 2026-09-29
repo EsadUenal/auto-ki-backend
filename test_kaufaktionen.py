@@ -477,7 +477,7 @@ check("J9 Umlaut-Bauteile nutzen den Tabellentext statt des Fallbacks",
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n=== K) Nur gültige Evidence-IDs ===")
 
-br_k = baureihe([{"bauteil": "Bremsen", "beschreibung": "Verschleiß.", "betroffene_baujahre": "Alle",
+br_k = baureihe([{"bauteil": "Bremsen", "beschreibung": "Vorzeitiger Defekt mit stark verminderter Bremswirkung.", "betroffene_baujahre": "Alle",
                   "schweregrad": "hoch"},
                  {"bauteil": "Fahrwerk", "beschreibung": "Poltern von der Vorderachse.",
                   "betroffene_baujahre": "Alle", "schweregrad": "mittel"}],

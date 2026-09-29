@@ -80,14 +80,14 @@ def bauteile_in_insights(insights, bauteile: list[str]) -> set[str]:
 print("=== A. Problem gilt für das Fahrzeugbaujahr -> im Prompt vorhanden ===")
 
 b = baureihe_mit_schwachstellen([
-    {"bauteil": "Bremsen", "beschreibung": "Verschleiß", "betroffene_baujahre": "2019-2021",
+    {"bauteil": "Radlager", "beschreibung": "Vorzeitiger Ausfall", "betroffene_baujahre": "2019-2021",
      "schweregrad": "mittel"},
 ])
 ctx = build_db_context(b, None, baujahr=2020)
-check("A1: 'Bremsen' (2019-2021, Baujahr 2020) steht im Prompt", "Bremsen" in ctx)
+check("A1: 'Radlager' (2019-2021, Baujahr 2020) steht im Prompt", "Radlager" in ctx)
 ins = build_insights(b, None, [], Req(baujahr=2020), check_typ="kauf")
-check("A2: 'Bremsen' auch als Insight vorhanden",
-      any("Bremsen" in i.titel for i in ins))
+check("A2: 'Radlager' auch als Insight vorhanden",
+      any("Radlager" in i.titel for i in ins))
 
 print()
 print("=== B. Problem gilt nur für früheres Baujahr -> NICHT im Prompt ===")

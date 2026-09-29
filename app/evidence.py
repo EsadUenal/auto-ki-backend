@@ -29,7 +29,9 @@ from app.recall_filter import (
 )
 # DATA-SAFETY-RUNTIME-GATE: zentrale Allowed-List für Baureihen-Schwachstellen,
 # geteilt mit build_db_context (car_lookup.py) — analog zu recall_filter.
-from app.motor_applicability import gefilterte_schwachstellen
+from app.motor_applicability import gefilterte_schwachstellen, varianten_applicability
+from app.vehicle_identity import VehicleIdentity
+from app.fin_hinweis import recall_status, recall_handlung
 from app.risikothemen import WARTUNG_REGULAER, WARTUNG_VERSCHLEISS, kanonisiere, wartungsart
 from app.verification import is_verified
 
@@ -192,6 +194,7 @@ def build_insights(
     marktpreis_max: int | None = None,
     marktanalyse: Marktanalyse | None = None,
     web_recherche=None,
+    identity: VehicleIdentity | None = None,
 ) -> list[Insight]:
     """Baut die Liste nachvollziehbarer Insights aus deterministischen Daten.
 
@@ -206,6 +209,13 @@ def build_insights(
     """
     insights: list[Insight] = []
     baujahr = getattr(req, "baujahr", None)
+    identity = identity or VehicleIdentity.from_check_context(baureihe, motor_match, req)
+    # The legacy engine/family gate also sees known request attributes even when
+    # no unique motor row was found. No motor-specific facts are fabricated.
+    applicability_motor = {**(motor_match or {}), "kraftstoff": identity.fuel}
+
+    def allowed(fakt):
+        return fakt.get("_trust") != "rejected" and varianten_applicability(fakt, identity)[0] != "incompatible"
     # HINWEIS zu DB-Quellen-URLs (Tabelle `quelle`): diese sind ausschließlich per
     # `baureihe_id` verknüpft — es gibt KEINE Relation zu einer einzelnen
     # Schwachstelle/Rückruf/Motorproblem. Eine allgemeine Baureihen-URL darf daher
@@ -225,7 +235,15 @@ def build_insights(
     # Sätze erzeugen damit weder Evidence noch Kaufaktion noch Floor — exakt wie
     # ein "incompatible"-Rückruf.
     for s in gefilterte_schwachstellen(
-            (baureihe or {}).get("schwachstellen_baureihe"), motor_match, baureihe):
+            (baureihe or {}).get("schwachstellen_baureihe"), applicability_motor, baureihe):
+        if not allowed(s):
+            continue
+        # Plain consumable wear belongs in the general inspection catalogue.
+        # Early failure, corrosion or a concrete defect remains a risk.
+        if (re.fullmatch(r"Bremsen|Bremsbeläge|Bremsscheiben|Reifen|Wischer", s.get("bauteil") or "", re.I)
+                and re.search(r"verschleiß|verschleiss|abnutzung", s.get("beschreibung") or "", re.I)
+                and not re.search(r"vorzeitig|ungewöhnlich|überdurchschnittlich|übermäßig|defekt|ausfall|korrosion|riss", s.get("beschreibung") or "", re.I)):
+            continue
         passt = _baujahr_passt(s.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue  # gilt nachweislich nicht für dieses Baujahr -> nicht ausgeben
@@ -245,6 +263,7 @@ def build_insights(
         insights.append(Insight(
             id=_id("schwachstelle"),
             kategorie="schwachstelle",
+            risk_type="known_weakness",
             titel=(f"{s.get('bauteil') or 'Schwachstelle'}: "
                    f"{'bekannte Schwachstelle' if bekannt else 'gemeldeter Hinweis'}"),
             beschreibung=beschreibung_s,
@@ -265,6 +284,8 @@ def build_insights(
 
     # ── 2) Rückrufe (KBA-Daten) ────────────────────────────────────────────────
     for r in (baureihe or {}).get("rueckrufe") or []:
+        if not allowed(r):
+            continue
         passt = _baujahr_passt(r.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue
@@ -316,7 +337,7 @@ def build_insights(
         # Applicability-Berechnung genau den Wert, der gleich auch am Insight steht —
         # statt eine zweite, schwächere Trust-Ermittlung zu benutzen.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
-            {**r, "_trust": trust_rueckruf}, passt, kba, motor_match, marke=marke)
+            {**r, "_trust": trust_rueckruf}, passt, kba, applicability_motor, marke=marke)
         # §8/§27: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
         # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
         # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
@@ -358,6 +379,7 @@ def build_insights(
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
+            risk_type="recall",
             kurztitel=kurz,
             titel=titel,
             beschreibung=beschr.strip(" —"),
@@ -365,13 +387,16 @@ def build_insights(
             quellen=quellen,
             confidence=r_conf,
             applicability=applicability,
+            recall_status=recall_status(applicability),
             trust=trust_rueckruf,
-            einfluss=r_einfluss,
+            einfluss=recall_handlung(recall_status(applicability)),
         ))
 
     # ── 3) Motorspezifische Probleme (nur bei ERKANNTEM Motor) ─────────────────
     if motor_match:
         for s in motor_match.get("schwachstellen_motor") or []:
+            if not allowed(s):
+                continue
             passt = _baujahr_passt(s.get("baujahre"), baujahr)
             if passt is False:
                 continue
@@ -405,6 +430,7 @@ def build_insights(
             insights.append(Insight(
                 id=_id("motorproblem"),
                 kategorie="motorproblem",
+                risk_type="known_weakness",
                 titel=titel_mp,
                 beschreibung=(s.get("beschreibung") or "").strip(),
                 quellen_typen=_typen(quellen),
@@ -447,6 +473,8 @@ def build_insights(
     # hier bewusst KEINE eigene Baujahreslogik erfunden.
     if check_typ == "kauf" and motor_match:
         for w in motor_match.get("kritische_wartung") or []:
+            if not allowed(w):
+                continue
             bauteil = (w.get("bauteil") or "").strip()
             if not bauteil:
                 continue
@@ -497,6 +525,7 @@ def build_insights(
             insights.append(Insight(
                 id=_id("wartung"),
                 kategorie="wartung",
+                risk_type="wear" if art == WARTUNG_VERSCHLEISS else "maintenance",
                 titel=f"{bauteil}: {art_titel} ({motor_name})",
                 beschreibung=beschreibung_w,
                 quellen_typen=_typen(quellen),
@@ -542,11 +571,15 @@ def build_insights(
     # Quellen tragen `typ="web_technik"` statt `datenbank`/`rueckruf_kba`.
     if web_recherche is not None and check_typ == "kauf":
         for fakt in web_recherche.fakten:
+            if not allowed({"bauteil": fakt.bauteil, "beschreibung": fakt.aussage}):
+                continue
             if not fakt.quellen:
                 continue          # ohne Quelle keine Evidence — nie
             insights.append(Insight(
                 id=_id(f"web-{fakt.kategorie}"),
                 kategorie=f"web_{fakt.kategorie}",
+                risk_type=("recall" if fakt.kategorie == "rueckruf" else
+                           "maintenance" if fakt.kategorie == "wartung" else "known_weakness"),
                 titel=_WEB_TITEL[fakt.kategorie].format(
                     bauteil=(fakt.bauteil or "Fahrzeug").replace("_", " ")),
                 beschreibung=fakt.aussage,
@@ -556,6 +589,7 @@ def build_insights(
                 # + Tier), nie aus dem Inhalt — dieselbe Trennung wie oben.
                 confidence=fakt.confidence,
                 applicability=fakt.applicability,
+                recall_status=recall_status(fakt.applicability) if fakt.kategorie == "rueckruf" else None,
                 # §11: Web-Evidence trägt eine echte Quellenlage (URL + Domain-
                 # Qualität + Anzahl unabhängiger Domains) und bekommt deshalb eine
                 # EIGENE Trust-Stufe — sie ist weder ein ungeprüfter DB-Satz noch

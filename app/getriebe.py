@@ -46,7 +46,7 @@ ARTEN = (AUTOMATIK, MANUELL)
 AUTOMATIK_WORTE = ("automatik", "automatic", "steptronic", "tiptronic", "dsg", "s tronic",
                    "s-tronic", "dkg", "doppelkupplung", "pdk", "cvt", "wandler",
                    "multitronic", "powershift", "edc", "g-tronic")
-MANUELL_WORTE = ("schaltgetriebe", "handschalt", "manuell", "handschalter", "schaltung")
+MANUELL_WORTE = ("schaltgetriebe", "handschalt", "manuell", "handschalter", "schaltung", "schalter")
 
 # Anzeigeform fuer Prompt, Bericht und Checkliste. "Schaltgetriebe" statt
 # "Manuell", weil das die Sprache der Inserate ist.

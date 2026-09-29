@@ -37,6 +37,16 @@ _MARKEN_ALIAS = {
 }
 
 
+def normalisiere_marke(marke: str | None) -> str | None:
+    if not marke:
+        return None
+    compact = re.sub(r"[\W_]+", "", marke, flags=re.UNICODE).casefold()
+    for alias, name in _MARKEN_ALIAS.items():
+        if compact in {re.sub(r"[\W_]+", "", v).casefold() for v in (alias, name)}:
+            return name
+    return re.sub(r"[\s\-]+", "-", marke.strip()).casefold()
+
+
 # ---------- Verkaufsbezeichnungs-Normalisierung / -Erkennung ----------
 #
 # Typische Nutzereingaben im "Modell"-Feld sind Verkaufsbezeichnungen wie
@@ -272,7 +282,7 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
     rows = get_alle_baureihen_kurz()
 
     if marke:
-        marke = _MARKEN_ALIAS.get(marke.upper().strip(), marke.strip())
+        marke = normalisiere_marke(marke)
 
     # Der eingegebene "Modell"-String ist häufig KEIN Baureihen-Name ("3er"), sondern eine
     # Motorbezeichnung ("320d") oder ein Motorcode ("B47"). Diese den zugehörigen Baureihen
@@ -326,7 +336,7 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
         modell_getroffen = False
         art = MATCH_NONE
         if marke:
-            if r["marke"].lower() == marke.lower():
+            if normalisiere_marke(r["marke"]) == marke:
                 score += 4
                 marke_ok = True
             elif marke.lower() in r["marke"].lower() or r["marke"].lower() in marke.lower():
@@ -365,6 +375,7 @@ def _find_baureihe_scored(marke: str | None, modell: str | None,
                                                 (r.get("generation") or "").lower()) if t}
             if r_gen_tokens & gen_tokens_user:
                 score += 3
+                modell_getroffen = True
                 # Die Generation ist die spezifischste Angabe, die ein Nutzer
                 # machen kann ("Golf VII", "3er G20") — sie hebt einen sonst nur
                 # substring-artigen Treffer auf eine belastbare Stufe.
@@ -543,10 +554,34 @@ _KRAFTSTOFF_HINTS: list[tuple[str, tuple[str, ...]]] = [
 def _kraftstoff_aus_hint(h: str) -> str | None:
     """Normierter Kraftstoff aus dem Hint, oder None. Reihenfolge: spezifisch vor
     Benzin (ein 'Plug-in-Hybrid' soll nicht als Benzin durchgehen)."""
+    h = (h or "").lower()
     for norm, keys in _KRAFTSTOFF_HINTS:
         if any(k in h for k in keys):
             return norm
     return None
+
+
+def _motor_kraftstoff_kompatibel(motor: dict, erwartet: str | None) -> bool:
+    """Prueft den Basiskraftstoff, ohne einen unbekannten DB-Wert zu erfinden.
+
+    Einige Bestandszeilen tragen nur den Antriebstyp ``Mild-Hybrid``. Bei diesen
+    Zeilen kann die Variantenbezeichnung den Basiskraftstoff eindeutig nennen
+    (etwa TDI oder TFSI). Fehlt auch dieses Signal, bleibt der Basiskraftstoff
+    unbekannt und ist kein Widerspruch zur Nutzerangabe.
+    """
+    if erwartet is None:
+        return True
+    from app.recall_filter import _norm_kraftstoff
+    vorhanden = _norm_kraftstoff(motor.get("kraftstoff"))
+    if vorhanden == erwartet:
+        return True
+    if vorhanden != "mild":
+        return vorhanden is None
+    basis = _kraftstoff_aus_hint(" ".join(str(motor.get(f) or "")
+                                          for f in ("bezeichnung", "motorcode")))
+    # "Mild-Hybrid" alone identifies the electrification level, not whether
+    # the combustion engine burns petrol or diesel.
+    return basis not in ("benzin", "diesel") or basis == erwartet
 
 
 # Antriebsangaben in Freitext -> DB-Wert von `motorvariante.antrieb`.
@@ -598,7 +633,7 @@ def _eingrenzen(treffer: list[dict], hint_lower: str, modell: str | None) -> dic
     return auswahl[0]
 
 
-def find_motor(baureihe: dict, hint: str | None, modell: str | None = None) -> dict | None:
+def find_motor(baureihe: dict, hint: str | None, modell: str | None = None, *, req=None) -> dict | None:
     """Findet die passende Motorvariante per Textabgleich.
 
     Signalreihenfolge: (1) direkte Bezeichnung/Motorcode, (2) Leistung — dabei die
@@ -634,6 +669,8 @@ def find_motor(baureihe: dict, hint: str | None, modell: str | None = None) -> d
     würde je nach Zeilenreihenfolge den Diesel für einen Benziner ausgeben. Nur
     Gleichheit ist hier sicher.
     """
+    if req is not None:
+        return _motor_mit_request(baureihe, hint, modell, req)
     if not hint or not baureihe["motoren"]:
         return None
     h = hint.lower()
@@ -693,6 +730,61 @@ def find_motor(baureihe: dict, hint: str | None, modell: str | None = None) -> d
         return kandidaten[0]
 
     return None
+
+
+def _motor_mit_request(baureihe: dict, hint: str | None, modell: str | None, req) -> dict | None:
+    """Constrain the existing resolver with all explicit request fields.
+
+    No first-row tie breaking. A database match identifies a reference variant;
+    it does not independently verify the seller's description of this vehicle.
+    """
+    from app.getriebe import aus_request, aus_db
+    from app.recall_filter import _norm_kraftstoff
+    text = " ".join(str(getattr(req, f, None) or "") for f in
+                    ("motor", "modell", "antrieb", "beschreibung", "freitext"))
+    fuel = _norm_kraftstoff(getattr(req, "kraftstoff", None)) or _kraftstoff_aus_hint(hint or "")
+    drive = _antrieb_aus_text(text)
+    transmission = aus_request(req)
+    power = getattr(req, "leistung_ps", None)
+    if power is None:
+        match = re.search(r"\b(\d{2,4})\s*PS\b", hint or "", re.I)
+        power = int(match[1]) if match else None
+    candidates = list(baureihe.get("motoren") or [])
+    if fuel is not None:
+        candidates = [m for m in candidates if _motor_kraftstoff_kompatibel(m, fuel)]
+    for field, value, normalizer in (
+        ("leistung_ps", power, lambda x: x),
+        ("antrieb", drive, lambda x: x),
+    ):
+        if value is not None:
+            candidates = [m for m in candidates if not m.get(field) or normalizer(m[field]) == value]
+    if transmission:
+        candidates = [m for m in candidates if aus_db(m) in (None, transmission)]
+    # An explicitly supplied engine code is a constraint, including a family
+    # prefix of a longer DB code. It must contain letters AND digits.
+    codes = [t for t in re.findall(r"\b[a-z][a-z0-9]{2,}\b", hint or "", re.I)
+             if re.search(r"\d", t)]
+    if codes:
+        def code_kompatibel(motor: dict) -> bool:
+            db_code = _norm_bezeichnung(motor.get("motorcode"))
+            if not db_code:
+                return True
+            return any(db_code.startswith(_norm_bezeichnung(code)) for code in codes)
+        candidates = [m for m in candidates if code_kompatibel(m)]
+    generations = set(_tokens(baureihe.get("generation")))
+    model_without_generation = " ".join(t for t in _tokens(modell) if t not in generations)
+    for label in (hint, model_without_generation):
+        exact = [m for m in candidates if _norm_bezeichnung(m.get("bezeichnung")) == _norm_bezeichnung(label)]
+        if exact:
+            candidates = exact
+            break
+    # Free text can help distinguish a variant but may not override constraints.
+    if len(candidates) > 1 and hint:
+        matching = [m for m in candidates if find_motor({"motoren": [m]}, hint, modell)]
+        if matching:
+            candidates = matching
+    has_evidence = bool(hint or model_without_generation or power)
+    return candidates[0] if has_evidence and len(candidates) == 1 else None
 
 
 # ---------- DB-Kontext ----------

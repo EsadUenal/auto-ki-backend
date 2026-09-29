@@ -168,8 +168,8 @@ check("C1: key_findings vorhanden (nicht leer)",
 check("D1: Rueckruf- ODER Schwachstellen-Findings vorhanden",
       any(f.kategorie in ("rueckruf", "schwachstelle", "motorproblem", "widerspruch")
           for f in ERG_NO_MARKET.get("key_findings") or []))
-check("E1: Empfehlung vorhanden und nicht 'unbekannt'",
-      ERG_NO_MARKET.get("empfehlung") == "nur_mit_werkstattpruefung")
+check("E1: deterministische technische Empfehlung vorhanden",
+      ERG_NO_MARKET.get("empfehlung") == "kaufen_nach_besichtigung")
 check("E2: Bericht vorhanden und substanziell",
       len(ERG_NO_MARKET.get("bericht") or "") > 200)
 
@@ -208,8 +208,8 @@ check("I3: erfundene preis_bewertung 'guenstig' wird auf 'unbekannt' zurueckgese
       erg_halluz.get("preis_bewertung") == "unbekannt")
 check("I4: price_assessment bleibt 'unbekannt'",
       erg_halluz["price_assessment"].verdict == "unbekannt")
-check("I5: technische Empfehlung bleibt erhalten",
-      erg_halluz.get("empfehlung") == "nur_mit_werkstattpruefung")
+check("I5: erfundene LLM-Empfehlung wird nicht übernommen",
+      erg_halluz.get("empfehlung") == "kaufen_nach_besichtigung")
 
 LLM_PREIS_NACHVERHANDELN = dict(LLM_OHNE_PREIS, empfehlung="preis_nachverhandeln")
 erg_pn = lauf_kaufcheck(ma_leer, LLM_PREIS_NACHVERHANDELN)
@@ -324,8 +324,9 @@ check("N4: PFAD B verbietet Preiseinstufung ausdruecklich",
       "Stufe den Angebotspreis NICHT ein" in prompt_b)
 check("N5: PFAD B fordert die technische Analyse weiterhin ein",
       "VOLLSTAENDIG durch" in prompt_b or "VOLLSTÄNDIG durch" in prompt_b)
-check("N6: PFAD B enthaelt weiterhin das DB-Profil (technischer Kontext)",
-      "DB-Profil" in prompt_b)
+check("N6: PFAD B enthaelt weiterhin den kanonischen Fahrzeug-/Risikokontext",
+      "KANONISCHER FAHRZEUG- UND RISIKOKONTEXT" in prompt_b
+      and '"canonical_risks"' in prompt_b)
 
 lauf_kaufcheck(ma_gut, LLM_MIT_PREIS)
 prompt_a = _letzter_prompt["user"]

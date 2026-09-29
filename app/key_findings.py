@@ -273,7 +273,7 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
             id="", kategorie="rueckruf", stufe=STUFE_WARNUNG, icon="⚠️",
             titel=f"{n} Rückruf{'e' if n != 1 else ''} zu prüfen",
             beschreibung=titel_liste,
-            aktion="Vor Kauf per FIN prüfen, ob die Rückrufaktion durchgeführt wurde.",
+            aktion=HINWEIS_FIN,
             evidence_ids=[i.id for i in zu_pruefen],
             prioritaet=_P_RUECKRUF,
         ))

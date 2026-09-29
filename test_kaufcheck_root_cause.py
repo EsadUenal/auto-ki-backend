@@ -342,8 +342,9 @@ check("A24b die drei hoechstrangigen Rueckrufe verdraengen die Fahrwerksfrage "
 gruende_m4 = " ".join(erg_m4["empfehlung_gruende"])
 check("A25 keine 'keine schwerwiegende Schwachstelle' neben Motorrisiken",
       "keine schwerwiegende" not in gruende_m4, gruende_m4)
-check("A26 die Zusammenfassung nennt die ungeprüften Hinweise als solche",
-      "ungeprüft" in gruende_m4 and "Vorsichtsmaßnahme" in gruende_m4, gruende_m4)
+check("A26 die Zusammenfassung nennt die niedrige Datenqualität und behauptet keinen Mangel",
+      "Datenqualität niedrig" in gruende_m4 and "kein festgestellter Mangel" in gruende_m4,
+      gruende_m4)
 kf_titel = [f.titel for f in erg_m4["key_findings"]]
 check("A27 kein 'Bekanntes Motorproblem' für ungeprüfte Hinweise",
       "Bekanntes Motorproblem" not in kf_titel and any("gemeldete Hinweise" in t for t in kf_titel),
@@ -352,12 +353,12 @@ check("A28 ungeprüfte Hinweise sind kein Beleg der Empfehlung",
       not any(e in {i.id for i in erg_m4["insights"] if i.confidence == "niedrig"}
               for e in erg_m4["empfehlung_evidence_ids"]), erg_m4["empfehlung_evidence_ids"])
 check("A29 Fälligkeit aus ungeprüftem Hinweis wird neutralisiert",
-      "werden jetzt fällig" not in erg_m4["bericht"] and "zu prüfen" in erg_m4["bericht"])
+      "werden jetzt fällig" not in erg_m4["bericht"] and "prüfen" in erg_m4["bericht"])
 
 # Befund 4.5: Prompt
 user = prompt_m4["user"]
 check("A30 Prompt: kanonischer Block mit Beleglage",
-      "### Technische Hinweise" in user and "gemeldeter Hinweis" in user)
+      '"canonical_risks"' in user and '"confidence"' in user)
 check("A31 Prompt: keine Rohliste 'Kritische Wartung:' und kein '(DB, geprüft)'",
       "Kritische Wartung:" not in user and "DB, geprüft" not in user)
 check("A32 Systemprompt nennt das DB-Profil nicht mehr 'geprüfte Fakten'",

@@ -17,6 +17,9 @@ Der Preis ist ausdrücklich eine eigene Dimension: ohne Marktbasis steht hier,
 dass er NICHT bewertet wurde.
 """
 from __future__ import annotations
+from collections import Counter
+from app.bekannte_fakten import unfall_status, UNFALLFREI, UNFALL
+from app.fin_hinweis import HINWEIS_FIN
 
 from app.risikothemen import WARTUNG_REGULAER, ist_bekannt, risikoart
 from app.servicehistorie import (
@@ -59,6 +62,9 @@ def _technische_datenlage(insights: list, empfehlung: str) -> list[str]:
     schwer_bekannt = [i for i in bekannt
                       if (getattr(i, "schweregrad", None) or "").lower() in _HOCH]
     saetze: list[str] = []
+    quality = Counter(i.confidence for i in risiken)
+    saetze.append(", ".join(f"{quality[q]} {'Hinweis' if quality[q] == 1 else 'Hinweise'} mit Datenqualität {q}"
+                            for q in ("hoch", "mittel", "niedrig") if quality[q]) + ".")
     if schwer_bekannt:
         namen = ", ".join(_name(i) for i in schwer_bekannt[:3])
         saetze.append(f"Belegte Schwachstelle mit hohem Schweregrad: {namen}. Vor dem Kauf "
@@ -78,12 +84,11 @@ def _technische_datenlage(insights: list, empfehlung: str) -> list[str]:
         if n == len(risiken):
             saetze.append(f"Für diese Variante {'ist' if n == 1 else 'sind'} "
                           f"{_mehrzahl(n, 'technischer Hinweis', 'technische Hinweise')} "
-                          f"hinterlegt, {'er ist' if n == 1 else 'alle sind'} ungeprüft "
-                          f"(Datenqualität niedrig): gezielt nachfragen, für sich allein kein "
+                          f"hinterlegt: gezielt nachfragen, für sich allein kein "
                           f"festgestellter Mangel.")
         else:
             saetze.append(f"{_mehrzahl(n, 'weiterer Hinweis ist', 'weitere Hinweise sind')} "
-                          f"ungeprüft (Datenqualität niedrig) und für sich allein kein "
+                          f"gemeldet und für sich allein kein "
                           f"festgestellter Mangel.")
         # Low-Evidence darf die Empfehlung nicht unbemerkt tragen. Ist sie streng
         # und ist KEIN technischer Punkt belegt, wird das ausdrücklich gesagt.
@@ -141,8 +146,7 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     rueckrufe = [i for i in insights or [] if getattr(i, "kategorie", None) == "rueckruf"]
     if rueckrufe and all(getattr(i, "applicability", None) in ("series_only", "unclear")
                          for i in rueckrufe):
-        gruende.append("Gemeldete Rückrufe gelten für Teile der Baureihe. Ob genau dieses "
-                       "Fahrzeug betroffen ist, klärt eine FIN-Abfrage.")
+        gruende.append("Gemeldete Rückrufe gelten für Teile der Baureihe. " + HINWEIS_FIN)
 
     # 4) Inseratsangaben — ausdrücklich als Angaben, nicht als Tatsachen
     # Servicehistorie: der kanonische Satz aus app/servicehistorie.py, damit dieselbe
@@ -163,9 +167,14 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
         gruende.append(f"HU laut Inserat gültig bis {hu.anzeige}. Prüfbericht ansehen.")
 
     # 5) Warum "nach Besichtigung"
-    if empfehlung == "kaufen_nach_besichtigung":
-        gruende.append("Zustand, Unfallfreiheit und Wartung sind Inseratsangaben. "
-                       "Sie lassen sich erst bei der Besichtigung bestätigen.")
+    accident = unfall_status(req)
+    if accident == UNFALLFREI:
+        gruende.append("Laut Inserat unfallfrei. Diese Angabe vor Ort prüfen und schriftlich festhalten.")
+    elif accident == UNFALL:
+        gruende.append("Unfall/Schaden laut Inserat angegeben. Umfang und Reparaturbelege klären.")
+    else:
+        gruende.append("Unfallhistorie nicht vollständig bekannt. Vor Kauf Schäden, "
+                       "Nachlackierungen und Reparaturhistorie klären.")
 
     # 6) Preis als eigene Dimension
     if markt_verfuegbar and preis_label:

@@ -79,6 +79,68 @@ KOMPATIBEL = "kompatibel"
 UNKLAR = "unklar"
 INKOMPATIBEL = "incompatible"
 
+
+def varianten_applicability(fakt: dict, identity) -> tuple[str, str]:
+    """Additional variant dimensions in the existing applicability gate.
+
+    Explicit rules are conjunctive. Missing attributes remain unknown; a known
+    contradiction always wins. Intrinsic component scopes do not depend on a
+    generation or manufacturer (AdBlue is diesel, HV requires electrification).
+    """
+    from app.getriebe import normalisiere as norm_getriebe
+    rules = dict(fakt.get("applicability_rules") or {})
+    scope = rules.pop("scope", None)
+    scoped = {
+        "diesel_only": ("fuel", ["diesel"]), "petrol_only": ("fuel", ["benzin"]),
+        "phev_only": ("powertrain", ["PHEV"]), "ev_only": ("powertrain", ["EV"]),
+        "ice_only": ("powertrain", ["ICE"]),
+        "manual_only": ("transmission", ["manuell"]),
+        "automatic_only": ("transmission", ["automatik"]),
+    }
+    if scope in scoped:
+        key, values = scoped[scope]
+        rules[key] = values
+    # Only component names and explicit qualifiers, never an incidental mention
+    # such as 'especially with automatic transmission' in general wear prose.
+    text = _scope_text(fakt)
+    if fakt.get("mangel"):
+        text += " " + fakt["mangel"] + " " + (fakt.get("betroffene_baujahre") or "")
+    if re.search(r"\badblue\b|dieselpartikelfilter", text, re.I):
+        rules.setdefault("fuel", ["diesel"])
+    if re.search(r"hochvolt|hv[- ]?batterie|traktionsbatterie|antriebsbatterie", text, re.I):
+        rules.setdefault("powertrain", ["PHEV", "HEV", "EV"])
+    if re.search(r"plug[- ]?in|\bphev\b", text, re.I):
+        rules.setdefault("powertrain", ["PHEV"])
+    if re.search(r"\b(?:nur|bei|für)\s+(?:fahrzeugen mit\s+)?(?:schaltgetriebe|handschalter)", text, re.I):
+        rules.setdefault("transmission", ["manuell"])
+    if re.search(r"\b(?:nur|bei|für)\s+(?:fahrzeugen mit\s+)?automatik", text, re.I):
+        rules.setdefault("transmission", ["automatik"])
+    unknown = False
+    for name, values in rules.items():
+        value = getattr(identity, name, None)
+        if name not in ("fuel", "powertrain", "transmission", "drivetrain", "engine_code", "generation", "year"):
+            unknown = True
+            continue
+        if value is None:
+            unknown = True
+            continue
+        if name == "year":
+            from app.recall_filter import _baujahr_passt
+            fits = _baujahr_passt(str(values), value)
+            if fits is False:
+                return INKOMPATIBEL, "year_widerspruch"
+            unknown |= fits is None
+            continue
+        values = values if isinstance(values, (tuple, list, set)) else [values]
+        norm = (_norm_kraftstoff if name == "fuel" else norm_getriebe if name == "transmission"
+                else lambda x: str(x).casefold())
+        actual = norm(value)
+        if actual is None:
+            unknown = True
+        elif actual not in {norm(x) for x in values}:
+            return INKOMPATIBEL, f"{name}_widerspruch"
+    return (UNKLAR, "variante_unbekannt") if unknown else (KOMPATIBEL, "kein_widerspruch")
+
 # Antriebe mit Hochvolt-System — dieselbe Gleichsetzung wie in recall_filter
 # (ein "Hybrid"-Scope schließt einen PHEV nicht aus).
 _HAT_HOCHVOLT = {"phev", "elektro"}

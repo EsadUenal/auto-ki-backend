@@ -228,6 +228,8 @@ class VehicleIdentity:
     edition_markers: set[str] = field(default_factory=set)
     chassis_codes: set[str] = field(default_factory=set)
     rohtext: str = ""                      # ursprünglicher Freitext (nur Diagnose)
+    powertrain: str | None = None
+    field_evidence: dict[str, dict] = field(default_factory=dict)
 
     # ── Abgeleitete Sichten ───────────────────────────────────────────────────
 
@@ -302,6 +304,66 @@ class VehicleIdentity:
         }
 
     # ── Konstruktoren ─────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_check_context(cls, baureihe: dict | None, motor_match: dict | None, req) -> "VehicleIdentity":
+        """One request-local identity from the already gated resolver result.
+
+        'identified' means a unique ENFAL reference match, never VIN verification.
+        Each provided value remains distinguishable from the database reference.
+        """
+        from app.car_lookup import normalisiere_marke, _antrieb_aus_text
+        from app.getriebe import aus_request, aus_db
+        from app.recall_filter import _norm_kraftstoff
+        b, m = baureihe or {}, motor_match or {}
+        identity = cls.from_market_context(b, m, req)
+        text = " ".join(str(getattr(req, f, None) or "") for f in
+                        ("motor", "antrieb", "beschreibung", "freitext"))
+        supplied = {
+            "make": getattr(req, "marke", None), "model": getattr(req, "modell", None),
+            "year": getattr(req, "baujahr", None), "engine_name": getattr(req, "motor", None),
+            "fuel": getattr(req, "kraftstoff", None), "horsepower": getattr(req, "leistung_ps", None),
+            "transmission": aus_request(req), "drivetrain": _antrieb_aus_text(text),
+            "mileage": getattr(req, "kilometerstand", None),
+        }
+        reference = {"make": b.get("marke"), "model": b.get("modell"),
+                     "generation": b.get("generation"), "engine_name": m.get("bezeichnung"),
+                     "engine_code": m.get("motorcode"), "fuel": m.get("kraftstoff"),
+                     "horsepower": m.get("leistung_ps"), "drivetrain": m.get("antrieb"),
+                     "transmission": aus_db(m)}
+        for name in set(supplied) | set(reference):
+            provided, db_value = supplied.get(name), reference.get(name)
+            value = provided if provided is not None else db_value
+            if name in ("make", "model", "engine_name") and db_value:
+                value = db_value
+            if name == "make" and not db_value:
+                value = normalisiere_marke(provided)
+            setattr(identity, name, value)
+            status = ("identified" if db_value is not None else
+                      "provided" if provided is not None else "unknown")
+            identity.field_evidence[name] = {
+                "status": status, "provided_value": provided, "reference_value": db_value,
+                "confidence": "hoch" if db_value is not None else "niedrig" if provided is not None else "unbekannt",
+                "provenance": (["user"] if provided is not None else []) + (["enfal"] if db_value is not None else []),
+                "evidence": m.get("variante_id") if name not in ("make", "model", "generation") else b.get("id"),
+            }
+        # A generation-wide body/options set is not this vehicle's equipment.
+        identity.body = None
+        identity.powertrain = getattr(req, "powertrain", None)
+        if identity.powertrain:
+            identity.powertrain = identity.powertrain.upper()
+        else:
+            identity.powertrain = {"benzin": "ICE", "diesel": "ICE", "phev": "PHEV",
+                                  "elektro": "EV", "mild": "MHEV"}.get(_norm_kraftstoff(m.get("kraftstoff")))
+        identity.field_evidence["powertrain"] = {
+            "status": "provided" if getattr(req, "powertrain", None) else "plausible" if identity.powertrain else "unknown",
+            "provided_value": getattr(req, "powertrain", None),
+            "reference_value": m.get("kraftstoff") if m else None,
+            "confidence": "niedrig" if getattr(req, "powertrain", None) else "mittel" if identity.powertrain else "unbekannt",
+            "provenance": ["user"] if getattr(req, "powertrain", None) else ["enfal"] if m else [],
+            "evidence": m.get("variante_id"),
+        }
+        return identity
 
     @classmethod
     def from_market_context(cls, baureihe: dict | None, motor_match: dict | None,

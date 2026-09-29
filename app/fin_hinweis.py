@@ -29,7 +29,23 @@ Markenname hartkodiert wird.
 # Der kanonische Satz. Punkt am Ende, damit er sich an einen Vorsatz anhängen
 # lässt, ohne dass an sieben Stellen eine eigene Interpunktion entsteht.
 HINWEIS_FIN = ("Betroffenheit anhand der FIN beim Hersteller oder einer "
-               "Vertragswerkstatt der Marke prüfen lassen.")
+               "Vertragswerkstatt der Marke prüfen lassen und, falls betroffen, "
+               "anschließend die Durchführung mit Werkstattnachweis klären.")
+
+
+def recall_status(applicability: str | None) -> dict[str, str]:
+    """Applicability is a scope, never an assertion that a campaign is open."""
+    return {"scope": applicability or "unclear",
+            "vehicle_affected": "confirmed" if applicability == "confirmed_by_vin" else "unknown",
+            "completion": "unknown"}
+
+
+def recall_handlung(status: dict | None) -> str:
+    if (status or {}).get("vehicle_affected") == "confirmed":
+        if status.get("completion") == "completed":
+            return "Die bestätigte Durchführung mit dem Werkstattnachweis abgleichen."
+        return "Die Betroffenheit ist bestätigt. Durchführung und Werkstattnachweis klären."
+    return HINWEIS_FIN
 
 # Kurzform für Stellen, an denen der Satz mitten in einer Aufzählung steht.
 STELLE_FIN = "beim Hersteller oder einer Vertragswerkstatt der Marke"

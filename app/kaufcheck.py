@@ -67,6 +67,10 @@ from app.postprocess import neutralisiere_preiszeile_ohne_markt
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
+from app.kaufcheck_bericht import (
+    kontext as kanonischer_kontext, bericht as kanonischer_bericht,
+    datenbasis as bericht_datenbasis,
+)
 from app.postprocess import (
     postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_wartungs_faelligkeit,
     neutralisiere_no_market_preisurteil,
@@ -120,122 +124,18 @@ _PREIS_BEWERTUNG_SYNONYME = {
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = """\
-Du bist ein erfahrener KFZ-Kaufberater. Du analysierst ein Fahrzeug-Inserat und gibst eine sachliche, konkrete Kaufentscheidung zurück.
-
-Du erhältst:
-1. INSERAT-DATEN: Angaben aus dem Inserat
-2. DB-PROFIL: Fahrzeugdaten der ENFAL-Datenbank. Technische Daten (Specs) und die dort aufgeführten Rückrufe sind Referenzdaten. Schwachstellen und Wartungshinweise tragen dagegen eine eigene BELEGLAGE (siehe Abschnitt "Technische Hinweise"): ein "gemeldeter Hinweis" ist ein ungeprüfter Eintrag, oft Werkstatt- oder Community-Erfahrung, und KEINE Herstellervorgabe.
-3. WEB-ERGEBNISSE: aktuelle Marktpreise aus Tavily, nur zur Orientierung
-
-AUSGABE: Ausschließlich gültiges JSON, kein Text davor oder danach.
-
-{
-  "bericht": "<Markdown-Bericht, Details unten>",
-  "empfehlung": "kaufen" | "kaufen_nach_besichtigung" | "nur_mit_werkstattpruefung" | "preis_nachverhandeln" | "hohes_risiko" | "finger_weg" | "unbekannt",
-  "preis_bewertung": "extrem_guenstig" | "guenstig" | "marktgerecht" | "teuer" | "extrem_teuer" | "unbekannt",
-  "marktpreis_min": <integer EUR oder null>,
-  "marktpreis_max": <integer EUR oder null>,
-  "empfehlung_evidence_ids": [<IDs aus "VERFÜGBARE EVIDENCE", die die Kaufempfehlung stützen; sonst []>],
-  "preis_evidence_ids": [<IDs, die die Preisbewertung stützen; sonst []>],
-  "risiko_evidence_ids": [<IDs zu den zentralen Risiken im Bericht; sonst []>]
-}
-
-EVIDENCE-VERKNÜPFUNG (Provenance):
-Im Nutzerteil steht ggf. ein Block "VERFÜGBARE EVIDENCE" mit IDs (bereits geprüfte Schicht-A-Fakten). Für die *_evidence_ids-Felder:
-- Referenziere NUR IDs aus diesem Block, und NUR solche, die die jeweilige Entscheidung TATSÄCHLICH stützen.
-- Erfinde KEINE IDs. Referenziere keine ID nur wegen thematischer Ähnlichkeit.
-- Passt keine Evidence → leere Liste []. Empfehlung/Preisbewertung bleiben trotzdem gültig (dann reine KI-Ableitung).
-- Die Felder dienen NUR dem Referenzieren bestehender IDs: ändere nichts an der Evidence, erfinde keine Confidence.
-- Gibt es keinen Evidence-Block, sind alle *_evidence_ids [].
-- Evidence-IDs (z.B. "schwachstelle-1", "rueckruf-4", "marktvergleich-7") gehören AUSSCHLIESSLICH in die *_evidence_ids-Felder. Im Feld "bericht" dürfen NIEMALS interne Evidence-IDs, technische IDs oder Hinweise auf das interne Evidence-System erscheinen. KEIN "(Evidence-ID: ...)", KEIN "[schwachstelle-1]" o.ä. Der Bericht bleibt für den Nutzer vollständig natürlich lesbar.
-
-FEHLENDE ODER FEHLERHAFTE EINGABEN (prüfe das ZUERST):
-Bevor du die volle Struktur schreibst, prüfe die Inserat-Daten:
-- Fehlen Kernangaben (Marke, Modell, Baujahr ODER Preis): Antworte NUR mit einer kompakten Rückfrage (2–3 Sätze), was konkret noch gebraucht wird. Keine Tabelle, keine Checkliste. empfehlung/preis_bewertung = "unbekannt".
-- Enthält das Inserat einen technisch UNMÖGLICHEN Wert: Antworte kompakt (2–4 Sätze), benenne den Widerspruch technisch begründet, frage nach Klarstellung. Keine volle Struktur.
-- Wirkt ein Wert wie ein Zahlen-/Schreibfehler: kurz darauf hinweisen ("vermutlich Tippfehler, meintest du X?") statt kommentarlos zu übernehmen.
-- Nur wenn genug valide Kerndaten vorhanden sind, schreibe die volle Struktur unten.
-
-PREISBEWERTUNG: fünf Stufen, eindeutig nach Position zur Marktspanne (marktpreis_min–marktpreis_max):
-  - "extrem_guenstig": Preis liegt MEHR ALS 20% UNTER marktpreis_min.
-  - "guenstig": Preis liegt bis zu 20% unter marktpreis_min ODER in der unteren Hälfte der Spanne.
-  - "marktgerecht": Preis liegt innerhalb der Marktspanne.
-  - "teuer": Preis liegt bis zu 20% ÜBER marktpreis_max.
-  - "extrem_teuer": Preis liegt MEHR ALS 20% ÜBER marktpreis_max.
-  - "unbekannt": keine Marktspanne aus dem Web ableitbar.
-WICHTIGER SELBST-CHECK vor der Ausgabe: Liegt der Preis UNTER der Marktspanne, MUSS die Bewertung "extrem_guenstig" oder "guenstig" sein, niemals "teuer" oder "extrem_teuer". Verwechsle die Richtung nicht.
-"unbekannt" NUR wenn die Web-Ergebnisse WIRKLICH KEINEN Preishinweis zu vergleichbaren Fahrzeugen enthalten. Enthält auch nur eines der Web-Ergebnisse eine ungefähre Preisangabe zu einem vergleichbaren Fahrzeug, leite daraus eine grobe marktpreis_min/max-Spanne ab (auch mit Unsicherheitsspanne, z.B. ±15%) statt vorschnell "unbekannt" zu setzen.
-KONSISTENZ-PFLICHT: Schreibst du im "bericht"-Feld einen Abschnitt "## Preis-Einschätzung" mit einer konkreten Kategorie (z.B. "marktgerecht") und/oder einer Marktspanne, MUSS das strukturierte Feld "preis_bewertung" exakt dieselbe Kategorie tragen: niemals "unbekannt", wenn der Bericht bereits eine konkrete Einschätzung nennt. Dasselbe gilt für "empfehlung": Steht im Bericht z.B. "**NUR MIT WERKSTATTPRÜFUNG**", MUSS "empfehlung" = "nur_mit_werkstattpruefung" sein, niemals "unbekannt".
-
-KAUFEMPFEHLUNG: sechs Risikostufen statt Ja/Nein:
-  - "kaufen": keine relevanten Risiken, Preis marktgerecht oder günstiger, Inserat plausibel.
-  - "kaufen_nach_besichtigung": grundsätzlich empfehlenswert, aber Punkte die nur bei der Besichtigung geprüft werden können (z.B. unklare Serviceheft-Angabe).
-  - "nur_mit_werkstattpruefung": bekannte, potenziell teure Schwachstellen der Baureihe/Motorisierung vorhanden, die eine Fachprüfung vor Kauf erfordern.
-  - "preis_nachverhandeln": Fahrzeug technisch unauffällig, aber Preis "teuer" oder "extrem_teuer".
-  - "hohes_risiko": mehrere Risikofaktoren gleichzeitig (z.B. hohe Laufleistung + bekannte teure Schwachstelle + fehlende Angaben) ODER Preis "extrem_guenstig" ohne plausible Erklärung im Inserat.
-  - "finger_weg": Inserat unplausibel/widersprüchlich, Betrugsverdacht, oder gravierende bekannte Mängel ohne Kompensation im Preis.
-
-BELEGLAGE UND KAUFEMPFEHLUNG:
-- Stützt du eine strengere Stufe ("nur_mit_werkstattpruefung" oder strenger) auf konkrete technische Punkte, müssen diese BELEGT sein (Beleglage "belegt" bzw. Confidence mindestens "mittel"). Eine Werkstattprüfung darfst du auch aus allgemeinen Gründen empfehlen (Alter, Leistungsklasse, lückenhafte Nachweise); dann nenne genau diese Gründe.
-- Ein gemeldeter Hinweis (Datenqualität niedrig) darf ergänzend erscheinen, aber nie allein die Empfehlung begründen. Schreibe nie, ein Bauteil sei "bei dieser Laufleistung fällig", "jetzt zu tauschen" oder "vorgeschrieben", wenn dafür nur ein gemeldeter Hinweis vorliegt.
-- Übernimm Szene-Begriffe aus der Datenbank (z.B. englische Werkstattjargon-Wendungen) nicht als Empfehlung von ENFAL.
-
-MOTORSPEZIFISCHE SCHWACHSTELLEN NUR MIT BEKANNTEM MOTOR:
-Der Kontext enthält eine Zeile "MOTOR-STATUS: erkannt (...)" oder "MOTOR-STATUS: nicht erkannt".
-- Nicht erkannt, aber DB-Kontext zeigt Schwachstellen mehrerer Motorvarianten: NICHT als feststehende Risiken für DAS Inserat ausgeben. Entweder klar als bedingt kennzeichnen ("Falls Motor X: ...") oder zuerst nach der genauen Motorisierung fragen, wenn die Schwachstellen stark zwischen Varianten abweichen.
-- Erkannt: nutze ausschließlich dessen spezifische Schwachstellen als feststehende Risiken.
-
-BERICHT-STRUKTUR (Markdown im "bericht"-Feld): wichtigste Ergebnisse ZUERST, Details danach. Nur bei ausreichenden, plausiblen Kerndaten:
-
-## Fahrzeug erkannt
-Kurzzeile: Was wurde identifiziert (Baureihe, Motor, Baujahr).
-
-## Kaufempfehlung
-Risikostufe in Fettdruck (z.B. **NUR MIT WERKSTATTPRÜFUNG**), darunter 2–4 Sätze technische Begründung: gestützt auf konkrete Fakten (Schwachstellen, Marktpreis-Abweichung, Plausibilität), nie Marketing-Formulierungen ("toller Wagen", "beliebtes Modell").
-
-## Kritische Risiken
-Priorisiert absteigend: zuerst sicherheitsrelevante/teure Schwachstellen (hoher Schweregrad, KBA-Rückrufe), dann mittlere, zuletzt geringe/kosmetische Punkte. JEDER Rückruf, der im DB-Profil bzw. in der Evidence steht, gehört in diesen Abschnitt — vollzählig und mit seiner KBA-Referenz. Die Obergrenze von 3–5 Punkten gilt ERST DANACH, also nur noch für Schwachstellen und sonstige Punkte. Ein Software-, Komfort- oder Kosmetikthema darf einen Rückruf NIEMALS aus der Liste verdrängen. Motorspezifische Punkte nur gemäß Regel oben. Einen gemeldeten Hinweis kennzeichnest du hier ausdrücklich als "gemeldeter Hinweis" und stellst ihn nie als festgestellte Tatsache dar.
-
-## Preis-Einschätzung
-- Kategorie (siehe oben) + Marktspanne, Quelle transparent machen ("laut aktueller Websuche")
-- Bei "extrem_guenstig": IMMER kurz erklären, wieso ein ungewöhnlich niedriger Preis oft auf Probleme hindeutet (z.B. Unfall-/Totalschaden-Vorgeschichte, fehlende Fahrzeugpapiere/Servicenachweis, Zahlungsdruck, Betrugsversuch wie Vorkasse ohne Besichtigung): sachlich, keine Anschuldigung gegen den konkreten Verkäufer.
-- Falls kein Web: ehrlich kommunizieren
-- marktpreis_min und marktpreis_max als Integer-Zahlen befüllen (nur wenn aus Web ableitbar)
-
-## Inserat im Vergleich
-Schreibe hier NUR diese Überschrift, keine Tabelle. ENFAL setzt die Vergleichstabelle selbst ein, aus Inseratsangaben, berechneten Werten und Datenbank-Spezifikationen, jeweils mit Herkunft: Baujahr, Kilometerstand, Motor/Leistung, Kraftstoff, Preis, Getriebe (falls bekannt), Vorbesitzer (falls angegeben), letzte Wartung (falls im Inserat genannt), Servicehistorie und HU. Erfinde an keiner Stelle des Berichts eine "Markterwartung", eine Verteilung (z.B. "üblich sind 1-3 Vorbesitzer") oder eine Plausibilitätsbewertung ohne echte Vergleichsdaten.
-
-## Besichtigungs-Checkliste
-Markdown-Checkboxen, priorisiert: kritische Prüfpunkte (die im schlimmsten Fall den Kauf verhindern sollten) ZUERST, allgemeine Hinweise (Kosmetik, übliche Verschleißteile) DANACH.
-
-INSERAT-ANGABEN SIND ANGABEN, KEINE TATSACHEN:
-- Gib Verkäuferangaben immer als solche wieder ("laut Inserat …") und formuliere sie NIE stärker als eingegeben: "scheckheftgepflegt" heißt NICHT "lückenlose Wartungshistorie"; "unfallfrei laut Inserat" heißt NICHT "nachweislich unfallfrei"; "HU neu" heißt NICHT "Prüfbericht gesehen"; "2 Vorbesitzer" heißt NICHT "amtlich bestätigt".
-- SERVICEHISTORIE: Die Zeile "Servicehistorie" nennt AUSSCHLIESSLICH, was das Inserat behauptet. "vollständig angegeben" heißt NICHT, dass die Historie vollständig IST — es wurde kein Serviceheft, keine Rechnung und kein Herstellerdatensatz geprüft. Erlaubt: "Laut Inserat wird eine vollständige Servicehistorie angegeben."; "Die Servicehistorie ist laut Inserat nur teilweise vorhanden."; "Zur Servicehistorie enthält das Inserat keine klare Angabe." Verboten: "Das Fahrzeug ist lückenlos scheckheftgepflegt."; "Die Wartungen wurden vollständig durchgeführt."; "Die Historie ist nachweislich vollständig." Auch die beste Angabe entfernt kein Risiko: verlange in jedem Fall die Nachweise (Serviceheft, digitales Serviceprotokoll, Rechnungen).
-- VERKÄUFERART: Sie sagt NICHTS über Technik, Motorisierung, Rückrufbetroffenheit oder Marktwert — nutze sie ausschließlich für Unterlagen, Nachfragen und die Kaufvorbereitung. Keine Pauschalwertung ("Händler = sicher", "Privat = riskant"). KEINE rechtlichen Aussagen: kein Wort zu Gewährleistung, Sachmängelhaftung, Garantie, Widerruf oder Haftungsausschluss — auch nicht einschränkend oder allgemein.
-- GETRIEBE: Die Getriebeart steuert nur, WELCHE Prüfungen sinnvoll sind (Kupplung und Greifpunkt beim Schaltgetriebe, Schaltverhalten und Fahrstufen bei der Automatik). Leite aus ihr NIEMALS einen typischen Defekt, ein Wartungsintervall oder eine Lebensdauer ab: "Automatik" allein belegt kein Problem. Solche Aussagen dürfen ausschließlich aus dem DB-PROFIL kommen.
-- KEINE FRAGE NACH BEREITS GENANNTEM: Was im Inseratsblock oder im Inseratstext ausdrücklich dasteht, darf die Checkliste NICHT als offene Frage zurückgeben. Nennt das Inserat z.B. eine letzte Wartung mit Kilometerstand oder Datum, dann frage nicht "Wann war die letzte Wartung?", sondern nach Umfang und Beleg. Die Angabe bleibt dabei eine Angabe: sie belegt nicht, dass die Arbeiten ausgeführt wurden.
-- Datum: Das aktuelle Datum steht im Nutzerteil ("HEUTIGES DATUM"). Rechne ausschließlich damit, nie mit einem angenommenen anderen Jahr.
-
-PREIS OHNE MARKTBASIS:
-- Steht im Nutzerteil kein belastbarer Marktpreis, gibt es KEINE Preiswertung, auch nicht indirekt: niemals "selten", "günstig", "fair", "marktgerecht" oder "teuer" zum Preis.
-- Die Kaufempfehlung ist dann eine rein TECHNISCHE Einschätzung. Formuliere sie so, dass der Angebotspreis nicht als bestätigt erscheint.
-
-CHECKLISTE:
-- Keine Handlung, die beim konkreten Fahrzeug unmöglich oder falsch sein kann: Ölstand "nach Herstellervorgabe" prüfen (viele Motoren haben keinen Peilstab mehr), Kupplungsprüfungen nur bei Schaltgetriebe, Ausstattungs- und Assistenzprüfungen mit "falls vorhanden".
-- Ein Geräusch- oder Softwarethema ist kein Bauteil: frage nach Auffälligkeiten und Nachbesserungen, nicht nach "Arbeiten am Bauteil".
-
-STIL:
-- [[STILREGEL]]
-- Nenne den Motorcode exakt so, wie er im DB-Kontext steht: nicht auf eine gröbere Motorfamilie verkürzen und nicht präziser machen, als die Daten es hergeben.
-
-REGELN:
-1. Erfinde keine Zahlen. Specs nur aus DB-Kontext verwenden.
-2. Kennzeichne Web-Preise transparent als Websuche-Ergebnis, ohne interne Begriffe wie "ungeprüft" oder "Vertrauen" im Text zu verwenden: das sind Entwicklerbegriffe, keine Nutzersprache.
-3. Sei direkt, sachlich und neutral: keine leeren Phrasen, kein Hype, keine Marketing-Sprache. Begründungen immer technisch (Motor, Verschleiß, Marktdaten), nie emotional/werblich.
-4. Schreibe ausschließlich auf Deutsch, kompakt: keine Wiederholung derselben Information in mehreren Abschnitten.
-5. Das JSON-Feld "bericht" darf Zeilenumbrüche (\\n) enthalten.
-6. Kein Floskel-Text vor oder nach der geforderten Struktur (kein "Gerne, hier ist die Analyse", kein "Ich hoffe, das hilft"). Der Bericht beginnt direkt mit "## Fahrzeug erkannt" und endet mit dem letzten inhaltlichen Punkt der Checkliste.\
+_SYSTEM = """Du bereitest die Darstellung eines bereits deterministisch geprüften KaufChecks vor.
+Fahrzeugidentität, Feldherkunft, Unfallstatus, Ausstattung und Canonical Risk Set sind verbindlich.
+Keine zweite Fahrzeugerkennung. Keine neuen Risiken, Rückrufe, Ausstattungen oder technischen Fakten.
+Keine Severity-/Confidence-Änderung, keine qualitative Laufleistungsbewertung ohne Referenz.
+series_only bedeutet weder fahrzeugbezogene Betroffenheit noch einen offenen Rückruf.
+Die FIN-Prüfung klärt zuerst Betroffenheit und, falls betroffen, anschließend Durchführung.
+Eine Inseratsangabe darfst du NICHT verstärken: "scheckheftgepflegt" ist NICHT "lückenlose Wartungshistorie".
+Ein ungeprüfter Wartungshinweis ist KEINE starre Herstellervorgabe.
+Nenne den Motorcode exakt so, wie er im DB-Kontext steht.
+[[STILREGEL]]
+Gib ausschließlich JSON mit risiko_evidence_ids aus: eine Liste vorhandener IDs für die Darstellung.
+Freier Berichtstext, Preise und Empfehlungen werden nicht übernommen.
 """
 
 
@@ -346,7 +246,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Der Check bricht dabei NICHT ab: Inserat-Daten, Marktrecherche, LLM-Bericht
     # und die allgemeinen Basis-Pruefplaene laufen vollstaendig weiter.
     baureihe_markt, identitaet = await baureihe_task
-    motor_markt = find_motor(baureihe_markt, req.motor, req.modell) if baureihe_markt else None
+    motor_markt = find_motor(baureihe_markt, req.motor, req.modell, req=req) if baureihe_markt else None
     if identitaet["belastbar"]:
         baureihe, motor_match = baureihe_markt, motor_markt
     else:
@@ -420,7 +320,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Adaptive, qualitäts-gesteuerte Recherche auch OHNE erkannte Baureihe, sofern
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
-    identity = VehicleIdentity.from_market_context(baureihe_markt, motor_markt, req)
+    identity = VehicleIdentity.from_check_context(baureihe, motor_match, req)
     if markt_recherche:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
@@ -492,22 +392,20 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # 4. Gemini-Analyse
     motor_status = (
         f"MOTOR-STATUS: erkannt ({motor_match['bezeichnung']})" if motor_match
-        else "MOTOR-STATUS: nicht erkannt. Inserat nennt keine eindeutige Motorisierung"
+        else "MOTOR-STATUS: keine eindeutige ENFAL-Zuordnung; vorhandene Motorangabe bleibt Inseratsangabe"
     )
     # Phase 1 Schicht B: Evidence deterministisch VOR dem LLM bauen (Marktvergleich
     # 2.0 ist jetzt bereits vor dem LLM berechnet) und dem LLM kompakt zum
     # Referenzieren mitgeben. Die IDs sind stabil, sodass die vom LLM referenzierten
     # IDs anschließend gegen genau diese Insights validiert werden können.
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
-                              marktanalyse=marktanalyse, web_recherche=web_recherche)
+                              marktanalyse=marktanalyse, web_recherche=web_recherche, identity=identity)
     evidence_block = format_evidence_for_prompt(insights)
     # Root-Cause-Closing (Befund C/E, 4.5): der DB-Kontext zeigt dem Modell die
     # KANONISCHE Risikomenge mit Beleglage, nicht mehr die drei Rohlisten. Der
     # Stilfilter läuft über den ganzen Block, damit Datenbanktexte mit
     # Gedankenstrich nicht als Vorlage in den Bericht wandern.
-    db_ctx = entferne_gedankenstriche(build_db_context(
-        baureihe, motor_match, req.baujahr, fahrzeugkontext=fahrzeugkontext,
-        risiken=insights))
+    db_ctx = kanonischer_kontext(identity, req, insights)
     # P2-5: Laufleistungs- und Wartungskontext. Bekommt NUR Request und Insights —
     # weder Marktanalyse noch Preis (§13), damit eine Preisaussage aus der
     # Laufleistung strukturell unmoeglich bleibt und PFAD B (`completed_no_market`)
@@ -542,125 +440,10 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # und eine saubere Fehlermeldung zeigt, statt hier einen wertlosen "unbekannt"-
     # Bericht als scheinbaren Erfolg (200 OK) zurückzugeben.
     result = await call_gemini_json(_SYSTEM, user_msg)
-    if result.get("bericht"):
-        result["bericht"] = postprocess_answer(result["bericht"])
-        # §26 defensiv: auch der Kaufcheck-Bericht kann einen Wiederverkaufs-Ausblick
-        # enthalten — dieselbe Absicherung wie im Verkaufscheck.
-        result["bericht"] = entferne_erfundene_verkaufsdauer(result["bericht"])
-        # P2-5-Nachbesserung (Bake-off Gemini 3.7): unabhaengig vom Empfehlungs-Floor
-        # geltendes Sicherheitsnetz — kein Feld im System kennt den Zeitpunkt des
-        # letzten Service, ein "faellig"/"ueberfaellig"/"versaeumt" ist deshalb IMMER
-        # unbelegt, egal welches Modell den Bericht geschrieben hat.
-        # Root-Cause-Closing: die Bauteile der technischen Hinweise dieses Laufs
-        # zählen als Wartungskontext ("Kurbelnabe und Pleuellager werden fällig").
-        result["bericht"] = neutralisiere_wartungs_faelligkeit(
-            result["bericht"],
-            zusatz_kontext=sorted({w for i in insights if i.kategorie in RISIKO_KATEGORIEN
-                                   for w in bauteil_kern(i.bauteil).kern if len(w) >= 5}))
-        # Servicehistorie-Claim-Netz: der Prompt verbietet die Verstärkung oben
-        # bereits, dies ist das deterministische Netz DANACH. Bewusst eng gebaut —
-        # es fängt nur die ZUSICHERUNG ("ist lückenlos scheckheftgepflegt"), nicht
-        # die Aufforderung ("Vollständigkeit der Servicehistorie prüfen"), und es
-        # läuft unabhängig vom gewählten Status: auch "vollständig angegeben" ist
-        # unbelegt, solange ENFAL keine Unterlagen gesehen hat.
-        result["bericht"], _sh_ersetzt = servicehistorie_neutralisieren(result["bericht"])
-        if _sh_ersetzt:
-            log.info("Kaufcheck: %d Servicehistorie-Zusicherung(en) entschaerft: %s",
-                     len(_sh_ersetzt), _sh_ersetzt[:3])
-        # P1-b (KaufCheck-Backend-Freeze): PFAD B (kein belastbarer Markt) verbietet
-        # dem Modell im Prompt bereits jedes Preisurteil (no_market_prompt_block) —
-        # dieser Guard ist das Sicherheitsnetz NACH dem Call. NUR im No-Market-Pfad
-        # aufgerufen: bei belastbarer Markt-Evidence (PFAD A) bleibt das echte,
-        # kanonische Preisurteil unberuehrt.
-        if not markt_verfuegbar:
-            result["bericht"] = neutralisiere_no_market_preisurteil(result["bericht"])
-            # RC1: "⚠ Selten (aber möglich)" in der Preiszeile ist ohne Marktbasis
-            # ebenso eine Preiswertung — die Zeile wird deterministisch neutral gesetzt.
-            result["bericht"] = neutralisiere_preiszeile_ohne_markt(result["bericht"])
-        # RC1: HU-Aussagen an die deterministische Bewertung angleichen.
-        result["bericht"] = hu_bereinige(result["bericht"], hu)
-        # §Phase 8: letztes Sicherheitsnetz — auch wenn db_ctx/evidence_block bereits
-        # gefiltert waren (§Phase 7), kann das LLM Begriffe frei kombinieren
-        # (z.B. aus dem Schwachstellen-/DB-Profil-Text). Entfernt NUR Sätze/Zeilen,
-        # die eindeutig einem für dieses Fahrzeug ausgeschlossenen Rückruf zuordenbar
-        # sind (z.B. Hochvolt-Rückruf bei erkanntem Diesel).
-        if baureihe and (baureihe.get("rueckrufe") or baureihe.get("rueckrufe_gesperrt")):
-            # KBA-Trust-Gate: `marke` mitgeben, damit dieselbe Applicability-
-            # Formulierung entsteht wie im Prompt oben (build_db_context) — sonst
-            # könnte der Bericht-Validator gegen eine andere Wortwahl prüfen als das
-            # LLM tatsächlich gesehen hat.
-            _ausgeschlossen = ausgeschlossene_rueckrufe(baureihe.get("rueckrufe"), motor_match,
-                                                        req.baujahr, marke=baureihe.get("marke"))
-            # KaufCheck RC1: unbelegte (gesperrte) Rueckrufe duerfen im Bericht
-            # ebenso wenig auftauchen wie nachweislich unpassende.
-            _ausgeschlossen = list(_ausgeschlossen) + [
-                {**r, "ausschlussgrund": "nicht_belegt"}
-                for r in baureihe.get("rueckrufe_gesperrt") or []]
-            if _ausgeschlossen:
-                _erlaubt = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, req.baujahr,
-                                                marke=baureihe.get("marke"))
-                result["bericht"], _ = pruefe_bericht(result["bericht"], _ausgeschlossen, _erlaubt)
-
-        # LIVE-RUN-BEFUND (BMW 330i G20): oben standen drei Rückrufe, unter
-        # "## Kritische Risiken" nur noch zwei plus ein Softwarethema — der
-        # Brandgefahr-Rückruf zum Starterrelais war verschwunden. Ursache ist die
-        # Obergrenze "maximal 3–5 Punkte" zusammen mit der freien Auswahl des
-        # Modells (siehe app/rueckruf_konsistenz.py).
-        #
-        # Reihenfolge ist wichtig: dieses Netz läuft NACH `pruefe_bericht`, damit es
-        # nur Rückrufe ergänzt, die dessen Ausschluss- und Sperrfilter überlebt
-        # haben. Vorher ergänzte Zeilen könnte der Validator anschließend wieder
-        # entfernen. Ergänzt werden ausschließlich Rückruf-Insights DIESES Laufs.
-        result["bericht"], _rk_ergaenzt = ergaenze_fehlende_rueckrufe(
-            result["bericht"], [i for i in insights if i.kategorie == "rueckruf"])
-
-        # ROOT-CAUSE-CLOSING (Befund A, 4.2): ein bekannter Fakt darf auch im
-        # Freitext des Modells nicht wieder als unbekannt erfragt werden ("Wann
-        # war die letzte Wartung?" trotz "bei ca. 64.000 km" im Inserat). Ersetzt
-        # wird nur die Frage selbst, durch die geschärfte Fassung.
-        _fakten = bekannte_fakten_aus_request(req)
-        result["bericht"], _bf_ersetzt = bekannte_fakten_bereinige_bericht(
-            result["bericht"], _fakten)
-        if _bf_ersetzt:
-            log.info("Kaufcheck: %d Frage(n) nach bekannten Fakten ersetzt: %s",
-                     len(_bf_ersetzt), _bf_ersetzt[:3])
-
-        # ROOT-CAUSE-CLOSING (Befund G/H/I, 4.6): die Vergleichstabelle entsteht
-        # deterministisch, jeder Wert mit Herkunft. Eine "Markterwartung" gibt es
-        # nur mit belastbarem Marktvergleich, eine Einordnung nur mit Referenz.
-        result["bericht"] = setze_vergleichstabelle(result["bericht"], vergleich_als_markdown(
-            baue_vergleichszeilen(req, baureihe, motor_match, hu=hu,
-                                  laufleistungskontext=laufleistungskontext,
-                                  price_assessment=price_assessment,
-                                  markt_verfuegbar=markt_verfuegbar, fakten=_fakten)))
-
-    # Sicherheitsnetz gegen Modell-Inkonsistenz: Gemini liefert gelegentlich einen
-    # vollständigen Bericht mit klarer Kaufempfehlung/Preiseinschätzung im Fließtext,
-    # setzt die STRUKTURIERTEN Felder aber trotzdem auf "unbekannt" (kein Parse-Fehler —
-    # das JSON war syntaktisch gültig, nur inhaltlich inkonsistent zum eigenen Bericht).
-    # Bei einem erkennbar vollständigen Bericht (> 200 Zeichen, enthält "Kaufempfehlung")
-    # wird dann per Regex aus dem Bericht selbst nachgezogen statt "unbekannt" stehen
-    # zu lassen.
-    bericht_text = result.get("bericht", "")
-    ist_voller_bericht = len(bericht_text) > 200 and "kaufempfehlung" in bericht_text.lower()
-    if ist_voller_bericht:
-        nachtrag = _notfall_extraktion(bericht_text)
-        if result.get("empfehlung") in (None, "", "unbekannt"):
-            result["empfehlung"] = nachtrag.get("empfehlung", result.get("empfehlung", "unbekannt"))
-        # P0-1: Die Preis-Rekonstruktion liest per Regex Kategorie UND Spanne aus dem
-        # BERICHTSTEXT zurueck. Im No-Market-Pfad waere genau das ein Einfallstor:
-        # haelt sich das Modell nicht an den No-Market-Block und schreibt doch eine
-        # Spanne in den Fliesstext, wuerde sie hier in die strukturierten Felder
-        # gehoben und damit zur offiziellen ENFAL-Aussage. Ohne belastbaren Markt
-        # bleiben diese Felder deshalb unantastbar leer — die Empfehlungs-
-        # Rekonstruktion oben (rein technisch) bleibt davon unberuehrt.
-        if markt_verfuegbar:
-            if result.get("preis_bewertung") in (None, "", "unbekannt"):
-                result["preis_bewertung"] = nachtrag.get("preis_bewertung", result.get("preis_bewertung", "unbekannt"))
-            if result.get("marktpreis_min") is None:
-                result["marktpreis_min"] = nachtrag.get("marktpreis_min")
-            if result.get("marktpreis_max") is None:
-                result["marktpreis_max"] = nachtrag.get("marktpreis_max")
+    # Only ID selections cross the LLM boundary. All assertions remain in the
+    # canonical objects, including the recommendation's existing safety floor.
+    result = {"risiko_evidence_ids": result.get("risiko_evidence_ids", []),
+              "empfehlung": "kaufen_nach_besichtigung" if req.marke and req.modell and req.baujahr else "unbekannt"}
 
     hat_db, hat_web = baureihe is not None, bool(web_results)
     if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
@@ -786,11 +569,21 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
         generation=(baureihe or {}).get("generation"))
 
+    sources = bericht_datenbasis(baureihe, insights, belege)
+    result["bericht"] = kanonischer_bericht(
+        req, identity, baureihe, motor_match, insights, kaufaktionen, empfehlung_gruende,
+        result["empfehlung"], price_assessment, markt_verfuegbar, laufleistungskontext,
+        hu, sources, fahrzeugkontext)
+
     # ROOT-CAUSE-CLOSING (Befund K, 4.7): die Schreibstil-Regel gilt für JEDEN
     # Nutzertext des Ergebnisses: Bericht des Modells, Datenbanktexte, Key
     # Findings, Prüfplan, Empfehlungsgründe, Fahrzeugkontext. Quellen und Belege
     # fremder Seiten bleiben unverändert (app/schreibstil.py).
     return bereinige_nutzertexte({
+        "vehicle_identity": identity.as_diagnose(),
+        "accident_status": bekannte_fakten_aus_request(req).unfall,
+        "datenbasis": sources,
+        "risiko_titel": "Relevante Risiken und Hinweise",
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),
         "preis_bewertung":  preis_wert,

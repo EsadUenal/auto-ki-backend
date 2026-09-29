@@ -586,9 +586,9 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
             # "betrifft".
             if passt is True and kba_ok:
                 return ("variant_match", "hoch",
-                        f"Sicherheitsrelevant. Durchführung der Rückrufaktion per FIN prüfen. {_HINWEIS_FIN}", "")
+                        f"Sicherheitsrelevant. {_HINWEIS_FIN}", "")
             return ("series_only", "mittel",
-                    f"Sicherheitsrelevant. Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
+                    f"Sicherheitsrelevant. {_HINWEIS_FIN}", "")
         # Klarer Antriebs-Widerspruch (§8): z.B. Hochvolt-/PHEV-Rückruf, Fahrzeug ist
         # nachweislich Diesel. Die Motorisierung ist ERKANNT und passt eindeutig NICHT
         # -> "incompatible". Solche Rückrufe werden VOLLSTÄNDIG aus den sichtbaren
@@ -627,9 +627,9 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
         if kba_ok:
             return ("series_only", "hoch",
                     f"Sicherheitsrelevant: betrifft die Baureihe im gemeldeten "
-                    f"Zeitraum; Durchführung per FIN prüfen. {_HINWEIS_FIN}", "")
+                    f"Zeitraum. {_HINWEIS_FIN}", "")
         return ("series_only", "mittel",
-                f"Sicherheitsrelevant. Durchführung der Rückrufaktion prüfen. {_HINWEIS_FIN}", "")
+                f"Sicherheitsrelevant. {_HINWEIS_FIN}", "")
     return ("series_only", "mittel",
             f"Sicherheitsrelevant. Baujahr-Zuordnung nicht eindeutig. {_HINWEIS_FIN}", "")
 

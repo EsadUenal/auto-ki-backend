@@ -90,6 +90,9 @@ class ChatResponse(BaseModel):
 # ---------- Kauf-Check ----------
 
 class KaufCheckRequest(BaseModel):
+    antrieb: str | None = Field(default=None, max_length=40)
+    powertrain: str | None = Field(default=None, max_length=40)
+    tuning: str | None = Field(default=None, max_length=500)
     # Strukturierte Inserat-Felder
     marke: str | None = Field(default=None, max_length=100)
     modell: str | None = Field(default=None, max_length=100)
@@ -377,6 +380,9 @@ class PriceAssessment(BaseModel):
 
 
 class Insight(BaseModel):
+    # Applicability never proves VIN affectedness or an outstanding campaign.
+    recall_status: dict | None = None
+    risk_type: str | None = None
     """Eine nachvollziehbare Erkenntnis mit Herkunft (Provenance).
 
     Wiederverwendbar für Kauf- und Verkaufscheck. `confidence` ist bewusst dreistufig
@@ -809,6 +815,10 @@ class Laufleistungskontext(BaseModel):
 # ---------- Kauf-Check ----------
 
 class KaufCheckResponse(BaseModel):
+    vehicle_identity: dict | None = None
+    accident_status: str | None = None
+    datenbasis: list[str] = Field(default_factory=list)
+    risiko_titel: str = "Relevante Risiken und Hinweise"
     bericht: str                                   # Markdown-Bericht
     empfehlung: str                                # "kaufen" | "kaufen_nach_besichtigung" | "nur_mit_werkstattpruefung" | "preis_nachverhandeln" | "hohes_risiko" | "finger_weg" | "unbekannt"
     preis_bewertung: str                           # "extrem_guenstig" | "guenstig" | "marktgerecht" | "teuer" | "extrem_teuer" | "unbekannt"
