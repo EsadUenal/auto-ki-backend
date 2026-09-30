@@ -585,7 +585,8 @@ check("N1 HV-Rückruf, Benzin-PHEV, Nutzer sagt 'Benzin' -> bleibt (kein Achsen-
 check("N2 HV-Rückruf, Verbrenner (DB 'Benzin') -> entfernt",
       rueckruf_applicability(r_hv, True, "", app_m(m_ice, "Benzin"))[0] == "incompatible")
 check("N3 HV-Rückruf, nur Nutzerangabe 'Benzin' ohne Motor -> unklar, nicht ausgeschlossen",
-      rueckruf_applicability(r_hv, True, "", {"kraftstoff": "Benzin"})[0] == "unclear")
+      rueckruf_applicability(r_hv, True, "", {"kraftstoff": "Benzin", "_kraftstoff_db": None,
+                                             "_kraftstoff_nutzer": "Benzin"})[0] == "unclear")
 i_n4 = ident(baureihe([m_phev]), m_phev, req(kraftstoff="Benzin", leistung_ps=290))
 check("N4 HV-Rückruf mit kanonischer Identität (Benzin + PHEV) -> bleibt",
       rueckruf_applicability(r_hv, True, "", app_m(m_phev, "Benzin"), identity=i_n4)[0] != "incompatible")

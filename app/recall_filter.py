@@ -513,18 +513,16 @@ def _fahrzeug_achsen(motor_match: dict | None, identity=None):
 
     Mit kanonischer Identität gilt nur sie. Ohne: `_kraftstoff_db` /
     `_kraftstoff_nutzer` (von app/evidence.py gesetzt) trennen DB-Rohwert und
-    Nutzerangabe; fehlen sie, ist `kraftstoff` einer DB-Zeile (mit
-    `variante_id`) ein DB-Rohwert, sonst eine Nutzer-/Freitextangabe."""
+    Nutzerangabe; fehlen sie (ältere Aufrufer, z.B. der Chat-Kontext), gilt
+    `kraftstoff` wie bisher als Wert der erkannten Motorisierung."""
     from app.kraftstoff_powertrain import fahrzeug_achsen
     if identity is not None:
         return fahrzeug_achsen(identity=identity)
     m = motor_match or {}
     if "_kraftstoff_db" in m or "_kraftstoff_nutzer" in m:
         db, nutzer = m.get("_kraftstoff_db"), m.get("_kraftstoff_nutzer")
-    elif m.get("variante_id"):
-        db, nutzer = m.get("kraftstoff"), None
     else:
-        db, nutzer = None, m.get("kraftstoff")
+        db, nutzer = m.get("kraftstoff"), None
     return fahrzeug_achsen(db_kraftstoff=db, bezeichnung=m.get("bezeichnung"),
                            motorcode=m.get("motorcode"), nutzer_text=nutzer)
 

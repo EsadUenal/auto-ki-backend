@@ -377,8 +377,12 @@ check("L2 jeder Web-Insight hat eine Confidence",
       all(i.confidence in ("hoch", "mittel", "niedrig") for i in _web_ins))
 check("L3 Confidence steigt mit unabhängigen Domains (Turbolader: 2 Domains)",
       any(i.confidence == "mittel" for i in _web_ins if "turbolader" in i.titel.lower()))
-check("L4 Einzelquelle bleibt 'niedrig'",
-      all(i.confidence == "niedrig" for i in _web_ins if len(i.quellen) == 1))
+# Final-Stabilization (Quellenstufe zählt): eine einzelne Quelle bleibt
+# "niedrig" — AUSSER sie ist amtlich bzw. vom Hersteller (TIER 1), dann "mittel".
+from app.technical_research import _tier as _tier_q
+check("L4 Einzelquelle bleibt 'niedrig', eine einzelne amtliche/Herstellerquelle 'mittel'",
+      all(i.confidence == ("mittel" if _tier_q(i.quellen[0].url or "") == 1 else "niedrig")
+          for i in _web_ins if len(i.quellen) == 1))
 check("L5 Quellen tragen ein Qualitätslabel", all(q.qualitaet for i in _web_ins for q in i.quellen))
 
 
