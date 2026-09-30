@@ -632,6 +632,51 @@ check("N17 Auswahl 'Benzin' + Text 'Diesel' bleibt ein Widerspruch",
       bool(_strukturiert_vs_inserat(req(kraftstoff="Benzin", beschreibung="Sparsamer Diesel."))))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== O) Web-Identität aus realistisch verrauschten Quellen ===")
+from app.technical_research import _fremde_generation, _tier_identitaet
+from app.web_search import score_domain as _score
+ziel_o = {"marke": "Testmarke", "modell": "Alpha", "baujahr": 2019, "motor": "2.0 Q", "leistung_ps": 184}
+FX_RAUSCH = [
+    # Stufe 2: Trim-/Leistungskürzel direkt hinter dem Modell ("G 184") -> kein Generationscode.
+    t("https://www.auto-motor-und-sport.de/test/alpha-g-184", "Test Testmarke Alpha G 184 (Technische Daten)",
+      "Benzin Direkteinspritzung. Antriebsart Hinterradantrieb. Getriebe 6-Gang Schaltgetriebe."),
+    # Stufe 2: Karosseriekürzel ohne Generationskontext/Fenster ("RF (2017)").
+    t("https://www.autobild.de/artikel/alpha-rf", "Testmarke Alpha RF (2017) im Test",
+      "Als Fastback kommt die Testmarke Alpha mit Hinterradantrieb."),
+    # Stufe 2 (Identitätsliste): Vergleichsseite mit zwei Generationen im Kontext.
+    t("https://www.autozeitung.de/alpha-vergleich", "Testmarke Alpha T1/Testmarke Alpha T4: Vergleich",
+      "Aktuell gebaut in der vierten Generation (Testmarke Alpha T4). Von der ersten Generation "
+      "Testmarke Alpha (T1) bis heute."),
+    # Stufe 2 (Identitätsliste): Seite über GENAU diese Motorisierung, römische Nummer + Code.
+    t("https://www.auto-data.net/de/alpha-iv-t4-2.0-184hp", "Testmarke Alpha IV (T4, Facelift 2018) 2.0 Q (184 PS)",
+      "Leistung 184 PS, Benzin."),
+    # Stufe 3: Fenster schließt T1 aus; Spezifikationsseiten nennen die Leistung.
+    t("https://www.alpha-club.example/t1", "Die Testmarke Alpha T1 Kaufberatung",
+      "Ich kenne eher die Angabe von 1989-1998 für den T1."),
+    t("https://www.spec-a.example/alpha", "Testmarke Alpha 2.0 Q (184 PS) technische Daten", "Leistung 184 PS."),
+    t("https://www.spec-b.example/alpha", "Testmarke Alpha 184 PS Datenblatt", "135 kW (184 PS), Benzin."),
+    t("https://www.hersteller-testmarke.example/alpha", "Testmarke Alpha", "Die Testmarke Alpha."),
+]
+wi_o, abg_o = werte_identitaet_aus(FX_RAUSCH, ziel_o)
+check("O1 Trim-/Karosseriekürzel ohne Generationskontext sind keine Generation",
+      any(a.get("grund") == "ohne_generationskontext" and a.get("wert") in ("G", "RF") for a in abg_o))
+check("O2 Generation per Kontext + variantengenauer Quelle trotz Vergleichsseite", wi_o.generation == "T4")
+check("O3 'Modell IV (T4 …)': römische Zahl = Nummer, Klammercode = Generation",
+      not any(a.get("wert") == "IV" for a in abg_o) and wi_o.generation == "T4")
+check("O4 Stufe-3-Spezifikationsseiten bestätigen den Nutzerwert (mit einer Stufe-2-Quelle)",
+      wi_o.leistung_ps == 184 and wi_o.feldwerte["horsepower"]["domains"] >= 3)
+wi_nur3, _ = werte_identitaet_aus([FX_RAUSCH[0], FX_RAUSCH[1]] + [
+    t(f"https://www.spec-{i}.example/a", "Testmarke Alpha T9 Daten", "Testmarke Alpha T9 (seit 2018).")
+    for i in range(4)], ziel_o)
+check("O5 Nur Stufe-3-Quellen belegen keine Generation (Mehrheit schwacher Seiten reicht nicht)",
+      wi_nur3.generation is None)
+check("O6 Einzelbuchstabe im Titel macht eine Seite nicht zur 'anderen Generation'",
+      not _fremde_generation(FX_RAUSCH[0], "Alpha", "T4") and _fremde_generation(FX_RAUSCH[4], "Alpha", "T4"))
+check("O7 Identitäts-Stufenliste gilt nur für Phase 1 (geteilte Domainbewertung unverändert)",
+      _tier_identitaet("https://www.autozeitung.de/x") == 2 and _score("https://www.autozeitung.de/x") == 0)
+
+
 print("\n" + "=" * 60)
 print(f"{_ANZAHL['n']} Prüfungen")
 if _FEHLER:

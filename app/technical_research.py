@@ -119,6 +119,25 @@ def _tier(url: str) -> int:
     return 3
 
 
+# Identitätsquellen der Stufe 2, die die allgemeine Domainliste
+# (app/web_search.py, auch für Markt und Fakten genutzt) nicht als Fachmedien
+# führt: etablierte Fachpresse und technische Datenbanken. Gilt NUR für Phase 1
+# (Identitäts-Claims), damit die geteilte Markt-/Faktenbewertung unverändert
+# bleibt. Resume-Audit, realer Web-Smoke-Test (DB-Miss): die Seiten, die
+# Generation und Leistung nannten, lagen genau hier und zählten vorher gar nicht.
+_IDENTITAET_TIER2 = frozenset({
+    "autozeitung.de", "auto-data.net", "motor1.com", "autohaus.de", "kfz-betrieb.vogel.de",
+    "heise.de", "automobil-industrie.vogel.de",
+})
+
+
+def _tier_identitaet(url: str) -> int:
+    dom = _domain_von(url) or ""
+    if any(dom == d or dom.endswith("." + d) for d in _IDENTITAET_TIER2):
+        return min(_tier(url), 2)
+    return _tier(url)
+
+
 # ── Provider-Schnittstelle ───────────────────────────────────────────────────
 
 class TechnicalVehicleResearchProvider(Protocol):
@@ -223,7 +242,8 @@ def _identitaet_belegt(modell: str | None, marke: str | None,
     domains: set[str] = set()
     for r in treffer:
         url = r.get("url") or ""
-        if score_domain(url, KATEGORIE_TECHNISCHE_DATEN) < MIN_SCORE_IDENTITAET:
+        if (score_domain(url, KATEGORIE_TECHNISCHE_DATEN) < MIN_SCORE_IDENTITAET
+                and _tier_identitaet(url) > 2):
             continue
         ok, _ = ausgerichtet(r, marke, modell)
         if not ok:
@@ -328,29 +348,57 @@ _RE_MOTORCODE_CLAIM = re.compile(r"(?:motorcode|motorkennung|motorkennbuchstaben
 _ZAHLWORT = {"sechs": 6, "fünf": 5, "fuenf": 5}
 
 
-def _generationscodes(r: dict, modell: str | None) -> list[tuple[str, tuple | None]]:
-    """(Code, Zeitraum) für jeden Generationscode, der UNMITTELBAR hinter dem
-    Modellnamen steht ("MX-5 ND", "MX-5 (ND)", "Golf VII"), samt eines
-    Jahresfensters in derselben Umgebung."""
+_ROEMISCH = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
+# Wörter, die einen Code als GENERATIONSbezeichnung ausweisen. Ohne diesen
+# Kontext (oder ein passendes Jahresfenster) ist ein Kürzel hinter dem
+# Modellnamen oft eine Ausstattungs-/Karosserie-/Leistungsbezeichnung
+# ("… G 184", "… RF", "… GTI") und kein Generationscode.
+_GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|werkscode"
+                          r"|interne?[nr]?\s+bezeichnung|\bgen\.", re.IGNORECASE)
+
+
+def _generationscodes(r: dict, modell: str | None) -> list[dict]:
+    """Generationscodes, die UNMITTELBAR hinter dem Modellnamen stehen ("MX-5 ND",
+    "MX-5 (ND)", "Golf VII"), je mit
+
+      zeitraum  Jahresfenster direkt dahinter (oder None),
+      kontext   ein Generationswort in der Umgebung ("vierte Generation (… ND)")
+                bzw. die Form "Modell IV (ND …)" — sonst ist das Kürzel oft eine
+                Ausstattungs-/Karosserie-/Leistungsbezeichnung,
+      nummer    Generationsnummer aus "Modell IV (ND …)" (IV = 4).
+
+    Eine römische Zahl mit folgendem Klammercode ist die NUMMER, der
+    Klammercode der CODE derselben Generation (vorher entstand daraus "IV" als
+    Code, und die Seite galt sogar als "andere Generation")."""
     text = f"{r.get('title') or ''}. {r.get('content') or ''}"
     modell_rx = r"[\s-]*".join(re.escape(t) for t in re.split(r"[\s-]+", (modell or "").strip()) if t)
     if not modell_rx:
         return []
-    out: list[tuple[str, tuple | None]] = []
+    out: list[dict] = []
     # Modellname case-insensitiv, der Generationscode selbst in Großbuchstaben.
     for m in re.finditer(r"(?i:" + modell_rx + r")\s*\(?\s*([A-Z]{1,2}\d{0,3}|[IVX]{1,4})\b\)?", text):
         code = m.group(1)
         if code.upper() in ("PS", "KW", "TDI", "TSI", "GT", "S", "I"):
             continue
-        umgebung = text[m.end(): m.end() + 70]
-        out.append((code, zeitraum(umgebung)))
+        ende = m.end()
+        nummer = None
+        if code in _ROEMISCH:
+            folge = re.match(r"\s*\(\s*([A-Z]{1,2}\d{0,3})\b", text[m.end():])
+            if folge:
+                nummer, code = _ROEMISCH[code], folge.group(1)
+                ende = m.end() + folge.end()
+        umgebung = text[ende: ende + 70]
+        kontext = bool(nummer) or bool(_GEN_KONTEXT.search(
+            text[max(0, m.start() - 60): m.start()] + " " + text[m.start(): ende + 30]))
+        out.append({"code": code, "zeitraum": zeitraum(umgebung), "kontext": kontext,
+                    "nummer": nummer})
     return out
 
 
 def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
     url = r.get("url") or ""
-    dom, tier = _domain_von(url), _tier(url)
+    dom, tier = _domain_von(url), _tier_identitaet(url)
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe.
@@ -365,12 +413,21 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     def add(feld, wert, **extra):
         claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": tier, "url": url, **extra})
 
-    for code, z in _generationscodes(r, ziel.get("modell")):
-        passt = _im_zeitraum(baujahr, z)
+    # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von
+    # genau dieser Motorisierung: ihr Generationscode wiegt eine Stufe mehr.
+    ps = ziel.get("leistung_ps")
+    varianten_bonus = 1 if ps and re.search(rf"\b{int(ps)}\s*(?:PS|hp)\b", r.get("title") or "",
+                                            re.IGNORECASE) else 0
+    for g in _generationscodes(r, ziel.get("modell")) if grund != "schwach" else []:
+        passt = _im_zeitraum(baujahr, g["zeitraum"])
         if passt is False:
-            add("generation", code, verworfen="baujahr_ausserhalb", zeitraum=z)
-        else:
-            add("generation", code, zeitraum=z, jahr_belegt=passt is True)
+            add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"])
+            continue
+        add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
+            kontext=g["kontext"], bonus=varianten_bonus)
+        if g["nummer"]:
+            add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
+                jahr_belegt=passt is True)
     for m in _RE_GEN_NUMMER.finditer(text):
         nr = m.group(1) or _ORDINAL.get(_norm(m.group(2)).replace(" ", ""))
         if nr:
@@ -414,17 +471,19 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
         if c["feld"] != feld or c.get("verworfen"):
             continue
         key = str(c["wert"]).lower()
-        e = je_wert.setdefault(key, {"wert": c["wert"], "domains": {}, "details": []})
+        e = je_wert.setdefault(key, {"wert": c["wert"], "domains": {}, "bonus": {}, "details": []})
         alt = e["domains"].get(c["domain"])
         if alt is None or c["tier"] < alt:
             e["domains"][c["domain"]] = c["tier"]
+        # Je Domain höchstens EIN Bonus (z.B. Seite über genau diese Motorisierung).
+        e["bonus"][c["domain"]] = max(e["bonus"].get(c["domain"], 0), int(c.get("bonus") or 0))
         if c.get("detail"):
             e["details"].append(c["detail"])
     if not je_wert:
         return None
     bewertet = []
     for key, e in je_wert.items():
-        gewicht = sum(_GEWICHT[t] for t in e["domains"].values())
+        gewicht = sum(_GEWICHT[t] + e["bonus"].get(d, 0) for d, t in e["domains"].items())
         stark = any(t <= 2 for t in e["domains"].values())
         bewertet.append((gewicht, stark, key, e))
     bewertet.sort(key=lambda x: -x[0])
@@ -457,6 +516,29 @@ def _conf(info: dict) -> str:
     return "hoch" if info["gewicht"] >= 6 else "mittel" if info["gewicht"] >= 4 else "niedrig"
 
 
+def _generationen_pruefen(claims: list[dict]) -> None:
+    """Verwirft (in place) Generations-Claims ohne Beleg für DIESES Fahrzeug.
+
+      * Ein Code, dessen Jahresfenster in irgendeiner Quelle das Baujahr
+        ausschließt und in keiner Quelle einschließt, ist überall ausgeschlossen
+        (eine Vergleichsseite "NA/ND" nennt beide, eine andere grenzt NA ein).
+      * Ein Code ohne Jahresfenster UND ohne Generationskontext zählt nicht: er
+        ist dann meist eine Ausstattungs-, Karosserie- oder Leistungsbezeichnung
+        ("… G 184", "… RF"). Vorher entstanden daraus Konflikte, die jede
+        Generation auf "unbekannt" setzten.
+    """
+    gen = [c for c in claims if c["feld"] == "generation"]
+    aus = {c["wert"] for c in gen if c.get("verworfen") == "baujahr_ausserhalb"}
+    ein = {c["wert"] for c in gen if c.get("jahr_belegt")}
+    for c in gen:
+        if c.get("verworfen"):
+            continue
+        if c["wert"] in aus - ein:
+            c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
+        elif not (c.get("jahr_belegt") or c.get("kontext")):
+            c["verworfen"] = "ohne_generationskontext"
+
+
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
@@ -470,7 +552,17 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         return WebVehicleIdentity(belegt=False, marke=marke, modell=modell,
                                   belegende_domains=domains, abgelehnte_claims=abgelehnt), abgelehnt
 
-    claims = [c for r in stuetzend for c in _identitaets_claims(r, ziel)]
+    # Claims kommen aus JEDER ausgerichteten, nicht gesperrten Quelle: unbekannte
+    # Domains zählen mit Gewicht 1 (Stufe 3). Das ändert nichts an der Schwelle —
+    # ein Wert braucht weiterhin eine Quelle der Stufe 1/2 und Gewicht >= 3, und
+    # nur Stufe-1/2-Quellen können einen Konflikt auslösen —, aber unabhängige
+    # Spezifikationsseiten bestätigen jetzt einen Nutzerwert, statt ungelesen zu
+    # bleiben (realer Web-Smoke-Test: sieben Seiten nannten die Leistung, gezählt
+    # wurde keine).
+    claim_quellen = [r for r in treffer if score_domain(r.get("url") or "") >= 0
+                     and ausgerichtet(r, marke, modell)[0]]
+    claims = [c for r in claim_quellen for c in _identitaets_claims(r, ziel)]
+    _generationen_pruefen(claims)
     abgelehnt += [{"url": c["url"], "feld": c["feld"], "wert": c["wert"], "grund": c["verworfen"]}
                   for c in claims if c.get("verworfen")]
     feldwerte: dict[str, dict] = {}
@@ -488,10 +580,12 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         return w
 
     # Generation: nur ein Code, der zum Baujahr passt (jahr_belegt) oder
-    # unwidersprochen per Konsens gestützt ist.
-    gen_claims = [c for c in claims if c["feld"] == "generation"]
+    # unwidersprochen per Konsens gestützt ist — und nur Codes mit Jahresfenster
+    # oder Generationskontext (`_generationen_pruefen`).
+    gen_claims = [c for c in claims if c["feld"] == "generation" and not c.get("verworfen")]
     mit_jahr = [c for c in gen_claims if c.get("jahr_belegt")]
-    generation = uebernehme("generation", konsens(mit_jahr or gen_claims, "generation"))
+    generation = uebernehme("generation", konsens(mit_jahr, "generation")
+                            or konsens(gen_claims, "generation"))
     gen_nr = konsens([c for c in claims if c["feld"] == "generation_nummer"], "generation_nummer")
     if gen_nr and generation:
         feldwerte["generation"]["detail"] = gen_nr[0]
@@ -526,10 +620,11 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         hub = re.search(r"\b(\d)[.,](\d)\b", motor)
         if hub:
             kern = kern | {hub.group(1), hub.group(2)}
-        doms = {_domain_von(r.get("url") or "") for r in stuetzend
+        doms = {_domain_von(r.get("url") or "") for r in claim_quellen
                 if kern <= _tokens(f"{r.get('title') or ''} {r.get('content') or ''}")
-                and _tier(r.get("url") or "") <= 2}
-        if kern and (len(doms) >= 2 or any(_tier(r.get("url") or "") == 1 for r in stuetzend
+                and _tier_identitaet(r.get("url") or "") <= 2}
+        if kern and (len(doms) >= 2 or any(_tier_identitaet(r.get("url") or "") == 1
+                                           for r in claim_quellen
                                            if kern <= _tokens(f"{r.get('title')} {r.get('content')}"))):
             motor_bestaetigt = motor
             feldwerte["engine_name"] = {"value": motor, "confidence": "mittel",
@@ -589,7 +684,10 @@ def _fremde_generation(r: dict, modell: str | None, generation: str | None) -> b
     über ein anderes Fahrzeug (z.B. "MX-5 NC Gebrauchtwagen-Check" für ein ND)."""
     if not generation:
         return False
-    codes = {c.upper() for c, _ in _generationscodes({"title": r.get("title"), "content": ""}, modell)}
+    # Einzelbuchstaben ("MX-5 G 184") sind Leistungs-/Ausstattungskürzel, keine
+    # Generation; "Modell IV (ND …)" liefert den Code ND (siehe _generationscodes).
+    codes = {g["code"].upper() for g in _generationscodes({"title": r.get("title"), "content": ""}, modell)
+             if len(g["code"]) > 1 or g["code"] in _ROEMISCH or g["kontext"]}
     return bool(codes) and generation.upper() not in codes
 
 
