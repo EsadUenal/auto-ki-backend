@@ -296,7 +296,13 @@ _RE_VAGE = re.compile(
     r"|erste[nr]?\s+(?:baujahre?n?|serien?|jahrg(?:ä|ae)nge?n?|modelle?n?)"
     r"|vor\s+(?:dem|der)\s+(?:facelift|modellpflege)|anfangs|anf(?:ä|ae)nglich|bis\s+zur\s+modellpflege"
     r"|(?:ä|ae)ltere[nr]?\s+(?:exemplare?n?|modelle?n?|baujahre?n?|fahrzeuge?n?|jahrg(?:ä|ae)nge?n?)"
-    r"|early\s+(?:models|cars|builds)|older\s+(?:models|cars)", re.IGNORECASE)
+    r"|early\s+(?:models|cars|builds)|older\s+(?:models|cars)"
+    # Resume-Audit (realer Web-Smoke-Test): "die ersten beiden Getriebe-Generationen",
+    # "frühe Motor-Revisionen" — eine Ordnungs-/Zeitangabe vor einer Revisions-/
+    # Serienbezeichnung, auch als Kompositum und mit Zahlwort dazwischen.
+    r"|(?:erste[nrm]?|fr(?:ü|ue)he[nrm]?|(?:ä|ae)ltere[nrm]?)\s+(?:(?:beiden|zwei|drei|paar)\s+)?"
+    r"(?:[\w-]+\s+){0,2}?[\w-]*(?:generation|revision|version|serie|charge|ausbaustufe)\w*",
+    re.IGNORECASE)
 
 
 def zeitraum(text: str) -> tuple[int | None, int | None] | None:
@@ -657,7 +663,10 @@ _RUECKRUF_WORTE = ("rueckruf", "rückruf", "recall", "rueckrufaktion", "rückruf
 _INTERVALL = re.compile(
     r"(?:alle\s+)?(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*km"
     r"|(?:alle\s+)?(\d{1,3})\s*(monate|jahre?)", re.IGNORECASE)
-_SATZ = re.compile(r"(?<=[.!?])\s+")
+# Satzgrenzen: Satzzeichen, Zeilenumbrüche und Markdown-Überschriften. Sonst
+# verschmolzen Navigations-/Überschriftenfragmente ("Mazda MX-5 Rückruf ###
+# Software …") zu einem scheinbaren Satz und wurden zum "Fakt".
+_SATZ = re.compile(r"(?<=[.!?])\s+|\s*\r?\n\s*\r?\n\s*|\s*#{2,}\s*")
 
 
 def _bauteil_vokabular() -> dict[str, str]:
@@ -667,7 +676,8 @@ def _bauteil_vokabular() -> dict[str, str]:
 
 
 def _saetze(text: str) -> list[str]:
-    return [s.strip() for s in _SATZ.split(text or "") if 20 <= len(s.strip()) <= 300]
+    return [s.strip() for s in _SATZ.split(text or "")
+            if 20 <= len(s.strip()) <= 300 and len(s.split()) >= 5]
 
 
 def _anzeige_bauteil(satz: str, muster: str) -> str:
@@ -889,8 +899,12 @@ class TavilyTechnicalResearchProvider:
         # PHASE 2 — Rückrufe (amtlich/Fachquellen bevorzugt)
         phasen.append("rueckruf")
         rr = await asyncio.gather(
-            suche(" ".join(filter(None, [basis, "Rückruf", jahr]))),
-            suche(" ".join(filter(None, [breit, "Rückruf Rückrufaktion", jahr])),
+            # Ohne Baujahr: ein Rückruf wird Jahre NACH der Produktion veröffentlicht;
+            # ob das Baujahr betroffen ist, entscheidet das Produktionsfenster im
+            # Quelltext (_extrahiere_fakten). Mit Baujahr fand die Suche vor allem
+            # Meldungen aus dem Baujahr selbst.
+            suche(" ".join(filter(None, [basis, "Rückruf"]))),
+            suche(" ".join(filter(None, [breit, "Rückruf Rückrufaktion"])),
                   include_domains=_RUECKRUF_DOMAINS))
         roh = {"rueckruf": [r for liste in rr for r in liste]}
         # PHASE 3 — technische Hinweise

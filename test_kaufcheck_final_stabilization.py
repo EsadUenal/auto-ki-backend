@@ -692,6 +692,43 @@ check("O7 Identitäts-Stufenliste gilt nur für Phase 1 (geteilte Domainbewertun
       _tier_identitaet("https://www.autozeitung.de/x") == 2 and _score("https://www.autozeitung.de/x") == 0)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== P) Web-Fakten aus realen Formulierungen ===")
+fk_p = _extrahiere_fakten([t("https://www.autobild.de/alpha-t4-gebraucht", "Testmarke Alpha T4 Gebrauchtwagen-Test",
+                             "Die einzige gravierende Schwachstelle der Testmarke Alpha sind die ersten beiden "
+                             "Getriebe-Generationen.")],
+                          "schwachstelle", marke="Testmarke", modell="Alpha", baujahr=2019)
+check("P1 'die ersten beiden Getriebe-Generationen' -> unaufgelöster Geltungsbereich, niedrig",
+      fk_p and fk_p[0].geltung_fuer_fahrzeug == "unresolved" and fk_p[0].confidence == "niedrig")
+fk_nav = _extrahiere_fakten([t("https://www.auto-motor-und-sport.de/alpha/news", "Testmarke Alpha News",
+                               "Tests\n\nTestmarke Alpha Rückruf\n\n### Software verstößt gegen geltendes Recht")],
+                            "rueckruf", marke="Testmarke", modell="Alpha", baujahr=2019)
+check("P2 Überschriften-/Navigationsfragment ergibt keinen Rückruf-Fakt", fk_nav == [])
+import app.technical_research as _tr_mod
+_q_log: list[str] = []
+
+
+async def _fake_suche(query, **kw):
+    _q_log.append(query)
+    return FX_GUT["identitaet"] if "technische Daten" in query or "Generation" in query else []
+
+
+async def _fake_fb(queries, **kw):
+    _q_log.extend(queries)
+    return []
+_orig_s, _orig_fb = _tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback
+_tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback = _fake_suche, _fake_fb
+try:
+    asyncio.run(_tr_mod.TavilyTechnicalResearchProvider().recherchiere(
+        marke="Testmarke", modell="Alpha", baujahr=2019, motor="2.0 Q", ausgeloest_durch="db_miss",
+        ziel={"leistung_ps": 180}))
+finally:
+    _tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback = _orig_s, _orig_fb
+rr_q = [q for q in _q_log if "Rückruf" in q]
+check("P3 Rückrufanfragen ohne Baujahr (Veröffentlichung != Baujahr), Generation im Query",
+      len(rr_q) == 2 and all("2019" not in q for q in rr_q) and any("T2" in q for q in rr_q))
+
+
 print("\n" + "=" * 60)
 print(f"{_ANZAHL['n']} Prüfungen")
 if _FEHLER:
