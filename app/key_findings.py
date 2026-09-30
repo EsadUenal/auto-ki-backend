@@ -490,9 +490,23 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
     out += _getriebe_widerspruch(req, motor_match)
 
     # Kraftstoff-Widerspruch: Inserat-Kraftstoff vs. erkannte Motorisierung.
+    # Kraftstoffart (Benzin/Diesel/Elektro) und Antriebsart (ICE/MHEV/PHEV/BEV)
+    # sind getrennte Dimensionen (app/kraftstoff_powertrain.py) — ein Benzin-
+    # oder Diesel-Mild-/Plug-in-Hybrid widerspricht der jeweiligen Kraftstoff-
+    # angabe nicht. `canonical_fuel` leitet bei Mild-/Plug-in-Hybrid-Einträgen
+    # die tatsächliche Kraftstoffart aus Bezeichnung/Motorcode ab statt den
+    # rohen DB-Powertrain-Wert als Kraftstoff zu behandeln.
+    from app.kraftstoff_powertrain import canonical_fuel
     ins_kraft = _kraftstoff_norm(getattr(req, "kraftstoff", None)) \
         or _kraftstoff_norm(getattr(req, "motor", None))
-    mot_kraft = _kraftstoff_norm((motor_match or {}).get("kraftstoff"))
+    if ins_kraft == "hybrid":
+        # "Hybrid" ist im kanonischen Schema keine Kraftstoffart, sondern eine
+        # Antriebsart (ICE/MHEV/PHEV) — als Vergleichsbasis ungeeignet, nicht
+        # als Widerspruch werten.
+        ins_kraft = None
+    mot_kraft = canonical_fuel((motor_match or {}).get("kraftstoff"),
+                               (motor_match or {}).get("bezeichnung"),
+                               (motor_match or {}).get("motorcode"))
     if ins_kraft and mot_kraft and ins_kraft != mot_kraft:
         out.append(KeyFinding(
             id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",

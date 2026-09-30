@@ -16,7 +16,17 @@ from app.vergleichstabelle import als_markdown, baue_zeilen
 REPORT_RISK_CATEGORIES = (*RISIKO_KATEGORIEN, "rueckruf", "web_rueckruf")
 
 
-def datenbasis(baureihe, insights, belege) -> list[str]:
+def datenbasis(baureihe, insights, belege, *, identity=None, markt_verfuegbar: bool = False) -> list[str]:
+    """Nur TATSÄCHLICH verwendete Quellen (§5.9).
+
+    BEFUND (Production-Run Mazda MX-5, Test 6): "Datenbank + Web" erschien auch
+    dann, wenn die Marktrecherche zwar LIEF (Tavily-Treffer mit URL vorhanden),
+    aber keiner davon einen belastbaren Marktwert ergab UND kein technischer
+    Web-Fakt/keine Web-Identität in den Bericht einfloss. Ein Tavily-Aufruf mit
+    Ergebnissen ist kein verwendeter Beleg — er wird es erst, wenn er den
+    Marktwert trägt (`markt_verfuegbar`), einen Insight referenziert, oder eine
+    Identitätslücke füllt (`identity.field_evidence[...]["provenance"]`).
+    """
     sources = ["Inserat-/Nutzereingaben"]
     if baureihe:
         sources.append("ENFAL-Fahrzeugdatenbank")
@@ -30,7 +40,10 @@ def datenbasis(baureihe, insights, belege) -> list[str]:
                 continue
             if label and label not in sources:
                 sources.append(label)
-    if any(b.get("url") for b in belege) and "Webrecherche" not in sources:
+    web_identitaet_genutzt = identity is not None and any(
+        "web" in (fe.get("provenance") or []) for fe in identity.field_evidence.values())
+    web_markt_genutzt = markt_verfuegbar and any(b.get("url") for b in belege)
+    if (web_identitaet_genutzt or web_markt_genutzt) and "Webrecherche" not in sources:
         sources.append("Webrecherche")
     return sources
 
@@ -48,10 +61,27 @@ def kontext(identity, req, insights) -> str:
     }, ensure_ascii=False)
 
 
+def _identitaet_bestaetigt(baureihe, identity) -> bool:
+    """Ob Marke/Modell durch DB oder Web unabhängig bestätigt sind (§6).
+
+    BEFUND (Production-Run Mazda MX-5, Test 6): die Überschrift "Fahrzeug
+    erkannt" stand unverändert über dem Abschnitt, obwohl direkt darunter
+    "Generation nicht sicher bekannt" folgte — nur die ungeprüfte Inserat-
+    angabe war vorhanden. Eine feste Überschrift kann diesen Unterschied nicht
+    zeigen.
+    """
+    if baureihe is not None:
+        return True
+    return any(fe.get("status") in ("identified", "web_verified")
+              for fe in identity.field_evidence.values())
+
+
 def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommendation,
             price_assessment, market_available, mileage, hu, sources, fahrzeugkontext=None) -> str:
     facts = aus_request(req)
-    lines = ["## Fahrzeug erkannt", "", "Datenbasis: " + "; ".join(sources) + ".", ""]
+    ueberschrift = ("## Fahrzeug erkannt" if _identitaet_bestaetigt(baureihe, identity)
+                    else "## Fahrzeugidentität eingeschränkt")
+    lines = [ueberschrift, "", "Datenbasis: " + "; ".join(sources) + ".", ""]
     labels = {"make": "Marke", "model": "Modell", "generation": "Generation", "year": "Baujahr",
               "engine_name": "Motor", "engine_code": "Motorcode / Motorfamilie", "fuel": "Kraftstoff",
               "powertrain": "Antriebsart", "transmission": "Getriebe", "drivetrain": "Antrieb",

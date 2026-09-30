@@ -510,8 +510,23 @@ FEHLENDE_ANGABE = {
     MATCH_AMBIGUOUS:   "die Generation bzw. den Baureihencode, weil mehrere Modelle "
                        "gleich gut passen",
     MATCH_MARKE_ONLY:  "das Modell (bisher liegt nur die Marke vor)",
-    MATCH_NONE:        "Marke, Modell und Erstzulassung",
 }
+
+
+def _fehlende_angabe_none(marke: str | None, modell: str | None, baujahr: int | None) -> str:
+    """MATCH_NONE-Hinweis, der WIRKLICH sagt, was fehlt (Production-Run Mazda
+    MX-5, §6): "Bitte Marke, Modell und Erstzulassung nachtragen" stand auch
+    dann im Bericht, wenn alle drei Angaben längst vorhanden waren — die
+    Baureihe war nur schlicht nicht in der ENFAL-Datenbank. Ein fixer Text für
+    alle MATCH_NONE-Fälle kann das nicht unterscheiden."""
+    fehlt = [n for n, v in (("Marke", marke), ("Modell", modell),
+                            ("Baujahr/Erstzulassung", baujahr)) if not v]
+    if fehlt:
+        if len(fehlt) == 1:
+            return fehlt[0]
+        return ", ".join(fehlt[:-1]) + " und " + fehlt[-1]
+    return ("Generation/Motorisierung konnten nicht sicher verifiziert werden "
+            "(kein Treffer in der ENFAL-Fahrzeugdatenbank)")
 
 
 def find_baureihe_mit_vertrauen(marke: str | None, modell: str | None,
@@ -533,11 +548,15 @@ def find_baureihe_mit_vertrauen(marke: str | None, modell: str | None,
     if treffer is None:
         art = MATCH_NONE
     belastbar = art in MATCH_VERTRAUENSWUERDIG
+    fehlende_angabe = None
+    if not belastbar:
+        fehlende_angabe = (_fehlende_angabe_none(marke, modell, baujahr) if art == MATCH_NONE
+                           else FEHLENDE_ANGABE.get(art))
     return treffer, {
         "match_art": art,
         "konfidenz": identitaet_konfidenz(art),
         "belastbar": belastbar,
-        "fehlende_angabe": None if belastbar else FEHLENDE_ANGABE.get(art),
+        "fehlende_angabe": fehlende_angabe,
     }
 
 

@@ -46,6 +46,23 @@ UNFALLFREI = "unfallfrei"
 UNFALL = "unfall"
 UNKNOWN = "unknown"
 
+# Generisches Tri-State-Signal (§10): eine Formulierung, die explizit sagt "hier
+# steht keine Information", nie ein Feld-spezifisches Vokabular. "nicht
+# angegeben"/"keine Angabe"/"unbekannt" bedeuten für JEDES Feld (Tuning,
+# Unfallstatus, Servicehistorie, ...) dasselbe: UNKNOWN, nie eine positive oder
+# negative Behauptung.
+_UNBEKANNT_PHRASEN = re.compile(
+    r"\b(?:nicht\s+angegeben|keine\s+angabe(?:n)?|nicht\s+bekannt|unbekannt|unknown|"
+    r"k\.?\s?a\.?|n/?a)\b", re.I)
+
+
+def ist_unbekannt_angabe(text: str | None) -> bool:
+    """True, wenn der Text (oder das gesamte Feld) explizit als nicht angegeben
+    markiert ist — unabhängig vom Feld. Ein leerer Text ist NICHT dasselbe
+    (schlicht keine Angabe gemacht vs. ausdrücklich als offen markiert), wird
+    aber vom jeweiligen Aufrufer ohnehin bereits als UNKNOWN behandelt."""
+    return bool(text) and bool(_UNBEKANNT_PHRASEN.search(text))
+
 
 def unfall_status(req) -> str:
     value = (getattr(req, "unfallfrei", None) or "").strip().lower()
@@ -66,7 +83,16 @@ def tuning_status(req) -> str:
     value = (getattr(req, "tuning", None) or "").strip().lower()
     if value in ("nein", "kein", "keines", "serie", "serienzustand", "kein tuning"):
         return "absent"
-    if value and value not in ("unbekannt", "unknown", "keine angaben", "keine angaben zu tuning"):
+    if value and ist_unbekannt_angabe(value):
+        # BEFUND (Production-Run Mercedes C300 W205, §10): die Ausschlussliste
+        # kannte nur EXAKT "unbekannt"/"unknown"/"keine angaben" — eine im
+        # Inserat übliche Formulierung wie "nicht angegeben" fiel dadurch in
+        # den "sonst present"-Zweig darunter und erzeugte eine BEHAUPTETE
+        # Tuning-Präsenz aus einer reinen Nichtangabe. Tri-State-Regel (§10):
+        # "nicht angegeben"/"keine Angabe"/"unbekannt" bedeuten IMMER UNKNOWN,
+        # nie eine positive Behauptung.
+        return UNKNOWN
+    if value:
         return "present"
     text = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
     if re.search(r"\b(?:kein tuning|nicht getunt|keine leistungssteigerung)\b", text, re.I):
@@ -74,6 +100,7 @@ def tuning_status(req) -> str:
     if re.search(r"\b(?:chiptuning|stage\s*[123]|leistungssteigerung durchgeführt|tuning vorhanden)\b", text, re.I):
         return "present"
     return UNKNOWN
+
 
 _UNFALL_WERTE = {"nein": UNFALL, "false": UNFALL, "unfallschaden": UNFALL, "unfall": UNFALL,
                  "ja": UNFALLFREI, "true": UNFALLFREI}

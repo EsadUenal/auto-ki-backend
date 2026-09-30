@@ -321,6 +321,9 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
     identity = VehicleIdentity.from_check_context(baureihe, motor_match, req)
+    # §5.6: eine belegte Web-Identität (technischer Fallback, s.o.) ergänzt NUR
+    # echte Lücken der kanonischen Identität — DB/Nutzerangabe bleiben Guardrail.
+    identity.apply_web_evidence(web_recherche)
     if markt_recherche:
         deep_queries = baue_deep_queries(identity)
         rare_queries = baue_rare_queries(identity)
@@ -486,6 +489,25 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                      "'kaufen_nach_besichtigung' reduziert (Preisteil nicht belegbar)")
             result["empfehlung"] = "kaufen_nach_besichtigung"
 
+    # ── Identitäts-Floor (§6 Fall C) ─────────────────────────────────────────────
+    # Production-Run Mazda MX-5 (Test 6): "KAUFEN NACH BESICHTIGUNG" stand auch
+    # dann, wenn WEDER die ENFAL-Datenbank noch die Web-Recherche das Fahrzeug
+    # bestätigen konnten — nur die ungeprüfte Inseratangabe war da. Das ist eine
+    # zu selbstsichere Aussage für einen stark eingeschränkten Analysemodus.
+    # Bewusst binär und ausschließlich an den bereits vorhandenen, geprüften
+    # Signalen (Identity-Trust-Gate + Web-Fallback-Beleglage): kein neues
+    # Statusmodell — "unbekannt" ist bereits im Systemprompt als "keine
+    # Empfehlung möglich" definiert (app/empfehlungs_floor.py). Greift NUR, wenn
+    # beide Quellen versagen; ein einzelner DB- oder Web-Treffer reicht weiterhin
+    # für eine normale Empfehlung.
+    web_identitaet_belegt = bool(web_recherche and web_recherche.identitaet
+                                 and web_recherche.identitaet.belegt)
+    identitaet_kritisch_unbekannt = not identitaet["belastbar"] and not web_identitaet_belegt
+    if identitaet_kritisch_unbekannt and result.get("empfehlung") not in (None, "unbekannt"):
+        log.info("Kaufcheck: Fahrzeugidentität weder DB- noch Web-bestätigt — "
+                 "Empfehlung auf 'unbekannt' gesetzt (§6 Fall C)")
+        result["empfehlung"] = "unbekannt"
+
     # ── Deterministischer Empfehlungs-Floor ─────────────────────────────────────
     # BEWUSST als LETZTER Eingriff auf `empfehlung`: danach senkt nichts mehr ab.
     # Der Bake-off (2.5 vs. 3.7) hat gezeigt, dass ein Modell die im Systemprompt
@@ -569,7 +591,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
         generation=(baureihe or {}).get("generation"))
 
-    sources = bericht_datenbasis(baureihe, insights, belege)
+    sources = bericht_datenbasis(baureihe, insights, belege,
+                                 identity=identity, markt_verfuegbar=markt_verfuegbar)
     result["bericht"] = kanonischer_bericht(
         req, identity, baureihe, motor_match, insights, kaufaktionen, empfehlung_gruende,
         result["empfehlung"], price_assessment, markt_verfuegbar, laufleistungskontext,

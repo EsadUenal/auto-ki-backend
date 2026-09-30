@@ -500,7 +500,15 @@ _KOMPONENTEN: tuple[dict, ...] = (
                       "Ladezustand der Batterie erfragen.",
          probefahrt=None),
     dict(schluessel="infotainment",
-         muster=("infotainment", "idrive", "mmi", "navi", "display", "bordcomputer",
+         # Root-Cause-Closing (§9, Production-Run Mercedes C300 W205): "COMAND"
+         # (Mercedes) fehlte in der Markenliste, obwohl "iDrive" (BMW) und "MMI"
+         # (Audi) längst enthalten sind — ein unvollständiges, aber generisches
+         # Vokabular, kein markenspezifischer Sonderfall. Ohne Treffer landete
+         # das Bauteil in einer anderen Tabellenzeile und erbte deren Probefahrt-
+         # text (Beschleunigung/Schaltverhalten) — fachlich falsch für ein
+         # Infotainmentsystem.
+         muster=("infotainment", "idrive", "mmi", "comand", "mbux", "uconnect",
+                 "navi", "display", "bordcomputer",
                  "software", "elektronik", "elektrik", "bussystem", "kabelbaum",
                  "zentralverriegelung", "wegfahrsperre", "kombiinstrument",
                  "elektrische heckklappe"),
@@ -1140,7 +1148,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     # konkretere Text soll gewinnen — deshalb steht dieser Aufruf vor
     # `_aus_wartung`/`_aus_web_evidence`, die denselben Schlüssel belegen.
     _aus_laufleistung(s, laufleistungskontext)
-    _aus_schwachstellen(s, insights)
+    _aus_schwachstellen(s, insights, getattr(req, "ausstattung", None))
     _aus_motorproblemen(s, insights, motor_match, baujahr)
     _aus_rueckrufen(s, insights)
     _aus_wartung(s, insights)
@@ -1273,7 +1281,56 @@ def _nachweis(bauteil: str, umbau: bool) -> tuple[str, str]:
             f"Werkstattbeleg mit Datum und Kilometerstand vorlegen lassen.")
 
 
-def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
+# ── Optionale Ausstattung (§8) ────────────────────────────────────────────────
+#
+# BEFUND (Production-Run BMW M4 F82, Test 1A): "EDC/adaptive Dämpfer" erschien
+# als konkreter, fahrzeugspezifischer Prüfpunkt, obwohl die Ausstattung nicht
+# bestätigt war — EDC ist bei den meisten Baureihen eine AUFPREISPFLICHTIGE
+# Option, kein Serienmerkmal. Generische Bauteil-Kategorien (kein Modell-
+# Hardcoding): EDC/adaptive Dämpfer, Panoramadach, Head-up-Display, Matrix-/
+# Laserlicht, Luftfederung, Allrad-/Hinterachslenkung, Massagesitze sowie die
+# bekannten Premium-Soundsystem-Marken. Ohne Bestätigung in `req.ausstattung`
+# wird der Prüftext mit "falls vorhanden" versehen statt als sichere Aussage
+# über DIESES Fahrzeug behandelt.
+_OPTIONALE_AUSSTATTUNG_MUSTER: tuple[str, ...] = (
+    "edc", "adaptive daempfer", "adaptives fahrwerk", "adaptivdaempfer",
+    "panoramadach", "panorama-schiebedach", "glasschiebedach",
+    "head-up", "headup", "matrix-led", "matrixlicht", "laserlicht",
+    "luftfederung", "hinterachslenkung", "allradlenkung", "aktivlenkung",
+    "massagesitz", "massagefunktion", "sitzbelueftung", "sitzklimatisierung",
+    "burmester", "bang & olufsen", "bang und olufsen", "harman kardon",
+    "bowers & wilkins", "bowers and wilkins", "meridian",
+    "elektrische anhaengerkupplung", "schwenkbare anhaengerkupplung",
+    "standheizung",
+)
+
+
+def _ist_optionale_ausstattung(bauteil: str | None) -> bool:
+    n = _norm(bauteil)
+    return bool(n) and any(m in n for m in _OPTIONALE_AUSSTATTUNG_MUSTER)
+
+
+def _ausstattung_bestaetigt(bauteil: str | None, ausstattung: list[str] | None) -> bool:
+    """Token-Überlappung zwischen dem Bauteiltext und der bestätigten Ausstattung
+    des Inserats — keine neue Heuristik, dieselbe `_norm`-Tokenbasis wie überall
+    sonst in diesem Modul."""
+    if not ausstattung:
+        return False
+    bauteil_tokens = set(_norm(bauteil).split())
+    if not bauteil_tokens:
+        return False
+    for eintrag in ausstattung:
+        eintrag_tokens = set(_norm(eintrag).split())
+        if bauteil_tokens & eintrag_tokens:
+            return True
+    return False
+
+
+_FALLS_VORHANDEN_PRAEFIX = "Nur falls diese Ausstattung verbaut ist: "
+
+
+def _aus_schwachstellen(s: _Sammler, insights: list[Insight],
+                        ausstattung: list[str] | None = None) -> None:
     """Bekannte Baureihen-Schwachstelle -> Besichtigung (+ ggf. Probefahrt) + Frage.
 
     Die Insights sind bereits baujahrgefiltert (P0-2) — eine Schwachstelle, die
@@ -1303,7 +1360,14 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
                             f"Probefahrt auf schlechter Fahrbahn hinhören.")
         else:
             besichtigung = _besichtigung(komp, bauteil)
+        # §8: optionale Ausstattung nur als konkreten Prüfpunkt behandeln, wenn
+        # das Inserat sie bestätigt — sonst "falls vorhanden" statt einer
+        # Aussage über eine möglicherweise gar nicht verbaute Komponente.
+        optional_unbestaetigt = (_ist_optionale_ausstattung(bauteil)
+                                 and not _ausstattung_bestaetigt(bauteil, ausstattung))
         if besichtigung:
+            if optional_unbestaetigt:
+                besichtigung = _FALLS_VORHANDEN_PRAEFIX + besichtigung
             s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
                   gruppe=gruppe, bauteil=bauteil)
@@ -1311,6 +1375,8 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight]) -> None:
         # Probefahrt NUR über eines der beiden Tore (§6).
         symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
         if symptom:
+            if optional_unbestaetigt:
+                symptom = _FALLS_VORHANDEN_PRAEFIX + symptom
             s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
               gruppe=gruppe, bauteil=bauteil)

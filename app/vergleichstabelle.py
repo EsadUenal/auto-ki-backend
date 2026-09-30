@@ -42,6 +42,10 @@ from dataclasses import dataclass
 
 from app.getriebe import AUTOMATIK, MANUELL, anzeige as getriebe_anzeige, aus_db as getriebe_aus_db
 from app.hu_termin import ABGELAUFEN, PLAUSIBEL, UNGEWOEHNLICH_WEIT
+from app.kraftstoff_powertrain import (
+    POWERTRAIN_ICE, canonical_fuel, canonical_powertrain, fuel_aus_freitext,
+    ist_fuel_widerspruch,
+)
 from app.servicehistorie import anzeige as servicehistorie_anzeige
 
 HERKUNFT_INSERAT = "inserat"
@@ -91,23 +95,9 @@ def _eur(n: int) -> str:
     return f"{n:,} €".replace(",", ".")
 
 
-_KRAFTSTOFF = {"benzin": "Benzin", "diesel": "Diesel", "elektro": "Elektro",
-               "hybrid": "Hybrid", "plug-in-hybrid": "Plug-in-Hybrid", "lpg": "Autogas",
-               "cng": "Erdgas"}
-
-
-def _kraftstoff_norm(text: str | None) -> str | None:
-    t = (text or "").strip().lower()
-    if not t:
-        return None
-    if "plug" in t:
-        return "plug-in-hybrid"
-    for k in ("diesel", "elektro", "hybrid", "benzin", "lpg", "cng"):
-        if k in t:
-            return k
-    if "super" in t or "otto" in t:
-        return "benzin"
-    return t
+_KRAFTSTOFF_LABEL = {"benzin": "Benzin", "diesel": "Diesel", "elektro": "Elektro"}
+_POWERTRAIN_LABEL = {"MHEV": "Mild-Hybrid", "PHEV": "Plug-in-Hybrid", "BEV": "Elektro",
+                     "ICE": "Verbrenner"}
 
 
 def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
@@ -160,16 +150,30 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))
 
-    # Kraftstoff.
+    # Kraftstoff. Kraftstoffart (Benzin/Diesel/Elektro) und Antriebsart/
+    # Elektrifizierung (ICE/MHEV/PHEV/BEV) sind ZWEI unabhängige Dimensionen
+    # (app/kraftstoff_powertrain.py). Ein Benzin-Mild-Hybrid widerspricht der
+    # Angabe "Benzin" nicht — verglichen wird deshalb ausschließlich die
+    # Kraftstoffart, nie der rohe DB-Wert.
     kraftstoff = getattr(req, "kraftstoff", None)
     if kraftstoff:
-        k_req = _kraftstoff_norm(kraftstoff)
-        angabe = _KRAFTSTOFF.get(k_req, kraftstoff)
-        if motor_match and motor_match.get("kraftstoff"):
-            k_db = _kraftstoff_norm(motor_match.get("kraftstoff"))
-            zeilen.append(Vergleichszeile(
-                "Kraftstoff", angabe, motor_match.get("kraftstoff"), HERKUNFT_DB,
-                PASST if k_req == k_db else WEICHT_AB))
+        k_req = fuel_aus_freitext(kraftstoff)
+        angabe = _KRAFTSTOFF_LABEL.get(k_req, kraftstoff)
+        db_roh = (motor_match or {}).get("kraftstoff")
+        if motor_match and db_roh:
+            k_db = canonical_fuel(db_roh, motor_match.get("bezeichnung"), motor_match.get("motorcode"))
+            powertrain = canonical_powertrain(db_roh)
+            ref = _KRAFTSTOFF_LABEL.get(k_db, db_roh)
+            if powertrain and powertrain != POWERTRAIN_ICE:
+                ref += f" ({_POWERTRAIN_LABEL.get(powertrain, powertrain)})"
+            if k_req and k_db:
+                einordnung = PASST if not ist_fuel_widerspruch(k_req, k_db) else WEICHT_AB
+            else:
+                # Kraftstoffart nicht auf beiden Seiten ableitbar (z.B. Mild-
+                # Hybrid ohne erkennbares TDI/TFSI-Signal) — keine Bewertung
+                # statt einer geratenen.
+                einordnung = NICHT_BEWERTBAR
+            zeilen.append(Vergleichszeile("Kraftstoff", angabe, ref, HERKUNFT_DB, einordnung))
         else:
             zeilen.append(Vergleichszeile("Kraftstoff", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))

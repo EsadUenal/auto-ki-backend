@@ -31,6 +31,8 @@ Grundsätze:
 import re
 from dataclasses import dataclass, field
 
+from app.kraftstoff_powertrain import canonical_fuel
+
 # ── Performance-Marker: (kanonischer Name, Familie, Regex) ────────────────────
 # Der kanonische Name ist SPEZIFISCH (m3, rs6, amg-c63). Die Familie erlaubt die
 # Unterscheidung "andere Variante derselben Performance-Linie" (-> Widerspruch) von
@@ -303,6 +305,68 @@ class VehicleIdentity:
             for n, v in self.__dict__.items() if v and n != "rohtext"
         }
 
+    def apply_web_evidence(self, web_recherche) -> None:
+        """Belegte Web-Identität in die kanonische Identität übernehmen (§5.6).
+
+        BEFUND (Production-Run Mazda MX-5, Test 6)
+        --------------------------------------------
+        Der technische Web-Fallback (`app/technical_research.py`) wird bei einem
+        DB-Miss zuverlässig ausgelöst und liefert bei belegter Identität
+        strukturierte Werte (Motor, Kraftstoff, Leistung, Quellen, Confidence).
+        Diese landeten bisher ausschließlich in `insights` (Risikothemen) — die
+        HIER gezeigte kanonische Identität (Marke/Modell/Motor/Kraftstoff im
+        "Fahrzeug erkannt"-Abschnitt) wurde ausschließlich aus DB+Nutzerangabe
+        gebaut und nie mit dem Web-Ergebnis abgeglichen. Ein erfolgreich
+        recherchiertes Fahrzeug erschien dem Nutzer trotzdem als "nicht sicher
+        bekannt".
+
+        REGEL (§5.6/§5.7): Web ergänzt NUR echte Lücken. Ein bereits bekannter
+        Wert (DB-`identified` oder Nutzer-`provided`) wird NIE überschrieben —
+        unabhängig davon, ob Web etwas anderes behauptet (Konflikte werden nicht
+        aufgelöst, sondern schlicht nicht übernommen; die DB/Nutzerangabe bleibt
+        Guardrail, §5.7). Nur Felder mit Status "unknown" werden befüllt, mit
+        eigener Provenance ("web") und der Confidence der Beleglage.
+        """
+        identitaet = getattr(web_recherche, "identitaet", None) if web_recherche else None
+        if not identitaet or not getattr(identitaet, "belegt", False):
+            return
+        confidence = getattr(identitaet, "confidence", None) or "niedrig"
+        quellen_anzahl = len(getattr(identitaet, "quellen", None) or [])
+
+        def _fuellen(feld: str, wert) -> None:
+            if wert is None:
+                return
+            bisher = self.field_evidence.get(feld, {})
+            if bisher.get("status") not in (None, "unknown"):
+                return          # DB- oder Nutzerwert hat immer Vorrang.
+            if getattr(self, feld, None):
+                return          # bereits anderweitig befüllt (z.B. aus Freitext).
+            setattr(self, feld, wert)
+            self.field_evidence[feld] = {
+                "status": "web_verified", "provided_value": None, "reference_value": wert,
+                "confidence": confidence,
+                "provenance": ["web"],
+                "evidence": f"{quellen_anzahl} Webquelle(n)",
+            }
+
+        _fuellen("engine_name", (getattr(identitaet, "motor", None) or "").strip() or None)
+        _fuellen("horsepower", getattr(identitaet, "leistung_ps", None))
+        web_kraftstoff = getattr(identitaet, "kraftstoff", None)
+        # Nur eine echte Kraftstoffart übernehmen (Benzin/Diesel/Elektro) — ein
+        # mehrdeutiges "hybrid"-Signal aus der Websuche ist keine Kraftstoffart
+        # (app/kraftstoff_powertrain.py) und wird nicht übernommen.
+        if web_kraftstoff in ("benzin", "diesel", "elektro"):
+            _fuellen("fuel", web_kraftstoff)
+        if self.field_evidence.get("powertrain", {}).get("status") in (None, "unknown") and not self.powertrain:
+            neu = {"phev": "PHEV", "elektro": "BEV"}.get(web_kraftstoff)
+            if neu:
+                self.powertrain = neu
+                self.field_evidence["powertrain"] = {
+                    "status": "web_verified", "provided_value": None, "reference_value": neu,
+                    "confidence": confidence, "provenance": ["web"],
+                    "evidence": f"{quellen_anzahl} Webquelle(n)",
+                }
+
     # ── Konstruktoren ─────────────────────────────────────────────────────────
 
     @classmethod
@@ -314,7 +378,7 @@ class VehicleIdentity:
         """
         from app.car_lookup import normalisiere_marke, _antrieb_aus_text
         from app.getriebe import aus_request, aus_db
-        from app.recall_filter import _norm_kraftstoff
+        from app.kraftstoff_powertrain import canonical_powertrain
         b, m = baureihe or {}, motor_match or {}
         identity = cls.from_market_context(b, m, req)
         text = " ".join(str(getattr(req, f, None) or "") for f in
@@ -328,7 +392,13 @@ class VehicleIdentity:
         }
         reference = {"make": b.get("marke"), "model": b.get("modell"),
                      "generation": b.get("generation"), "engine_name": m.get("bezeichnung"),
-                     "engine_code": m.get("motorcode"), "fuel": m.get("kraftstoff"),
+                     "engine_code": m.get("motorcode"),
+                     # KraftstoffART, nie der rohe DB-Powertrain-Wert: die Spalte
+                     # `motorvariante.kraftstoff` kann 'Mild-Hybrid'/'Plug-in-Hybrid'
+                     # tragen — das sind Antriebsarten, keine Kraftstoffarten
+                     # (app/kraftstoff_powertrain.py). `identity.fuel` darf niemals
+                     # einen dieser beiden Werte annehmen.
+                     "fuel": canonical_fuel(m.get("kraftstoff"), m.get("bezeichnung"), m.get("motorcode")),
                      "horsepower": m.get("leistung_ps"), "drivetrain": m.get("antrieb"),
                      "transmission": aus_db(m)}
         for name in set(supplied) | set(reference):
@@ -347,14 +417,26 @@ class VehicleIdentity:
                 "provenance": (["user"] if provided is not None else []) + (["enfal"] if db_value is not None else []),
                 "evidence": m.get("variante_id") if name not in ("make", "model", "generation") else b.get("id"),
             }
+        # §11: eine vom Nutzer genannte Motorbezeichnung darf nicht verschwinden,
+        # nur weil die DB keinen Motorcode dafür kennt (Production-Run Mercedes
+        # C300 W205: "M264" ging verloren, `engine_code` blieb leer). Greift NUR,
+        # wenn die DB tatsächlich KEINEN Code liefert — ein bekannter DB-Code
+        # wird nie durch eine unbestätigte Nutzerangabe ersetzt.
+        if not identity.engine_code:
+            kandidat = motorcode_kandidat(getattr(req, "motor", None))
+            if kandidat:
+                identity.engine_code = kandidat
+                identity.field_evidence["engine_code"] = {
+                    "status": "provided", "provided_value": kandidat, "reference_value": None,
+                    "confidence": "niedrig", "provenance": ["user"], "evidence": None,
+                }
         # A generation-wide body/options set is not this vehicle's equipment.
         identity.body = None
         identity.powertrain = getattr(req, "powertrain", None)
         if identity.powertrain:
             identity.powertrain = identity.powertrain.upper()
         else:
-            identity.powertrain = {"benzin": "ICE", "diesel": "ICE", "phev": "PHEV",
-                                  "elektro": "EV", "mild": "MHEV"}.get(_norm_kraftstoff(m.get("kraftstoff")))
+            identity.powertrain = canonical_powertrain(m.get("kraftstoff"))
         identity.field_evidence["powertrain"] = {
             "status": "provided" if getattr(req, "powertrain", None) else "plausible" if identity.powertrain else "unknown",
             "provided_value": getattr(req, "powertrain", None),
@@ -406,7 +488,10 @@ class VehicleIdentity:
             body=body,
             year=_int_oder_none(getattr(req, "baujahr", None)),
             first_registration=(_RE_EZ.search(freitext).group(1) if _RE_EZ.search(freitext) else None),
-            fuel=m.get("kraftstoff") or getattr(req, "kraftstoff", None) or _erste(_KRAFTSTOFF_MUSTER, freitext),
+            # KraftstoffART, nie der rohe DB-Powertrain-Wert ('Mild-Hybrid'/
+            # 'Plug-in-Hybrid' sind Antriebsarten — app/kraftstoff_powertrain.py).
+            fuel=(canonical_fuel(m.get("kraftstoff"), m.get("bezeichnung"), m.get("motorcode"))
+                  or getattr(req, "kraftstoff", None) or _erste(_KRAFTSTOFF_MUSTER, freitext)),
             engine_name=engine_name,
             engine_code=m.get("motorcode"),
             displacement=displacement,
@@ -570,6 +655,30 @@ def _modell_und_generation(roh: str, make: str | None, codes: set[str],
     else:
         model, generation = None, (sorted(codes)[0] if codes else None)
     return model, generation
+
+
+# Motorcode-artiges Token aus MOTORFREITEXT ("M264" aus "2.0 Turbo M264",
+# "OM651", "B48B20"). Bewusst NUR case-sensitiv auf Grossschreibung: reale
+# Motorcodes werden in Inseraten fast immer in Grossbuchstaben genannt; ohne
+# diese Einschraenkung wuerden beliebige Kleinbuchstaben-Woerter (z.B. "km70")
+# faelschlich als Code gelten. Buchstabe(n) UND Ziffer(n) gemeinsam gefordert,
+# damit reine Woerter (TURBO, DIESEL) nicht anschlagen.
+_RE_MOTORCODE_KANDIDAT = re.compile(r"\b([A-Z]{1,3}\d{2,4}[A-Z]?\d{0,2})\b")
+_MOTORCODE_AUSSCHLUSS = frozenset({"TDI", "TSI", "TFSI", "CDI", "HDI", "DCI", "CRDI", "JTD"})
+
+
+def motorcode_kandidat(text: str | None) -> str | None:
+    """Motorcode-Kandidat aus Nutzer-Freitext, wenn die DB keinen liefert
+    (Production-Run Mercedes C300 W205, §11): eine explizite Nutzereingabe wie
+    "M264" darf nicht verschwinden, nur weil die DB dafür keinen Motorcode
+    kennt. Bleibt der Kandidat unbestätigt (Herkunft "user", keine DB-Referenz)
+    — er wird nirgends als geprüfte Tatsache behandelt."""
+    for m in _RE_MOTORCODE_KANDIDAT.finditer(text or ""):
+        kandidat = m.group(1)
+        if kandidat.upper() in _MOTORCODE_AUSSCHLUSS:
+            continue
+        return kandidat
+    return None
 
 
 def _motorbezeichnung(text: str) -> str | None:

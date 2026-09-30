@@ -153,9 +153,13 @@ def _konflikt_grund(req, motor_match: dict | None) -> str | None:
     if not motor_match:
         return None
     from app.key_findings import _kraftstoff_norm, _ps_aus_text
+    from app.kraftstoff_powertrain import canonical_fuel
     ins_kraft = (_kraftstoff_norm(getattr(req, "kraftstoff", None))
                  or _kraftstoff_norm(getattr(req, "motor", None)))
-    mot_kraft = _kraftstoff_norm(motor_match.get("kraftstoff"))
+    if ins_kraft == "hybrid":
+        ins_kraft = None       # "Hybrid" ist Antriebsart, keine Kraftstoffart.
+    mot_kraft = canonical_fuel(motor_match.get("kraftstoff"), motor_match.get("bezeichnung"),
+                               motor_match.get("motorcode"))
     if ins_kraft and mot_kraft and ins_kraft != mot_kraft:
         return "kraftstoff"
     ins_ps = _ps_aus_text(getattr(req, "motor", None), getattr(req, "beschreibung", None),

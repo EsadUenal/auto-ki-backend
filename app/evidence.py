@@ -212,7 +212,18 @@ def build_insights(
     identity = identity or VehicleIdentity.from_check_context(baureihe, motor_match, req)
     # The legacy engine/family gate also sees known request attributes even when
     # no unique motor row was found. No motor-specific facts are fabricated.
-    applicability_motor = {**(motor_match or {}), "kraftstoff": identity.fuel}
+    #
+    # BEWUSST NICHT `identity.fuel`: seit der Fuel-/Powertrain-Trennung
+    # (app/kraftstoff_powertrain.py) ist `identity.fuel` REIN die Kraftstoffart
+    # (Benzin/Diesel/Elektro) und für 'Mild-Hybrid'/'Plug-in-Hybrid' bewusst oft
+    # None, wenn sich die Kraftstoffart nicht ableiten lässt. Die HV-/PHEV-
+    # Rückruf-Erkennung (`recall_filter._norm_kraftstoff`/`_HAT_HOCHVOLT`)
+    # braucht dagegen genau das ANTRIEBS-Signal ('Mild-Hybrid' vs. 'Plug-in-
+    # Hybrid' vs. 'Elektro') — eine andere Dimension. Nutzerangabe hat weiterhin
+    # Vorrang, sonst der unveränderte DB-Rohwert (nie `identity.fuel`).
+    applicability_motor = {**(motor_match or {}),
+                          "kraftstoff": (getattr(req, "kraftstoff", None)
+                                        or (motor_match or {}).get("kraftstoff"))}
 
     def allowed(fakt):
         return fakt.get("_trust") != "rejected" and varianten_applicability(fakt, identity)[0] != "incompatible"
