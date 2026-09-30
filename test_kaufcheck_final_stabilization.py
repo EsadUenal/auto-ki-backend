@@ -673,6 +673,20 @@ check("O5 Nur Stufe-3-Quellen belegen keine Generation (Mehrheit schwacher Seite
       wi_nur3.generation is None)
 check("O6 Einzelbuchstabe im Titel macht eine Seite nicht zur 'anderen Generation'",
       not _fremde_generation(FX_RAUSCH[0], "Alpha", "T4") and _fremde_generation(FX_RAUSCH[4], "Alpha", "T4"))
+class _ZielProvider:
+    def __init__(self):
+        self.aufruf = None
+
+    async def recherchiere(self, **kw):
+        self.aufruf = kw
+        return TechnischeRecherche(ausgeloest_durch=kw["ausgeloest_durch"])
+
+
+zp = _ZielProvider()
+asyncio.run(recherchiere_technisch(req(modell="Alpha T1", motor="9.9 Unbekannt"), baureihe([m_a]),
+                                   {"belastbar": True}, baureihe([m_a]), None, provider=zp))
+check("O8 Belastbare Baureihe, Motor fehlt: Web recherchiert das kanonische Modell + DB-Generation",
+      zp.aufruf and zp.aufruf["modell"] == "Alpha" and zp.aufruf["ziel"].get("generation") == "T1")
 check("O7 Identitäts-Stufenliste gilt nur für Phase 1 (geteilte Domainbewertung unverändert)",
       _tier_identitaet("https://www.autozeitung.de/x") == 2 and _score("https://www.autozeitung.de/x") == 0)
 

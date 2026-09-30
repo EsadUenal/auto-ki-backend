@@ -823,7 +823,8 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                  kategorie=_WEB_KATEGORIE[kategorie], max_results=8)
         fakten += _extrahiere_fakten(treffer, kategorie, marke=ziel.get("marke"),
                                      modell=ziel.get("modell"), baujahr=ziel.get("baujahr"),
-                                     generation=identitaet.generation, abgelehnt=abgelehnt)
+                                     generation=identitaet.generation or ziel.get("generation"),
+                                     abgelehnt=abgelehnt)
     return fakten
 
 
@@ -883,7 +884,7 @@ class TavilyTechnicalResearchProvider:
                                        phasen=phasen, abgelehnte_fakten=abgelehnt,
                                        anfragen=anfragen)
 
-        gen = identitaet.generation
+        gen = identitaet.generation or z.get("generation")
         basis = " ".join(filter(None, [breit, gen]))
         # PHASE 2 — Rückrufe (amtlich/Fachquellen bevorzugt)
         phasen.append("rueckruf")
@@ -966,16 +967,27 @@ async def recherchiere_technisch(req, baureihe_roh, identitaet, baureihe_gegatet
     if trigger is None:
         return None
     provider = provider or TavilyTechnicalResearchProvider()
+    # Ist die Baureihe belastbar zugeordnet (Trigger "Motor fehlt"/"Konflikt"),
+    # recherchiert der Fallback das KANONISCHE Modell der Datenbank, nicht die
+    # Rohangabe: "Astra L" hieße sonst, dass jede Quelle das Token "L" tragen
+    # muss (realer Smoke-Test: alle Quellen als "modell_fehlt" verworfen). Die
+    # bekannte Generation geht als Ziel mit (Generationsabgleich der Fakten).
+    marke, modell = getattr(req, "marke", None), getattr(req, "modell", None)
+    ziel = _ziel_aus_request(req)
+    if baureihe_gegatet:
+        marke = baureihe_gegatet.get("marke") or marke
+        modell = baureihe_gegatet.get("modell") or modell
+        ziel["generation"] = baureihe_gegatet.get("generation")
     try:
         return await provider.recherchiere(
-            marke=getattr(req, "marke", None), modell=getattr(req, "modell", None),
+            marke=marke, modell=modell,
             baujahr=getattr(req, "baujahr", None), motor=getattr(req, "motor", None),
-            ausgeloest_durch=trigger, ziel=_ziel_aus_request(req))
+            ausgeloest_durch=trigger, ziel=ziel)
     except TypeError:
         # Ältere Provider ohne `ziel`-Parameter.
         try:
             return await provider.recherchiere(
-                marke=getattr(req, "marke", None), modell=getattr(req, "modell", None),
+                marke=marke, modell=modell,
                 baujahr=getattr(req, "baujahr", None), motor=getattr(req, "motor", None),
                 ausgeloest_durch=trigger)
         except Exception as exc:
