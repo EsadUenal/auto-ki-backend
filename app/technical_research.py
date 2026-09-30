@@ -304,15 +304,32 @@ def _saetze(text: str) -> list[str]:
     return [s.strip() for s in _SATZ.split(text or "") if 20 <= len(s.strip()) <= 300]
 
 
-def _extrahiere_fakten(treffer: list[dict], kategorie: str) -> list[WebFakt]:
+def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
+                       marke: str | None = None, modell: str | None = None) -> list[WebFakt]:
     """Baut strukturierte Fakten aus den Snippets — je Bauteil höchstens einen.
 
     Mehrere Treffer zum selben Bauteil werden zu EINEM Fakt zusammengeführt, dessen
     Confidence mit der Zahl unabhängiger Domains steigt. Ein einzelnes Forum
     erreicht damit nie "hoch".
+
+    BEFUND (Real-Web-Smoke-Test Mazda MX-5, Verifikationsrunde
+    kaufcheck-web-fallback-root-cause): Eine generische Suchanfrage
+    ("Mazda MX-5 typische Probleme Schwachstellen") lieferte unter den
+    Treffern einen thematisch verwandten, aber FREMDEN Artikel ("Ford
+    Mustang V8 als Gebrauchtwagen: typische Schwachstellen") — Domain-Score
+    und Vokabular-Treffer ("Motor", "verkokte Ansaugklappen") reichten aus,
+    um daraus fälschlich eine Mazda-MX-5-Schwachstelle "Motor" zu bauen.
+    `_identitaet_belegt()` prüft genau das für die Fahrzeugidentität
+    (Modell-Token muss im Treffertext stehen) — diese Prüfung fehlte hier
+    für die FAKTENEXTRAKTION komplett. Jeder Treffer muss deshalb, genau wie
+    bei der Identitätsprüfung, das Modell (und, falls bekannt, die Marke)
+    als Token im eigenen Titel/Text tragen, bevor er überhaupt Sätze für
+    einen Fakt liefern darf — sonst entsteht ein Fakt über das falsche Auto.
     """
     vokabular = _bauteil_vokabular()
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
+    modell_tokens = _tokens(modell)
+    marke_tokens = _tokens(marke)
     # schluessel -> {"aussage": str, "bauteil": str, "treffer": [...]}
     kandidaten: dict[str, dict] = {}
 
@@ -321,6 +338,11 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str) -> list[WebFakt]:
         score = score_domain(url, _WEB_KATEGORIE[kategorie])
         if score < min_score:
             continue
+        text_tokens = _tokens(f"{r.get('title') or ''} {r.get('content') or ''}")
+        if modell_tokens and not modell_tokens <= text_tokens:
+            continue          # Treffer nennt das gesuchte Modell nicht — kein Fakt daraus.
+        if marke_tokens and not (marke_tokens & text_tokens):
+            continue          # Treffer nennt nicht einmal die Marke — vermutlich ein anderes Fahrzeug.
         for satz in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}"):
             n = _norm(satz)
             if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
@@ -459,7 +481,7 @@ def _baue_recherche(marke, modell, baujahr, motor, ausgeloest_durch,
     for kategorie in ("schwachstelle", "rueckruf", "wartung"):
         treffer = curate_results(roh.get(kategorie) or [],
                                  kategorie=_WEB_KATEGORIE[kategorie], max_results=8)
-        fakten += _extrahiere_fakten(treffer, kategorie)
+        fakten += _extrahiere_fakten(treffer, kategorie, marke=marke, modell=modell)
 
     log.info("Technische Recherche: '%s %s' belegt (%d Domains, confidence=%s), %d Fakten",
              marke, modell, domains, identitaet.confidence, len(fakten))

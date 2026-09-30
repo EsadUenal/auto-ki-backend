@@ -36,7 +36,9 @@ from app.kraftstoff_powertrain import (
     canonical_fuel, canonical_powertrain, fuel_aus_freitext, ist_fuel_widerspruch,
 )
 from app.models import KaufCheckRequest, TechnischeRecherche, WebVehicleIdentity
-from app.technical_research import FixtureTechnicalResearchProvider, recherchiere_technisch
+from app.technical_research import (
+    FixtureTechnicalResearchProvider, _extrahiere_fakten, recherchiere_technisch,
+)
 from app.vehicle_identity import VehicleIdentity, motorcode_kandidat
 
 _FEHLER: list[str] = []
@@ -315,6 +317,42 @@ check("K2 ... und Web ebenfalls nicht belegt -> Kriterium für Identitäts-Floor
       not _web_g_belegt)
 check("K3 MX-5 MIT Web-Beleg (Szenario F): Floor-Kriterium NICHT erfüllt",
       _f["info"]["belastbar"] or bool(_f["web"] and _f["web"].identitaet and _f["web"].identitaet.belegt))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== L) Faktenextraktion: fremder Treffer wird NICHT dem gesuchten Fahrzeug zugeschrieben ===")
+# BEFUND (Real-Web-Smoke-Test Verifikationsrunde): eine echte Tavily-Suche nach
+# "Mazda MX-5 typische Probleme Schwachstellen" lieferte u.a. einen fremden
+# Artikel ("Ford Mustang V8 als Gebrauchtwagen: typische Schwachstellen"), der
+# denselben Domain-Score und dieselben Bauteil-/Problem-Worte trifft ("Motor",
+# "verkokte Ansaugklappen") wie ein echter MX-5-Treffer — und wurde dadurch
+# faelschlich als MX-5-Schwachstelle "Motor" extrahiert. Fixture reproduziert
+# genau diesen Fall deterministisch.
+
+_fremdtreffer_mustang = treffer(
+    "https://www.auto-motor-und-sport.de/sportwagen/gebrauchtwagen/ford-mustang-v8",
+    "Ford Mustang V8 als Gebrauchtwagen: typische Schwachstellen und Tipps zum Kauf",
+    "Verkokte Ansaugklappen: Ein haeufiges Problem bei den V8-Motoren sind "
+    "verkokte und klemmende Ansaugklappen. Ein bekanntes Motor-Problem.",
+)
+_echttreffer_mx5 = treffer(
+    "https://www.autobild.de/artikel/mazda-mx-5-nd-gebrauchtwagen-test",
+    "Mazda MX-5 Gebrauchtwagen-Test",
+    "Der Mazda MX-5 gilt als zuverlaessig, vereinzelt wird ein Kupplungsproblem "
+    "als Schwachstelle genannt.",
+)
+_fakten_gemischt = _extrahiere_fakten(
+    [_fremdtreffer_mustang, _echttreffer_mx5], "schwachstelle", marke="Mazda", modell="MX-5")
+check("L1 kein Fakt aus dem fremden Mustang-Treffer (Modell-Token fehlt dort)",
+      not any("mustang" in (q.url or "").lower()
+              for f in _fakten_gemischt for q in f.quellen))
+check("L2 der echte MX-5-Treffer liefert weiterhin einen Fakt (Regel filtert nicht zu aggressiv)",
+      any("kupplung" in (f.bauteil or "") for f in _fakten_gemischt)
+      or any("autobild" in (q.url or "") for f in _fakten_gemischt for q in f.quellen))
+_fakten_nur_fremd = _extrahiere_fakten(
+    [_fremdtreffer_mustang], "schwachstelle", marke="Mazda", modell="MX-5")
+check("L3 ausschliesslich fremder Treffer -> gar kein Fakt (statt Fehlzuschreibung)",
+      _fakten_nur_fremd == [])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

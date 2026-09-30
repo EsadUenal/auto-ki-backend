@@ -89,11 +89,26 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     status_labels = {"provided": "laut Inserat, nicht unabhängig bestätigt",
                      "plausible": "aus ENFAL-Daten plausibilisiert",
                      "identified": "ENFAL-Referenz eindeutig zugeordnet, keine Prüfung am Fahrzeug",
+                     # BEFUND (Real-E2E-Test Mazda MX-5, Verifikationsrunde
+                     # kaufcheck-web-fallback-root-cause): `apply_web_evidence`
+                     # setzt den Status "web_verified" fuer jedes durch die
+                     # Websuche ergaenzte Feld — dieses Mapping kannte den Wert
+                     # nicht und liess `bericht()` mit KeyError abstuerzen,
+                     # sobald ein echter Web-Fallback tatsaechlich ein Feld
+                     # fuellte (der bisherige Test F prueft nur `field_evidence`
+                     # direkt, nie den Berichtstext). Root-Cause: kein Test rief
+                     # bislang `kanonischer_bericht()` mit einer Identitaet, die
+                     # ein web-ergaenztes Feld enthaelt.
+                     "web_verified": "durch Webrecherche belegt, keine Prüfung am Fahrzeug",
                      "unknown": "nicht sicher bekannt"}
     for name, label in labels.items():
         value = getattr(identity, name)
         state = identity.field_evidence.get(name, {}).get("status", "unknown")
-        lines.append(f"- {label}: {value if value is not None else 'nicht sicher bekannt'} ({status_labels[state]}).")
+        # Verteidigungslinie: ein kuenftig neuer, hier noch unbekannter Status
+        # darf den Bericht nie zum Absturz bringen — im Zweifel "nicht sicher
+        # bekannt" statt KeyError.
+        status_text = status_labels.get(state, status_labels["unknown"])
+        lines.append(f"- {label}: {value if value is not None else 'nicht sicher bekannt'} ({status_text}).")
     if req.ausstattung:
         lines += ["", "Ausstattung laut Inserat: " + ", ".join(req.ausstattung) + ". Vor Ort prüfen."]
     if req.vorbesitzer is not None:
