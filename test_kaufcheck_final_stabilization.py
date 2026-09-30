@@ -625,6 +625,11 @@ fk_t1 = _extrahiere_fakten([t("https://www.kba.de/r", "Rückruf Testmarke Alpha"
                            "rueckruf", marke="Testmarke", modell="Alpha", baujahr=2019)
 check("N15 Einzelne amtliche Quelle (TIER 1) -> mindestens 'mittel'",
       fk_t1 and fk_t1[0].confidence == "mittel")
+from app.key_findings import _strukturiert_vs_inserat
+check("N16 Auswahl 'Benzin' + Text 'Plug-in-Hybrid, Benziner' ist kein Kraftstoff-Widerspruch",
+      not _strukturiert_vs_inserat(req(kraftstoff="Benzin", beschreibung="Plug-in-Hybrid, Benziner.")))
+check("N17 Auswahl 'Benzin' + Text 'Diesel' bleibt ein Widerspruch",
+      bool(_strukturiert_vs_inserat(req(kraftstoff="Benzin", beschreibung="Sparsamer Diesel."))))
 
 
 print("\n" + "=" * 60)

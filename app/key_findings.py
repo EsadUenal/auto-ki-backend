@@ -206,6 +206,17 @@ def _kraftstoff_norm(text: str | None) -> str | None:
     return None
 
 
+def _nur_kraftstoffart(text: str | None) -> str | None:
+    """Wie `_kraftstoff_norm`, aber ausschließlich auf der Kraftstoff-Achse
+    (benzin/diesel/elektro). Eine Hybrid-Nennung ist eine Antriebsart und
+    verdeckt die im selben Text genannte Kraftstoffart nicht."""
+    t = (text or "").lower()
+    for norm, keys in _KRAFTSTOFF_HINTS:
+        if norm != "hybrid" and any(k in t for k in keys):
+            return norm
+    return None
+
+
 def _ps_aus_text(*teile: str | None) -> int | None:
     for t in teile:
         m = _PS_RE.search(t or "")
@@ -456,8 +467,11 @@ def _strukturiert_vs_inserat(req) -> list[KeyFinding]:
     if not text.strip():
         return out
 
-    feld_kraft = _kraftstoff_norm(getattr(req, "kraftstoff", None))
-    text_kraft = _kraftstoff_norm(text)
+    # Final-Stabilization (Cluster D): verglichen wird NUR die Kraftstoffart.
+    # "Plug-in-Hybrid" im Text ist eine Antriebsart — "Plug-in-Hybrid, Benziner"
+    # widerspricht der Auswahl "Benzin" nicht (vorher: Widerspruchs-Finding).
+    feld_kraft = _nur_kraftstoffart(getattr(req, "kraftstoff", None))
+    text_kraft = _nur_kraftstoffart(text)
     if feld_kraft and text_kraft and feld_kraft != text_kraft:
         out.append(KeyFinding(
             id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
