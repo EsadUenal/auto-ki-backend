@@ -92,7 +92,7 @@ def varianten_applicability(fakt: dict, identity) -> tuple[str, str]:
     scope = rules.pop("scope", None)
     scoped = {
         "diesel_only": ("fuel", ["diesel"]), "petrol_only": ("fuel", ["benzin"]),
-        "phev_only": ("powertrain", ["PHEV"]), "ev_only": ("powertrain", ["EV"]),
+        "phev_only": ("powertrain", ["PHEV"]), "ev_only": ("powertrain", ["EV", "BEV"]),
         "ice_only": ("powertrain", ["ICE"]),
         "manual_only": ("transmission", ["manuell"]),
         "automatic_only": ("transmission", ["automatik"]),
@@ -108,7 +108,9 @@ def varianten_applicability(fakt: dict, identity) -> tuple[str, str]:
     if re.search(r"\badblue\b|dieselpartikelfilter", text, re.I):
         rules.setdefault("fuel", ["diesel"])
     if re.search(r"hochvolt|hv[- ]?batterie|traktionsbatterie|antriebsbatterie", text, re.I):
-        rules.setdefault("powertrain", ["PHEV", "HEV", "EV"])
+        # "BEV" ist der kanonische Wert der Identität (app/kraftstoff_powertrain.py);
+        # ohne ihn galt ein Hochvolt-Fakt an einem Elektroauto als "incompatible".
+        rules.setdefault("powertrain", ["PHEV", "HEV", "EV", "BEV"])
     if re.search(r"plug[- ]?in|\bphev\b", text, re.I):
         rules.setdefault("powertrain", ["PHEV"])
     if re.search(r"\b(?:nur|bei|für)\s+(?:fahrzeugen mit\s+)?(?:schaltgetriebe|handschalter)", text, re.I):
@@ -316,16 +318,22 @@ def schwachstelle_applicability(s: dict, motor_match: dict | None,
     if not motor_match:
         return UNKLAR, "motor_unbekannt"
 
-    fahrzeug_kraftstoff = _norm_kraftstoff(motor_match.get("kraftstoff"))
     fahrzeug_zylinder = motor_match.get("zylinder")
+    # Final-Stabilization (Cluster D): Kraftstoff- und Antriebsart-Scope werden
+    # auf GETRENNTEN Achsen geprüft (app/kraftstoff_powertrain.py). Vorher
+    # verglich diese Stelle den Scope "(Benzinmotoren)" mit dem DB-Rohwert
+    # "Mild-Hybrid" eines TFSI und schloss die Schwachstelle aus.
+    from app.kraftstoff_powertrain import fahrzeug_achsen, scopes_passen
+    kraftstoff_passt = None
+    if scope_kraftstoffe:
+        fuel, powertrains = fahrzeug_achsen(
+            db_kraftstoff=motor_match.get("kraftstoff"), bezeichnung=motor_match.get("bezeichnung"),
+            motorcode=motor_match.get("motorcode"))
+        kraftstoff_passt = scopes_passen(scope_kraftstoffe, fuel, powertrains)
 
     # ── 1) Harte Widersprüche ────────────────────────────────────────────────
-    if scope_kraftstoffe and fahrzeug_kraftstoff:
-        passt = fahrzeug_kraftstoff in scope_kraftstoffe or (
-            fahrzeug_kraftstoff in _HAT_HOCHVOLT and bool(scope_kraftstoffe & _HAT_HOCHVOLT)
-        )
-        if not passt:
-            return INKOMPATIBEL, "kraftstoff_widerspruch"
+    if kraftstoff_passt is False:
+        return INKOMPATIBEL, "kraftstoff_widerspruch"
 
     if scope_zylinder and isinstance(fahrzeug_zylinder, int) and fahrzeug_zylinder > 0:
         if fahrzeug_zylinder not in scope_zylinder:
@@ -335,7 +343,7 @@ def schwachstelle_applicability(s: dict, motor_match: dict | None,
     # Reihenfolge ist bewusst so (siehe Modulkopf): ein explizit passender
     # Kraftstoff belegt die Zugehörigkeit auch dann, wenn die Bezeichnung des
     # Fahrzeugs das im Scope genannte Kürzel nicht wörtlich führt.
-    if scope_kraftstoffe and fahrzeug_kraftstoff in scope_kraftstoffe:
+    if kraftstoff_passt is True:
         return KOMPATIBEL, "kraftstoff_treffer"
     if scope_zylinder and fahrzeug_zylinder in scope_zylinder:
         return KOMPATIBEL, "zylinder_treffer"

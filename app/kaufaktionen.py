@@ -186,6 +186,12 @@ _R_BASIS             = 200
 
 # Zuschläge (nie negativ, damit die Bänder ihre Reihenfolge behalten).
 _BONUS_SICHERHEIT = 40       # Bauteil mit unmittelbarer Sicherheitsrelevanz
+# Final-Stabilization: ein Punkt, dessen Komponente am Fahrzeug nicht sicher
+# vorhanden ist ("Falls … vorhanden"), verdrängt keinen sicher zutreffenden: er
+# rangiert in einem eigenen Band direkt über dem Basis-Katalog und behält dort
+# die Reihenfolge seines ursprünglichen Rangs.
+def _rang_bedingt(rang: int) -> int:
+    return _R_BASIS + 1 + rang // 20
 _BONUS_KOSTEN     = 20       # Reparaturkosten aus der DB bekannt
 
 _SCHWELLE_KRITISCH = 850
@@ -269,6 +275,19 @@ _KOMPONENTEN: tuple[dict, ...] = (
     # Root-Cause-Closing (Befund D): "Hinterachsträger-Buchse" und "EDC-Dämpfer"
     # fielen durch die Tabelle und bekamen den generischen Rückfalltext. Beides
     # sind Fahrwerksteile mit fahrbarem Symptom.
+    # Final-Stabilization (Cluster C): adaptive/geregelte Dämpfer sind eine
+    # AUSSTATTUNGSABHÄNGIGE Komponente (app/ausstattung_praesenz.py) mit eigener
+    # Prüfung der Regelung. Steht VOR dem allgemeinen Fahrwerk.
+    dict(schluessel="adaptive_daempfer",
+         muster=("edc", "adaptive daempfer", "adaptivdaempfer", "adaptives fahrwerk",
+                 "dcc", "daempferregel", "verstelldaempfer", "dynamic damper", "magnetic ride",
+                 "elektronische daempf"),
+         sicherheit=True,
+         besichtigung="Fahrwerksmodi im Stand durchschalten und auf Warnmeldungen zur "
+                      "Dämpferregelung achten; Dämpfer auf Ölaustritt und Kabel/Stecker an den "
+                      "Dämpfern auf Beschädigung prüfen.",
+         probefahrt="In jedem Fahrwerksmodus fahren: der Unterschied zwischen Komfort und Sport "
+                    "muss spürbar sein, ohne Warnmeldung und ohne Poltern auf schlechter Fahrbahn."),
     dict(schluessel="fahrwerk",
          muster=("fahrwerk", "vorderachse", "hinterachse", "querlenker", "stossdaempfer",
                  "domlager", "federbein", "radaufhaengung", "achse", "koppelstange",
@@ -507,14 +526,27 @@ _KOMPONENTEN: tuple[dict, ...] = (
          # das Bauteil in einer anderen Tabellenzeile und erbte deren Probefahrt-
          # text (Beschleunigung/Schaltverhalten) — fachlich falsch für ein
          # Infotainmentsystem.
-         muster=("infotainment", "idrive", "mmi", "comand", "mbux", "uconnect",
-                 "navi", "display", "bordcomputer",
-                 "software", "elektronik", "elektrik", "bussystem", "kabelbaum",
+         # Final-Stabilization (Cluster I): Infotainment ist eine eigene
+         # Prüfklasse mit eigener Stand- UND Fahrprüfung. Die Probefahrt beobachtet
+         # nur, was während der Fahrt am System selbst sichtbar wird (GPS, Audio,
+         # Neustarts) — nie Ruckeln/Beschleunigung. Allgemeine Elektrik steht in
+         # `elektrik` (keine Fahrprüfung).
+         muster=("infotainment", "idrive", "mmi", "comand", "mbux", "uconnect", "intellilink",
+                 "sensus", "navi", "headunit", "head unit", "multimedia", "touchscreen",
+                 "bluetooth", "carplay", "radio", "display"),
+         sicherheit=False,
+         besichtigung="Im Stand das Infotainment prüfen: Systemstart, Touch-/Controller-"
+                      "Bedienung, Display, Audio, Bluetooth-Kopplung und Navigation; auf "
+                      "Neustarts, Einfrieren und Aussetzer achten.",
+         probefahrt="Während der Fahrt nur beobachten: Navigation/GPS-Position stabil, Audio "
+                    "ohne Aussetzer, kein Neustart von Display oder System."),
+    dict(schluessel="elektrik",
+         muster=("bordcomputer", "software", "elektronik", "elektrik", "bussystem", "kabelbaum",
                  "zentralverriegelung", "wegfahrsperre", "kombiinstrument",
                  "elektrische heckklappe"),
          sicherheit=False,
-         besichtigung="Alle elektrischen Funktionen im Stand durchtesten: Display/Infotainment, "
-                      "Bedienelemente, Fensterheber, Beleuchtung: auf Neustarts und Aussetzer achten.",
+         besichtigung="Alle elektrischen Funktionen im Stand durchtesten: Bedienelemente, "
+                      "Fensterheber, Beleuchtung, Anzeigen: auf Neustarts und Aussetzer achten.",
          probefahrt=None),
     dict(schluessel="klimaanlage", muster=("klima",), sicherheit=False,
          besichtigung="Klimaanlage einschalten und prüfen, ob sie spürbar und dauerhaft kühlt; "
@@ -617,7 +649,8 @@ _KLASSE_JE_EINTRAG: dict[str, str] = {
     "zylinderkopf": KLASSE_INTERN, "motor_innen": KLASSE_INTERN,
     "kuehlung": KLASSE_FLUESSIGKEIT, "sensorik": KLASSE_ELEKTRONIK, "abgasanlage": KLASSE_ABGAS,
     "hochvoltbatterie": KLASSE_ELEKTRONIK, "starterbatterie": KLASSE_ELEKTRONIK,
-    "infotainment": KLASSE_ELEKTRONIK, "klimaanlage": KLASSE_KOMFORT,
+    "infotainment": KLASSE_ELEKTRONIK, "elektrik": KLASSE_ELEKTRONIK,
+    "adaptive_daempfer": KLASSE_FAHRWERK, "klimaanlage": KLASSE_KOMFORT,
     "dach_fenster": KLASSE_KOMFORT, "beleuchtung": KLASSE_SICHTBAR,
     "innenraum": KLASSE_KOMFORT, "oberflaeche": KLASSE_OBERFLAECHE,
     "karosserie": KLASSE_OBERFLAECHE, "motor": KLASSE_ANBAUTEIL,
@@ -690,6 +723,25 @@ _FAHRSYMPTOME: tuple[tuple[tuple[str, ...], str], ...] = (
      "Auf ungewöhnliche Geräusche während der Fahrt achten und die Fahrsituation notieren, "
      "in der sie auftreten."),
 )
+
+
+# Final-Stabilization (Cluster I): das Text-Tor darf nur Prüfklassen ein
+# Fahrsymptom zuordnen, bei denen es fachlich ein Fahrverhalten gibt. Vorher
+# bekam ein Infotainment-Hinweis mit dem Wort "Aussetzer" den Antriebstext
+# "Auf Ruckeln und Aussetzer achten: … beim Beschleunigen" — ein Keyword traf,
+# die Prüfklasse wurde ignoriert. Für Elektronik, Komfort, Oberfläche und
+# sichtbare Bauteile gilt ausschließlich der Tabellentext der Komponente.
+_KLASSEN_OHNE_TEXTSYMPTOM = ("elektronik", "komfort", "oberflaeche", "sichtbar")
+
+
+def _probefahrt_symptom(komp: dict | None, *texte: str | None) -> str | None:
+    """Die EINE Probefahrt-Entscheidung: Tabellentext der Komponente, sonst das
+    Text-Tor — aber nur für Prüfklassen mit fahrbarem Verhalten."""
+    if komp and komp.get("probefahrt"):
+        return komp["probefahrt"]
+    if komp and _KLASSE_JE_EINTRAG.get(komp["schluessel"]) in _KLASSEN_OHNE_TEXTSYMPTOM:
+        return None
+    return _fahrsymptom_aus_text(*texte)
 
 
 def _fahrsymptom_aus_text(*texte: str | None) -> str | None:
@@ -790,8 +842,10 @@ def _kostenhinweis(kosten_ca: str | None) -> str | None:
     Die Spalte ist Freitext und enthält u.a. '—' oder 'Herstellergarantie/Rückruf'.
     Ohne Ziffer wird nichts ausgegeben — lieber kein Kostenhinweis als ein leerer.
     """
-    t = (kosten_ca or "").strip()
-    return t if t and _KOSTEN_ZAHL.search(t) else None
+    # Final-Stabilization (Cluster L): EIN Format ("ca. 300 €", "ca. 300–500 €")
+    # oder "Kostenangabe nicht verifiziert" — nie eine nackte Zahl ohne Einheit.
+    from app.anzeige import kosten_anzeige
+    return kosten_anzeige(kosten_ca)
 
 
 def _mangel_kurz(insight) -> str:
@@ -1306,8 +1360,22 @@ _OPTIONALE_AUSSTATTUNG_MUSTER: tuple[str, ...] = (
 
 
 def _ist_optionale_ausstattung(bauteil: str | None) -> bool:
-    n = _norm(bauteil)
-    return bool(n) and any(m in n for m in _OPTIONALE_AUSSTATTUNG_MUSTER)
+    """Ob ein Bauteil zu einer OPTIONALEN Ausstattung gehört — aus dem zentralen
+    Präsenzmodell (app/ausstattung_praesenz.py), nicht aus einer eigenen Liste."""
+    from app.ausstattung_praesenz import abhaengigkeit
+    a, _ = abhaengigkeit(bauteil)
+    return a is not None and a.art == "ausstattung"
+
+
+def _bedingt(i: Insight) -> str:
+    """Präfix für JEDE aus einem Insight abgeleitete Aktion, wenn die Präsenz
+    der Komponente unbekannt ist ("Falls EDC vorhanden: "). Leer sonst."""
+    if getattr(i, "presence_state", None) != "unknown":
+        return ""
+    from app.ausstattung_praesenz import bedingung, abhaengigkeit
+    a, bez = abhaengigkeit(getattr(i, "equipment_dependency", None) or getattr(i, "bauteil", None)
+                           or i.titel)
+    return bedingung(getattr(i, "equipment_dependency", None) or bez, a)
 
 
 def _ausstattung_bestaetigt(bauteil: str | None, ausstattung: list[str] | None) -> bool:
@@ -1360,29 +1428,28 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight],
                             f"Probefahrt auf schlechter Fahrbahn hinhören.")
         else:
             besichtigung = _besichtigung(komp, bauteil)
-        # §8: optionale Ausstattung nur als konkreten Prüfpunkt behandeln, wenn
-        # das Inserat sie bestätigt — sonst "falls vorhanden" statt einer
-        # Aussage über eine möglicherweise gar nicht verbaute Komponente.
-        optional_unbestaetigt = (_ist_optionale_ausstattung(bauteil)
-                                 and not _ausstattung_bestaetigt(bauteil, ausstattung))
+        # Cluster C: die Präsenz steht EINMAL am kanonischen Insight
+        # (app/evidence.py::wende_praesenz_an). Ist sie unbekannt, wird JEDE
+        # abgeleitete Aktion bedingt — Besichtigung, Probefahrt, Verkäuferfrage
+        # und Dokument, nicht nur die ersten beiden wie zuvor. Ein bedingter
+        # Punkt rangiert UNTER den sicher zutreffenden desselben Bands.
+        falls = _bedingt(i)
+        if falls:
+            rang = _rang_bedingt(rang)
         if besichtigung:
-            if optional_unbestaetigt:
-                besichtigung = _FALLS_VORHANDEN_PRAEFIX + besichtigung
-            s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
+            s.add(BESICHTIGUNG, schluessel, bauteil, falls + besichtigung, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
                   gruppe=gruppe, bauteil=bauteil)
 
-        # Probefahrt NUR über eines der beiden Tore (§6).
-        symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
+        # Probefahrt NUR über eines der beiden Tore (§6), klassengebunden.
+        symptom = _probefahrt_symptom(komp, i.beschreibung)
         if symptom:
-            if optional_unbestaetigt:
-                symptom = _FALLS_VORHANDEN_PRAEFIX + symptom
-            s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
+            s.add(PROBEFAHRT, schluessel, bauteil, falls + symptom, rang,
                   evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
               gruppe=gruppe, bauteil=bauteil)
 
         s.add(VERKAEUFERFRAGEN, schluessel,
-              verkaeuferfrage(bauteil, art, umbau),
+              falls + verkaeuferfrage(bauteil, art, umbau),
               f"{_herkunft_satz(i)}: nach durchgeführten Reparaturen oder Updates fragen "
               "und Rechnungen bzw. Werkstattbelege zeigen lassen.",
               rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
@@ -1392,6 +1459,7 @@ def _aus_schwachstellen(s: _Sammler, insights: list[Insight],
         # Dokumentenliste mit jeder Kleinigkeit volllaufen.
         if (i.schweregrad or "").strip().lower() in _HOHE_SCHWERE:
             titel_n, text_n = _nachweis(bauteil, umbau)
+            titel_n, text_n = falls + titel_n, falls + text_n
             s.add(DOKUMENTE, schluessel, titel_n, text_n,
                   rang, evidence_ids=[i.id], kategorie="schwachstelle", schweregrad=i.schweregrad,
                   gruppe=gruppe, bauteil=bauteil)
@@ -1423,31 +1491,36 @@ def _aus_motorproblemen(s: _Sammler, insights: list[Insight], motor_match: dict 
                     else "Für diese Motorisierung gemeldeter Punkt")
         umbau = WARTUNG_MODIFIKATION in risikoarten(i)
 
+        falls = _bedingt(i)
+        if falls:
+            rang = _rang_bedingt(rang)
         besichtigung = _besichtigung(komp, bauteil)
         if besichtigung:
-            s.add(BESICHTIGUNG, schluessel, bauteil, besichtigung, rang,
+            s.add(BESICHTIGUNG, schluessel, bauteil, falls + besichtigung, rang,
                   evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
                   gruppe=gruppe, bauteil=bauteil)
 
-        symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
+        symptom = _probefahrt_symptom(komp, i.beschreibung)
         if symptom:
-            s.add(PROBEFAHRT, schluessel, bauteil, symptom, rang,
+            s.add(PROBEFAHRT, schluessel, bauteil, falls + symptom, rang,
                   evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
                   gruppe=gruppe, bauteil=bauteil)
 
         if kosten:
             kosten_satz = (f" Bekannte Reparaturkosten laut Datenlage: {kosten}." if bekannt
                            else f" Hinterlegte Kostenangabe (nicht geprüft): {kosten}.")
+            if kosten == "Kostenangabe nicht verifiziert":
+                kosten_satz = " Die hinterlegte Kostenangabe ist nicht verifiziert."
         else:
             kosten_satz = ""
         s.add(VERKAEUFERFRAGEN, schluessel,
-              verkaeuferfrage(bauteil, BAUTEIL, umbau),
+              falls + verkaeuferfrage(bauteil, BAUTEIL, umbau),
               f"{herkunft}: nach Grund, Datum, Kilometerstand und Rechnung fragen.{kosten_satz}",
               rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
               gruppe=gruppe, bauteil=bauteil)
 
         titel_n, text_n = _nachweis(bauteil, umbau)
-        s.add(DOKUMENTE, schluessel, titel_n, text_n,
+        s.add(DOKUMENTE, schluessel, falls + titel_n, falls + text_n,
               rang, evidence_ids=[i.id], kategorie="motorproblem", kostenhinweis=kosten,
               gruppe=gruppe, bauteil=bauteil)
 
@@ -1496,17 +1569,20 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
 
         from app.fin_hinweis import recall_handlung, recall_status
         status = i.recall_status or recall_status(i.applicability)
+        # Cluster C: betrifft der Rückruf eine Komponente mit unbekannter
+        # Präsenz (optionale Ausstattung), bleibt auch jede Aktion bedingt.
+        falls = _bedingt(i)
         if status["vehicle_affected"] == "confirmed":
             frage = f"Wurde die Rückrufaktion zu „{mangel}“ bereits durchgeführt?"
             frage_aktion = recall_handlung(status)
         else:
             frage = f"Ist bekannt, ob dieses Fahrzeug von der Rückrufaktion zu „{mangel}“ betroffen ist?"
             frage_aktion = "Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. " + recall_handlung(status)
-        s.add(VERKAEUFERFRAGEN, schluessel, frage, frage_aktion, rang,
+        s.add(VERKAEUFERFRAGEN, schluessel, falls + frage, frage_aktion, rang,
               evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
 
-        s.add(DOKUMENTE, schluessel, f"Rückrufaktion „{mangel}“",
+        s.add(DOKUMENTE, schluessel, f"{falls}Rückrufaktion „{mangel}“",
               recall_handlung(status) + kba_zusatz,
               rang, evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")
@@ -1610,12 +1686,14 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
         # übrigen Arten steht die Aussage auf der Evidence-Karte.
         satz = f" {i.beschreibung}" if (art == WARTUNG_REGULAER and i.beschreibung) else ""
 
-        s.add(VERKAEUFERFRAGEN, schluessel, frage.format(b=bauteil),
+        falls = _bedingt(i)
+        s.add(VERKAEUFERFRAGEN, schluessel, falls + frage.format(b=bauteil),
               f"{herkunft}.{satz} {nachfrage}",
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
               gruppe="Wartung und Technik", bauteil=bauteil)
 
-        s.add(DOKUMENTE, schluessel, dok_titel.format(b=bauteil), dok_text.format(b=bauteil),
+        s.add(DOKUMENTE, schluessel, falls + dok_titel.format(b=bauteil),
+              falls + dok_text.format(b=bauteil),
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
               gruppe=dok_gruppe, bauteil=bauteil)
 
@@ -1653,20 +1731,21 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         if not i.kategorie.startswith("web_"):
             continue
         art = i.kategorie.removeprefix("web_")
-        bauteil = _web_bauteil(i)
+        bauteil = getattr(i, "bauteil", None) or _web_bauteil(i)
         komp = _komponente(bauteil)
         schluessel = _schluessel(komp, bauteil)
+        falls = _bedingt(i)
 
         if art == "rueckruf":
             from app.fin_hinweis import recall_handlung, recall_status
             handlung = recall_handlung(i.recall_status or recall_status(i.applicability))
             s.add(VERKAEUFERFRAGEN, f"rueckruf-web-{schluessel}",
-                  "Ist bekannt, ob dieses Fahrzeug von der gemeldeten Rückrufaktion betroffen ist?",
+                  falls + "Ist bekannt, ob dieses Fahrzeug von der gemeldeten Rückrufaktion betroffen ist?",
                   "Eine Webrecherche nennt für dieses Modell eine Rückrufaktion. " + handlung,
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Rückrufaktion")
             s.add(DOKUMENTE, f"rueckruf-web-{schluessel}",
-                  "Rückrufstatus über die FIN prüfen lassen",
+                  falls + "Rückrufstatus über die FIN prüfen lassen",
                   handlung,
                   _R_WEB_RUECKRUF, evidence_ids=[i.id], kategorie="web_rueckruf",
                   gruppe="Prüfungen und Wartung")
@@ -1674,14 +1753,14 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 
         if art == "wartung":
             s.add(VERKAEUFERFRAGEN, f"wartung-web-{schluessel}",
-                  f"Wann wurde „{bauteil}“ zuletzt gemacht: bei welchem Kilometerstand?",
+                  f"{falls}Wann wurde „{bauteil}“ zuletzt gemacht: bei welchem Kilometerstand?",
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Wartung und Technik", bauteil=bauteil)
             # Web-Wartungsfakten sind geprüfte Intervallangaben
             # (app/technical_research.py), also reguläre Wartung.
-            s.add(DOKUMENTE, f"wartung-web-{schluessel}", f"Wartungsnachweis {bauteil}",
+            s.add(DOKUMENTE, f"wartung-web-{schluessel}", f"{falls}Wartungsnachweis {bauteil}",
                   _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil),
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Prüfungen und Wartung", bauteil=bauteil)
@@ -1692,14 +1771,15 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         besichtigung = _besichtigung(komp, bauteil)
         if besichtigung:
             s.add(BESICHTIGUNG, schluessel, bauteil,
-                  f"{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
+                  f"{falls}{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
                   f"ENFAL-Fahrzeugdatenbank.)",
                   _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
                   gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
-        symptom = (komp or {}).get("probefahrt") or _fahrsymptom_aus_text(i.beschreibung)
+        symptom = _probefahrt_symptom(komp, i.beschreibung)
         if symptom:
+            symptom = falls + symptom
             # Auch hier die Herkunft im TEXT, nicht nur in der Gruppe: die vier
             # Prueflisten werden einzeln ausgedruckt (§13 P1-3) und stehen dann ohne
             # jede Oberflaeche da. Ein Punkt ohne Herkunftshinweis waere auf Papier
@@ -1711,11 +1791,21 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
                   gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
+        # Cluster I (Web-Scope): ist der Geltungsbereich laut Quelle für dieses
+        # Baujahr nicht belegt, heißt es nicht "bekannter Schwachpunkt dieses
+        # Modells", sondern ausdrücklich unaufgelöst.
+        if getattr(i, "geltung_fuer_fahrzeug", None) == "unresolved":
+            web_satz = (f"Webquellen nennen „{bauteil}“ als Problem"
+                        + (f" ({i.geltungsbereich})" if i.geltungsbereich else "")
+                        + "; ob dieses Fahrzeug dazu gehört, ist nicht belegt. Nach "
+                          "durchgeführten Reparaturen fragen und Belege zeigen lassen.")
+        else:
+            web_satz = (f"Eine Webrecherche nennt „{bauteil}“ als bekannten Schwachpunkt dieses "
+                        f"Modells: nach durchgeführten Reparaturen fragen und Rechnungen bzw. "
+                        f"Werkstattbelege zeigen lassen.")
         s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
-              f"Eine Webrecherche nennt „{bauteil}“ als bekannten Schwachpunkt dieses "
-              f"Modells: nach durchgeführten Reparaturen fragen und Rechnungen bzw. "
-              f"Werkstattbelege zeigen lassen.",
+              f"{falls}Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
+              web_satz,
               _R_WEB_SCHWACH, evidence_ids=[i.id], kategorie="web_schwachstelle",
               gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 

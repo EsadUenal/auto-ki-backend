@@ -525,8 +525,13 @@ def _fehlende_angabe_none(marke: str | None, modell: str | None, baujahr: int | 
         if len(fehlt) == 1:
             return fehlt[0]
         return ", ".join(fehlt[:-1]) + " und " + fehlt[-1]
-    return ("Generation/Motorisierung konnten nicht sicher verifiziert werden "
-            "(kein Treffer in der ENFAL-Fahrzeugdatenbank)")
+    # Final-Stabilization (Cluster K): der Rückgabewert wird in "Für eine
+    # gezielte Analyse bitte {…} nachtragen." eingesetzt — er muss deshalb eine
+    # NOMINALPHRASE sein. Der vorherige Satz ("… konnten nicht sicher
+    # verifiziert werden …") ergab dort einen grammatisch kaputten Satz.
+    return ("die Generation bzw. den Baureihencode und den Motorcode aus dem "
+            "Fahrzeugschein (Fahrzeug nicht in der ENFAL-Fahrzeugdatenbank, "
+            "Generation und Motorisierung nicht sicher verifiziert)")
 
 
 def find_baureihe_mit_vertrauen(marke: str | None, modell: str | None,
@@ -590,17 +595,22 @@ def _motor_kraftstoff_kompatibel(motor: dict, erwartet: str | None) -> bool:
     """
     if erwartet is None:
         return True
-    from app.recall_filter import _norm_kraftstoff
-    vorhanden = _norm_kraftstoff(motor.get("kraftstoff"))
-    if vorhanden == erwartet:
-        return True
-    if vorhanden != "mild":
-        return vorhanden is None
-    basis = _kraftstoff_aus_hint(" ".join(str(motor.get(f) or "")
-                                          for f in ("bezeichnung", "motorcode")))
-    # "Mild-Hybrid" alone identifies the electrification level, not whether
-    # the combustion engine burns petrol or diesel.
-    return basis not in ("benzin", "diesel") or basis == erwartet
+    # Final-Stabilization (Cluster D): Kraftstoff- und Antriebsart-Angabe werden
+    # auf GETRENNTEN Achsen geprüft (app/kraftstoff_powertrain.py). Vorher schloss
+    # die Nutzerangabe "Benzin" die Zeile "Plug-in-Hybrid" eines Benzin-PHEV aus,
+    # weil beide Werte als EINE Dimension verglichen wurden. Nur ein sicherer
+    # Widerspruch auf der passenden Achse schließt eine Zeile aus.
+    from app.kraftstoff_powertrain import fahrzeug_achsen, scope_passt
+    fuel, powertrains = fahrzeug_achsen(db_kraftstoff=motor.get("kraftstoff"),
+                                        bezeichnung=motor.get("bezeichnung"),
+                                        motorcode=motor.get("motorcode"))
+    if fuel is None:
+        # "Mild-Hybrid"/"Plug-in-Hybrid" allein nennt die Elektrifizierung, nicht
+        # die Kraftstoffart — die Variantenbezeichnung kann sie nennen.
+        basis = _kraftstoff_aus_hint(" ".join(str(motor.get(f) or "")
+                                              for f in ("bezeichnung", "motorcode")))
+        fuel = basis if basis in ("benzin", "diesel") else None
+    return scope_passt(erwartet, fuel, powertrains) is not False
 
 
 # Antriebsangaben in Freitext -> DB-Wert von `motorvariante.antrieb`.

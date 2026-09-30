@@ -57,7 +57,10 @@ def test_full_pipeline(profile, provider):
     identity = result.vehicle_identity
     assert identity["generation"]
     assert result.motor_erkannt
-    assert identity["fuel"] == "Benzin"
+    # Final-Stabilization: kanonischer Wert normalisiert, Rohangabe erhalten.
+    assert identity["fuel"].lower() == "benzin"
+    assert identity["field_evidence"]["fuel"]["raw_user_value"] == "Benzin"
+    assert identity["field_evidence"]["fuel"]["primary_source"] == "user"
     assert identity["horsepower"] == profile["leistung_ps"]
     assert identity["field_evidence"]["horsepower"]["provided_value"] == profile["leistung_ps"]
     assert identity["field_evidence"]["horsepower"]["confidence"] == "hoch"

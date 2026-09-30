@@ -462,6 +462,20 @@ class Insight(BaseModel):
     # Lauf (z.B. ein geprüftes Wartungsintervall für den Laufleistungskontext).
     # Nicht Teil der Antwort: sichtbar ist die zusammengeführte Aussage.
     nebenbelege: list["Insight"] = Field(default_factory=list, exclude=True)
+    # ── KaufCheck-Final-Stabilization (additiv, Default = altes Verhalten) ────
+    # Präsenz einer abhängigen Komponente (app/ausstattung_praesenz.py):
+    # "confirmed_present" | "unknown" | None (keine Abhängigkeit). "unknown"
+    # heißt: Titel und jede abgeleitete Aktion sind bedingt ("Falls … vorhanden").
+    presence_state: str | None = None
+    equipment_dependency: str | None = None
+    # Rückrufe: expliziter Zustand der Betroffenheit (app/recall_filter.py):
+    # SERIES_RELEVANT | VARIANT_POSSIBLE | VEHICLE_POSSIBLE | UNKNOWN.
+    # NOT_APPLICABLE erscheint nie am sichtbaren Insight (es wird entfernt).
+    recall_state: str | None = None
+    # Web-Fakten: Geltungsbereich laut Quelle (z.B. "frühe Baujahre") und ob er
+    # für DIESES Fahrzeug belegt ist ("covered" | "unresolved").
+    geltungsbereich: str | None = None
+    geltung_fuer_fahrzeug: str | None = None
 
 
 Insight.model_rebuild()
@@ -620,6 +634,22 @@ class WebVehicleIdentity(BaseModel):
     # der `confidence` und zugleich der Schutz gegen eine einzelne SEO-Seite.
     belegende_domains: int = 0
     quellen: list[EvidenceQuelle] = Field(default_factory=list)
+    # ── KaufCheck-Final-Stabilization: Identität aus Quellentexten ───────────
+    # Generationsnummer ("4. Generation") getrennt vom Code ("ND").
+    generation_nummer: str | None = None
+    antrieb: str | None = None
+    getriebe: str | None = None
+    getriebe_detail: str | None = None
+    motorcode: str | None = None
+    # Per Konsens akzeptierte Feldwerte für die kanonische Identität:
+    # {feld: {"value", "confidence", "domains", "detail"}} — nur aus
+    # Quellentexten extrahiert, nie aus der Nutzereingabe kopiert.
+    feldwerte: dict = Field(default_factory=dict)
+    # "hoch" | "mittel" | "niedrig": wie gut die Identität INSGESAMT belegt ist
+    # (Marke/Modell + Generation + Motorisierung).
+    identitaet_konfidenz: str = "niedrig"
+    akzeptierte_claims: list[dict] = Field(default_factory=list)
+    abgelehnte_claims: list[dict] = Field(default_factory=list)
 
 
 class WebFakt(BaseModel):
@@ -641,6 +671,10 @@ class WebFakt(BaseModel):
     # ohne FIN-Prüfung nie "betrifft dieses Fahrzeug".
     applicability: str | None = None
     quellen: list[EvidenceQuelle] = Field(default_factory=list)
+    # Geltungsbereich laut Quelle ("frühe Baujahre", "2015-2017") und ob er
+    # DIESES Fahrzeug abdeckt: "covered" | "unresolved" (None = ohne Einschränkung).
+    geltungsbereich: str | None = None
+    geltung_fuer_fahrzeug: str | None = None
 
 
 class TechnischeRecherche(BaseModel):
@@ -660,6 +694,11 @@ class TechnischeRecherche(BaseModel):
     # das Ergebnis als unvollständig — es wird aber NIE eine Exception nach oben
     # gereicht, die den Kaufcheck abbrechen würde.
     provider_fehler: bool = False
+    # Final-Stabilization: tatsächlich gelaufene Phasen in Reihenfolge
+    # ("identitaet", "rueckruf", "technik") und verworfene Web-Fakten mit Grund.
+    phasen: list[str] = Field(default_factory=list)
+    abgelehnte_fakten: list[dict] = Field(default_factory=list)
+    anfragen: int = 0
 
 
 class Fahrzeugkontext(BaseModel):
@@ -818,6 +857,15 @@ class KaufCheckResponse(BaseModel):
     vehicle_identity: dict | None = None
     accident_status: str | None = None
     datenbasis: list[str] = Field(default_factory=list)
+    # KaufCheck-Final-Stabilization (additiv; alte Checks laden weiter):
+    # EINE Empfehlungsentscheidung (app/empfehlungs_policy.py) und EINE
+    # deduplizierte Fahrzeugbezeichnung (app/anzeige.py) — das Frontend rendert,
+    # interpretiert nicht neu.
+    recommendation_state: str | None = None       # "NORMAL" | "LIMITED_ANALYSIS" | "INSUFFICIENT_IDENTITY"
+    empfehlung_anzeige: str | None = None
+    empfehlung_hinweis: str | None = None
+    identitaet_aufloesung: dict | None = None
+    anzeige_titel: str | None = None
     risiko_titel: str = "Relevante Risiken und Hinweise"
     bericht: str                                   # Markdown-Bericht
     empfehlung: str                                # "kaufen" | "kaufen_nach_besichtigung" | "nur_mit_werkstattpruefung" | "preis_nachverhandeln" | "hohes_risiko" | "finger_weg" | "unbekannt"

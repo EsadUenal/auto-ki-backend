@@ -319,9 +319,14 @@ check("A22 kein 'Wartungsnachweis Kurbelnabe', keine 'letzte Durchführung'",
 check("A23 CFK-Dach: Oberflächenprüfung statt Öffnungsprüfung",
       "CFK-Dach Klarlack" in bes_m4 and "Ablösungen" in bes_m4["CFK-Dach Klarlack"]
       and "öffnen und schließen" not in bes_m4["CFK-Dach Klarlack"], bes_m4.get("CFK-Dach Klarlack"))
-check("A24 EDC-Dämpfer und Hinterachsträger-Buchse landen auf demselben "
-      "Fahrwerks-Schlüssel (Grundlage der Zusammenlegung)",
-      _komponente("EDC-Dämpfer")["schluessel"] == "fahrwerk"
+# KaufCheck-Final-Stabilization (Cluster C): EDC-Dämpfer sind eine
+# AUSSTATTUNGSABHÄNGIGE Komponente. Fielen sie auf denselben Schlüssel wie ein
+# sicher vorhandenes Fahrwerksteil, ginge ihre Bedingung ("Falls … vorhanden")
+# bei der Zusammenlegung verloren (der Sammler behält den ersten Text). Deshalb
+# eigener Schlüssel; das allgemeine Fahrwerk bleibt zusammengelegt.
+check("A24 EDC-Dämpfer eigener Schlüssel (Bedingung bleibt erhalten), "
+      "Hinterachsträger-Buchse bleibt beim Fahrwerk",
+      _komponente("EDC-Dämpfer")["schluessel"] == "adaptive_daempfer"
       and _komponente("Hinterachsträger-Buchse")["schluessel"] == "fahrwerk")
 # Root-Cause-Closing (KBA-Paar-Closing): der F82 hat inzwischen 5 zusaetzliche,
 # echte amtliche Rueckrufe (vorher fuer sich sicher, aber verloren, siehe

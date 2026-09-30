@@ -143,8 +143,13 @@ def baureihe(schwachstellen, rueckrufe):
 
 
 def motor(motorprobleme, wartung):
+    # KaufCheck-Final-Stabilization: die Fixture war ein DIESEL mit dem Motorproblem
+    # "Zuendspulen" — physikalisch unmöglich. Die neue, generische Präsenzregel
+    # (app/ausstattung_praesenz.py: Zündspule setzt einen Benziner voraus) entfernt
+    # einen solchen Fakt zu Recht aus der kanonischen Risikomenge. Geprüft wird hier
+    # die Trust-Isolation, nicht der Kraftstoff; deshalb ein Benziner.
     return {"variante_id": "test-motor", "bezeichnung": "2.0 Test", "motorcode": "T20",
-            "kraftstoff": "Diesel", "zylinder": 4, "leistung_ps": 150, "leistung_kw": 110,
+            "kraftstoff": "Benzin", "zylinder": 4, "leistung_ps": 150, "leistung_kw": 110,
             "schwachstellen_motor": motorprobleme, "kritische_wartung": wartung}
 
 

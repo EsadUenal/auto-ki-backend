@@ -225,7 +225,7 @@ def _mangel_kurz(insight) -> str:
     """
     kurz = getattr(insight, "kurztitel", None)
     if kurz:
-        return kurz
+        return kurz + _bedingt_suffix(insight)
     titel = insight if isinstance(insight, str) else (getattr(insight, "titel", "") or "")
     teil = titel.split(":", 1)[-1].strip()
     return (teil[:60].rstrip() + "…") if len(teil) > 61 else teil
@@ -238,10 +238,20 @@ def _enthaelt_kategorie(insight: Insight, kategorie: str) -> bool:
             or any(n.kategorie == kategorie for n in getattr(insight, "nebenbelege", None) or []))
 
 
+def _bedingt_suffix(insight) -> str:
+    """Cluster C: eine Komponente mit unbekannter Präsenz bleibt auch in "Das
+    solltest du wissen" bedingt."""
+    if getattr(insight, "presence_state", None) == "unknown":
+        dep = getattr(insight, "equipment_dependency", None)
+        return f" (falls {dep} vorhanden)" if dep else " (falls vorhanden)"
+    return ""
+
+
 def _bauteilname(insight: Insight) -> str:
     from app.evidence import titel_bauteil
-    return (getattr(insight, "bauteil", None) or titel_bauteil(insight.titel)
+    name = (getattr(insight, "bauteil", None) or titel_bauteil(insight.titel)
             or insight.titel).strip()
+    return name + _bedingt_suffix(insight)
 
 
 def _finalisiere(findings: list[KeyFinding]) -> list[KeyFinding]:
@@ -260,9 +270,10 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
     (confirmed_by_vin/variant_match/series_only) heißt jetzt bewusst NICHT mehr
     "relevant" im Titel — ohne VIN-Prüfung ist keine dieser Stufen sicher "relevant"
     im Sinne von gesichert betroffen; der Titel bleibt neutral ("zu prüfen")."""
-    rueckrufe = [i for i in insights if i.kategorie == "rueckruf"]
+    rueckrufe = [i for i in insights if i.kategorie in ("rueckruf", "web_rueckruf")]
     zu_pruefen = [i for i in rueckrufe
-                 if i.applicability in ("confirmed_by_vin", "variant_match", "series_only")]
+                 if i.applicability in ("confirmed_by_vin", "variant_match", "series_only",
+                                        "vehicle_possible")]
     unklar = [i for i in rueckrufe if i.applicability == "unclear"]
     out: list[KeyFinding] = []
 
@@ -294,7 +305,7 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
 
 # ══ KAUFCHECK ════════════════════════════════════════════════════════════════
 
-def _identitaets_finding(fehlende_angabe: str | None) -> KeyFinding:
+def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False) -> KeyFinding:
     """Unsichere Fahrzeugzuordnung sichtbar machen (Identity-Trust-Gate).
 
     Nennt bewusst KEINE vermutete Baureihe: Die Zuordnung war ja gerade nicht
@@ -303,6 +314,18 @@ def _identitaets_finding(fehlende_angabe: str | None) -> KeyFinding:
     Erkennung eindeutig machen würde.
     """
     fehlt = fehlende_angabe or "die genaue Modell- und Generationsbezeichnung"
+    if web_belegt:
+        # Final-Stabilization (Cluster M): bei belegter Web-Identität stammen
+        # fahrzeugspezifische Hinweise aus Webquellen — die Aussage "es werden
+        # keine fahrzeugspezifischen … ausgegeben" wäre dann falsch.
+        return KeyFinding(
+            id="", kategorie="identitaet", stufe=STUFE_WARNUNG, icon="❓",
+            titel="Nicht in der ENFAL-Fahrzeugdatenbank",
+            beschreibung="Das Fahrzeug ist nicht in der ENFAL-Fahrzeugdatenbank. Identität und "
+                         "fahrzeugspezifische Hinweise stammen aus einer Webrecherche mit "
+                         "Quellenangabe, nicht aus geprüften ENFAL-Daten.",
+            aktion=f"Für eine gezielte Analyse bitte {fehlt} nachtragen.",
+            prioritaet=_P_IDENTITAET)
     return KeyFinding(
         id="", kategorie="identitaet", stufe=STUFE_WARNUNG, icon="❓",
         titel="Baureihe nicht sicher erkannt",
@@ -317,7 +340,8 @@ def _identitaets_finding(fehlende_angabe: str | None) -> KeyFinding:
 def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None,
                             insights: list[Insight],
                             price_assessment: PriceAssessment | None = None,
-                            identitaet: dict | None = None) -> list[KeyFinding]:
+                            identitaet: dict | None = None,
+                            web_belegt: bool = False) -> list[KeyFinding]:
     """`identitaet` (optional, Identity-Trust-Gate): Info-dict aus
     `car_lookup.find_baureihe_mit_vertrauen`. Ist die Zuordnung nicht belastbar,
     entsteht ein erklärendes Finding statt einer stillen Leerausgabe. Der Parameter
@@ -325,7 +349,7 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     findings: list[KeyFinding] = []
 
     if identitaet is not None and not identitaet.get("belastbar", True):
-        findings.append(_identitaets_finding(identitaet.get("fehlende_angabe")))
+        findings.append(_identitaets_finding(identitaet.get("fehlende_angabe"), web_belegt))
 
     # ── A) Preis-Finding aus dem KANONISCHEN Preisurteil (§6) — genau EINE Bewertung ──
     mv = _marktvergleich_insight(insights)
@@ -512,8 +536,8 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
             id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
             titel="Kraftstoff passt nicht zusammen",
             beschreibung=f"Das Inserat deutet auf {ins_kraft.capitalize()} hin, die erkannte "
-                         f"Motorisierung ist {(motor_match or {}).get('kraftstoff')}.",
-            wert=f"Inserat: {ins_kraft.capitalize()} · Daten: {(motor_match or {}).get('kraftstoff')}",
+                         f"Motorisierung ist {mot_kraft.capitalize()}.",
+            wert=f"Inserat: {ins_kraft.capitalize()} · Daten: {mot_kraft.capitalize()}",
             aktion="Motorisierung im Inserat klären.",
             prioritaet=_P_WIDERSPRUCH))
 

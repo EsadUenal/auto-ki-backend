@@ -117,3 +117,118 @@ def ist_fuel_widerspruch(a: str | None, b: str | None) -> bool:
     ableiten ließ), ist das KEIN Widerspruch — nur eine fehlende Vergleichsbasis.
     """
     return bool(a) and bool(b) and a != b
+
+
+# ── Scope-Vergleich auf GETRENNTEN Achsen (KaufCheck-Final-Stabilization, D) ──
+#
+# BEFUND (Resume-Audit): drei Stellen verglichen einen Scope aus dem gemischten
+# Vokabular ("Benziner", "Diesel", "Mild-Hybrid", "Plug-in-Hybrid", "Elektro")
+# per Gleichheit gegen EINEN Fahrzeugwert, der selbst mal Kraftstoff, mal
+# Antriebsart war:
+#   * recall_filter.rueckruf_applicability: Nutzerangabe "Benzin" gegen einen
+#     "(Plug-in-Hybrid)"-/Hochvolt-Rückruf -> "incompatible" — ein Brandgefahr-
+#     Rückruf verschwand bei einem Benzin-PHEV.
+#   * motor_applicability.schwachstelle_applicability: Scope "(Benzinmotoren)"
+#     gegen den DB-Rohwert "Mild-Hybrid" eines TFSI -> ausgeschlossen.
+#   * car_lookup._motor_kraftstoff_kompatibel: Nutzerangabe "Benzin" schloss die
+#     "Plug-in-Hybrid"-Zeile eines Benzin-PHEV aus der Motorzuordnung aus.
+#
+# REGEL: jeder Scope-Begriff gehört zu GENAU einer Achse. "benzin"/"diesel"
+# werden nur gegen die Kraftstoffart geprüft, "mild"/"phev"/"elektro" nur gegen
+# die Antriebsart (Hochvolt-Gruppe PHEV/HEV/BEV wie bisher gleichgesetzt). Eine
+# unbekannte Achse ergibt None (unklar), nie einen Ausschluss. Eine Nutzer-
+# angabe "Benzin" sagt NICHTS über die Elektrifizierung; der DB-Rohwert
+# "Benzin"/"Diesel" dagegen schon (die Spalte trägt bei Hybriden die
+# Antriebsart, also heißt "Benzin" dort ICE).
+
+HOCHVOLT_POWERTRAINS = frozenset({POWERTRAIN_PHEV, "HEV", POWERTRAIN_BEV})
+SCOPE_FUEL = frozenset({FUEL_BENZIN, FUEL_DIESEL})
+
+
+def powertrain_aus_freitext(*texte: str | None) -> str | None:
+    """Antriebsart NUR aus ausdrücklichen Elektrifizierungswörtern. "Benzin"
+    oder "Diesel" liefern hier bewusst nichts."""
+    import re
+    roh = " ".join(_norm(t) for t in texte if t)
+    if not roh.strip():
+        return None
+    if re.search(r"plug[\s-]?in|\bphev\b", roh):
+        return POWERTRAIN_PHEV
+    if re.search(r"mild|mhev|\b48\s?v\b", roh):
+        return POWERTRAIN_MHEV
+    if re.search(r"\bbev\b|elektro|electric", roh):
+        return POWERTRAIN_BEV
+    if re.search(r"\bhev\b|hybrid", roh):
+        return "HEV"
+    if re.search(r"\bice\b|verbrenner", roh):
+        return POWERTRAIN_ICE
+    return None
+
+
+def fahrzeug_achsen(*, identity=None, db_kraftstoff: str | None = None,
+                    bezeichnung: str | None = None, motorcode: str | None = None,
+                    nutzer_text: str | None = None) -> tuple[str | None, frozenset | None]:
+    """(Kraftstoffart, mögliche Antriebsarten) eines Fahrzeugs.
+
+    Mit kanonischer Identität gilt ausschließlich sie (inklusive einer
+    mehrdeutigen Antriebsart als Menge der möglichen Werte). Ohne Identität:
+    Nutzertext für die Kraftstoffart, DB-Zeile für beide Achsen."""
+    if identity is not None:
+        fuel = fuel_aus_freitext(getattr(identity, "fuel", None))
+        fe = (getattr(identity, "field_evidence", None) or {}).get("powertrain") or {}
+        if fe.get("verification_state") == "ambiguous" and fe.get("possible_values"):
+            pts = frozenset(str(p).upper() for p in fe["possible_values"])
+        elif getattr(identity, "powertrain", None):
+            pts = frozenset({str(identity.powertrain).upper()})
+        else:
+            pts = None
+        if pts is None and fuel == FUEL_ELEKTRO:
+            pts = frozenset({POWERTRAIN_BEV})
+        return fuel, pts
+    fuel = fuel_aus_freitext(nutzer_text) or canonical_fuel(db_kraftstoff, bezeichnung, motorcode)
+    pt = powertrain_aus_freitext(nutzer_text) or canonical_powertrain(db_kraftstoff)
+    if pt is None and fuel == FUEL_ELEKTRO:
+        pt = POWERTRAIN_BEV
+    return fuel, (frozenset({pt}) if pt else None)
+
+
+def scope_passt(scope: str | None, fuel: str | None, powertrains: frozenset | None) -> bool | None:
+    """Passt ein Scope-Begriff (Vokabular von `recall_filter._norm_kraftstoff`:
+    benzin|diesel|mild|phev|elektro) zum Fahrzeug? True/False/None (unklar)."""
+    if not scope:
+        return None
+    if scope in SCOPE_FUEL:
+        if fuel in (FUEL_BENZIN, FUEL_DIESEL, FUEL_ELEKTRO):
+            return fuel == scope
+        if powertrains and powertrains <= {POWERTRAIN_BEV}:
+            return False
+        return None
+    if scope == "mild":
+        if powertrains:
+            if powertrains <= {POWERTRAIN_MHEV}:
+                return True
+            if POWERTRAIN_MHEV not in powertrains:
+                return False
+        return None
+    if scope in ("phev", "elektro"):
+        if powertrains:
+            if powertrains <= HOCHVOLT_POWERTRAINS:
+                return True
+            if not (powertrains & HOCHVOLT_POWERTRAINS):
+                return False
+            return None
+        if fuel == FUEL_ELEKTRO:
+            return True
+        return None
+    return None
+
+
+def scopes_passen(scopes, fuel: str | None, powertrains: frozenset | None) -> bool | None:
+    """Mehrere Scope-Begriffe (ODER): ein Treffer genügt, ausgeschlossen nur,
+    wenn JEDER Begriff sicher nicht passt."""
+    ergebnisse = [scope_passt(s, fuel, powertrains) for s in scopes or ()]
+    if any(e is True for e in ergebnisse):
+        return True
+    if ergebnisse and all(e is False for e in ergebnisse):
+        return False
+    return None

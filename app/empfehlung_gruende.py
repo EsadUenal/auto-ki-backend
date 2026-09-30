@@ -18,7 +18,7 @@ dass er NICHT bewertet wurde.
 """
 from __future__ import annotations
 from collections import Counter
-from app.bekannte_fakten import unfall_status, UNFALLFREI, UNFALL
+from app.bekannte_fakten import unfall_detail, unfall_status, UNFALLFREI, UNFALL
 from app.fin_hinweis import HINWEIS_FIN
 
 from app.risikothemen import WARTUNG_REGULAER, ist_bekannt, risikoart
@@ -108,22 +108,54 @@ def _name(insight) -> str:
 def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None,
                             insights: list, key_findings: list, empfehlung: str,
                             markt_verfuegbar: bool, preis_label: str | None,
-                            hu=None, generation: str | None = None) -> list[str]:
+                            hu=None, generation: str | None = None, identity=None) -> list[str]:
+    from app.anzeige import fahrzeug_titel, ohne_wiederholung
     gruende: list[str] = []
 
     # 1) Identität
+    #
+    # BEFUND (Production-Run BMW M4 F82): "Fahrzeug eindeutig zugeordnet: BMW M4
+    # F82 M4 (...)". Diese Zeile setzte Marke/Modell/Generation/Variante erneut
+    # per String-Verkettung zusammen; die Deduplizierung der Hauptüberschrift
+    # galt hier nicht, und mehrere DB-Motorcodes erschienen als die EINE
+    # Identität. Jetzt: derselbe Formatter (app/anzeige.py) auf derselben
+    # kanonischen Identität wie Überschrift und Titel.
     if baureihe and motor_match:
-        name = " ".join(filter(None, [baureihe.get("marke"), baureihe.get("modell"),
-                                      generation or baureihe.get("generation")]))
-        motor = motor_match.get("bezeichnung") or ""
-        code = motor_match.get("motorcode")
-        ps = motor_match.get("leistung_ps")
-        details = ", ".join(filter(None, [code, f"{ps} PS" if ps else None]))
-        gruende.append(f"Fahrzeug eindeutig zugeordnet: {name} {motor}"
-                       + (f" ({details})" if details else "") + ".")
+        if identity is not None:
+            name = fahrzeug_titel(identity, mit_jahr=False, mit_motor=False)
+            name = ohne_wiederholung(name, identity.engine_name)
+            code_fe = identity.field_evidence.get("engine_code") or {}
+            mehrdeutig = code_fe.get("verification_state") == "ambiguous"
+            code = None if mehrdeutig else identity.engine_code
+            ps = identity.horsepower
+        else:
+            name = ohne_wiederholung(baureihe.get("marke"), baureihe.get("modell"),
+                                     generation or baureihe.get("generation"),
+                                     motor_match.get("bezeichnung"))
+            code_fe, mehrdeutig = {}, False
+            code, ps = motor_match.get("motorcode"), motor_match.get("leistung_ps")
+        # Details nur, soweit sie nicht schon im Namen stehen (Token-Dedup).
+        details = [d for d in (code, f"{ps} PS" if ps else None)
+                   if d and ohne_wiederholung(name, d) != name]
+        satz = f"ENFAL-Referenzvariante zugeordnet: {name}" + (f" ({', '.join(details)})" if details else "")
+        if mehrdeutig:
+            satz += (". Der genaue Motorcode ist nicht eindeutig (mögliche Motorcodes: "
+                     f"{', '.join(code_fe.get('possible_values') or [])})")
+        gruende.append(satz + ".")
     elif baureihe:
         gruende.append("Baureihe erkannt, Motorisierung aber nicht eindeutig: "
                        "motorbezogene Aussagen bleiben allgemein.")
+    elif identity is not None and any(
+            fe.get("primary_source") == "web" or "web" in (fe.get("confirmed_by") or [])
+            for fe in identity.field_evidence.values()):
+        # DB-Miss mit Web-Identität: dieselbe kanonische Bezeichnung, mit Herkunft.
+        gruende.append(f"Fahrzeugidentität über Webquellen plausibilisiert: "
+                       f"{fahrzeug_titel(identity, mit_jahr=False)} (keine ENFAL-Referenz).")
+        web_risiken = [i for i in insights or [] if str(getattr(i, "kategorie", "")).startswith("web_")]
+        if web_risiken:
+            n = len(web_risiken)
+            gruende.append(f"{n} {'Hinweis' if n == 1 else 'Hinweise'} aus der Webrecherche mit "
+                           f"Quellenangabe, nicht aus geprüften ENFAL-Daten.")
 
     # 2) Inserat in sich stimmig
     widersprueche = [f for f in key_findings or []
@@ -167,8 +199,12 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
         gruende.append(f"HU laut Inserat gültig bis {hu.anzeige}. Prüfbericht ansehen.")
 
     # 5) Warum "nach Besichtigung"
+    detail = unfall_detail(req)
     accident = unfall_status(req)
-    if accident == UNFALLFREI:
+    if accident == UNFALLFREI and detail.eingeschraenkt:
+        gruende.append("Laut Inserat sind keine Unfallschäden bekannt (eingeschränkte Angabe). "
+                       "Schäden und Nachlackierungen vor Ort klären und schriftlich festhalten.")
+    elif accident == UNFALLFREI:
         gruende.append("Laut Inserat unfallfrei. Diese Angabe vor Ort prüfen und schriftlich festhalten.")
     elif accident == UNFALL:
         gruende.append("Unfall/Schaden laut Inserat angegeben. Umfang und Reparaturbelege klären.")

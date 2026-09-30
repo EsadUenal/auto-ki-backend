@@ -308,143 +308,229 @@ class VehicleIdentity:
     def apply_web_evidence(self, web_recherche) -> None:
         """Belegte Web-Identität in die kanonische Identität übernehmen (§5.6).
 
-        BEFUND (Production-Run Mazda MX-5, Test 6)
-        --------------------------------------------
-        Der technische Web-Fallback (`app/technical_research.py`) wird bei einem
-        DB-Miss zuverlässig ausgelöst und liefert bei belegter Identität
-        strukturierte Werte (Motor, Kraftstoff, Leistung, Quellen, Confidence).
-        Diese landeten bisher ausschließlich in `insights` (Risikothemen) — die
-        HIER gezeigte kanonische Identität (Marke/Modell/Motor/Kraftstoff im
-        "Fahrzeug erkannt"-Abschnitt) wurde ausschließlich aus DB+Nutzerangabe
-        gebaut und nie mit dem Web-Ergebnis abgeglichen. Ein erfolgreich
-        recherchiertes Fahrzeug erschien dem Nutzer trotzdem als "nicht sicher
-        bekannt".
+        Provenienzregeln (KaufCheck-Final-Stabilization, Invarianten 1/2/8):
 
-        REGEL (§5.6/§5.7): Web ergänzt NUR echte Lücken. Ein bereits bekannter
-        Wert (DB-`identified` oder Nutzer-`provided`) wird NIE überschrieben —
-        unabhängig davon, ob Web etwas anderes behauptet (Konflikte werden nicht
-        aufgelöst, sondern schlicht nicht übernommen; die DB/Nutzerangabe bleibt
-        Guardrail, §5.7). Nur Felder mit Status "unknown" werden befüllt, mit
-        eigener Provenance ("web") und der Confidence der Beleglage.
+          * Ein Nutzer- oder DB-Wert wird NIE überschrieben. Bestätigt Web
+            denselben Wert, wird "web" in `confirmed_by` ergänzt — die
+            Primärquelle bleibt die Nutzereingabe bzw. ENFAL.
+          * Widerspricht Web einem vorhandenen Wert, bleibt der Wert, und der
+            Konflikt wird sichtbar vermerkt (`web_conflict`), nie still gelöst.
+          * Nur echte Lücken (`unknown`/`ambiguous`) füllt Web — dann mit
+            `primary_source="web"` und der Confidence der Beleglage.
+          * Übernommen werden ausschließlich Werte, die aus den Quellentexten
+            extrahiert und per Konsens bestätigt wurden
+            (`WebVehicleIdentity.feldwerte`). Die frühere Fassung kopierte die
+            NUTZERANGABE "motor" in die Web-Identität und machte sie so zu einem
+            scheinbar web-belegten Wert — genau die Umetikettierung einer
+            Nutzereingabe, die Invariante 2 verbietet.
         """
         identitaet = getattr(web_recherche, "identitaet", None) if web_recherche else None
         if not identitaet or not getattr(identitaet, "belegt", False):
             return
-        confidence = getattr(identitaet, "confidence", None) or "niedrig"
         quellen_anzahl = len(getattr(identitaet, "quellen", None) or [])
-
-        def _fuellen(feld: str, wert) -> None:
-            if wert is None:
-                return
-            bisher = self.field_evidence.get(feld, {})
-            if bisher.get("status") not in (None, "unknown"):
-                return          # DB- oder Nutzerwert hat immer Vorrang.
-            if getattr(self, feld, None):
-                return          # bereits anderweitig befüllt (z.B. aus Freitext).
-            setattr(self, feld, wert)
-            self.field_evidence[feld] = {
-                "status": "web_verified", "provided_value": None, "reference_value": wert,
-                "confidence": confidence,
-                "provenance": ["web"],
-                "evidence": f"{quellen_anzahl} Webquelle(n)",
-            }
-
-        _fuellen("engine_name", (getattr(identitaet, "motor", None) or "").strip() or None)
-        _fuellen("horsepower", getattr(identitaet, "leistung_ps", None))
-        web_kraftstoff = getattr(identitaet, "kraftstoff", None)
-        # Nur eine echte Kraftstoffart übernehmen (Benzin/Diesel/Elektro) — ein
-        # mehrdeutiges "hybrid"-Signal aus der Websuche ist keine Kraftstoffart
-        # (app/kraftstoff_powertrain.py) und wird nicht übernommen.
-        if web_kraftstoff in ("benzin", "diesel", "elektro"):
-            _fuellen("fuel", web_kraftstoff)
-        if self.field_evidence.get("powertrain", {}).get("status") in (None, "unknown") and not self.powertrain:
-            neu = {"phev": "PHEV", "elektro": "BEV"}.get(web_kraftstoff)
-            if neu:
-                self.powertrain = neu
-                self.field_evidence["powertrain"] = {
-                    "status": "web_verified", "provided_value": None, "reference_value": neu,
-                    "confidence": confidence, "provenance": ["web"],
-                    "evidence": f"{quellen_anzahl} Webquelle(n)",
-                }
+        felder = getattr(identitaet, "feldwerte", None) or {}
+        # Marke/Modell selbst sind durch die belegte Identität bestätigt.
+        for feld in ("make", "model"):
+            fe = self.field_evidence.get(feld)
+            if fe and getattr(self, feld):
+                if "web" not in fe.setdefault("confirmed_by", []):
+                    fe["confirmed_by"].append("web")
+                if "web" not in fe.setdefault("provenance", []):
+                    fe["provenance"].append("web")
+                if fe.get("verification_state") == "user_only":
+                    fe["verification_state"] = "user_confirmed"
+                    fe["status"] = "confirmed"
+                    fe["confidence"] = getattr(identitaet, "confidence", None) or "mittel"
+        for feld, eintrag in felder.items():
+            wert = eintrag.get("value")
+            if wert in (None, ""):
+                continue
+            conf = eintrag.get("confidence") or "niedrig"
+            fe = dict(self.field_evidence.get(feld) or {})
+            state = fe.get("verification_state") or ("unknown" if getattr(self, feld, None) in (None, "")
+                                                    else "reference_only")
+            if state in ("unknown", "ambiguous"):
+                moegliche = fe.get("possible_values") or []
+                if moegliche and _norm_wert(feld, wert) not in {_norm_wert(feld, x) for x in moegliche}:
+                    # Web behauptet einen Wert AUSSERHALB der möglichen Menge:
+                    # als Konflikt vermerken, nichts übernehmen.
+                    fe["web_conflict"] = wert
+                    self.field_evidence[feld] = fe
+                    continue
+                setattr(self, feld, wert)
+                neu = _feld_eintrag(
+                    wert, primary="web", confirmed_by=[], confidence=conf,
+                    state="web_only", raw_user=fe.get("raw_user_value"),
+                    reference=fe.get("reference_value"),
+                    evidence=f"{eintrag.get('domains') or quellen_anzahl} Webquelle(n)")
+                if eintrag.get("detail"):
+                    neu["detail"] = eintrag["detail"]
+                self.field_evidence[feld] = neu
+                continue
+            vorhanden = getattr(self, feld, None)
+            if vorhanden in (None, ""):
+                continue
+            if (_norm_wert(feld, vorhanden) == _norm_wert(feld, wert)
+                    or _norm_wert(feld, fe.get("raw_user_value")) == _norm_wert(feld, wert)):
+                if "web" not in fe.setdefault("confirmed_by", []):
+                    fe["confirmed_by"].append("web")
+                if "web" not in fe.setdefault("provenance", []):
+                    fe["provenance"].append("web")
+                if eintrag.get("detail") and not fe.get("detail"):
+                    fe["detail"] = eintrag["detail"]
+                if fe.get("verification_state") == "user_only":
+                    # Nutzerangabe bleibt Primärquelle, ist jetzt aber unabhängig
+                    # (durch Webquellen) bestätigt.
+                    fe["verification_state"] = "user_confirmed"
+                    fe["status"] = "confirmed"
+                    fe["confidence"] = "mittel"
+                elif not fe:
+                    fe.update(_feld_eintrag(vorhanden, primary="user", confirmed_by=["web"],
+                                            confidence="mittel", state="user_confirmed",
+                                            raw_user=vorhanden))
+            else:
+                fe["web_conflict"] = wert
+            self.field_evidence[feld] = fe
 
     # ── Konstruktoren ─────────────────────────────────────────────────────────
 
     @classmethod
     def from_check_context(cls, baureihe: dict | None, motor_match: dict | None, req) -> "VehicleIdentity":
-        """One request-local identity from the already gated resolver result.
+        """Die EINE request-lokale kanonische Identität des KaufChecks.
 
-        'identified' means a unique ENFAL reference match, never VIN verification.
-        Each provided value remains distinguishable from the database reference.
+        PROVENIENZ-MODELL (KaufCheck-Final-Stabilization, Cluster A)
+        ------------------------------------------------------------
+        Vorher galt: sobald die DB einen Wert kannte, hieß das Feld
+        "identified" ("ENFAL-Referenz eindeutig zugeordnet") — auch wenn der
+        Nutzer genau diesen Wert selbst eingegeben hatte. Die Nutzereingabe
+        verlor ihre Herkunft; DB-Daten etikettierten sie still um.
+
+        Jetzt trägt jedes Feld:
+          value              kanonischer (ggf. von der DB präzisierter) Wert
+          primary_source     "user" | "enfal" | "web" | None
+          confirmed_by       unabhängige Bestätigungen, z.B. ["enfal"]
+          confidence         Beleglage
+          verification_state user_only | user_confirmed | user_refined |
+                             conflict | reference_only | plausible |
+                             web_only | ambiguous | unknown
+          raw_user_value     die unveränderte Nutzereingabe
+          possible_values    nur bei ambiguous (z.B. mehrere Motorcodes)
+        plus die bisherigen Schlüssel (status/provided_value/reference_value/
+        provenance) für bestehende Konsumenten.
+
+        Regeln: Nutzer und DB stimmen überein -> Primärquelle Nutzer, DB
+        bestätigt. DB ist präziser (B48 -> B48B20) -> DB präzisiert den Wert,
+        die Rohangabe bleibt erhalten. Widerspruch -> der Nutzerwert bleibt,
+        der Konflikt wird ausgewiesen (nie still überschrieben).
         """
-        from app.car_lookup import normalisiere_marke, _antrieb_aus_text
+        from app.car_lookup import _antrieb_aus_text
         from app.getriebe import aus_request, aus_db
-        from app.kraftstoff_powertrain import canonical_powertrain
+        from app.kraftstoff_powertrain import fuel_aus_freitext
         b, m = baureihe or {}, motor_match or {}
         identity = cls.from_market_context(b, m, req)
+        identity.field_evidence = {}
         text = " ".join(str(getattr(req, f, None) or "") for f in
                         ("motor", "antrieb", "beschreibung", "freitext"))
-        supplied = {
-            "make": getattr(req, "marke", None), "model": getattr(req, "modell", None),
-            "year": getattr(req, "baujahr", None), "engine_name": getattr(req, "motor", None),
-            "fuel": getattr(req, "kraftstoff", None), "horsepower": getattr(req, "leistung_ps", None),
-            "transmission": aus_request(req), "drivetrain": _antrieb_aus_text(text),
-            "mileage": getattr(req, "kilometerstand", None),
-        }
-        reference = {"make": b.get("marke"), "model": b.get("modell"),
-                     "generation": b.get("generation"), "engine_name": m.get("bezeichnung"),
-                     "engine_code": m.get("motorcode"),
-                     # KraftstoffART, nie der rohe DB-Powertrain-Wert: die Spalte
-                     # `motorvariante.kraftstoff` kann 'Mild-Hybrid'/'Plug-in-Hybrid'
-                     # tragen — das sind Antriebsarten, keine Kraftstoffarten
-                     # (app/kraftstoff_powertrain.py). `identity.fuel` darf niemals
-                     # einen dieser beiden Werte annehmen.
-                     "fuel": canonical_fuel(m.get("kraftstoff"), m.get("bezeichnung"), m.get("motorcode")),
-                     "horsepower": m.get("leistung_ps"), "drivetrain": m.get("antrieb"),
-                     "transmission": aus_db(m)}
-        for name in set(supplied) | set(reference):
-            provided, db_value = supplied.get(name), reference.get(name)
-            value = provided if provided is not None else db_value
-            if name in ("make", "model", "engine_name") and db_value:
-                value = db_value
-            if name == "make" and not db_value:
-                value = normalisiere_marke(provided)
-            setattr(identity, name, value)
-            status = ("identified" if db_value is not None else
-                      "provided" if provided is not None else "unknown")
-            identity.field_evidence[name] = {
-                "status": status, "provided_value": provided, "reference_value": db_value,
-                "confidence": "hoch" if db_value is not None else "niedrig" if provided is not None else "unbekannt",
-                "provenance": (["user"] if provided is not None else []) + (["enfal"] if db_value is not None else []),
-                "evidence": m.get("variante_id") if name not in ("make", "model", "generation") else b.get("id"),
-            }
-        # §11: eine vom Nutzer genannte Motorbezeichnung darf nicht verschwinden,
-        # nur weil die DB keinen Motorcode dafür kennt (Production-Run Mercedes
-        # C300 W205: "M264" ging verloren, `engine_code` blieb leer). Greift NUR,
-        # wenn die DB tatsächlich KEINEN Code liefert — ein bekannter DB-Code
-        # wird nie durch eine unbestätigte Nutzerangabe ersetzt.
-        if not identity.engine_code:
-            kandidat = motorcode_kandidat(getattr(req, "motor", None))
-            if kandidat:
-                identity.engine_code = kandidat
-                identity.field_evidence["engine_code"] = {
-                    "status": "provided", "provided_value": kandidat, "reference_value": None,
-                    "confidence": "niedrig", "provenance": ["user"], "evidence": None,
-                }
+        motor_roh = (getattr(req, "motor", None) or "").strip() or None
+        user_ps = getattr(req, "leistung_ps", None) or _erste_zahl(_RE_PS, motor_roh or "")
+        user_fuel_roh = getattr(req, "kraftstoff", None)
+        user_fuel = fuel_aus_freitext(user_fuel_roh) if user_fuel_roh else None
+        db_codes = motorcodes(m.get("motorcode"))
+        user_code = motorcode_kandidat(motor_roh)
+        evid_m = m.get("variante_id")
+        evid_b = b.get("id")
+
+        def setze(feld, wert, eintrag):
+            setattr(identity, feld, wert)
+            identity.field_evidence[feld] = eintrag
+
+        # Marke / Modell: die DB normalisiert die Schreibweise; stammt die
+        # Zuordnung aus der Nutzereingabe, bleibt der Nutzer Primärquelle.
+        for feld, roh, db_wert in (("make", getattr(req, "marke", None), b.get("marke")),
+                                   ("model", getattr(req, "modell", None), b.get("modell"))):
+            if db_wert:
+                setze(feld, db_wert, _feld_eintrag(
+                    db_wert, primary="user" if roh else "enfal",
+                    confirmed_by=["enfal"] if roh else [], confidence="hoch",
+                    state="user_confirmed" if roh else "reference_only",
+                    raw_user=roh, reference=db_wert, evidence=evid_b))
+            elif roh:
+                wert = anzeige_marke(roh) if feld == "make" else roh.strip()
+                setze(feld, wert, _feld_eintrag(wert, primary="user", confidence="niedrig",
+                                                state="user_only", raw_user=roh))
+            else:
+                setze(feld, None, _feld_eintrag(None))
+
+        # Baujahr: Nutzerangabe; der DB-Bauzeitraum plausibilisiert nur.
+        jahr = _int_oder_none(getattr(req, "baujahr", None))
+        von, bis = b.get("bauzeitraum_von"), b.get("bauzeitraum_bis")
+        im_zeitraum = bool(jahr and von and von <= jahr <= (bis or 9999))
+        setze("year", jahr, _feld_eintrag(
+            jahr, primary="user" if jahr else None,
+            confirmed_by=["enfal"] if im_zeitraum else [],
+            confidence=("mittel" if im_zeitraum else "niedrig") if jahr else "unbekannt",
+            state=("user_confirmed" if im_zeitraum else "user_only") if jahr else "unknown",
+            raw_user=getattr(req, "baujahr", None),
+            reference=(f"{von}-{bis or ''}" if von else None), evidence=evid_b))
+
+        # Generation: nur die DB (oder später Web) kennt sie.
+        gen = b.get("generation")
+        setze("generation", gen, _feld_eintrag(
+            gen, primary="enfal" if gen else None, confidence="hoch" if gen else "unbekannt",
+            state="reference_only" if gen else "unknown", reference=gen, evidence=evid_b))
+
+        # Leistung.
+        db_ps = _int_oder_none(m.get("leistung_ps"))
+        setze("horsepower", *_vergleiche("horsepower", user_ps, db_ps,
+                                         getattr(req, "leistung_ps", None) or user_ps, evid_m))
+
+        # Kraftstoffart — nie der rohe DB-Powertrainwert.
+        db_fuel = canonical_fuel(m.get("kraftstoff"), m.get("bezeichnung"), m.get("motorcode"))
+        setze("fuel", *_vergleiche("fuel", user_fuel, db_fuel, user_fuel_roh, evid_m))
+
+        # Getriebe.
+        user_getriebe = aus_request(req)
+        db_getriebe = aus_db(m) if m else None
+        setze("transmission", *_vergleiche("transmission", user_getriebe, db_getriebe,
+                                           getattr(req, "getriebe", None) or user_getriebe, evid_m))
+        if m.get("getriebe"):
+            identity.field_evidence["transmission"]["reference_options"] = _optionen(m.get("getriebe"))
+
+        # Antrieb.
+        user_antrieb = antrieb_nutzer(req) or _antrieb_aus_text(text)
+        db_antrieb = (m.get("antrieb") or None) if m else None
+        setze("drivetrain", *_vergleiche("drivetrain", user_antrieb, db_antrieb, user_antrieb, evid_m))
+
+        # Motorcode (Cluster F): ein DB-Satz mit MEHREREN Codes identifiziert
+        # nicht den einen Motor dieses Fahrzeugs.
+        setze("engine_code", *_motorcode_aufloesen(user_code, db_codes, evid_m))
+
+        # Antriebsart / Elektrifizierung (Cluster D/E).
+        pt_wert, pt_eintrag = _powertrain_aufloesen(b, m, req, identity.fuel, user_code)
+        setze("powertrain", pt_wert, pt_eintrag)
+
+        # Motorbezeichnung: die DB liefert die Referenzvariante, die Nutzer-
+        # angabe bleibt als Rohwert erhalten. Solange die Elektrifizierung nicht
+        # gesichert ist, trägt die Anzeige keinen "Mild-Hybrid"-Zusatz.
+        db_name = m.get("bezeichnung") or None
+        if db_name and pt_eintrag.get("verification_state") in ("ambiguous", "unknown"):
+            db_name = ohne_elektrifizierung(db_name)
+        if db_name:
+            setze("engine_name", db_name, _feld_eintrag(
+                db_name, primary="user" if motor_roh else "enfal",
+                confirmed_by=["enfal"] if motor_roh else [], confidence="hoch",
+                state="user_refined" if motor_roh else "reference_only",
+                raw_user=motor_roh, reference=m.get("bezeichnung"), evidence=evid_m))
+        elif motor_roh:
+            setze("engine_name", motor_roh, _feld_eintrag(
+                motor_roh, primary="user", confidence="niedrig", state="user_only",
+                raw_user=motor_roh))
+        else:
+            setze("engine_name", None, _feld_eintrag(None))
+
+        identity.mileage = _int_oder_none(getattr(req, "kilometerstand", None))
         # A generation-wide body/options set is not this vehicle's equipment.
         identity.body = None
-        identity.powertrain = getattr(req, "powertrain", None)
-        if identity.powertrain:
-            identity.powertrain = identity.powertrain.upper()
-        else:
-            identity.powertrain = canonical_powertrain(m.get("kraftstoff"))
-        identity.field_evidence["powertrain"] = {
-            "status": "provided" if getattr(req, "powertrain", None) else "plausible" if identity.powertrain else "unknown",
-            "provided_value": getattr(req, "powertrain", None),
-            "reference_value": m.get("kraftstoff") if m else None,
-            "confidence": "niedrig" if getattr(req, "powertrain", None) else "mittel" if identity.powertrain else "unbekannt",
-            "provenance": ["user"] if getattr(req, "powertrain", None) else ["enfal"] if m else [],
-            "evidence": m.get("variante_id"),
-        }
         return identity
 
     @classmethod
@@ -566,6 +652,259 @@ class VehicleIdentity:
         )
         return identity
 
+
+
+# ── Provenienz-Hilfen (KaufCheck-Final-Stabilization) ─────────────────────────
+
+# Alte Statuswerte bleiben für bestehende Konsumenten erhalten, abgeleitet aus
+# dem neuen verification_state.
+_STATUS_AUS_STATE = {
+    "user_only": "provided", "user_confirmed": "confirmed", "user_refined": "confirmed",
+    "conflict": "conflict", "reference_only": "identified", "web_only": "web_verified",
+    "ambiguous": "ambiguous", "unknown": "unknown", "plausible": "plausible",
+}
+
+
+def _feld_eintrag(value=None, *, primary: str | None = None, confirmed_by=None,
+                  confidence: str = "unbekannt", state: str = "unknown", raw_user=None,
+                  reference=None, evidence=None, possible=None) -> dict:
+    confirmed = list(confirmed_by or [])
+    provenance = ([primary] if primary else []) + [c for c in confirmed if c != primary]
+    eintrag = {
+        "value": value, "primary_source": primary, "confirmed_by": confirmed,
+        "confidence": confidence, "verification_state": state,
+        "raw_user_value": raw_user,
+        # Legacy-Sicht:
+        "status": _STATUS_AUS_STATE.get(state, "unknown"),
+        "provided_value": raw_user, "reference_value": reference,
+        "provenance": provenance, "evidence": evidence,
+    }
+    if possible:
+        eintrag["possible_values"] = list(possible)
+    return eintrag
+
+
+def _norm_wert(feld: str, wert) -> str:
+    if wert is None:
+        return ""
+    t = str(wert).strip().lower()
+    if feld == "drivetrain":
+        return {"heckantrieb": "heck", "hinterradantrieb": "heck", "hinterrad": "heck",
+                "rwd": "heck", "frontantrieb": "front", "vorderradantrieb": "front",
+                "vorderrad": "front", "fwd": "front", "allradantrieb": "allrad",
+                "awd": "allrad"}.get(t, t)
+    if feld == "fuel":
+        from app.kraftstoff_powertrain import fuel_aus_freitext
+        return fuel_aus_freitext(t) or t
+    if feld == "transmission":
+        from app.getriebe import normalisiere
+        return normalisiere(t) or t
+    return re.sub(r"[\s\-]+", "", t)
+
+
+def _vergleiche(feld: str, user, db, raw_user, evidence) -> tuple[object, dict]:
+    """Ein Feld aus Nutzer- und DB-Wert — ohne stille Umetikettierung."""
+    if user is not None and db is not None:
+        if feld == "horsepower":
+            gleich = abs(int(user) - int(db)) <= 2
+        else:
+            gleich = _norm_wert(feld, user) == _norm_wert(feld, db)
+        if gleich:
+            return user, _feld_eintrag(user, primary="user", confirmed_by=["enfal"],
+                                       confidence="hoch", state="user_confirmed",
+                                       raw_user=raw_user, reference=db, evidence=evidence)
+        return user, _feld_eintrag(user, primary="user", confidence="niedrig", state="conflict",
+                                   raw_user=raw_user, reference=db, evidence=evidence)
+    if user is not None:
+        return user, _feld_eintrag(user, primary="user", confidence="niedrig", state="user_only",
+                                   raw_user=raw_user, evidence=evidence)
+    if db is not None:
+        return db, _feld_eintrag(db, primary="enfal", confidence="mittel", state="reference_only",
+                                 reference=db, evidence=evidence)
+    return None, _feld_eintrag(None)
+
+
+def _optionen(getriebe) -> list[str]:
+    if isinstance(getriebe, str):
+        roh = getriebe.strip().strip("[]")
+        return [t.strip().strip('"').strip("'") for t in roh.split(",") if t.strip()]
+    return [str(g) for g in (getriebe or [])]
+
+
+_RE_CODE_TRENNER = re.compile(r"\s*(?:,|/|;|\bund\b|\boder\b)\s*", re.I)
+
+
+def motorcodes(roh: str | None) -> list[str]:
+    """Einzelne Motorcodes eines DB-Felds ("B14XFL, D14XFL, F14XFL" -> 3 Codes).
+    Klammerzusätze sind Aliasse desselben Codes, keine eigenen Motoren."""
+    out: list[str] = []
+    for teil in _RE_CODE_TRENNER.split(roh or ""):
+        teil = re.sub(r"\([^)]*\)", "", teil).strip()
+        if teil and teil not in out:
+            out.append(teil)
+    return out
+
+
+def _code_passt(user_code: str | None, db_code: str | None) -> bool:
+    u, d = _norm_wert("engine_code", user_code), _norm_wert("engine_code", db_code)
+    return bool(u and d) and (d.startswith(u) or u.startswith(d))
+
+
+def _motorcode_aufloesen(user_code: str | None, db_codes: list[str], evidence) -> tuple[object, dict]:
+    """Drei Zustände (Cluster F): eindeutig, mehrdeutig ("mögliche Motorcodes"),
+    unbekannt. Mehrere Codes werden NIE als die Identität des einen Motors
+    dargestellt."""
+    if user_code and db_codes:
+        passend = [c for c in db_codes if _code_passt(user_code, c)]
+        if len(passend) == 1:
+            code = passend[0]
+            state = ("user_confirmed" if _norm_wert("engine_code", code)
+                     == _norm_wert("engine_code", user_code) else "user_refined")
+            return code, _feld_eintrag(code, primary="user", confirmed_by=["enfal"],
+                                       confidence="hoch", state=state, raw_user=user_code,
+                                       reference=", ".join(db_codes), evidence=evidence)
+        if len(passend) > 1:
+            return user_code, _feld_eintrag(user_code, primary="user", confidence="mittel",
+                                            state="user_only", raw_user=user_code,
+                                            reference=", ".join(db_codes), evidence=evidence,
+                                            possible=passend)
+        return user_code, _feld_eintrag(user_code, primary="user", confidence="niedrig",
+                                        state="conflict", raw_user=user_code,
+                                        reference=", ".join(db_codes), evidence=evidence)
+    if user_code:
+        return user_code, _feld_eintrag(user_code, primary="user", confidence="niedrig",
+                                        state="user_only", raw_user=user_code, evidence=evidence)
+    if len(db_codes) == 1:
+        return db_codes[0], _feld_eintrag(db_codes[0], primary="enfal", confidence="mittel",
+                                          state="reference_only", reference=db_codes[0],
+                                          evidence=evidence)
+    if len(db_codes) > 1:
+        return None, _feld_eintrag(None, confidence="niedrig", state="ambiguous",
+                                   reference=", ".join(db_codes), evidence=evidence,
+                                   possible=db_codes)
+    return None, _feld_eintrag(None)
+
+
+_RE_ELEKTRIFIZIERUNG = re.compile(r"\s*\(?\b(?:mild[\s-]?hybrid|mhev|48\s?v(?:olt)?)\b\)?", re.I)
+
+
+def ohne_elektrifizierung(bezeichnung: str | None) -> str | None:
+    """Variantenname ohne Mild-Hybrid-Zusatz — nur für die Anzeige, solange die
+    Elektrifizierung dieses Fahrzeugs nicht gesichert ist."""
+    if not bezeichnung:
+        return bezeichnung
+    return re.sub(r"\s{2,}", " ", _RE_ELEKTRIFIZIERUNG.sub("", bezeichnung)).strip() or bezeichnung
+
+
+def _powertrain_nutzer(req) -> str | None:
+    """Antriebsart aus der Nutzereingabe — dieselbe zentrale Erkennung wie
+    jeder Scope-Vergleich (app/kraftstoff_powertrain.powertrain_aus_freitext)."""
+    from app.kraftstoff_powertrain import powertrain_aus_freitext
+    return powertrain_aus_freitext(getattr(req, "powertrain", None), getattr(req, "kraftstoff", None))
+
+
+def _powertrain_aufloesen(b: dict, m: dict, req, fuel, user_code) -> tuple[object, dict]:
+    """Antriebsart mit Mehrdeutigkeitsbewusstsein (Cluster D/E).
+
+    ENFAL-Motorzeilen sind NICHT nach Modelljahr getrennt: eine Zeile
+    "Mild-Hybrid" kann mehrere Motorcodes/Revisionen bündeln, von denen nicht
+    alle elektrifiziert sind (48-V-Systeme kamen innerhalb einer Motorfamilie
+    nachträglich). Deshalb gilt generisch:
+
+      * Nutzerangabe -> Primärquelle Nutzer.
+      * Kraftstoff Elektro -> BEV.
+      * Mögliche Antriebsarten = die der zugeordneten Zeile plus aller
+        Schwesterzeilen derselben Baureihe mit gleicher Leistung und
+        verträglichem Kraftstoff. Eine Mild-Hybrid-Zeile, die nicht über GENAU
+        EINEN, vom Nutzer genannten Motorcode belegt ist, schließt die nicht
+        elektrifizierte Revision nicht aus -> {ICE, MHEV}.
+      * Mehr als eine mögliche Antriebsart -> ambiguous, Wert None.
+    """
+    from app.kraftstoff_powertrain import canonical_powertrain, canonical_fuel
+    nutzer = _powertrain_nutzer(req)
+    if nutzer:
+        ref = canonical_powertrain(m.get("kraftstoff")) if m else None
+        if ref == nutzer:
+            state = "user_confirmed"
+        elif ref and not (ref == "MHEV" and nutzer == "ICE") and not (ref == "ICE" and nutzer == "MHEV"):
+            state = "conflict"
+        else:
+            state = "user_only"
+        return nutzer, _feld_eintrag(nutzer, primary="user",
+                                     confirmed_by=["enfal"] if state == "user_confirmed" else [],
+                                     confidence="hoch" if state == "user_confirmed" else "niedrig",
+                                     state=state, raw_user=getattr(req, "powertrain", None)
+                                     or getattr(req, "kraftstoff", None),
+                                     reference=m.get("kraftstoff") if m else None,
+                                     evidence=m.get("variante_id") if m else None)
+    if str(fuel or "").lower() == "elektro":
+        return "BEV", _feld_eintrag("BEV", primary="enfal" if m else "user", confidence="mittel",
+                                    state="plausible" if m else "user_only",
+                                    evidence=m.get("variante_id") if m else None)
+    if not m:
+        return None, _feld_eintrag(None)
+    eigen = canonical_powertrain(m.get("kraftstoff"))
+    if not eigen:
+        return None, _feld_eintrag(None)
+    moeglich: list[str] = [eigen]
+    ps = _int_oder_none(m.get("leistung_ps"))
+    eigen_fuel = canonical_fuel(m.get("kraftstoff"), m.get("bezeichnung"), m.get("motorcode"))
+    ziel_fuel = str(fuel or eigen_fuel or "").lower() or None
+    for s in (b.get("motoren") or []):
+        if s is m or (s.get("variante_id") and s.get("variante_id") == m.get("variante_id")):
+            continue
+        s_ps = _int_oder_none(s.get("leistung_ps"))
+        if ps is None or s_ps is None or abs(s_ps - ps) > 2:
+            continue
+        s_fuel = canonical_fuel(s.get("kraftstoff"), s.get("bezeichnung"), s.get("motorcode"))
+        if ziel_fuel and s_fuel and s_fuel != ziel_fuel:
+            continue
+        pt = canonical_powertrain(s.get("kraftstoff"))
+        if pt and pt not in moeglich:
+            moeglich.append(pt)
+    codes = motorcodes(m.get("motorcode"))
+    code_belegt = bool(user_code) and len(codes) == 1 and _code_passt(user_code, codes[0])
+    if eigen == "MHEV" and not code_belegt and "ICE" not in moeglich:
+        moeglich.append("ICE")
+    if len(moeglich) > 1:
+        return None, _feld_eintrag(None, confidence="niedrig", state="ambiguous",
+                                   reference=m.get("kraftstoff"), evidence=m.get("variante_id"),
+                                   possible=sorted(moeglich))
+    return eigen, _feld_eintrag(eigen, primary="enfal", confidence="mittel", state="plausible",
+                                reference=m.get("kraftstoff"), evidence=m.get("variante_id"))
+
+
+_ANTRIEB_FELD = (("Allrad", re.compile(r"allrad|4x4|awd|4wd|quattro|xdrive|4matic|4motion", re.I)),
+                 ("Heck", re.compile(r"(?<![a-z])heck|hinterrad|rwd", re.I)),
+                 ("Front", re.compile(r"(?<![a-z])front|vorderrad|fwd", re.I)))
+
+
+def antrieb_nutzer(req) -> str | None:
+    """Antrieb aus der NUTZEREINGABE: zuerst das strukturierte Feld `antrieb`
+    ("Heck", "Front", "Allrad"), dann ein eindeutiges Wort im Motorfeld
+    ("3.0 Biturbo Heck"). Freitext-Beschreibungen bleiben beim bestehenden,
+    strengeren Parser (`car_lookup._antrieb_aus_text`)."""
+    for text in (getattr(req, "antrieb", None), getattr(req, "motor", None)):
+        treffer = {wert for wert, rx in _ANTRIEB_FELD if rx.search(str(text or ""))}
+        if len(treffer) == 1:
+            return treffer.pop()
+    return None
+
+
+def anzeige_marke(marke: str | None) -> str | None:
+    """Anzeigeform einer Marke ohne DB-Treffer: bekannte Aliasse normalisiert,
+    sonst die Nutzerschreibweise — reine Kleinschreibung ("mazda") wird zu
+    "Mazda", eine bewusste Schreibweise ("BMW", "DS") bleibt erhalten."""
+    if not marke:
+        return None
+    from app.car_lookup import normalisiere_marke
+    norm = normalisiere_marke(marke)
+    roh = marke.strip()
+    if norm and norm != norm.casefold():
+        return norm            # bekannter Alias mit kanonischer Schreibweise
+    if roh.islower():
+        return "-".join(t[:1].upper() + t[1:] for t in roh.split("-"))
+    return roh
 
 def _erste_zahl(rx: re.Pattern, text: str) -> int | None:
     m = rx.search(text or "")

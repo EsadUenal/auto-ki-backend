@@ -182,6 +182,11 @@ def darf_floor_tragen(insight: Insight) -> bool:
     "unverified_db" — eine Evidence, die ihre Herkunft nicht ausdrücklich setzt,
     kann den Floor also nicht versehentlich auslösen.
     """
+    # Final-Stabilization (Cluster C): ein Risiko an einer Komponente, deren
+    # Präsenz unbekannt ist ("Falls EDC vorhanden: …"), bleibt sichtbar, darf die
+    # Empfehlung aber nicht verschärfen — es betrifft das Fahrzeug vielleicht nicht.
+    if getattr(insight, "presence_state", None) == "unknown":
+        return False
     return (getattr(insight, "trust", None) or "") in TRUST_FLOOR_FAEHIG
 
 

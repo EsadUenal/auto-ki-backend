@@ -218,7 +218,9 @@ check("B2 Frage nennt das Bauteil", "turbolader" in fragen_b[0].titel.lower())
 check("B3 Frage ist eine Frage", fragen_b[0].titel.rstrip().endswith("?"))
 check("B4 fragt nach Reparatur/Nachweis",
       any(w in fragen_b[0].aktion.lower() for w in ("rechnung", "beleg", "nachweis")))
-check("B5 Kostenhinweis aus kosten_ca übernommen", fragen_b[0].kostenhinweis == "1500-3000 EUR")
+# Final-Stabilization (Cluster L): EIN Kostenformat ("ca. 1.500–3.000 €").
+check("B5 Kostenhinweis aus kosten_ca übernommen (einheitliches Format)",
+      fragen_b[0].kostenhinweis == "ca. 1.500–3.000 €")
 check("B6 Evidence-ID vorhanden und gültig",
       fragen_b[0].evidence_ids and set(fragen_b[0].evidence_ids) <= valid_evidence_ids(ins_b))
 check("B7 KEINE Smalltalk-Frage nach dem Verkaufsgrund",
@@ -441,7 +443,7 @@ check("J4 IDs sind innerhalb eines Bereichs eindeutig",
 check("J5 Besichtigung UND Frage zum selben Bauteil sind KEIN unerwünschtes Duplikat",
       len(agr_bes) == 1 and len(agr_fragen) == 1)
 check("J6 Kostenhinweis der beitragenden Evidence bleibt erhalten",
-      agr_fragen[0].kostenhinweis == "500-1500 EUR")
+      agr_fragen[0].kostenhinweis == "ca. 500–1.500 €")
 
 # Realfall aus dem Sanity-Lauf (Audi A4 B6): Baureihen-Schwachstelle
 # "Zündspulen (Benziner)" und Motorproblem "Zündspulen" ergaben vor dem

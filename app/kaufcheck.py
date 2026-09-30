@@ -69,8 +69,10 @@ from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
 from app.kaufcheck_bericht import (
     kontext as kanonischer_kontext, bericht as kanonischer_bericht,
-    datenbasis as bericht_datenbasis,
+    datenbasis_objekt,
 )
+from app.empfehlungs_policy import entscheide as entscheide_empfehlung
+from app.anzeige import fahrzeug_titel
 from app.postprocess import (
     postprocess_answer, entferne_erfundene_verkaufsdauer, neutralisiere_wartungs_faelligkeit,
     neutralisiere_no_market_preisurteil,
@@ -445,14 +447,11 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     result = await call_gemini_json(_SYSTEM, user_msg)
     # Only ID selections cross the LLM boundary. All assertions remain in the
     # canonical objects, including the recommendation's existing safety floor.
+    # Der technische KANDIDAT der Empfehlung. Ob er ausgegeben werden darf,
+    # entscheidet ausschließlich die zentrale Policy weiter unten
+    # (app/empfehlungs_policy.py), nach dem Risiko-Floor.
     result = {"risiko_evidence_ids": result.get("risiko_evidence_ids", []),
               "empfehlung": "kaufen_nach_besichtigung" if req.marke and req.modell and req.baujahr else "unbekannt"}
-
-    hat_db, hat_web = baureihe is not None, bool(web_results)
-    if hat_db and hat_web:   quelle, vertrauen = "gemischt", "mittel"
-    elif hat_db:             quelle, vertrauen = "datenbank", "hoch"
-    elif hat_web:            quelle, vertrauen = "web", "niedrig"
-    else:                    quelle, vertrauen = "gemischt", "niedrig"
 
     # Preisbewertung deterministisch aus dem KANONISCHEN Preisurteil ableiten (§6/§13)
     # — NICHT mehr vom LLM. So kann das Frontend-Badge (preis_bewertung) niemals dem
@@ -489,25 +488,6 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                      "'kaufen_nach_besichtigung' reduziert (Preisteil nicht belegbar)")
             result["empfehlung"] = "kaufen_nach_besichtigung"
 
-    # ── Identitäts-Floor (§6 Fall C) ─────────────────────────────────────────────
-    # Production-Run Mazda MX-5 (Test 6): "KAUFEN NACH BESICHTIGUNG" stand auch
-    # dann, wenn WEDER die ENFAL-Datenbank noch die Web-Recherche das Fahrzeug
-    # bestätigen konnten — nur die ungeprüfte Inseratangabe war da. Das ist eine
-    # zu selbstsichere Aussage für einen stark eingeschränkten Analysemodus.
-    # Bewusst binär und ausschließlich an den bereits vorhandenen, geprüften
-    # Signalen (Identity-Trust-Gate + Web-Fallback-Beleglage): kein neues
-    # Statusmodell — "unbekannt" ist bereits im Systemprompt als "keine
-    # Empfehlung möglich" definiert (app/empfehlungs_floor.py). Greift NUR, wenn
-    # beide Quellen versagen; ein einzelner DB- oder Web-Treffer reicht weiterhin
-    # für eine normale Empfehlung.
-    web_identitaet_belegt = bool(web_recherche and web_recherche.identitaet
-                                 and web_recherche.identitaet.belegt)
-    identitaet_kritisch_unbekannt = not identitaet["belastbar"] and not web_identitaet_belegt
-    if identitaet_kritisch_unbekannt and result.get("empfehlung") not in (None, "unbekannt"):
-        log.info("Kaufcheck: Fahrzeugidentität weder DB- noch Web-bestätigt — "
-                 "Empfehlung auf 'unbekannt' gesetzt (§6 Fall C)")
-        result["empfehlung"] = "unbekannt"
-
     # ── Deterministischer Empfehlungs-Floor ─────────────────────────────────────
     # BEWUSST als LETZTER Eingriff auf `empfehlung`: danach senkt nichts mehr ab.
     # Der Bake-off (2.5 vs. 3.7) hat gezeigt, dass ein Modell die im Systemprompt
@@ -521,6 +501,19 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # noch `price_assessment` noch `req.preis_eur`. PFAD B (completed_no_market)
     # verhaelt sich damit identisch zu PFAD A.
     empfehlung_final, floor_befund = wende_floor_an(result.get("empfehlung"), insights)
+    # ── Zentrale Empfehlungs-Policy (Identity Floor, Cluster J) ────────────────
+    # NACH dem Risiko-Floor, als einzige Stelle, die über den Zustand der
+    # Empfehlung entscheidet. Sie liest die KANONISCHE Identität (dieselbe, die
+    # der Bericht anzeigt): ohne belegte Generation und Motorisierung gibt es
+    # keine Freigabe-Empfehlung ("Analyse eingeschränkt"). Die frühere
+    # Zwei-Boolean-Prüfung (DB belastbar ODER Web "belegt") griff beim
+    # DB-Miss praktisch nie, weil "belegt" nur Marke+Modell-Tokens prüfte.
+    entscheidung = entscheide_empfehlung(empfehlung_final, identity)
+    if entscheidung.empfehlung != empfehlung_final:
+        log.info("Kaufcheck: Empfehlung %s -> %s (Identitätsstufe %s, offen: %s)",
+                 empfehlung_final, entscheidung.empfehlung, entscheidung.identitaet.stufe,
+                 ", ".join(entscheidung.identitaet.fehlend))
+    empfehlung_final = entscheidung.empfehlung
     result["empfehlung"] = empfehlung_final
     # Bericht/Feld-Konsistenz: IMMER, nicht nur wenn der Floor angehoben hat.
     # `wende_floor_an` deckt nur EINEN Weg ab, wie Bericht und Feld auseinander-
@@ -570,8 +563,10 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Phase 2: Kern-Erkenntnisse deterministisch aus den bereits vorhandenen Daten
     # verdichten (Marktanalyse in insights, Rückruf-Applicability, Schwachstellen,
     # Inserat-Widersprüche) — kein weiteres LLM, referenziert nur echte Insight-IDs.
-    key_findings = build_key_findings_kauf(req, baureihe, motor_match, insights,
-                                           price_assessment, identitaet=identitaet)
+    key_findings = build_key_findings_kauf(
+        req, baureihe, motor_match, insights, price_assessment, identitaet=identitaet,
+        web_belegt=bool(web_recherche and web_recherche.identitaet
+                        and web_recherche.identitaet.belegt))
 
     # P1-3: deterministische Kaufaktionen (Besichtigung / Probefahrt / Verkaeufer-
     # fragen / Dokumente) aus DENSELBEN bereits aufbereiteten Daten — keine neuen
@@ -589,14 +584,17 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     empfehlung_gruende = baue_empfehlung_gruende(
         req, baureihe, motor_match, insights, key_findings, result.get("empfehlung", "unbekannt"),
         markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
-        generation=(baureihe or {}).get("generation"))
+        generation=(baureihe or {}).get("generation"), identity=identity)
 
-    sources = bericht_datenbasis(baureihe, insights, belege,
-                                 identity=identity, markt_verfuegbar=markt_verfuegbar)
+    # EINE Datenbasis für Berichtszeile, Quellen-Chip (`quelle`) und `vertrauen`.
+    basis = datenbasis_objekt(baureihe, insights, belege,
+                              identity=identity, markt_verfuegbar=markt_verfuegbar)
+    sources = basis["labels"]
+    quelle, vertrauen = basis["quelle"], basis["vertrauen"]
     result["bericht"] = kanonischer_bericht(
         req, identity, baureihe, motor_match, insights, kaufaktionen, empfehlung_gruende,
         result["empfehlung"], price_assessment, markt_verfuegbar, laufleistungskontext,
-        hu, sources, fahrzeugkontext)
+        hu, sources, fahrzeugkontext, entscheidung=entscheidung)
 
     # ROOT-CAUSE-CLOSING (Befund K, 4.7): die Schreibstil-Regel gilt für JEDEN
     # Nutzertext des Ergebnisses: Bericht des Modells, Datenbanktexte, Key
@@ -606,6 +604,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "vehicle_identity": identity.as_diagnose(),
         "accident_status": bekannte_fakten_aus_request(req).unfall,
         "datenbasis": sources,
+        "recommendation_state": entscheidung.state,
+        "empfehlung_anzeige": entscheidung.anzeige,
+        "empfehlung_hinweis": entscheidung.hinweis,
+        "identitaet_aufloesung": {"stufe": entscheidung.identitaet.stufe,
+                                  "fehlend": list(entscheidung.identitaet.fehlend),
+                                  "quellen": list(entscheidung.identitaet.quellen)},
+        "anzeige_titel": fahrzeug_titel(identity) or None,
         "risiko_titel": "Relevante Risiken und Hinweise",
         "bericht":          result.get("bericht", ""),
         "empfehlung":       result.get("empfehlung", "unbekannt"),

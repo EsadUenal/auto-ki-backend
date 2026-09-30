@@ -26,6 +26,11 @@ from app.recall_filter import (
     rueckruf_applicability as _rueckruf_applicability,
     kba_referenz_anzeige,
     RUECKRUF_APPLICABILITY_TEXT,
+    RECALL_STATE_AUS_APPLICABILITY,
+)
+from app.ausstattung_praesenz import (
+    ABSENT as PRAESENZ_ABSENT, PRESENT as PRAESENZ_PRESENT, UNKNOWN as PRAESENZ_UNKNOWN,
+    bedingung as praesenz_bedingung, praesenz,
 )
 # DATA-SAFETY-RUNTIME-GATE: zentrale Allowed-List für Baureihen-Schwachstellen,
 # geteilt mit build_db_context (car_lookup.py) — analog zu recall_filter.
@@ -223,7 +228,13 @@ def build_insights(
     # Vorrang, sonst der unveränderte DB-Rohwert (nie `identity.fuel`).
     applicability_motor = {**(motor_match or {}),
                           "kraftstoff": (getattr(req, "kraftstoff", None)
-                                        or (motor_match or {}).get("kraftstoff"))}
+                                        or (motor_match or {}).get("kraftstoff")),
+                          # Final-Stabilization (Cluster D): beide Herkünfte
+                          # getrennt — die Nutzerangabe ist eine KRAFTSTOFFart,
+                          # der DB-Rohwert trägt die Antriebsart
+                          # (recall_filter._fahrzeug_achsen).
+                          "_kraftstoff_db": (motor_match or {}).get("kraftstoff"),
+                          "_kraftstoff_nutzer": getattr(req, "kraftstoff", None)}
 
     def allowed(fakt):
         return fakt.get("_trust") != "rejected" and varianten_applicability(fakt, identity)[0] != "incompatible"
@@ -348,7 +359,11 @@ def build_insights(
         # Applicability-Berechnung genau den Wert, der gleich auch am Insight steht —
         # statt eine zweite, schwächere Trust-Ermittlung zu benutzen.
         applicability, r_conf, r_einfluss, variant_hinweis = _rueckruf_applicability(
-            {**r, "_trust": trust_rueckruf}, passt, kba, applicability_motor, marke=marke)
+            {**r, "_trust": trust_rueckruf,
+             "_ausstattung": getattr(req, "ausstattung", None),
+             "_freitext": " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))},
+            passt, kba, applicability_motor, marke=marke,
+            identity=identity if check_typ == "kauf" else None)
         # §8/§27: Rückruf betrifft eine eindeutig andere Motorisierung (z.B. Hochvolt-/
         # PHEV-Rückruf bei erkanntem Diesel) -> VOLLSTÄNDIG aus den sichtbaren Findings
         # entfernen (nicht als "unklare Betroffenheit" darstellen, nicht in "Was jetzt?").
@@ -399,6 +414,7 @@ def build_insights(
             confidence=r_conf,
             applicability=applicability,
             recall_status=recall_status(applicability),
+            recall_state=RECALL_STATE_AUS_APPLICABILITY.get(applicability),
             trust=trust_rueckruf,
             einfluss=recall_handlung(recall_status(applicability)),
         ))
@@ -418,8 +434,11 @@ def build_insights(
                                                              trust_motorproblem))]
             kosten = s.get("kosten_ca")
             # "—" oder "Herstellergarantie" sind keine Kostenangabe: vorher entstand
-            # daraus "Mögliche Reparaturkosten ca. —.".
-            kosten = kosten if kosten and re.search(r"\d", str(kosten)) else None
+            # daraus "Mögliche Reparaturkosten ca. —.". Final-Stabilization
+            # (Cluster L): EIN Kostenformat für alle Ausgaben ("ca. 300 €",
+            # "ca. 300–500 €" oder "Kostenangabe nicht verifiziert").
+            from app.anzeige import kosten_anzeige
+            kosten = kosten_anzeige(str(kosten)) if kosten else None
             titel_mp = (f"{s.get('bauteil') or 'Motorproblem'} "
                         f"({motor_match.get('bezeichnung') or 'Motor'})")
             if check_typ == "verkauf":
@@ -432,12 +451,12 @@ def build_insights(
                               and not _EINZELBERICHT.search(s.get("beschreibung") or ""))
                 titel_mp += f": {'bekanntes Motorproblem' if bekannt_mp else 'gemeldeter Hinweis'}"
                 if bekannt_mp:
-                    einfluss = (f"Mögliche Reparaturkosten ca. {kosten}. Das erhöht das "
+                    einfluss = (f"Mögliche Reparaturkosten: {kosten}. Das erhöht das "
                                 f"technische Risiko." if kosten else "Erhöht das technische Risiko.")
                 else:
                     einfluss = ("Gemeldeter Hinweis, nicht geprüft: gezielt nachfragen, nicht "
                                 "als festgestellten Mangel werten."
-                                + (f" Hinterlegte Kostenangabe: ca. {kosten}." if kosten else ""))
+                                + (f" Hinterlegte Kostenangabe: {kosten}." if kosten else ""))
             insights.append(Insight(
                 id=_id("motorproblem"),
                 kategorie="motorproblem",
@@ -592,8 +611,10 @@ def build_insights(
                 risk_type=("recall" if fakt.kategorie == "rueckruf" else
                            "maintenance" if fakt.kategorie == "wartung" else "known_weakness"),
                 titel=_WEB_TITEL[fakt.kategorie].format(
-                    bauteil=(fakt.bauteil or "Fahrzeug").replace("_", " ")),
-                beschreibung=fakt.aussage,
+                    bauteil=(fakt.bauteil or "Fahrzeug").replace("_", " "))
+                + (" (Geltung für dieses Baujahr nicht belegt)"
+                   if getattr(fakt, "geltung_fuer_fahrzeug", None) == "unresolved" else ""),
+                beschreibung=_web_beschreibung(fakt, baujahr),
                 quellen_typen=_typen(fakt.quellen),
                 quellen=list(fakt.quellen),
                 # Confidence kommt aus der QUELLENLAGE (Anzahl unabhängiger Domains
@@ -601,6 +622,10 @@ def build_insights(
                 confidence=fakt.confidence,
                 applicability=fakt.applicability,
                 recall_status=recall_status(fakt.applicability) if fakt.kategorie == "rueckruf" else None,
+                recall_state=(RECALL_STATE_AUS_APPLICABILITY.get(fakt.applicability)
+                              if fakt.kategorie == "rueckruf" else None),
+                geltungsbereich=getattr(fakt, "geltungsbereich", None),
+                geltung_fuer_fahrzeug=getattr(fakt, "geltung_fuer_fahrzeug", None),
                 # §11: Web-Evidence trägt eine echte Quellenlage (URL + Domain-
                 # Qualität + Anzahl unabhängiger Domains) und bekommt deshalb eine
                 # EIGENE Trust-Stufe — sie ist weder ein ungeprüfter DB-Satz noch
@@ -620,8 +645,55 @@ def build_insights(
     # hat einen eigenen Evidence-Filter und bleibt unverändert.
     if check_typ == "kauf":
         insights = kanonisiere(insights)
+        insights = wende_praesenz_an(insights, identity, req)
 
     return insights
+
+
+_PRAESENZ_KATEGORIEN = ("schwachstelle", "motorproblem", "wartung", "rueckruf",
+                        "web_schwachstelle", "web_wartung", "web_rueckruf")
+
+
+def wende_praesenz_an(insights: list[Insight], identity, req) -> list[Insight]:
+    """Präsenz abhängiger Komponenten EINMAL an der kanonischen Risikomenge
+    festhalten (Cluster C, Invariante 5; app/ausstattung_praesenz.py).
+
+      CONFIRMED_ABSENT  -> Insight entfällt (keine Karte, keine Aktion, kein Floor,
+                           kein LLM-Kontext): DKG-Punkt am Schaltwagen, AdBlue am
+                           Benziner, Hochvolt am Verbrenner.
+      UNKNOWN           -> Titel wird bedingt ("Falls EDC vorhanden: …"); alle
+                           Konsumenten (Karten, Key Findings, Prüfplan, Bericht,
+                           Frontend) lesen genau dieses Insight.
+      CONFIRMED_PRESENT -> unverändert.
+    """
+    ausstattung = getattr(req, "ausstattung", None)
+    freitext = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
+    out: list[Insight] = []
+    for i in insights:
+        if i.kategorie not in _PRAESENZ_KATEGORIEN:
+            out.append(i)
+            continue
+        if i.kategorie in ("rueckruf", "web_rueckruf"):
+            text = " ".join(filter(None, [i.kurztitel, i.beschreibung.split(" Abhilfe:")[0]]))
+        else:
+            text = " ".join(filter(None, [i.bauteil, i.titel.split(":")[0]]))
+        state, abh, bez = praesenz(text, identity, ausstattung, freitext)
+        if abh is None:
+            out.append(i)
+            continue
+        if state == PRAESENZ_ABSENT:
+            log.info("Kanonische Risikomenge: %s entfällt (%s nicht vorhanden)", i.id, abh.klasse)
+            continue
+        if state == PRAESENZ_UNKNOWN:
+            praefix = praesenz_bedingung(bez, abh)
+            titel = i.titel if i.titel.startswith("Falls ") else praefix + i.titel
+            out.append(i.model_copy(update={"presence_state": PRAESENZ_UNKNOWN,
+                                            "equipment_dependency": bez or abh.klasse,
+                                            "titel": titel}))
+            continue
+        out.append(i.model_copy(update={"presence_state": PRAESENZ_PRESENT,
+                                        "equipment_dependency": bez or abh.klasse}))
+    return out
 
 
 # Titel-/Einfluss-Vorlagen für Web-Evidence. Die Formulierung macht die Herkunft
@@ -632,6 +704,24 @@ _WEB_TITEL = {
     "rueckruf": "Rückruf-Hinweis aus der Webrecherche ({bauteil})",
     "wartung": "{bauteil}: Wartungsangabe aus der Webrecherche",
 }
+def _web_beschreibung(fakt, baujahr) -> str:
+    """Web-Aussage plus ihr Geltungsbereich — nie ein Fakt ohne Scope-Hinweis,
+    wenn die Quelle selbst eingrenzt (Cluster I)."""
+    text = fakt.aussage
+    geltung = getattr(fakt, "geltung_fuer_fahrzeug", None)
+    bereich = getattr(fakt, "geltungsbereich", None)
+    if fakt.kategorie == "rueckruf" and fakt.applicability == "vehicle_possible":
+        text += (f" Das Baujahr {baujahr or ''} liegt im genannten Produktionszeitraum: das "
+                 "Fahrzeug ist möglicherweise betroffen. Nur die FIN-Prüfung klärt das.").replace("  ", " ")
+    elif geltung == "unresolved":
+        bereich = (bereich[:1].lower() + bereich[1:]) if bereich and not bereich[:1].isdigit() else bereich
+        text += (f" Laut Quelle betrifft das {bereich or 'nur einen Teil der Fahrzeuge'}; ob dieses "
+                 f"Fahrzeug{f' (Baujahr {baujahr})' if baujahr else ''} dazu gehört, ist nicht belegt.")
+    elif geltung == "covered" and bereich:
+        text += f" Laut Quelle betrifft das den Zeitraum {bereich}, der das Baujahr einschließt."
+    return text
+
+
 _WEB_EINFLUSS = {
     "schwachstelle": "Aus Webquellen belegt, nicht aus der "
                      "Fahrzeugdatenbank: vor dem Kauf gezielt prüfen.",

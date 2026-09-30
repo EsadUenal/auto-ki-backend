@@ -508,6 +508,27 @@ def _paren_qualifier(betroffene: str | None) -> str | None:
     return _norm_kraftstoff(m.group(1)) if m else None
 
 
+def _fahrzeug_achsen(motor_match: dict | None, identity=None):
+    """(Kraftstoffart, mögliche Antriebsarten) für den Scope-Vergleich.
+
+    Mit kanonischer Identität gilt nur sie. Ohne: `_kraftstoff_db` /
+    `_kraftstoff_nutzer` (von app/evidence.py gesetzt) trennen DB-Rohwert und
+    Nutzerangabe; fehlen sie, ist `kraftstoff` einer DB-Zeile (mit
+    `variante_id`) ein DB-Rohwert, sonst eine Nutzer-/Freitextangabe."""
+    from app.kraftstoff_powertrain import fahrzeug_achsen
+    if identity is not None:
+        return fahrzeug_achsen(identity=identity)
+    m = motor_match or {}
+    if "_kraftstoff_db" in m or "_kraftstoff_nutzer" in m:
+        db, nutzer = m.get("_kraftstoff_db"), m.get("_kraftstoff_nutzer")
+    elif m.get("variante_id"):
+        db, nutzer = m.get("kraftstoff"), None
+    else:
+        db, nutzer = None, m.get("kraftstoff")
+    return fahrzeug_achsen(db_kraftstoff=db, bezeichnung=m.get("bezeichnung"),
+                           motorcode=m.get("motorcode"), nutzer_text=nutzer)
+
+
 # Antriebe, die ein Hochvolt-System besitzen (für den Abgleich mit HV-Rückrufen).
 _HAT_HOCHVOLT = {"phev", "elektro"}
 
@@ -535,8 +556,162 @@ RUECKRUF_APPLICABILITY_TEXT: dict[str, str] = {
 }
 
 
+# ── Varianten-Scope eines Rückrufs (KaufCheck-Final-Stabilization, Cluster G) ──
+#
+# BEFUND (Production-Run Opel Astra K 1.4 Turbo 125 PS): ein Rückruf erschien,
+# obwohl er nach externer Beleglage eine andere Motorisierung betrifft. Die
+# Applicability kannte nur ZWEI Achsen: Baujahr und Hochvolt-Antrieb. Eine im
+# Rückruf genannte Leistung, ein Hubraum, ein Motorcode, eine Kraftstoffart,
+# eine Getriebe- oder Antriebsbedingung oder eine Ausstattungsabhängigkeit
+# wurden nie gegen das Fahrzeug geprüft — jede Baureihen-Übereinstimmung
+# genügte ("series match alone").
+#
+# REGEL (generisch, datengetrieben): aus dem Rückruf wird ein Scope gelesen —
+# optional strukturiert (`scope_motorcodes`, `scope_leistung_ps`,
+# `scope_hubraum`, `scope_kraftstoff`), sonst aus ausdrücklichen Angaben im
+# amtlichen Text. Jede Scope-Dimension wird NUR gegen einen BEKANNTEN Wert der
+# kanonischen Identität geprüft (Nutzerangabe oder eindeutige Referenz; ein
+# mehrdeutiger Wert schließt nichts aus):
+#   bekannter Widerspruch        -> NOT_APPLICABLE (wird entfernt)
+#   Scope passt ausdrücklich     -> VARIANT_POSSIBLE
+#   Scope da, Wert unbekannt     -> UNKNOWN
+#   kein Scope                   -> SERIES_RELEVANT (FIN-first, nie "offen")
+# Die ~1.400 Bestandszeilen werden dafür NICHT verändert.
+
+RECALL_SERIES_RELEVANT = "SERIES_RELEVANT"
+RECALL_VARIANT_POSSIBLE = "VARIANT_POSSIBLE"
+RECALL_VEHICLE_POSSIBLE = "VEHICLE_POSSIBLE"
+RECALL_NOT_APPLICABLE = "NOT_APPLICABLE"
+RECALL_UNKNOWN = "UNKNOWN"
+
+RECALL_STATE_AUS_APPLICABILITY = {
+    "variant_match": RECALL_VARIANT_POSSIBLE, "series_only": RECALL_SERIES_RELEVANT,
+    "unclear": RECALL_UNKNOWN, "incompatible": RECALL_NOT_APPLICABLE,
+    "vehicle_possible": RECALL_VEHICLE_POSSIBLE,
+}
+
+_RE_SCOPE_PS = re.compile(r"\b(\d{2,3})\s*PS\b", re.I)
+_RE_SCOPE_KW = re.compile(r"\b(\d{2,3})\s*kW\b", re.I)
+_RE_SCOPE_HUBRAUM = re.compile(
+    r"\b(\d[.,]\d)\s*(?:-?\s*l(?:iter)?\b|tsi|tfsi|tdi|turbo|cdti|dci|hdi|crdi|t-?gdi|ecoboost"
+    r"|puretech|skyactiv|vtec|i-?vtec|-?\s*motor)", re.I)
+_RE_SCOPE_MOTORCODE = re.compile(
+    r"(?:motor(?:en|code|kennbuchstabe|kennung|typ)?|aggregat)\s*[:(]?\s*((?:[A-Z]{1,4}\d{2,3}[A-Z0-9]*"
+    r"(?:\s*(?:,|/|und|oder)\s*)?)+)|\b([A-Z]{1,4}\d{2,3}[A-Z0-9]*)-?Motor", re.I)
+_RE_SCOPE_DIESEL = re.compile(r"diesel(?:motor|fahrzeug|variante|modell)\w*|\bdiesel\b", re.I)
+_RE_SCOPE_BENZIN = re.compile(r"benzin(?:er|motor|fahrzeug|variante)\w*|ottomotor\w*|\bbenziner\b", re.I)
+
+
+def _bekannt(identity, feld: str):
+    """Ein Identitätswert, der eine Aussage TRAGEN darf (nicht mehrdeutig,
+    nicht unbekannt, kein Konflikt)."""
+    if identity is None:
+        return None
+    fe = (getattr(identity, "field_evidence", None) or {}).get(feld) or {}
+    if fe.get("verification_state") in ("ambiguous", "unknown"):
+        return None
+    wert = getattr(identity, feld, None)
+    return wert if wert not in (None, "") else None
+
+
+def _scope_zahlen(rx, text) -> set[int]:
+    return {int(m) for m in rx.findall(text or "")}
+
+
+def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
+    """Varianten-Scope eines Rückrufs gegen die kanonische Identität.
+
+    Rückgabe (recall_state, begründung). Siehe Kommentar oben."""
+    text = " ".join(str(r.get(f) or "") for f in ("mangel", "abhilfe", "betroffene_baujahre",
+                                                  "scope_text"))
+    passt_explizit: list[str] = []
+    offen: list[str] = []
+
+    # Leistung
+    ps_scope = set(r.get("scope_leistung_ps") or []) or _scope_zahlen(_RE_SCOPE_PS, text)
+    kw_scope = _scope_zahlen(_RE_SCOPE_KW, text)
+    if kw_scope and not ps_scope:
+        ps_scope = {round(k * 1.35962) for k in kw_scope}
+    if ps_scope:
+        ps = _bekannt(identity, "horsepower")
+        if ps is None:
+            offen.append("Leistung")
+        elif not any(abs(int(ps) - s) <= 3 for s in ps_scope):
+            return RECALL_NOT_APPLICABLE, (f"Rückruf nennt {', '.join(str(s) for s in sorted(ps_scope))} PS; "
+                                           f"das Fahrzeug hat {ps} PS")
+        else:
+            passt_explizit.append("Leistung")
+
+    # Hubraum
+    hub_scope = {h.replace(",", ".") for h in (r.get("scope_hubraum") or [])} or \
+        {m.replace(",", ".") for m in _RE_SCOPE_HUBRAUM.findall(text)}
+    if hub_scope:
+        hub = getattr(identity, "displacement", None) if identity is not None else None
+        if not hub:
+            offen.append("Hubraum")
+        elif hub not in hub_scope:
+            return RECALL_NOT_APPLICABLE, (f"Rückruf nennt {', '.join(sorted(hub_scope))} l Hubraum; "
+                                           f"das Fahrzeug hat {hub} l")
+        else:
+            passt_explizit.append("Hubraum")
+
+    # Motorcode
+    codes: set[str] = {c.upper() for c in (r.get("scope_motorcodes") or [])}
+    for m in _RE_SCOPE_MOTORCODE.finditer(text):
+        for c in re.split(r"\s*(?:,|/|und|oder)\s*", (m.group(1) or m.group(2) or "")):
+            c = c.strip().upper()
+            if re.fullmatch(r"[A-Z]{1,4}\d{2,3}[A-Z0-9]*", c):
+                codes.add(c)
+    if codes:
+        from app.vehicle_identity import _code_passt
+        fe = ((getattr(identity, "field_evidence", None) or {}).get("engine_code") or {}) if identity else {}
+        eigener = _bekannt(identity, "engine_code")
+        moegliche = fe.get("possible_values") or ([eigener] if eigener else [])
+        if not moegliche:
+            offen.append("Motorcode")
+        elif not any(_code_passt(mc, c) for mc in moegliche for c in codes):
+            return RECALL_NOT_APPLICABLE, (f"Rückruf nennt Motorcode(s) {', '.join(sorted(codes))}; "
+                                           f"das Fahrzeug: {', '.join(moegliche)}")
+        elif eigener and any(_code_passt(eigener, c) for c in codes):
+            passt_explizit.append("Motorcode")
+        else:
+            offen.append("Motorcode")
+
+    # Kraftstoff (nur ausdrückliche Kraftstoffwörter)
+    fuel_scope = set(r.get("scope_kraftstoff") or [])
+    if not fuel_scope:
+        if _RE_SCOPE_DIESEL.search(text) and not _RE_SCOPE_BENZIN.search(text):
+            fuel_scope = {"diesel"}
+        elif _RE_SCOPE_BENZIN.search(text) and not _RE_SCOPE_DIESEL.search(text):
+            fuel_scope = {"benzin"}
+    if fuel_scope:
+        fuel = _norm_kraftstoff(str(_bekannt(identity, "fuel") or ""))
+        if fuel is None:
+            offen.append("Kraftstoff")
+        elif fuel not in fuel_scope:
+            return RECALL_NOT_APPLICABLE, f"Rückruf betrifft {'/'.join(sorted(fuel_scope))}-Varianten"
+        else:
+            passt_explizit.append("Kraftstoff")
+
+    # Komponentenabhängigkeit (Getriebe, Antrieb, Antriebsart, Ausstattung) —
+    # dieselbe zentrale Präsenzlogik wie für Schwachstellen.
+    from app.ausstattung_praesenz import ABSENT, UNKNOWN as P_UNKNOWN, praesenz
+    zustand, abh, bez = praesenz(f"{r.get('mangel') or ''}", identity,
+                                 r.get("_ausstattung"), r.get("_freitext"))
+    if zustand == ABSENT:
+        return RECALL_NOT_APPLICABLE, f"Rückruf betrifft Fahrzeuge mit {abh.klasse}; nicht verbaut"
+    if zustand == P_UNKNOWN and abh is not None:
+        offen.append(abh.klasse)
+
+    if offen and not passt_explizit:
+        return RECALL_UNKNOWN, "Variantenbedingung nicht prüfbar: " + ", ".join(offen)
+    if passt_explizit:
+        return RECALL_VARIANT_POSSIBLE, "Variantenbedingung passt: " + ", ".join(passt_explizit)
+    return RECALL_SERIES_RELEVANT, None
+
+
 def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: dict | None,
-                           marke: str | None = None):
+                           marke: str | None = None, identity=None):
     """Bestimmt, WIE SICHER ein Rückruf GENAU DIESES Fahrzeug betrifft.
 
     Rückgabe: (applicability, confidence, einfluss, variant_hinweis)
@@ -562,7 +737,11 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     text = " ".join(filter(None, [r.get("mangel"), r.get("abhilfe"), r.get("betroffene_baujahre")]))
     ist_hv_rueckruf = bool(_HV_MUSTER.search(text))
     qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
-    fahrzeug_kraftstoff = _norm_kraftstoff((motor_match or {}).get("kraftstoff"))
+    # Final-Stabilization (Cluster D): Kraftstoffart und Antriebsart sind zwei
+    # Achsen (app/kraftstoff_powertrain.py). Vorher wurde EIN normierter Wert
+    # (Nutzerangabe "Benzin" ODER DB-Rohwert "Plug-in-Hybrid") gegen den Scope
+    # verglichen — ein Hochvolt-Rückruf fiel dadurch bei einem Benzin-PHEV weg.
+    fuel, powertrains = _fahrzeug_achsen(motor_match, identity)
     # KBA-Trust-Gate: eine unplausible/kollidierende Referenz zählt wie keine.
     # RECALL-PILOT (§9): und eine bloß FORMATPLAUSIBLE zählt ebenfalls wie keine.
     kba_ok = bool(kba_referenz_anzeige(kba, marke)) and referenz_ist_belegt(r)
@@ -571,15 +750,15 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     # ODER klarer Hochvolt-/Hybrid-Bezug).
     scope = qualifier or ("phev" if ist_hv_rueckruf else None)
     if scope:
-        if fahrzeug_kraftstoff is None:
-            # Motor nicht erkannt -> Varianten-Betroffenheit NICHT bestimmbar.
+        from app.kraftstoff_powertrain import scope_passt
+        matcht = scope_passt(scope, fuel, powertrains)
+        if matcht is None:
+            # Die für DIESEN Scope maßgebliche Achse ist unbekannt (Motor nicht
+            # erkannt, nur eine Kraftstoffangabe zu einem Antriebsart-Scope,
+            # mehrdeutige Elektrifizierung) -> Betroffenheit NICHT bestimmbar.
             return ("unclear", "niedrig",
                     f"Betroffenheit unklar: der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
                     "Für die Baureihe hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
-        matcht = (
-            fahrzeug_kraftstoff == scope
-            or (scope in _HAT_HOCHVOLT and fahrzeug_kraftstoff in _HAT_HOCHVOLT)
-        )
         if matcht:
             # Passende Variante + Baujahr-Deckung + PLAUSIBLE KBA-Referenz -> stärkste
             # OHNE-VIN erreichbare Stufe: "kann diese Variante betreffen", nicht
@@ -623,6 +802,22 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     # hebt weiterhin die `confidence` auf "hoch" und den Wortlaut auf die
     # FIN-Prüfung. Nur die Varianten-BEHAUPTUNG entfällt. Was den Rückruf
     # tatsächlich auf ein Exemplar eingrenzt, ist die FIN — und die hat VIRA nicht.
+    #
+    # Final-Stabilization (Cluster G): bevor ein Rückruf als Baureihen-Rückruf
+    # gilt, wird sein Varianten-Scope gegen die KANONISCHE Identität geprüft.
+    if identity is not None:
+        scope_state, grund = rueckruf_scope(r, identity)
+        if scope_state == RECALL_NOT_APPLICABLE:
+            return ("incompatible", "hoch", f"Betrifft laut Datenlage nicht dieses Fahrzeug: {grund}.",
+                    f"Nicht zutreffend: {grund}.")
+        if scope_state == RECALL_UNKNOWN:
+            return ("unclear", "niedrig",
+                    f"Betroffenheit unklar: der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
+                    f"{grund}.")
+        if scope_state == RECALL_VARIANT_POSSIBLE:
+            if passt is True and kba_ok:
+                return ("variant_match", "hoch", f"Sicherheitsrelevant. {_HINWEIS_FIN}", f"{grund}.")
+            return ("series_only", "mittel", f"Sicherheitsrelevant. {_HINWEIS_FIN}", f"{grund}.")
     if passt is True:
         if kba_ok:
             return ("series_only", "hoch",

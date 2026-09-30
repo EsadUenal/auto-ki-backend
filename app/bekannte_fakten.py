@@ -46,64 +46,34 @@ UNFALLFREI = "unfallfrei"
 UNFALL = "unfall"
 UNKNOWN = "unknown"
 
-# Generisches Tri-State-Signal (§10): eine Formulierung, die explizit sagt "hier
-# steht keine Information", nie ein Feld-spezifisches Vokabular. "nicht
-# angegeben"/"keine Angabe"/"unbekannt" bedeuten für JEDES Feld (Tuning,
-# Unfallstatus, Servicehistorie, ...) dasselbe: UNKNOWN, nie eine positive oder
-# negative Behauptung.
-_UNBEKANNT_PHRASEN = re.compile(
-    r"\b(?:nicht\s+angegeben|keine\s+angabe(?:n)?|nicht\s+bekannt|unbekannt|unknown|"
-    r"k\.?\s?a\.?|n/?a)\b", re.I)
+# Tri-State (KaufCheck-Final-Stabilization): die frühere, pro Feld eigene
+# String-Heuristik ist ersetzt durch das EINE zentrale Modell in
+# app/tristate.py. Diese Funktionen bleiben als stabile Fassade (Rückgabewerte
+# unverändert), damit alle bisherigen Konsumenten dieselbe Semantik bekommen:
+# eine ausdrückliche Nichtangabe ("nicht angegeben", "keine eindeutige
+# Angabe", "Unfallfrei: nicht angegeben", "Ob … unfallfrei ist, ist unklar")
+# kann nie mehr zu einer Behauptung werden.
+from app import tristate as _ts
+from app.tristate import ist_unbekannt_angabe  # noqa: F401  (öffentliche API)
 
 
-def ist_unbekannt_angabe(text: str | None) -> bool:
-    """True, wenn der Text (oder das gesamte Feld) explizit als nicht angegeben
-    markiert ist — unabhängig vom Feld. Ein leerer Text ist NICHT dasselbe
-    (schlicht keine Angabe gemacht vs. ausdrücklich als offen markiert), wird
-    aber vom jeweiligen Aufrufer ohnehin bereits als UNKNOWN behandelt."""
-    return bool(text) and bool(_UNBEKANNT_PHRASEN.search(text))
+def unfall_detail(req) -> "_ts.TriState":
+    return _ts.bewerte(_ts.UNFALL, getattr(req, "unfallfrei", None), _ts.request_text(req))
 
 
 def unfall_status(req) -> str:
-    value = (getattr(req, "unfallfrei", None) or "").strip().lower()
-    text = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
-    # Explicit uncertainty also prevents a stale checkbox from claiming accident-free.
-    if re.search(r"unfall(?:historie|status)?[^.!?]{0,60}(?:unbekannt|unklar|nicht vollständig bekannt)", text, re.I):
-        return UNKNOWN
-    if value in _UNFALL_WERTE:
-        return _UNFALL_WERTE[value]
-    if re.search(r"\b(?:unfallschaden|unfallwagen|unfall repariert)\b", text, re.I):
-        return UNFALL
-    if re.search(r"\bunfallfrei\b", text, re.I) and not re.search(r"nicht\s+unfallfrei", text, re.I):
+    z = unfall_detail(req)
+    if z.state == _ts.CLAIMED_ABSENT:
         return UNFALLFREI
+    if z.state == _ts.CLAIMED_PRESENT:
+        return UNFALL
     return UNKNOWN
 
 
 def tuning_status(req) -> str:
-    value = (getattr(req, "tuning", None) or "").strip().lower()
-    if value in ("nein", "kein", "keines", "serie", "serienzustand", "kein tuning"):
-        return "absent"
-    if value and ist_unbekannt_angabe(value):
-        # BEFUND (Production-Run Mercedes C300 W205, §10): die Ausschlussliste
-        # kannte nur EXAKT "unbekannt"/"unknown"/"keine angaben" — eine im
-        # Inserat übliche Formulierung wie "nicht angegeben" fiel dadurch in
-        # den "sonst present"-Zweig darunter und erzeugte eine BEHAUPTETE
-        # Tuning-Präsenz aus einer reinen Nichtangabe. Tri-State-Regel (§10):
-        # "nicht angegeben"/"keine Angabe"/"unbekannt" bedeuten IMMER UNKNOWN,
-        # nie eine positive Behauptung.
-        return UNKNOWN
-    if value:
-        return "present"
-    text = " ".join(str(getattr(req, f, None) or "") for f in ("beschreibung", "freitext"))
-    if re.search(r"\b(?:kein tuning|nicht getunt|keine leistungssteigerung)\b", text, re.I):
-        return "absent"
-    if re.search(r"\b(?:chiptuning|stage\s*[123]|leistungssteigerung durchgeführt|tuning vorhanden)\b", text, re.I):
-        return "present"
-    return UNKNOWN
+    z = _ts.bewerte(_ts.TUNING, getattr(req, "tuning", None), _ts.request_text(req))
+    return {"claimed_absent": "absent", "claimed_present": "present"}.get(z.state, UNKNOWN)
 
-
-_UNFALL_WERTE = {"nein": UNFALL, "false": UNFALL, "unfallschaden": UNFALL, "unfall": UNFALL,
-                 "ja": UNFALLFREI, "true": UNFALLFREI}
 
 
 @dataclass(frozen=True)
@@ -114,6 +84,10 @@ class BekannteFakten:
     unfall: str = UNKNOWN
     vorbesitzer: int | None = None
     servicehistorie: str | None = None
+    # Tri-State-Details aller Inseratsthemen (app/tristate.py). Nur Angaben,
+    # nie ein geprüfter Befund ("verified" existiert in diesem Modell nicht).
+    unfall_eingeschraenkt: bool = False
+    angaben: dict | None = None
 
     @property
     def wartung_widerspruch(self) -> bool:
@@ -123,6 +97,7 @@ class BekannteFakten:
 def aus_request(req) -> BekannteFakten:
     km = getattr(req, "kilometerstand", None)
     unfall = unfall_status(req)
+    angaben = _ts.fakten_aus_request(req)
     return BekannteFakten(
         letzte_wartung=wartungsangabe_aus_request(req),
         kilometerstand=km if isinstance(km, int) else None,
@@ -130,6 +105,8 @@ def aus_request(req) -> BekannteFakten:
         unfall=unfall,
         vorbesitzer=getattr(req, "vorbesitzer", None),
         servicehistorie=servicehistorie_status(req),
+        unfall_eingeschraenkt=angaben["unfall"].eingeschraenkt,
+        angaben={k: v.as_dict() for k, v in angaben.items()},
     )
 
 
@@ -184,7 +161,13 @@ def basistexte(f: BekannteFakten) -> dict[tuple[str, str], tuple[str | None, str
             f"Laut Inserat läuft die HU bis {f.hu_bis}. Den Bericht zeigen lassen: dort "
             f"stehen auch Mängel, die ohne Beanstandung vermerkt wurden.")
 
-    if f.unfall == UNFALLFREI:
+    if f.unfall == UNFALLFREI and f.unfall_eingeschraenkt:
+        texte[("verkaeuferfragen", "unfall")] = (
+            "Welche Schäden, Nachlackierungen oder Reparaturen sind Ihnen bekannt?",
+            "Das Inserat nennt keine bekannten Unfallschäden, schränkt das aber selbst ein "
+            "(„bekannt“). Schäden, Nachlackierungen und Reparaturen ausdrücklich erfragen "
+            "und die Antwort im Kaufvertrag festhalten.")
+    elif f.unfall == UNFALLFREI:
         texte[("verkaeuferfragen", "unfall")] = (
             "Gab es trotz der Angabe „unfallfrei“ Schäden, Nachlackierungen oder ersetzte "
             "Teile?",

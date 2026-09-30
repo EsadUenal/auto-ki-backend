@@ -88,7 +88,13 @@ _req_c300 = KaufCheckRequest(marke="Mercedes-Benz", modell="C-Klasse", baujahr=2
 _identity_c300 = VehicleIdentity.from_check_context(_baureihe_c300, _motor_c300, _req_c300)
 check("A9 Identity.fuel bleibt 'Benzin' (Nutzerwert), keine Mild-Hybrid-Verwechslung",
       (_identity_c300.fuel or "").strip().lower() == "benzin")
-check("A10 Identity.powertrain = MHEV", _identity_c300.powertrain == "MHEV")
+# KaufCheck-Final-Stabilization (Cluster E): ein MHEV-DB-Satz OHNE Motorcode
+# belegt die Elektrifizierung DIESES Fahrzeugs nicht (ENFAL-Zeilen sind nicht
+# nach Modelljahr getrennt). Vorher wurde "MHEV" als sicherer Fakt gesetzt —
+# genau der Production-Befund. Jetzt: mehrdeutig, mögliche Werte ICE/MHEV.
+check("A10 Identity.powertrain mehrdeutig (ICE/MHEV), kein sicheres MHEV",
+      _identity_c300.powertrain is None
+      and set(_identity_c300.field_evidence["powertrain"].get("possible_values") or []) == {"ICE", "MHEV"})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,8 +161,13 @@ print("\n=== D) Inspection-Mapping: COMAND -> Infotainment ===")
 _komp_comand = _komponente("COMAND-System")
 check("D1 COMAND wird der Infotainment-Klasse zugeordnet", _komp_comand is not None
       and _komp_comand["schluessel"] == "infotainment")
-check("D2 Infotainment-Probefahrttext existiert NICHT (kein Motor-/Getriebe-Test)",
-      _komp_comand is not None and _komp_comand.get("probefahrt") is None)
+# Final-Stabilization (Cluster I): Infotainment hat jetzt eine EIGENE,
+# klassenspezifische Fahrbeobachtung (GPS/Audio/Neustart) — nie einen Motor-/
+# Getriebe-/Beschleunigungstext.
+check("D2 Infotainment-Probefahrttext ist infotainment-spezifisch (kein Motor-/Getriebe-Test)",
+      _komp_comand is not None and "GPS" in (_komp_comand.get("probefahrt") or "")
+      and not any(w in (_komp_comand.get("probefahrt") or "").lower()
+                  for w in ("ruckel", "beschleunig", "schalt", "kupplung")))
 check("D3 Besichtigungstext nennt Display/Bedienelemente, keine Beschleunigung",
       _komp_comand is not None and "beschleunig" not in (_komp_comand.get("besichtigung") or "").lower())
 

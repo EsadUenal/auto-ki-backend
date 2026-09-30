@@ -47,6 +47,7 @@ from app.kraftstoff_powertrain import (
     ist_fuel_widerspruch,
 )
 from app.servicehistorie import anzeige as servicehistorie_anzeige
+from app.anzeige import liste_ohne_wiederholung, wert as anzeige_wert
 
 HERKUNFT_INSERAT = "inserat"
 HERKUNFT_BERECHNET = "berechnet"
@@ -54,6 +55,16 @@ HERKUNFT_DB = "db"
 HERKUNFT_MARKT = "markt"
 HERKUNFT_AMTLICH = "amtlich"
 HERKUNFT_KEINE = "keine"
+HERKUNFT_WEB = "web"
+
+
+def _web_bestaetigt(identity, feld: str) -> bool:
+    """Ob ein Feld der kanonischen Identität durch Webquellen belegt ist."""
+    if identity is None:
+        return False
+    fe = (getattr(identity, "field_evidence", None) or {}).get(feld) or {}
+    return bool(getattr(identity, feld, None)) and (
+        fe.get("primary_source") == "web" or "web" in (fe.get("confirmed_by") or []))
 
 _HERKUNFT_LABEL = {
     HERKUNFT_INSERAT: "Inserat",
@@ -61,6 +72,7 @@ _HERKUNFT_LABEL = {
     HERKUNFT_DB: "ENFAL-Fahrzeugdaten",
     HERKUNFT_MARKT: "Marktvergleich",
     HERKUNFT_AMTLICH: "gesetzliche Regel",
+    HERKUNFT_WEB: "Webquellen",
 }
 
 PASST = "✓ passt"
@@ -102,7 +114,8 @@ _POWERTRAIN_LABEL = {"MHEV": "Mild-Hybrid", "PHEV": "Plug-in-Hybrid", "BEV": "El
 
 def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                 hu=None, laufleistungskontext=None, price_assessment=None,
-                markt_verfuegbar: bool = False, fakten=None) -> list[Vergleichszeile]:
+                markt_verfuegbar: bool = False, fakten=None,
+                identity=None) -> list[Vergleichszeile]:
     """Die Vergleichszeilen aus strukturierten Daten, jede mit Herkunft."""
     zeilen: list[Vergleichszeile] = []
 
@@ -117,6 +130,14 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
             drin = von <= baujahr <= (bis or 9999)
             zeilen.append(Vergleichszeile("Baujahr", str(baujahr), ref, HERKUNFT_DB,
                                           PASST if drin else WEICHT_AB))
+        elif _web_bestaetigt(identity, "generation"):
+            gen = identity.generation
+            detail = identity.field_evidence["generation"].get("detail")
+            zeilen.append(Vergleichszeile(
+                "Baujahr", str(baujahr),
+                f"Generation {gen}" + (f" ({detail})" if detail else ""), HERKUNFT_WEB,
+                PASST if "web" in (identity.field_evidence.get("year", {}).get("confirmed_by") or [])
+                else NICHT_BEWERTBAR))
         else:
             zeilen.append(Vergleichszeile("Baujahr", str(baujahr), None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))
@@ -135,17 +156,29 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
     # Motor/Leistung gegen die erkannte Variante.
     ps = getattr(req, "leistung_ps", None)
     motor_text = (getattr(req, "motor", None) or "").strip()
+    fe = getattr(identity, "field_evidence", None) or {}
     if ps or motor_text:
-        angabe = ", ".join(filter(None, [motor_text or None, f"{ps} PS" if ps else None]))
+        # Gemeinsamer Formatter: "2.0 TFSI, 190 PS" + "190 PS" -> einmal.
+        angabe = liste_ohne_wiederholung(motor_text or None, f"{ps} PS" if ps else None)
         if motor_match:
-            ref = ", ".join(filter(None, [motor_match.get("bezeichnung"),
-                                          motor_match.get("motorcode"),
+            # Motorcode(s) nur so, wie die kanonische Identität sie auflöst:
+            # mehrere DB-Codes sind "mögliche Motorcodes", nie DIE Identität.
+            code_fe = fe.get("engine_code") or {}
+            if code_fe.get("verification_state") == "ambiguous":
+                code = anzeige_wert("engine_code", None, code_fe)
+            else:
+                code = getattr(identity, "engine_code", None) if identity else motor_match.get("motorcode")
+            name = getattr(identity, "engine_name", None) if identity else motor_match.get("bezeichnung")
+            ref = liste_ohne_wiederholung(name, code,
                                           f"{motor_match.get('leistung_ps')} PS"
-                                          if motor_match.get("leistung_ps") else None]))
+                                          if motor_match.get("leistung_ps") else None)
             db_ps = motor_match.get("leistung_ps")
             einordnung = PASST if (not ps or not db_ps or ps == db_ps) else WEICHT_AB
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, ref, HERKUNFT_DB,
                                           einordnung))
+        elif _web_bestaetigt(identity, "horsepower"):
+            zeilen.append(Vergleichszeile("Motor/Leistung", angabe,
+                                          f"{identity.horsepower} PS", HERKUNFT_WEB, PASST))
         else:
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))
@@ -155,28 +188,44 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
     # (app/kraftstoff_powertrain.py). Ein Benzin-Mild-Hybrid widerspricht der
     # Angabe "Benzin" nicht — verglichen wird deshalb ausschließlich die
     # Kraftstoffart, nie der rohe DB-Wert.
+    #
+    # BEFUND (Production-Run Mercedes C300 W205): "Benzin -> Mild-Hybrid
+    # (Mild-Hybrid) -> nicht bewertbar". Ließ sich aus dem DB-Mild-Hybrid-
+    # Eintrag keine Kraftstoffart ableiten, fiel die Referenz auf den ROHEN
+    # DB-Wert zurück — ein Antriebsartwert stand in der Kraftstoffspalte.
+    # Jetzt: die Kraftstoffzeile zeigt als Referenz AUSSCHLIESSLICH eine
+    # Kraftstoffart; ohne ableitbare Kraftstoffart gibt es keine Referenz.
+    # Die Antriebsart steht in einer eigenen Zeile aus der kanonischen
+    # Identität (inklusive "nicht sicher bestimmbar").
     kraftstoff = getattr(req, "kraftstoff", None)
     if kraftstoff:
         k_req = fuel_aus_freitext(kraftstoff)
         angabe = _KRAFTSTOFF_LABEL.get(k_req, kraftstoff)
         db_roh = (motor_match or {}).get("kraftstoff")
-        if motor_match and db_roh:
-            k_db = canonical_fuel(db_roh, motor_match.get("bezeichnung"), motor_match.get("motorcode"))
-            powertrain = canonical_powertrain(db_roh)
-            ref = _KRAFTSTOFF_LABEL.get(k_db, db_roh)
-            if powertrain and powertrain != POWERTRAIN_ICE:
-                ref += f" ({_POWERTRAIN_LABEL.get(powertrain, powertrain)})"
-            if k_req and k_db:
-                einordnung = PASST if not ist_fuel_widerspruch(k_req, k_db) else WEICHT_AB
-            else:
-                # Kraftstoffart nicht auf beiden Seiten ableitbar (z.B. Mild-
-                # Hybrid ohne erkennbares TDI/TFSI-Signal) — keine Bewertung
-                # statt einer geratenen.
-                einordnung = NICHT_BEWERTBAR
-            zeilen.append(Vergleichszeile("Kraftstoff", angabe, ref, HERKUNFT_DB, einordnung))
+        k_db = (canonical_fuel(db_roh, motor_match.get("bezeichnung"), motor_match.get("motorcode"))
+                if motor_match and db_roh else None)
+        if k_db:
+            einordnung = (PASST if not ist_fuel_widerspruch(k_req, k_db) else WEICHT_AB) \
+                if k_req else NICHT_BEWERTBAR
+            zeilen.append(Vergleichszeile("Kraftstoff", angabe, _KRAFTSTOFF_LABEL.get(k_db, k_db),
+                                          HERKUNFT_DB, einordnung))
         else:
             zeilen.append(Vergleichszeile("Kraftstoff", angabe, None, HERKUNFT_KEINE,
-                                          NICHT_BEWERTBAR))
+                                          NICHT_BEWERTBAR,
+                                          ohne_referenz=("Kraftstoffart in ENFAL-Daten nicht "
+                                                         "getrennt erfasst") if db_roh else KEINE_REFERENZ))
+
+    # Antriebsart / Elektrifizierung — eigene Dimension, nie mit dem
+    # Kraftstoff verglichen.
+    pt_fe = fe.get("powertrain") or {}
+    if identity is not None and pt_fe.get("verification_state") not in (None, "unknown"):
+        pt_anzeige = anzeige_wert("powertrain", getattr(identity, "powertrain", None), pt_fe)
+        vom_nutzer = pt_fe.get("primary_source") == "user"
+        referenz = None if vom_nutzer else pt_anzeige
+        zeilen.append(Vergleichszeile(
+            "Antriebsart", pt_anzeige if vom_nutzer else "keine Angabe im Inserat",
+            referenz, HERKUNFT_DB if referenz else HERKUNFT_KEINE,
+            PASST if pt_fe.get("verification_state") == "user_confirmed" else NICHT_BEWERTBAR))
 
     # Getriebe gegen die Getriebeoptionen der Variante.
     getriebe = getattr(req, "getriebe", None)

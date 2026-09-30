@@ -78,7 +78,9 @@ _TIER_UNBEKANNT = 0
 _TIER_GESPERRT = -1000   # Social Media — wird zusätzlich hart herausgefiltert
 
 _AMTLICH_DOMAINS = frozenset({
-    "kba.de", "tuev-sued.de", "tuvsud.com", "tuev-nord.de", "tuv.com",
+    # kba-online.de: amtliche KBA-Rückrufdatenbank (Final-Stabilization) — der
+    # Teilstring "kba.de" trifft diese Domain nicht.
+    "kba.de", "kba-online.de", "tuev-sued.de", "tuvsud.com", "tuev-nord.de", "tuv.com",
     "tuev-rheinland.de", "dekra.de", "dekra-akademie.de",
 })
 _FACHMEDIEN_DOMAINS = frozenset({

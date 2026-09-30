@@ -33,9 +33,15 @@ def check(name: str, bedingung: bool) -> None:
 # ── Testfahrzeug: echte DB-Baureihe mit Schwachstellen UND Rueckruf ──────────
 # VW Passat B6 (Baujahr 2009) hat in der Fahrzeug-DB reale Schwachstellen; damit
 # ist der technische Teil des Checks belegbar vorhanden und nicht bloss leer.
+# KaufCheck-Final-Stabilization (Cluster J): "2.0 TDI" allein trifft im B6 ZWEI
+# Leistungsstufen (140/170 PS). Ohne aufgelöste Motorisierung erlaubt die
+# zentrale Empfehlungs-Policy keine Freigabe mehr ("Analyse eingeschränkt") —
+# dieser Test prüft aber die MARKT-Entkopplung eines vollständig identifizierten
+# Fahrzeugs. Die Leistung macht die Variante eindeutig.
 REQ = KaufCheckRequest(
     marke="Volkswagen", modell="Passat", baujahr=2009,
-    kilometerstand=180_000, motor="2.0 TDI", kraftstoff="Diesel", preis_eur=6_500,
+    kilometerstand=180_000, motor="2.0 TDI", kraftstoff="Diesel", leistung_ps=140,
+    preis_eur=6_500,
 )
 
 

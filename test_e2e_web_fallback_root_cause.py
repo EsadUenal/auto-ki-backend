@@ -100,14 +100,56 @@ async def run_all():
     check("B2 Web-Identitaet im Ergebnis vorhanden", res_b["web_identitaet"] is not None)
     check("B3 technical_coverage nennt 'web'", res_b["technical_coverage"] == "web")
     check("B4 Datenbasis nennt Webrecherche", any("Webrecherche" in s for s in res_b["datenbasis"]))
-    check("B5 Bericht-Ueberschrift 'Fahrzeug erkannt' (Web hat Identitaet bestaetigt)",
-          "## Fahrzeug erkannt" in res_b["bericht"])
-    check("B6 Empfehlung ist NICHT 'unbekannt' (Web-Identitaet erfuellt den Floor)",
-          res_b["empfehlung"] != "unbekannt")
+    # KaufCheck-Final-Stabilization (Cluster J): B5/B6 sicherten bisher die
+    # FALSCHE Aussage ab — "Marke+Modell auf zwei Domains" galt als bestätigte
+    # Identität und erlaubte "KAUFEN NACH BESICHTIGUNG", obwohl Generation und
+    # Motorisierung unbelegt blieben (genau der Production-Befund Mazda MX-5).
+    # Diese Fixture belegt NUR Marke/Modell (keine Generation, keine Motorangabe
+    # im Request) -> eingeschränkte Analyse. Der positive Fall steht in B9-B11.
+    check("B5 Bericht-Ueberschrift 'Fahrzeugidentität eingeschränkt' (nur Marke/Modell belegt)",
+          "## Fahrzeugidentität eingeschränkt" in res_b["bericht"])
+    check("B6 Empfehlung 'unbekannt' + LIMITED_ANALYSIS (Identitäts-Floor im echten Pfad)",
+          res_b["empfehlung"] == "unbekannt"
+          and res_b["recommendation_state"] == "LIMITED_ANALYSIS")
     check("B7 vehicle_identity.fuel wurde aus Web ergaenzt (benzin)",
           (res_b["vehicle_identity"].get("fuel") or "").lower() == "benzin")
     check("B8 Bericht nennt den Verdeckmechanismus NICHT als sicheren Fakt ohne Beleg-Hinweis "
           "(Datenqualitaet-Zeile vorhanden)", "Datenqualität" in res_b["bericht"])
+
+    # B9-B11: dieselbe Pipeline, aber die Identitätsphase belegt Generation und
+    # Motorisierung aus Quellentexten -> normale Empfehlung ist wieder erlaubt.
+    fx_voll = fixtures_mazda_mx5_gut()
+    fx_voll["identitaet"] = [
+        {"url": "https://www.adac.de/mazda-mx-5-nd", "title": "Mazda MX-5 ND (seit 2015)",
+         "content": "Die 4. Generation des Mazda MX-5 (ND, seit 2015): 2.0 SKYACTIV-G mit 184 PS, "
+                    "Benziner, Hinterradantrieb, 6-Gang-Schaltgetriebe."},
+        {"url": "https://www.auto-motor-und-sport.de/mazda-mx-5-nd", "title": "Mazda MX-5 ND im Test",
+         "content": "Mazda MX-5 ND (seit 2015) mit 2.0 SKYACTIV-G und 184 PS, Heckantrieb."},
+    ]
+    provider_b2 = FixtureTechnicalResearchProvider(fx_voll)
+
+    async def recherchiere_b2(req, baureihe_roh, identitaet, baureihe_gegatet, motor_match):
+        return await recherchiere_technisch(req, baureihe_roh, identitaet, baureihe_gegatet,
+                                            motor_match, provider=provider_b2)
+
+    kc.recherchiere_technisch = recherchiere_b2
+    kc.tavily_search_with_fallback = _no_market
+    kc.call_gemini_json = _stub_gemini
+    try:
+        res_b2 = await kc.run_kaufcheck(KaufCheckRequest(
+            marke="Mazda", modell="MX-5", baujahr=2019, motor="2.0 SKYACTIV-G", leistung_ps=184,
+            kraftstoff="Benzin", getriebe="Schaltgetriebe", kilometerstand=58_700, preis_eur=22_900))
+    finally:
+        kc.recherchiere_technisch = orig_recherchiere
+        kc.tavily_search_with_fallback = orig_tavily
+        kc.call_gemini_json = orig_gemini
+    check("B9 Web-Generation (ND) erreicht die kanonische Identität",
+          res_b2["vehicle_identity"].get("generation") == "ND")
+    check("B10 Identität belegt -> normale Empfehlung erlaubt",
+          res_b2["recommendation_state"] == "NORMAL" and res_b2["empfehlung"] != "unbekannt")
+    check("B11 Überschrift 'über Webquellen plausibilisiert', Datenbasis ohne ENFAL-DB",
+          "## Fahrzeug über Webquellen plausibilisiert" in res_b2["bericht"]
+          and "ENFAL-Fahrzeugdatenbank" not in res_b2["datenbasis"] and res_b2["quelle"] == "web")
 
     # ══════════════════════════════════════════════════════════════════════
     print("\n=== C) End-to-End Web Failure (DB-miss + kein Web-Beleg) ===")
@@ -133,8 +175,8 @@ async def run_all():
     check("C2 keine Web-Identitaet uebernommen", res_c["web_identitaet"] is None)
     check("C3 Empfehlung ist 'unbekannt' (Identitaets-Floor greift, weder DB noch Web)",
           res_c["empfehlung"] == "unbekannt")
-    check("C4 Bericht-Ueberschrift 'Fahrzeugidentität eingeschränkt' (kein falsches 'erkannt')",
-          "Fahrzeugidentität eingeschränkt" in res_c["bericht"])
+    check("C4 Bericht-Ueberschrift 'Fahrzeugidentität nicht bestätigt' (kein falsches 'erkannt')",
+          "Fahrzeugidentität nicht bestätigt" in res_c["bericht"])
     check("C5 'Fahrzeug erkannt' erscheint NICHT im Bericht",
           "## Fahrzeug erkannt" not in res_c["bericht"])
     check("C6 Datenbasis nennt KEINE Webrecherche (keine tatsaechlich verwendete Web-Quelle)",
