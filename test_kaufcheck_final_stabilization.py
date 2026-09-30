@@ -565,6 +565,68 @@ check("M4 Antriebsklasse behält das Text-Tor",
       _probefahrt_symptom(None, "Ruckeln beim Beschleunigen") is not None)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== N) Resume-Audit: Achsen, Floor, Anzeige-Konsistenz ===")
+from app.car_lookup import _motor_kraftstoff_kompatibel
+from app.empfehlungs_floor import darf_floor_tragen
+from app.kraftstoff_powertrain import fahrzeug_achsen, scope_passt
+from app.motor_applicability import schwachstelle_applicability
+from app.recall_filter import rueckruf_applicability
+
+m_phev = motor("n-1", "Alpha e", "QP20 + E-Motor", "Plug-in-Hybrid", 290, getriebe='["Automatik"]')
+m_ice = motor("n-2", "Alpha i", "QP20", "Benzin", 250, getriebe='["Automatik"]')
+m_mh_t = motor("n-3", "2.0 TFSI (40)", "QA1, QB2", "Mild-Hybrid", 190)
+r_hv = {"betroffene_baujahre": "2020 (Plug-in-Hybrid)", "kba_referenz": None,
+        "mangel": "Zellen des Hochvoltspeichers können einen Kurzschluss auslösen."}
+app_m = lambda m, user: {**m, "kraftstoff": user or m["kraftstoff"], "_kraftstoff_db": m["kraftstoff"],
+                         "_kraftstoff_nutzer": user}
+check("N1 HV-Rückruf, Benzin-PHEV, Nutzer sagt 'Benzin' -> bleibt (kein Achsen-Mix)",
+      rueckruf_applicability(r_hv, True, "", app_m(m_phev, "Benzin"))[0] != "incompatible")
+check("N2 HV-Rückruf, Verbrenner (DB 'Benzin') -> entfernt",
+      rueckruf_applicability(r_hv, True, "", app_m(m_ice, "Benzin"))[0] == "incompatible")
+check("N3 HV-Rückruf, nur Nutzerangabe 'Benzin' ohne Motor -> unklar, nicht ausgeschlossen",
+      rueckruf_applicability(r_hv, True, "", {"kraftstoff": "Benzin"})[0] == "unclear")
+i_n4 = ident(baureihe([m_phev]), m_phev, req(kraftstoff="Benzin", leistung_ps=290))
+check("N4 HV-Rückruf mit kanonischer Identität (Benzin + PHEV) -> bleibt",
+      rueckruf_applicability(r_hv, True, "", app_m(m_phev, "Benzin"), identity=i_n4)[0] != "incompatible")
+check("N5 Schwachstelle '(Benzinmotoren)' an Benzin-Mild-Hybrid -> nicht ausgeschlossen",
+      schwachstelle_applicability({"bauteil": "Steuerkette (Benzinmotoren)"}, m_mh_t,
+                                  {"motoren": [m_mh_t]})[0] != "incompatible")
+check("N6 Schwachstelle '(Dieselmotoren)' an Benzin-Mild-Hybrid -> ausgeschlossen",
+      schwachstelle_applicability({"bauteil": "AGR-Ventil (Dieselmotoren)"}, m_mh_t,
+                                  {"motoren": [m_mh_t]})[0] == "incompatible")
+check("N7 Motorzuordnung: Nutzer 'Benzin' schließt die PHEV-Zeile nicht aus",
+      _motor_kraftstoff_kompatibel(m_phev, "benzin"))
+check("N8 Motorzuordnung: Nutzer 'Diesel' schließt die Benzinzeile aus",
+      not _motor_kraftstoff_kompatibel(m_ice, "diesel"))
+check("N9 Mild-Hybrid-Scope bei mehrdeutiger Antriebsart -> unklar",
+      scope_passt("mild", "benzin", frozenset({"ICE", "MHEV"})) is None)
+check("N10 Nutzertext 'Benzin' sagt nichts über die Elektrifizierung",
+      fahrzeug_achsen(nutzer_text="Benzin") == ("benzin", None))
+ins_bedingt = Insight(id="x", kategorie="schwachstelle", titel="Falls EDC vorhanden: EDC",
+                      beschreibung="x", confidence="hoch", trust="verified", presence_state="unknown",
+                      schweregrad="hoch")
+check("N11 Risiko mit unbekannter Präsenz darf die Empfehlung nicht verschärfen",
+      not darf_floor_tragen(ins_bedingt)
+      and darf_floor_tragen(ins_bedingt.model_copy(update={"presence_state": None})))
+check("N12 'Spannungswandler' ist keine Automatik-Komponente",
+      praesenz("Spannungswandler", i_manuell)[1] is None
+      and praesenz("Drehmomentwandler", i_manuell)[0] == ABSENT)
+check("N13 Motor-Zeile: Variantenname nicht als 'präzisiert' der Nutzerangabe",
+      "ENFAL-Referenzvariante zur Angabe im Inserat („2.0 Q“)" in feldzeile(
+          "Motor", "engine_name", "Alpha i",
+          ident(baureihe([m_ice]), m_ice, req(motor="2.0 Q", leistung_ps=250)).field_evidence["engine_name"]))
+zeilen_web = baue_zeilen(req(kraftstoff="Benzin", getriebe="manuell"), None, None, identity=i_web)
+kz_web = [z for z in zeilen_web if z.kriterium == "Kraftstoff"]
+check("N14 Vergleichstabelle zeigt Web-Widerspruch zum Kraftstoff statt 'keine Vergleichsdaten'",
+      kz_web and "Diesel" in (kz_web[0].zelle_referenz() or "") and "weicht" in kz_web[0].einordnung)
+fk_t1 = _extrahiere_fakten([t("https://www.kba.de/r", "Rückruf Testmarke Alpha",
+                              "Rückruf: Fahrzeuge, gebaut von 2017 bis 2021, die Bremse kann ausfallen.")],
+                           "rueckruf", marke="Testmarke", modell="Alpha", baujahr=2019)
+check("N15 Einzelne amtliche Quelle (TIER 1) -> mindestens 'mittel'",
+      fk_t1 and fk_t1[0].confidence == "mittel")
+
+
 print("\n" + "=" * 60)
 print(f"{_ANZAHL['n']} Prüfungen")
 if _FEHLER:

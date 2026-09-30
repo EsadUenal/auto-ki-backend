@@ -664,6 +664,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         domains = len({_domain_von(q.url or "") for q in quellen})
         bester = max(score_domain(q.url or "") for q in quellen)
         confidence = _confidence_aus_domains(domains, bester)
+        # Quellenstufe zählt, nicht nur die Anzahl: eine einzelne amtliche bzw.
+        # Herstellerquelle (TIER 1) ist belastbarer als ein einzelner Blog und
+        # steht mindestens auf "mittel". Eine vage Eingrenzung senkt unten
+        # trotzdem wieder auf "niedrig".
+        if confidence == "niedrig" and any(_tier(q.url or "") == 1 for q in quellen):
+            confidence = "mittel"
         geltung, bereich = None, None
         if e["zeitraum"] is not None:
             von, bis = e["zeitraum"]

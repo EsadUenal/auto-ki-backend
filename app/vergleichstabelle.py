@@ -66,6 +66,20 @@ def _web_bestaetigt(identity, feld: str) -> bool:
     return bool(getattr(identity, feld, None)) and (
         fe.get("primary_source") == "web" or "web" in (fe.get("confirmed_by") or []))
 
+
+def _web_vergleich(identity, feld: str) -> tuple[str, bool] | None:
+    """(Webwert, passt zur Nutzerangabe) — nur wenn Webquellen das Feld belegen
+    oder ihm widersprechen. Webquellen bestätigen, sie ersetzen die Angabe nie."""
+    if identity is None:
+        return None
+    fe = (getattr(identity, "field_evidence", None) or {}).get(feld) or {}
+    if fe.get("web_conflict"):
+        return str(fe["web_conflict"]), False
+    if _web_bestaetigt(identity, feld):
+        return str(getattr(identity, feld)), True
+    return None
+
+
 _HERKUNFT_LABEL = {
     HERKUNFT_INSERAT: "Inserat",
     HERKUNFT_BERECHNET: "berechnet für dieses Fahrzeug",
@@ -209,6 +223,13 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                 if k_req else NICHT_BEWERTBAR
             zeilen.append(Vergleichszeile("Kraftstoff", angabe, _KRAFTSTOFF_LABEL.get(k_db, k_db),
                                           HERKUNFT_DB, einordnung))
+        elif _web_vergleich(identity, "fuel"):
+            # DB-Miss: dieselbe Web-Beleglage wie im Identitätsblock des Berichts
+            # (sonst stünde oben "bestätigt durch Webquellen", hier "keine
+            # Vergleichsdaten").
+            ref_w, passt_w = _web_vergleich(identity, "fuel")
+            zeilen.append(Vergleichszeile("Kraftstoff", angabe, _KRAFTSTOFF_LABEL.get(ref_w, ref_w),
+                                          HERKUNFT_WEB, PASST if passt_w else WEICHT_AB))
         else:
             zeilen.append(Vergleichszeile("Kraftstoff", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR,
@@ -244,6 +265,12 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                 einordnung = PASST if getriebe == db_arten else WEICHT_AB
             zeilen.append(Vergleichszeile("Getriebe", angabe, optionen_text, HERKUNFT_DB,
                                           einordnung))
+        elif _web_vergleich(identity, "transmission"):
+            ref_w, passt_w = _web_vergleich(identity, "transmission")
+            detail = ((getattr(identity, "field_evidence", None) or {}).get("transmission") or {}).get("detail")
+            ref_text = (getriebe_anzeige(ref_w) or ref_w) + (f" ({detail})" if detail else "")
+            zeilen.append(Vergleichszeile("Getriebe", angabe, ref_text, HERKUNFT_WEB,
+                                          PASST if passt_w else WEICHT_AB))
         else:
             zeilen.append(Vergleichszeile("Getriebe", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))

@@ -111,7 +111,7 @@ def wert(feld: str, value, fe: dict | None = None) -> str:
     return str(value)
 
 
-def herkunft(fe: dict | None) -> str:
+def herkunft(fe: dict | None, feld: str | None = None) -> str:
     """Herkunftssatz eines Felds — die Nutzereingabe verliert nie ihre Herkunft."""
     fe = fe or {}
     state = fe.get("verification_state") or {
@@ -123,6 +123,12 @@ def herkunft(fe: dict | None) -> str:
         return "laut Inserat/Nutzereingabe, nicht unabhängig bestätigt"
     if state == "user_confirmed":
         return "laut Inserat/Nutzereingabe; bestätigt durch " + " und ".join(bestaetigt or ["ENFAL-Fahrzeugdaten"])
+    if state == "user_refined" and feld == "engine_name":
+        # Der DB-Wert ist hier der NAME der Referenzvariante ("M4", "C300"), keine
+        # Präzisierung der Inseratsangabe ("S55B30 3.0 Biturbo"): beide bleiben
+        # getrennt sichtbar.
+        return ("ENFAL-Referenzvariante zur Angabe im Inserat"
+                + (f" („{raw}“)" if raw else ""))
     if state == "user_refined":
         zusatz = f" („{raw}“)" if raw else ""
         weitere = [b for b in bestaetigt if b != "ENFAL-Fahrzeugdaten"]
@@ -153,10 +159,10 @@ def feldzeile(label: str, feld: str, value, fe: dict | None) -> str:
     if anzeige.startswith("nicht ") or (fe or {}).get("verification_state") in (None, "unknown"):
         if (fe or {}).get("verification_state") in (None, "unknown"):
             return f"- {label}: nicht sicher bekannt."
-        return f"- {label}: {anzeige} ({herkunft(fe)})."
+        return f"- {label}: {anzeige} ({herkunft(fe, feld)})."
     web_konflikt = (fe or {}).get("web_conflict")
     zusatz = f"; Webquellen nennen abweichend „{web_konflikt}“" if web_konflikt else ""
-    return f"- {label}: {anzeige} ({herkunft(fe)}{zusatz})."
+    return f"- {label}: {anzeige} ({herkunft(fe, feld)}{zusatz})."
 
 
 # ── Fahrzeugtitel ────────────────────────────────────────────────────────────
