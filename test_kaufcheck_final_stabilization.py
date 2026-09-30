@@ -729,6 +729,37 @@ check("P3 Rückrufanfragen ohne Baujahr (Veröffentlichung != Baujahr), Generati
       len(rr_q) == 2 and all("2019" not in q for q in rr_q) and any("T2" in q for q in rr_q))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== Q) Web-Rückruf: Geltungsbereich pro Artikel ===")
+ART = ("Rückruf für die Testmarke Alpha T4: Probleme an der Kraftstoffleitung. Betroffen sind "
+       "ausschließlich Modelle mit 1,5-Liter-Benzinmotor aus den Baujahren 2015 bis 2018.")
+
+
+def _rr(text, baujahr, hub=None, ps=None):
+    ab: list[dict] = []
+    fk = _extrahiere_fakten([t("https://www.auto-motor-und-sport.de/rr", "Testmarke Alpha Rückruf", text)],
+                            "rueckruf", marke="Testmarke", modell="Alpha", baujahr=baujahr, abgelehnt=ab,
+                            hubraum=hub, leistung_ps=ps)
+    return fk, ab
+
+
+fk_q1, ab_q1 = _rr(ART, 2019, "2.0")
+check("Q1 Scope im Nachbarsatz schließt das Baujahr aus -> kein Rückruf-Fakt",
+      fk_q1 == [] and any(a["grund"] == "baujahr_ausserhalb_artikel" for a in ab_q1))
+fk_q2, _ = _rr(ART, 2016, "1.5")
+check("Q2 Scope im Nachbarsatz deckt das Fahrzeug -> 'vehicle_possible' (FIN-first)",
+      fk_q2 and fk_q2[0].applicability == "vehicle_possible")
+fk_q3, ab_q3 = _rr(ART.replace("2015 bis 2018", "2015 bis 2020"), 2019, "2.0")
+check("Q3 Hubraum-Scope (1,5 l) schließt einen 2,0-Liter aus",
+      fk_q3 == [] and any(a["grund"] == "hubraum_ausserhalb_artikel" for a in ab_q3))
+check("Q4 Bauteil außerhalb des Prüfplan-Vokabulars geht bei Rückrufen nicht verloren",
+      fk_q2 and fk_q2[0].bauteil == "Kraftstoffleitung")
+fk_q5, _ = _rr("Rückruf für die Testmarke Alpha wegen der Kraftstoffleitung. Fahrzeuge mit 2,0-Liter-Motor "
+               "aus 2019 sind nicht betroffen.", 2019, "2.0")
+check("Q5 Ausdrückliche Ausnahme ('nicht betroffen') ist kein Einschluss-Scope",
+      not fk_q5 or fk_q5[0].applicability == "series_only")
+
+
 print("\n" + "=" * 60)
 print(f"{_ANZAHL['n']} Prüfungen")
 if _FEHLER:

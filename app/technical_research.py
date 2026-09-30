@@ -701,10 +701,69 @@ def _fremde_generation(r: dict, modell: str | None, generation: str | None) -> b
     return bool(codes) and generation.upper() not in codes
 
 
+# Generische Bauteil-Endungen (deutsche Komposita) für Rückrufsätze, deren
+# Bauteil nicht im Prüfplan-Vokabular steht. Keine Fahrzeug- oder Markenwörter.
+_BAUTEIL_ENDUNGEN = ("leitung", "pumpe", "geraet", "gerät", "einheit", "modul", "airbag", "gurt",
+                     "schloss", "bremse", "lenkung", "sensor", "kabel", "kabelbaum", "tank",
+                     "schlauch", "ventil", "dichtung", "schraube", "mutter", "achse", "feder",
+                     "stange", "lager", "gelenk", "getriebe", "kupplung", "leuchte", "scheinwerfer",
+                     "batterie", "speicher", "software", "verschraubung", "halterung", "befestigung",
+                     "rahmen", "sitz", "lehne", "generator", "steuerung", "regelung", "anlage")
+
+
+def _rueckruf_bauteil(satz: str) -> str | None:
+    """Erstes Kompositum mit Bauteil-Endung im Satz ("Kraftstoffleitungs-Rückruf"
+    -> "Kraftstoffleitung")."""
+    for wort in re.findall(r"[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜa-zäöüß][a-zäöüß]+)*", satz or ""):
+        for teil in wort.split("-"):
+            kl = teil.lower()
+            for kandidat in (kl, kl[:-1] if kl.endswith("s") else None):
+                if kandidat and len(kandidat) >= 5 and kandidat.endswith(_BAUTEIL_ENDUNGEN):
+                    return teil[:1].upper() + (teil[1:-1] if kandidat != kl else teil[1:])
+    return None
+
+
+_RE_BETROFFEN = re.compile(r"betroffen|betrifft|betreffen|gebaut|produziert|hergestellt"
+                           r"|produktionszeitraum|baujahr|modelljahr", re.IGNORECASE)
+_RE_NICHT_BETROFFEN = re.compile(r"nicht\s+betroffen|nicht\s+betrifft|ausgenommen", re.IGNORECASE)
+
+
+def _artikel_geltung(text: str, baujahr: int | None, hubraum=None,
+                     leistung_ps: int | None = None) -> tuple[bool | None, str | None, tuple | None]:
+    """Geltungsbereich eines Rückruf-ARTIKELS, nicht nur eines Satzes.
+
+    BEFUND (realer Web-Smoke-Test, DB-Miss): der Rückrufsatz ("Rückruf wegen der
+    Kraftstoffleitung") und der Scope-Satz ("Betroffen sind ausschließlich
+    Modelle mit 1,5-Liter-Benzinmotor aus den Baujahren 2015 bis 2018") stehen
+    in verschiedenen Sätzen. Die satzweise Prüfung sah den Scope nie; aus einem
+    anderen Satz desselben Artikels entstand ein "series_only"-Rückruf.
+
+    Gelesen werden nur Sätze mit Betroffenheits-/Produktionsbezug (ohne
+    ausdrückliche Ausnahme "nicht betroffen"). Rückgabe (passt, grund, fenster):
+    False = der Artikel schließt dieses Fahrzeug aus (Baujahr, Hubraum oder
+    Leistung), True = ein Fenster deckt das Baujahr, None = offen."""
+    from app.recall_filter import _RE_SCOPE_HUBRAUM, _RE_SCOPE_PS
+    saetze = [s for s in _saetze(text) if _RE_BETROFFEN.search(s) and not _RE_NICHT_BETROFFEN.search(s)]
+    fenster = [z for z in (zeitraum(s) for s in saetze) if z]
+    deckend = [z for z in fenster if _im_zeitraum(baujahr, z)] if baujahr else []
+    if baujahr and fenster and not deckend:
+        return False, "baujahr_ausserhalb_artikel", fenster[0]
+    hubs = {h.replace(",", ".") for s in saetze for h in _RE_SCOPE_HUBRAUM.findall(s)}
+    if hubraum and hubs and str(hubraum).replace(",", ".") not in hubs:
+        return False, "hubraum_ausserhalb_artikel", None
+    ps_scope = {int(p) for s in saetze for p in _RE_SCOPE_PS.findall(s)}
+    if leistung_ps and ps_scope and not any(abs(int(leistung_ps) - p) <= 3 for p in ps_scope):
+        return False, "leistung_ausserhalb_artikel", None
+    if deckend:
+        return True, None, deckend[0]
+    return None, None, None
+
+
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        marke: str | None = None, modell: str | None = None,
                        baujahr: int | None = None, generation: str | None = None,
-                       abgelehnt: list[dict] | None = None) -> list[WebFakt]:
+                       abgelehnt: list[dict] | None = None, hubraum=None,
+                       leistung_ps: int | None = None) -> list[WebFakt]:
     """Strukturierte Fakten aus Snippets — je Bauteil höchstens einer.
 
     Jeder Treffer muss das Zielfahrzeug betreffen (Entity-Alignment, inkl.
@@ -734,6 +793,13 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         if _fremde_generation(r, modell, generation):
             abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "andere_generation"})
             continue
+        artikel_passt, artikel_fenster = None, None
+        if kategorie == "rueckruf":
+            artikel_passt, grund_a, artikel_fenster = _artikel_geltung(
+                f"{r.get('title') or ''}. {r.get('content') or ''}", baujahr, hubraum, leistung_ps)
+            if artikel_passt is False:
+                abgelehnt.append({"url": url, "kategorie": kategorie, "grund": grund_a})
+                continue
         for satz in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}"):
             if grund == "schwach" and not _satz_nennt_modell(satz, modell):
                 continue
@@ -746,16 +812,27 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 continue
             z = zeitraum(satz) if kategorie != "wartung" else None
             passt = _im_zeitraum(baujahr, z)
+            if passt is None and artikel_passt is True:
+                # Der Satz selbst nennt kein Fenster, der Artikel schon.
+                passt, z = True, artikel_fenster
             if passt is False:
                 abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "baujahr_ausserhalb",
                                   "satz": satz[:120]})
                 continue
             vage = _RE_VAGE.search(satz) if kategorie != "rueckruf" else None
-            for muster, schluessel in vokabular.items():
-                if muster not in n:
-                    continue
+            treffer_voc = [(m, s) for m, s in vokabular.items() if m in n][:1]
+            if not treffer_voc and kategorie == "rueckruf":
+                # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
+                # ("Kraftstoffleitung"). Ein Rückruf darf daran nicht verloren
+                # gehen: das Bauteil wird dann aus dem Satz selbst gelesen.
+                teil = _rueckruf_bauteil(satz)
+                if teil:
+                    treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
+            for muster, schluessel in treffer_voc:
                 eintrag = kandidaten.setdefault(
-                    schluessel, {"aussage": satz, "bauteil": _anzeige_bauteil(satz, muster),
+                    schluessel, {"aussage": satz,
+                                 "bauteil": (_anzeige_bauteil(satz, muster) if muster
+                                             else _rueckruf_bauteil(satz)),
                                  "treffer": [],
                                  "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None})
                 if r not in eintrag["treffer"]:
@@ -834,7 +911,8 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
         fakten += _extrahiere_fakten(treffer, kategorie, marke=ziel.get("marke"),
                                      modell=ziel.get("modell"), baujahr=ziel.get("baujahr"),
                                      generation=identitaet.generation or ziel.get("generation"),
-                                     abgelehnt=abgelehnt)
+                                     abgelehnt=abgelehnt, hubraum=ziel.get("hubraum"),
+                                     leistung_ps=ziel.get("leistung_ps"))
     return fakten
 
 
