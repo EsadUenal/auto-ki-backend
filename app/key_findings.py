@@ -316,7 +316,18 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
 
 # ══ KAUFCHECK ════════════════════════════════════════════════════════════════
 
-def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False) -> KeyFinding:
+# Release-Hardening (Cluster J): die nominalphrasige Fortsetzung für die beiden
+# Felder, die `empfehlungs_policy.identitaet_aufloesen` als "fehlend" melden
+# kann. Dieselben zwei Bezeichner wie dort ("Generation", "Motorisierung") —
+# keine dritte, abweichende Liste.
+_WEB_FEHLT_PHRASE = {
+    "Generation": "die Generation bzw. den Baureihencode",
+    "Motorisierung": "den Motorcode bzw. die Leistung aus dem Fahrzeugschein",
+}
+
+
+def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
+                         identity=None) -> KeyFinding:
     """Unsichere Fahrzeugzuordnung sichtbar machen (Identity-Trust-Gate).
 
     Nennt bewusst KEINE vermutete Baureihe: Die Zuordnung war ja gerade nicht
@@ -326,6 +337,31 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False) 
     """
     fehlt = fehlende_angabe or "die genaue Modell- und Generationsbezeichnung"
     if web_belegt:
+        # Release-Hardening (Production-Run Mazda MX-5, Cluster J): die obige
+        # `fehlende_angabe` wird VOR der Webrecherche aus dem reinen DB-Match
+        # berechnet ("Fahrzeug nicht in der ENFAL-Datenbank, Generation/
+        # Motorisierung nicht sicher verifiziert") und blieb danach unverändert
+        # stehen — auch dann, wenn dieselbe Webrecherche Generation, Leistung,
+        # Kraftstoff, Getriebe und Antrieb längst plausibilisiert hatte. Der
+        # Bericht forderte dann einen Nachtrag für Angaben, die die kanonische
+        # Identität (`identity`) bereits trug, während `empfehlungs_policy`
+        # dieselbe Identität zugleich als ausreichend für eine normale
+        # Empfehlung einstufte — zwei Aussagen aus zwei verschiedenen Quellen,
+        # die sich widersprechen konnten. Jetzt liest diese Aktion dieselbe
+        # Auflösung wie die Empfehlung (`empfehlungs_policy.identitaet_aufloesen`):
+        # ist danach nichts mehr offen, entfällt die Nachtrag-Aufforderung; ist
+        # etwas offen, wird GENAU das genannt — nie mehr und nie weniger als das,
+        # was die Empfehlung ebenfalls als offen behandelt.
+        aktion = f"Für eine gezielte Analyse bitte {fehlt} nachtragen."
+        if identity is not None:
+            from app.empfehlungs_policy import identitaet_aufloesen
+            aufl = identitaet_aufloesen(identity)
+            if not aufl.fehlend:
+                aktion = ("Generation und Motorisierung wurden über Webquellen "
+                          "ausreichend plausibilisiert; ein Nachtrag ist nicht nötig.")
+            else:
+                noch_offen = " und ".join(_WEB_FEHLT_PHRASE.get(f, f.lower()) for f in aufl.fehlend)
+                aktion = f"Für eine vollständig gesicherte Analyse bitte {noch_offen} nachtragen."
         # Final-Stabilization (Cluster M): bei belegter Web-Identität stammen
         # fahrzeugspezifische Hinweise aus Webquellen — die Aussage "es werden
         # keine fahrzeugspezifischen … ausgegeben" wäre dann falsch.
@@ -335,7 +371,7 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False) 
             beschreibung="Das Fahrzeug ist nicht in der ENFAL-Fahrzeugdatenbank. Identität und "
                          "fahrzeugspezifische Hinweise stammen aus einer Webrecherche mit "
                          "Quellenangabe, nicht aus geprüften ENFAL-Daten.",
-            aktion=f"Für eine gezielte Analyse bitte {fehlt} nachtragen.",
+            aktion=aktion,
             prioritaet=_P_IDENTITAET)
     return KeyFinding(
         id="", kategorie="identitaet", stufe=STUFE_WARNUNG, icon="❓",
@@ -352,15 +388,20 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
                             insights: list[Insight],
                             price_assessment: PriceAssessment | None = None,
                             identitaet: dict | None = None,
-                            web_belegt: bool = False) -> list[KeyFinding]:
+                            web_belegt: bool = False, identity=None) -> list[KeyFinding]:
     """`identitaet` (optional, Identity-Trust-Gate): Info-dict aus
     `car_lookup.find_baureihe_mit_vertrauen`. Ist die Zuordnung nicht belastbar,
     entsteht ein erklärendes Finding statt einer stillen Leerausgabe. Der Parameter
-    ist additiv — ohne ihn verhält sich die Funktion exakt wie bisher."""
+    ist additiv — ohne ihn verhält sich die Funktion exakt wie bisher.
+
+    `identity` (optional, Cluster J): die kanonische, bereits mit Web-Evidence
+    zusammengeführte VehicleIdentity. Nur für den Text der Nachtrag-Aufforderung
+    bei `web_belegt` genutzt (siehe `_identitaets_finding`) — ohne sie verhält
+    sich die Funktion wie bisher."""
     findings: list[KeyFinding] = []
 
     if identitaet is not None and not identitaet.get("belastbar", True):
-        findings.append(_identitaets_finding(identitaet.get("fehlende_angabe"), web_belegt))
+        findings.append(_identitaets_finding(identitaet.get("fehlende_angabe"), web_belegt, identity))
 
     # ── A) Preis-Finding aus dem KANONISCHEN Preisurteil (§6) — genau EINE Bewertung ──
     mv = _marktvergleich_insight(insights)

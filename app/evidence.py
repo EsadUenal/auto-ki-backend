@@ -27,6 +27,8 @@ from app.recall_filter import (
     kba_referenz_anzeige,
     RUECKRUF_APPLICABILITY_TEXT,
     RECALL_STATE_AUS_APPLICABILITY,
+    rueckruf_scope as _rueckruf_scope,
+    RECALL_NOT_APPLICABLE as _RECALL_NOT_APPLICABLE,
 )
 from app.ausstattung_praesenz import (
     ABSENT as PRAESENZ_ABSENT, PRESENT as PRAESENZ_PRESENT, UNKNOWN as PRAESENZ_UNKNOWN,
@@ -605,6 +607,23 @@ def build_insights(
                 continue
             if not fakt.quellen:
                 continue          # ohne Quelle keine Evidence — nie
+            # Final-Stabilization (Release-Hardening, Cluster A/B): ein Web-Rückruf
+            # lief bisher nur durch die Baujahr-/Hubraum-/Leistungs-Prüfung des
+            # ARTIKELS (app/technical_research.py::_artikel_geltung) — nie durch den
+            # Varianten-Scope-Check (Kraftstoff/Antriebsart/Motorcode/Ausstattung),
+            # den DB-Rückrufe über app.recall_filter.rueckruf_scope bereits
+            # durchlaufen. Ein Diesel-only-Web-Rückruf konnte dadurch bei einem
+            # sicher benzinbetriebenen Fahrzeug erscheinen. Beide Herkünfte (DB,
+            # Web) laufen jetzt durch DIESELBE Scope-Funktion — keine zweite,
+            # schwächere Parallelprüfung. Ein bekannter harter Widerspruch
+            # (NOT_APPLICABLE) schließt den Web-Rückruf genauso aus wie einen
+            # DB-Rückruf; ohne bekannten Gegenbeweis bleibt er sichtbar.
+            if fakt.kategorie == "rueckruf":
+                scope_state, _ = _rueckruf_scope({"mangel": fakt.aussage}, identity)
+                if scope_state == _RECALL_NOT_APPLICABLE:
+                    log.info("Web-Rückruf '%s' entfällt: Variantenbedingung widerspricht "
+                             "der kanonischen Identität.", fakt.bauteil)
+                    continue
             insights.append(Insight(
                 id=_id(f"web-{fakt.kategorie}"),
                 kategorie=f"web_{fakt.kategorie}",

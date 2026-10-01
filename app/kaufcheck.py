@@ -566,7 +566,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     key_findings = build_key_findings_kauf(
         req, baureihe, motor_match, insights, price_assessment, identitaet=identitaet,
         web_belegt=bool(web_recherche and web_recherche.identitaet
-                        and web_recherche.identitaet.belegt))
+                        and web_recherche.identitaet.belegt),
+        identity=identity)
 
     # P1-3: deterministische Kaufaktionen (Besichtigung / Probefahrt / Verkaeufer-
     # fragen / Dokumente) aus DENSELBEN bereits aufbereiteten Daten — keine neuen

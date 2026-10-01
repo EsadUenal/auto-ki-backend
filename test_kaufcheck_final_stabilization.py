@@ -37,9 +37,9 @@ from app.empfehlungs_policy import (
 from app.evidence import build_insights
 from app.kaufaktionen import build_kaufaktionen, _komponente, _probefahrt_symptom
 from app.kaufcheck_bericht import bericht, datenbasis_objekt
-from app.key_findings import build_key_findings_kauf
+from app.key_findings import build_key_findings_kauf, _identitaets_finding
 from app.models import (
-    Insight, KaufCheckRequest, TechnischeRecherche, WebVehicleIdentity,
+    EvidenceQuelle, Insight, KaufCheckRequest, TechnischeRecherche, WebFakt, WebVehicleIdentity,
 )
 from app.recall_filter import (
     RECALL_NOT_APPLICABLE, RECALL_SERIES_RELEVANT, RECALL_UNKNOWN, RECALL_VARIANT_POSSIBLE,
@@ -758,6 +758,75 @@ fk_q5, _ = _rr("Rückruf für die Testmarke Alpha wegen der Kraftstoffleitung. F
                "aus 2019 sind nicht betroffen.", 2019, "2.0")
 check("Q5 Ausdrückliche Ausnahme ('nicht betroffen') ist kein Einschluss-Scope",
       not fk_q5 or fk_q5[0].applicability == "series_only")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== R) Web-Rückruf teilt die Varianten-Scope-Policy mit DB-Rückrufen "
+      "(Release-Hardening, Cluster A/B) ===")
+r_req = req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell", antrieb="Heck")
+i_r = ident(None, None, r_req)
+q_r = EvidenceQuelle(typ="web", url="https://www.adac.de/alpha-rueckruf", titel="ADAC Rückruf",
+                     qualitaet="Amtlich/Prüforganisation")
+
+
+def _web_rr(aussage: str):
+    return TechnischeRecherche(
+        ausgeloest_durch="db_miss",
+        identitaet=WebVehicleIdentity(belegt=True, marke="Testmarke", modell="Alpha",
+                                      confidence="mittel", belegende_domains=2),
+        fakten=[WebFakt(kategorie="rueckruf", bauteil="Einspritzpumpe", aussage=aussage,
+                        confidence="mittel", applicability="series_only", quellen=[q_r])])
+
+
+ins_r1 = build_insights(None, None, [], r_req, check_typ="kauf",
+                        web_recherche=_web_rr("Rückruf: bei Dieselfahrzeugen kann die Einspritzpumpe versagen."),
+                        identity=i_r)
+check("R1 Web-Rückruf mit bekanntem Kraftstoff-Widerspruch (Diesel-Scope, Fahrzeug sicher Benzin) "
+      "entfällt -> dieselbe Policy wie ein DB-Rückruf",
+      not any(x.kategorie == "web_rueckruf" for x in ins_r1))
+ins_r2 = build_insights(None, None, [], r_req, check_typ="kauf",
+                        web_recherche=_web_rr("Rückruf: bei Fahrzeugen mit 184 PS kann die Einspritzpumpe versagen."),
+                        identity=i_r)
+check("R2 Web-Rückruf ohne bekannten Widerspruch (Leistung passt) bleibt sichtbar: keine Überfilterung",
+      any(x.kategorie == "web_rueckruf" for x in ins_r2))
+ins_r3 = build_insights(None, None, [], r_req, check_typ="kauf",
+                        web_recherche=_web_rr("Rückruf: bei Fahrzeugen mit 300 PS kann die Einspritzpumpe versagen."),
+                        identity=i_r)
+check("R3 Web-Rückruf mit bekanntem Leistungs-Widerspruch entfällt ebenfalls",
+      not any(x.kategorie == "web_rueckruf" for x in ins_r3))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== S) Identitäts-Hinweis bei Web-Identität nutzt dieselbe Auflösung wie "
+      "die Empfehlung (Release-Hardening, Cluster J) ===")
+finding_s0 = _identitaets_finding("Platzhalter-Text", web_belegt=True, identity=None)
+check("S0 Ohne 'identity' bleibt das bisherige Verhalten erhalten (Rückwärtskompatibilität)",
+      finding_s0.aktion == "Für eine gezielte Analyse bitte Platzhalter-Text nachtragen.")
+
+i_s1 = ident(None, None, req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell",
+                             antrieb="Heck"))
+i_s1.apply_web_evidence(TechnischeRecherche(ausgeloest_durch="db_miss", identitaet=WebVehicleIdentity(
+    belegt=True, marke="Testmarke", modell="Alpha", confidence="hoch", belegende_domains=2,
+    feldwerte={"generation": {"value": "T2", "confidence": "hoch", "domains": 2},
+               "horsepower": {"value": 184, "confidence": "hoch", "domains": 2},
+               "fuel": {"value": "benzin", "confidence": "hoch", "domains": 2}})))
+finding_s1 = _identitaets_finding("Platzhalter-Text", web_belegt=True, identity=i_s1)
+check("S1 Web-Identität nach Merge vollständig aufgelöst (Generation+Motorisierung bestätigt) "
+      "-> keine widersprüchliche Nachtrag-Aufforderung mehr",
+      "nachtragen" not in finding_s1.aktion and "ausreichend plausibilisiert" in finding_s1.aktion)
+check("S1b Dieselbe Identität gilt der Empfehlungs-Policy ebenfalls als VERIFIED (keine zwei Wahrheiten)",
+      entscheide("kaufen_nach_besichtigung", i_s1).state == STATE_NORMAL)
+
+i_s2 = ident(None, None, req())
+i_s2.apply_web_evidence(TechnischeRecherche(ausgeloest_durch="db_miss", identitaet=WebVehicleIdentity(
+    belegt=True, marke="Testmarke", modell="Alpha", confidence="mittel", belegende_domains=2,
+    feldwerte={"generation": {"value": "T2", "confidence": "mittel", "domains": 2}})))
+finding_s2 = _identitaets_finding("Platzhalter-Text", web_belegt=True, identity=i_s2)
+check("S2 Generation bestätigt, Motorisierung weiterhin offen -> Aktion nennt GENAU das noch Offene",
+      "Motorcode" in finding_s2.aktion and "Generation" not in finding_s2.aktion
+      and "Baureihencode" not in finding_s2.aktion)
+check("S2b Dieselbe Identität bleibt für die Empfehlungs-Policy PARTIAL (konsistent mit der Aktion oben)",
+      entscheide("kaufen_nach_besichtigung", i_s2).state == STATE_LIMITED)
 
 
 print("\n" + "=" * 60)
