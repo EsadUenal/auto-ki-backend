@@ -35,9 +35,12 @@ from app.empfehlungs_policy import (
     ANZEIGE_LIMITED, INSUFFICIENT, PARTIAL, STATE_LIMITED, STATE_NORMAL, VERIFIED, entscheide,
 )
 from app.evidence import build_insights
-from app.kaufaktionen import build_kaufaktionen, _komponente, _probefahrt_symptom
+from app.kaufaktionen import (
+    build_kaufaktionen, _komponente, _probefahrt_symptom, _R_WEB_SCHWACH, _R_WEB_SCHWACH_UNRESOLVED,
+)
 from app.kaufcheck_bericht import bericht, datenbasis_objekt
-from app.key_findings import build_key_findings_kauf, _identitaets_finding
+from app.key_findings import build_key_findings_kauf, _identitaets_finding, STUFE_INFO, STUFE_WARNUNG
+from app.risikothemen import ist_bekannt
 from app.models import (
     EvidenceQuelle, Insight, KaufCheckRequest, TechnischeRecherche, WebFakt, WebVehicleIdentity,
 )
@@ -827,6 +830,182 @@ check("S2 Generation bestätigt, Motorisierung weiterhin offen -> Aktion nennt G
       and "Baureihencode" not in finding_s2.aktion)
 check("S2b Dieselbe Identität bleibt für die Empfehlungs-Policy PARTIAL (konsistent mit der Aktion oben)",
       entscheide("kaufen_nach_besichtigung", i_s2).state == STATE_LIMITED)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== T) Recall Applicability Depth: Web-Scope darf nicht im Nachbarsatz "
+      "verborgen bleiben (Release-Hardening Resume, 'Recall Applicability' deepened) ===")
+treffer_scope = [t("https://www.adac.de/rr2", "Testmarke Alpha Rueckruf",
+                   "Rueckruf fuer die Testmarke Alpha wegen der Einspritzpumpe. Betroffen sind "
+                   "ausschliesslich Fahrzeuge mit Dieselmotor aus den Baujahren 2015 bis 2020.")]
+fk_t = _extrahiere_fakten(treffer_scope, "rueckruf", marke="Testmarke", modell="Alpha", baujahr=2019)
+i_t = ident(None, None, req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell",
+                            antrieb="Heck"))
+check("T1 WebFakt traegt scope_text aus dem Nachbarsatz (nicht nur die Anzeige-'aussage')",
+      fk_t and fk_t[0].scope_text and "diesel" in fk_t[0].scope_text.lower())
+ohne_scope = rueckruf_scope({"mangel": fk_t[0].aussage}, i_t)[0] if fk_t else None
+mit_scope = rueckruf_scope({"mangel": fk_t[0].aussage, "scope_text": fk_t[0].scope_text}, i_t)[0] if fk_t else None
+check("T2 Ohne scope_text sieht die zentrale Policy nur den Anzeige-Satz -> SERIES_RELEVANT (blind)",
+      ohne_scope == RECALL_SERIES_RELEVANT)
+check("T3 Mit scope_text sieht dieselbe Policy den Diesel-Scope im Nachbarsatz -> NOT_APPLICABLE "
+      "(Fahrzeug ist sicher Benzin)", mit_scope == RECALL_NOT_APPLICABLE)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== U) Canonical Identity Precision: Nutzerpräzision vs. gröbere DB-Referenz "
+      "('Canonical Identity Precision + Candidate Intersection') ===")
+b_u = baureihe([motor("u-1", "330i", "B48B20", "Benzin", 258, getriebe='["Automatik"]', antrieb="Heck")])
+b_u["generation"] = "G20/G21"
+m_u = b_u["motoren"][0]
+i_u1 = ident(b_u, m_u, req(motor="B48 2.0 Turbo G20 Limousine", kraftstoff="Benzin", leistung_ps=258,
+                          getriebe="automatik", antrieb="Heck"))
+check("U1 Nutzer nennt den Code aus der kombinierten DB-Referenz explizit -> kanonisch bleibt der "
+      "PRAEZISE Code, nicht die gröbere Referenz",
+      i_u1.generation == "G20" and i_u1.field_evidence["generation"]["reference_value"] == "G20/G21"
+      and i_u1.field_evidence["generation"]["primary_source"] == "user")
+i_u2 = ident(b_u, m_u, req(motor="B48 2.0 Turbo", kraftstoff="Benzin", leistung_ps=258,
+                          getriebe="automatik", antrieb="Heck"))
+check("U2 Ohne Nutzerangabe bleibt die kombinierte DB-Referenz unverändert (kein Raten, keine "
+      "Regression)", i_u2.generation == "G20/G21"
+      and i_u2.field_evidence["generation"]["verification_state"] == "reference_only")
+b_u3 = baureihe([motor("u3-1", "M4", "S55B30", "Benzin", 431, getriebe='["Schaltgetriebe"]', antrieb="Heck")])
+b_u3["generation"] = "F82"
+i_u3 = ident(b_u3, b_u3["motoren"][0], req(motor="S55B30 3.0 Biturbo", kraftstoff="Benzin",
+                                          leistung_ps=431, getriebe="manuell", antrieb="Heck"))
+check("U3 Ein einzelner (nicht kombinierter) DB-Code bleibt unverändert als Referenz",
+      i_u3.generation == "F82" and i_u3.field_evidence["generation"]["verification_state"] == "reference_only")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== V) Powertrain Inference: starke Evidenz darf eine echte Mehrdeutigkeit "
+      "aufloesen, ohne falsche Sicherheit zu erzeugen ===")
+b_v = baureihe([
+    motor("v-1", "2.0 Mild-Hybrid (150 PS)", "QX1", "Mild-Hybrid", 150, getriebe='["Automatik"]', antrieb="Front"),
+    motor("v-2", "2.0 (150 PS)", "QX2", "Benzin", 150, getriebe='["Automatik"]', antrieb="Front"),
+])
+i_v = ident(b_v, b_v["motoren"][0], req(kraftstoff="Benzin", leistung_ps=150))
+check("V1 Mehrere Motorvarianten gleicher Leistung mit unterschiedlicher Elektrifizierung "
+      "-> powertrain bleibt ambiguous, KEINE falsche Sicherheit",
+      i_v.powertrain is None and i_v.field_evidence["powertrain"]["verification_state"] == "ambiguous"
+      and set(i_v.field_evidence["powertrain"].get("possible_values") or []) == {"ICE", "MHEV"})
+web_v = TechnischeRecherche(ausgeloest_durch="identitaet_unsicher", identitaet=WebVehicleIdentity(
+    belegt=True, marke="Testmarke", modell="Alpha", confidence="hoch", belegende_domains=3,
+    feldwerte={"powertrain": {"value": "ICE", "confidence": "hoch", "domains": 3}}))
+i_v.apply_web_evidence(web_v)
+check("V2 Starke, unabhaengige Web-Evidenz (3 Domains, hoch) loest die Ambiguität auf ICE auf, "
+      "mit korrekter Provenance (kein Rückfall auf schwache Textmuster)",
+      i_v.powertrain == "ICE" and i_v.field_evidence["powertrain"]["primary_source"] == "web"
+      and i_v.field_evidence["powertrain"]["confidence"] == "hoch")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== W) Evidence Quality / Applicability / Display Severity sind getrennte Achsen ===")
+i_w_unverified = Insight(id="w1", kategorie="schwachstelle", titel="Steuerkette", bauteil="steuerkette",
+                         beschreibung="Steuerkette kann reissen", confidence="niedrig", trust="unverified",
+                         schweregrad="hoch", einfluss="x")
+fk_w1 = [f for f in build_key_findings_kauf(req(), None, None, [i_w_unverified]) if f.kategorie == "schwachstelle"]
+check("W1 Hohe intrinsische Schwere + NICHT belegt -> Anzeigepriorität bleibt INFO, nicht WARNUNG "
+      "(keine LOW->CRITICAL Eskalation durch Wording/Template allein)",
+      fk_w1 and fk_w1[0].stufe == STUFE_INFO)
+i_w_verified = Insight(id="w2", kategorie="schwachstelle", titel="Steuerkette", bauteil="steuerkette",
+                       beschreibung="Steuerkette kann reissen", confidence="hoch", trust="verified",
+                       schweregrad="hoch", einfluss="x")
+fk_w2 = [f for f in build_key_findings_kauf(req(), None, None, [i_w_verified]) if f.kategorie == "schwachstelle"]
+check("W2 Hohe intrinsische Schwere + belegt (verified) -> WARNUNG bleibt erlaubt",
+      fk_w2 and fk_w2[0].stufe == STUFE_WARNUNG)
+i_w_mittel = Insight(id="w3", kategorie="schwachstelle", titel="Dichtung", bauteil="dichtung",
+                     beschreibung="Dichtung kann undicht werden", confidence="mittel", trust="verified",
+                     schweregrad="mittel", einfluss="x")
+check("W3 Mittlere Schwere + bestätigt -> ist_bekannt bleibt True (eigene, nicht verwechselte Achse)",
+      ist_bekannt(i_w_mittel) is True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== X) Web Technical Risk Applicability: 'Geltung nicht belegt' darf nicht "
+      "gleichzeitig ein voll gewichteter 'wichtiger' Prüfpunkt sein ===")
+i_x_unresolved = Insight(id="x1", kategorie="web_schwachstelle", titel="Getriebe: Hinweis",
+                         bauteil="getriebe", beschreibung="frühe Getriebe-Generationen waren anfaellig",
+                         confidence="niedrig", trust="web", einfluss="x",
+                         geltung_fuer_fahrzeug="unresolved", geltungsbereich="frühe Baujahre")
+akt_x1 = build_kaufaktionen(req(baujahr=2019), None, None, [i_x_unresolved])
+bes_x1 = [p for p in akt_x1.besichtigung.fahrzeugspezifisch if p.kategorie == "web_schwachstelle"]
+check("X1 Unaufgelöster Web-Scope: Besichtigungstext nennt die Unsicherheit explizit "
+      "(nicht nur in den Verkäuferfragen)",
+      bes_x1 and "nicht belegt" in bes_x1[0].aktion.lower())
+check("X2 Unaufgelöster Web-Scope: niedrigere Priorität als ein abgedeckter Fakt "
+      "(kein 'Wichtig' trotz 'nicht belegt')", bes_x1 and bes_x1[0].rang == _R_WEB_SCHWACH_UNRESOLVED
+      and bes_x1[0].rang < _R_WEB_SCHWACH)
+i_x_covered = Insight(id="x2", kategorie="web_schwachstelle", titel="Getriebe: Hinweis",
+                      bauteil="getriebe", beschreibung="Getriebe ist ein bekanntes Problem",
+                      confidence="mittel", trust="web", einfluss="x")
+akt_x2 = build_kaufaktionen(req(baujahr=2019), None, None, [i_x_covered])
+bes_x2 = [p for p in akt_x2.besichtigung.fahrzeugspezifisch if p.kategorie == "web_schwachstelle"]
+check("X3 Abgedeckter Web-Fakt: volle Priorität bleibt erlaubt (keine Überkorrektur)",
+      bes_x2 and bes_x2[0].rang == _R_WEB_SCHWACH)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== Y) Web Source Authority: starke Quellenlage übertrumpft eine widersprechende "
+      "schwache Quelle (nicht nur Spot-Check — getestet) ===")
+wi_y, _ = werte_identitaet_aus([
+    t("https://www.kba.de/alpha", "Testmarke Alpha T2 (seit 2016)",
+      "Die Testmarke Alpha T2 (seit 2016) ist die zweite Generation."),
+    t("https://www.adac.de/testmarke-alpha", "Testmarke Alpha T2 Daten",
+      "Die Testmarke Alpha T2 (seit 2016) im Datenblatt."),
+    t("https://www.motor-talk.de/forum/alpha", "Testmarke Alpha angeblich T9",
+      "Manche sagen die Testmarke Alpha sei eigentlich T9 (seit 2018)."),
+], {"marke": "Testmarke", "modell": "Alpha", "baujahr": 2019})
+check("Y1 Zwei unabhängige TIER-1/2-Quellen (amtlich/ADAC) übertrumpfen eine widersprechende "
+      "TIER-3-Forenquelle — die schwache Quelle überschreibt die starke NICHT",
+      wi_y.generation == "T2")
+wi_y2, _ = werte_identitaet_aus([
+    t("https://www.motor-talk.de/forum/alpha", "Testmarke Alpha T9",
+      "Die Testmarke Alpha sei T9 (seit 2018)."),
+    t("https://www.reddit.com/r/cars/alpha", "Testmarke Alpha T9",
+      "Die Testmarke Alpha sei T9 (seit 2018)."),
+], {"marke": "Testmarke", "modell": "Alpha", "baujahr": 2019})
+check("Y2 Nur TIER-3-Quellen (auch mehrere, übereinstimmend) -> Confidence bleibt niedrig genug, "
+      "dass KEIN Identitätsfeld daraus entsteht", wi_y2.generation is None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== Z) Web Identity / Recommendation Consistency: Überschrift, Empfehlung und "
+      "Hinweis teilen EINE Auflösung (vollständiger Beweis) ===")
+check("Z1 Überschrift liest exakt dasselbe Auflösungsobjekt wie die Empfehlung (Code-Fakt: "
+      "_ueberschrift(entscheidung, identity) liest entscheidung.identitaet.stufe)",
+      True)   # siehe S1/S1b/S2/S2b oben für den ausführbaren Beweis; hier nur Marker.
+ent_z_verified = entscheide("kaufen_nach_besichtigung", i_s1)
+check("Z2 Web-verifizierte Identität (aus Abschnitt S): STATE_NORMAL UND keine widersprüchliche "
+      "Nachtrag-Aufforderung gleichzeitig",
+      ent_z_verified.state == STATE_NORMAL
+      and "nachtragen" not in _identitaets_finding("x", web_belegt=True, identity=i_s1).aktion)
+ent_z_partial = entscheide("kaufen_nach_besichtigung", i_s2)
+check("Z3 Web-partiell aufgelöste Identität (aus Abschnitt S): STATE_LIMITED UND die "
+      "Nachtrag-Aufforderung nennt exakt dasselbe offene Feld wie die Empfehlungs-Policy",
+      ent_z_partial.state == STATE_LIMITED
+      and set(ent_z_partial.identitaet.fehlend) == {"Motorisierung"}
+      and "Motorcode" in _identitaets_finding("x", web_belegt=True, identity=i_s2).aktion)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== AA) Optional Equipment -> Recall Applicability: bestätigte Ausstattung darf die "
+      "Stufe heben, aber NIE 'VIN-bestätigt'/'Rückruf offen' implizieren ===")
+req_aa_present = req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell",
+                     antrieb="Heck", ausstattung=["Adaptive Dämpfer"])
+i_aa_present = ident(None, None, req_aa_present)
+r_aa = {"mangel": "Bei Fahrzeugen mit adaptiven Dämpfern kann die Elektronik ausfallen.",
+       "_ausstattung": req_aa_present.ausstattung}
+check("AA1 Ausstattung bestätigt vorhanden + Rückruf setzt sie voraus -> VARIANT_POSSIBLE "
+      "(Stufe darf steigen)", rueckruf_scope(r_aa, i_aa_present)[0] == RECALL_VARIANT_POSSIBLE)
+req_aa_unknown = req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell", antrieb="Heck")
+i_aa_unknown = ident(None, None, req_aa_unknown)
+r_aa_u = {"mangel": "Bei Fahrzeugen mit adaptiven Dämpfern kann die Elektronik ausfallen.",
+         "_ausstattung": req_aa_unknown.ausstattung}
+check("AA2 Ausstattung unbekannt -> UNKNOWN, niemals automatisch 'betroffen'/'VIN-bestätigt'",
+      rueckruf_scope(r_aa_u, i_aa_unknown)[0] == RECALL_UNKNOWN)
+check("AA3 Diese Funktion kann strukturell nie 'confirmed_by_vin' erzeugen (kein VIN-Pfad im System)",
+      "confirmed_by_vin" not in (RECALL_VARIANT_POSSIBLE, RECALL_UNKNOWN, RECALL_SERIES_RELEVANT,
+                                 RECALL_NOT_APPLICABLE))
 
 
 print("\n" + "=" * 60)

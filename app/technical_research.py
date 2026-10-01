@@ -863,14 +863,25 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         if e["vage"] and e["passt"] is not True:
             geltung, bereich = "unresolved", e["vage"]
             confidence = "niedrig"
+        scope_text = None
         if kategorie == "rueckruf":
             applicability = "vehicle_possible" if e["passt"] is True else "series_only"
+            # Release-Hardening: die zentrale Scope-Policy (recall_filter.rueckruf_scope)
+            # darf nicht nur den EINEN gewaehlten Anzeige-Satz (`aussage`) sehen —
+            # ein Kraftstoff-/Leistungs-/Motorcode-/Hubraum-Scope kann im Nachbarsatz
+            # desselben Artikels stehen (siehe `_artikel_geltung`, dieselbe Ursache).
+            # Alle betroffenheits-tragenden Saetze aller beitragenden Treffer bilden
+            # deshalb die normalisierte Scope-Grundlage.
+            scope_saetze = [s for r in e["treffer"]
+                            for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+                            if _RE_BETROFFEN.search(s)]
+            scope_text = " ".join(scope_saetze)[:2000] or None
         else:
             applicability = None
         fakten.append(WebFakt(
             kategorie=kategorie, bauteil=e["bauteil"], aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
-            geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung,
+            geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
         ))
     fakten.sort(key=lambda f: ({"hoch": 0, "mittel": 1, "niedrig": 2}[f.confidence],
                                f.bauteil or ""))

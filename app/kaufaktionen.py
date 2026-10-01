@@ -177,6 +177,17 @@ _R_ANGABE_FEHLT      = 300   # gezielte Nachfrage zu einer fehlenden Inseratanga
 # Beleglage sinnvoll und kostet den Nutzer nichts.
 _R_WEB_RUECKRUF      = 780
 _R_WEB_SCHWACH       = 560
+# Release-Hardening (Web-Risiko-Applicability): ein Web-Fakt, dessen Geltung für
+# DIESES Baujahr laut Quelle nicht belegt ist ("frühe Baujahre", "vor dem
+# Facelift" ...), darf nicht dieselbe Anzeigepriorität wie ein abgedeckter
+# Fakt tragen — sonst erhält derselbe Hinweis in Besichtigung/Probefahrt die
+# volle "wichtige" Prüfpunkt-Gewichtung, während derselbe Fakt in den
+# Verkäuferfragen bereits ausdrücklich als unaufgelöst markiert wird (zwei
+# Aussagen aus zwei verschiedenen Konsumenten derselben Evidence). Liegt
+# deutlich unter `_R_WEB_SCHWACH`, bleibt aber oberhalb des allgemeinen
+# Basis-Bands — der Hinweis existiert weiterhin, tritt aber nicht mit der
+# Dringlichkeit eines fahrzeugspezifisch belegten Befunds auf.
+_R_WEB_SCHWACH_UNRESOLVED = 420
 _R_WEB_WARTUNG       = 500
 # Basis-Punkte liegen als Band UNTERHALB jeder fahrzeugspezifischen Aktion und
 # behalten innerhalb ihres Katalogs die dort definierte fachliche Reihenfolge
@@ -471,13 +482,32 @@ _KOMPONENTEN: tuple[dict, ...] = (
          ausschluss=("sensor", "geber"),
          je_bauteil=True,
          sicherheit=False,
+         # Release-Hardening (Datenqualität/Inspection-Policy, Task "internal
+         # component"): ein Geräuschtest im Stand/auf der Probefahrt wurde bisher
+         # wie eine ausreichende Diagnose DIESES Bauteils formuliert ("auf ...
+         # Geräusche achten und prüfen, ob Warnleuchten leuchten"). Für ein
+         # Bauteil im Motorinneren ist ein unauffälliger Kaltstart aber kein
+         # Beleg für einen intakten Zustand — ein schleichender Defekt (z.B. ein
+         # Pressverband, der erst unter Last durchrutscht) muss nicht hörbar
+         # sein, bevor er einen Schaden verursacht. Die generische Regel gilt für
+         # JEDES Bauteil dieser Klasse (Pleuellager, Kurbelwelle, Kolben,
+         # Nockenwelle, ...), nicht nur für eines: Geräuschprüfung bleibt ein
+         # allgemeiner Anhaltspunkt, wird aber nie als verlässliche Diagnose des
+         # konkreten Bauteils dargestellt, und Fehlerspeicher/Historie stehen vor
+         # der reinen Höreinschätzung.
          besichtigung="„{bauteil}“ liegt im Motorinneren und ist bei einer Besichtigung nicht "
-                      "einsehbar. Den Motor kalt starten lassen, im Leerlauf und beim Gasgeben "
-                      "auf Klopf-, Rassel- oder Schlaggeräusche achten und prüfen, ob "
-                      "Warnleuchten dauerhaft leuchten. Den Zustand des Bauteils kann nur eine "
-                      "Fachwerkstatt beurteilen.",
+                      "einsehbar; der Zustand lässt sich dort nicht zuverlässig feststellen. "
+                      "Fehlerspeicher auslesen lassen (auch sporadisch gespeicherte Einträge) "
+                      "und auf dauerhaft leuchtende Warnleuchten achten. Ein kalter Motorstart "
+                      "mit Achten auf Klopf-, Rassel- oder Schlaggeräusche ist dabei nur ein "
+                      "allgemeiner Anhaltspunkt und KEINE verlässliche Diagnose dieses "
+                      "konkreten Bauteils: den tatsächlichen Zustand kann nur eine "
+                      "Fachwerkstatt mit geeigneter Diagnose beurteilen. Nach Wartungs- bzw. "
+                      "Reparaturhistorie und Belegen zum Bauteil fragen.",
          probefahrt="Auf Klopf- oder Rasselgeräusche aus dem Motor achten, besonders unter Last "
-                    "und beim Gaswegnehmen, und Warnmeldungen im Kombiinstrument beachten."),
+                    "und beim Gaswegnehmen, und Warnmeldungen im Kombiinstrument beachten: "
+                    "ein allgemeiner Anhaltspunkt, keine verlässliche Diagnose dieses "
+                    "konkreten Bauteils."),
     dict(schluessel="kuehlung",
          muster=("wasserpumpe", "kuehlmittel", "kuehlsystem", "thermostat", "kuehler",
                  "ladeluftkuehler", "kuehlung", "kuehlwasser"),
@@ -1768,12 +1798,29 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 
         # art == "schwachstelle". Ohne bekannte Prüfklasse keine Besichtigung
         # (Befund D, siehe `_besichtigung`).
+        #
+        # Release-Hardening (Web-Risiko-Applicability): EINE Flagge für ALLE vier
+        # Konsumenten dieses Web-Fakts. Vorher prüfte nur die Verkäuferfragen-
+        # Formulierung `geltung_fuer_fahrzeug`; Besichtigung und Probefahrt blieben
+        # unverändert konfident formuliert UND auf der vollen `_R_WEB_SCHWACH`-
+        # Priorität, selbst wenn der Bericht an anderer Stelle (Verkäuferfragen,
+        # bzw. das Insight-Titel-Suffix aus app/evidence.py) bereits sagte, die
+        # Geltung für dieses Baujahr sei nicht belegt — derselbe Fakt trat damit
+        # gleichzeitig als "nicht belegt" und als prominenter, voll gewichteter
+        # Prüfpunkt auf. Jetzt lesen alle vier Stellen dasselbe Flag und dieselbe
+        # (niedrigere) Priorität.
+        unresolved = getattr(i, "geltung_fuer_fahrzeug", None) == "unresolved"
+        web_prioritaet = (_R_WEB_SCHWACH_UNRESOLVED if unresolved else _R_WEB_SCHWACH) + (
+            _BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0)
+        herkunft_suffix = (
+            f" (Webquelle, Geltung für dieses Baujahr nicht belegt: nicht aus der "
+            f"ENFAL-Fahrzeugdatenbank.)" if unresolved else
+            f" (Hinweis stammt aus der Webrecherche, nicht aus der ENFAL-Fahrzeugdatenbank.)")
         besichtigung = _besichtigung(komp, bauteil)
         if besichtigung:
             s.add(BESICHTIGUNG, schluessel, bauteil,
-                  f"{falls}{besichtigung} (Hinweis stammt aus der Webrecherche, nicht aus der "
-                  f"ENFAL-Fahrzeugdatenbank.)",
-                  _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
+                  f"{falls}{besichtigung}{herkunft_suffix}",
+                  web_prioritaet,
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
                   gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
@@ -1785,16 +1832,15 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             # jede Oberflaeche da. Ein Punkt ohne Herkunftshinweis waere auf Papier
             # nicht mehr von einem geprueften DB-Punkt zu unterscheiden.
             s.add(PROBEFAHRT, schluessel, bauteil,
-                  f"{symptom} (Hinweis stammt aus der Webrecherche, nicht aus der "
-                  f"ENFAL-Fahrzeugdatenbank.)",
-                  _R_WEB_SCHWACH + (_BONUS_SICHERHEIT if komp and komp["sicherheit"] else 0),
+                  f"{symptom}{herkunft_suffix}",
+                  web_prioritaet,
                   evidence_ids=[i.id], kategorie="web_schwachstelle",
                   gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
         # Cluster I (Web-Scope): ist der Geltungsbereich laut Quelle für dieses
         # Baujahr nicht belegt, heißt es nicht "bekannter Schwachpunkt dieses
         # Modells", sondern ausdrücklich unaufgelöst.
-        if getattr(i, "geltung_fuer_fahrzeug", None) == "unresolved":
+        if unresolved:
             web_satz = (f"Webquellen nennen „{bauteil}“ als Problem"
                         + (f" ({i.geltungsbereich})" if i.geltungsbereich else "")
                         + "; ob dieses Fahrzeug dazu gehört, ist nicht belegt. Nach "
@@ -1806,7 +1852,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"{falls}Wurde am Bauteil „{bauteil}“ bereits gearbeitet oder etwas ersetzt?",
               web_satz,
-              _R_WEB_SCHWACH, evidence_ids=[i.id], kategorie="web_schwachstelle",
+              web_prioritaet, evidence_ids=[i.id], kategorie="web_schwachstelle",
               gruppe="Hinweis aus der Webrecherche", bauteil=bauteil)
 
 

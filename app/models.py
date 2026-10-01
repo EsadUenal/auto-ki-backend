@@ -675,6 +675,14 @@ class WebFakt(BaseModel):
     # DIESES Fahrzeug abdeckt: "covered" | "unresolved" (None = ohne Einschränkung).
     geltungsbereich: str | None = None
     geltung_fuer_fahrzeug: str | None = None
+    # Release-Hardening: nur bei kategorie=="rueckruf" befuellt. Alle
+    # betroffenheits-tragenden Saetze des Quellartikels (nicht nur der eine Satz
+    # in `aussage`) — die normalisierte Scope-Grundlage, die
+    # app.recall_filter.rueckruf_scope liest (`scope_text`). Ohne dieses Feld
+    # sah die zentrale Applicability-Policy nur den EINEN gewaehlten
+    # Anzeige-Satz; ein Kraftstoff-/Leistungs-/Motorcode-Scope im NACHBARSATZ
+    # desselben Artikels blieb fuer sie unsichtbar.
+    scope_text: str | None = None
 
 
 class TechnischeRecherche(BaseModel):

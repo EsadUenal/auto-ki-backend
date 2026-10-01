@@ -619,7 +619,19 @@ def build_insights(
             # (NOT_APPLICABLE) schließt den Web-Rückruf genauso aus wie einen
             # DB-Rückruf; ohne bekannten Gegenbeweis bleibt er sichtbar.
             if fakt.kategorie == "rueckruf":
-                scope_state, _ = _rueckruf_scope({"mangel": fakt.aussage}, identity)
+                # `scope_text` (alle betroffenheits-tragenden Saetze des Artikels,
+                # siehe app/technical_research.py) gibt der zentralen Policy mehr
+                # als nur den einen Anzeige-Satz zu sehen — ein Scope im Nachbarsatz
+                # bleibt so nicht unsichtbar. `_ausstattung`/`_freitext` wie beim
+                # DB-Rückruf (oben) mitgeben, sonst bleibt der Ausstattungs-Teil
+                # der Scope-Pruefung fuer Web-Rueckrufe strukturell blind, obwohl
+                # dieselbe Funktion ihn fuer DB-Rueckrufe bereits auswertet.
+                scope_state, _ = _rueckruf_scope(
+                    {"mangel": fakt.aussage, "scope_text": getattr(fakt, "scope_text", None),
+                     "_ausstattung": getattr(req, "ausstattung", None),
+                     "_freitext": " ".join(str(getattr(req, f, None) or "")
+                                           for f in ("beschreibung", "freitext"))},
+                    identity)
                 if scope_state == _RECALL_NOT_APPLICABLE:
                     log.info("Web-Rückruf '%s' entfällt: Variantenbedingung widerspricht "
                              "der kanonischen Identität.", fakt.bauteil)

@@ -693,13 +693,22 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
 
     # Komponentenabhängigkeit (Getriebe, Antrieb, Antriebsart, Ausstattung) —
     # dieselbe zentrale Präsenzlogik wie für Schwachstellen.
-    from app.ausstattung_praesenz import ABSENT, UNKNOWN as P_UNKNOWN, praesenz
+    from app.ausstattung_praesenz import ABSENT, PRESENT as P_PRESENT, UNKNOWN as P_UNKNOWN, praesenz
     zustand, abh, bez = praesenz(f"{r.get('mangel') or ''}", identity,
                                  r.get("_ausstattung"), r.get("_freitext"))
     if zustand == ABSENT:
         return RECALL_NOT_APPLICABLE, f"Rückruf betrifft Fahrzeuge mit {abh.klasse}; nicht verbaut"
     if zustand == P_UNKNOWN and abh is not None:
         offen.append(abh.klasse)
+    # Release-Hardening: bestätigt vorhandene Ausstattung durfte die Applicability
+    # bisher nie heben — nur ABSENT (ausschließen) und UNKNOWN (offen) wurden
+    # ausgewertet, PRESENT war ein No-op. Bestätigte Ausstattung, die der
+    # Rückruf voraussetzt, darf die Stufe auf VARIANT_POSSIBLE heben (genau wie
+    # ein passender PS-/Hubraum-/Motorcode-Scope oben) — NIEMALS weiter, denn
+    # diese Funktion kennt ohnehin keine höhere Stufe als VARIANT_POSSIBLE
+    # (ein VIN-bestätigtes "confirmed_by_vin"/"Rückruf offen" entsteht hier nie).
+    elif zustand == P_PRESENT and abh is not None:
+        passt_explizit.append(abh.klasse)
 
     if offen and not passt_explizit:
         return RECALL_UNKNOWN, "Variantenbedingung nicht prüfbar: " + ", ".join(offen)

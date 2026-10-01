@@ -43,9 +43,14 @@ def rueckruf(iid, titel, applic):
                    confidence="hoch" if applic == "exakt" else "niedrig", applicability=applic)
 
 
-def schwach(iid, titel, sev):
+def schwach(iid, titel, sev, trust="verified"):
+    # Release-Hardening: `stufe` haengt jetzt (zu Recht) auch von `ist_bekannt`
+    # (trust=="verified") ab, nicht mehr nur von `schweregrad` allein — siehe
+    # app/key_findings.py. Diese Fixtures stellen eine BESTAETIGTE DB-Schwach-
+    # stelle dar (ihr Testname sagt "hohe Schwachstelle", nicht "gemeldeter,
+    # ungeprüfter Hinweis"), bekommen deshalb explizit trust="verified".
     return Insight(id=iid, kategorie="schwachstelle", titel=titel, beschreibung="…",
-                   confidence="hoch", schweregrad=sev)
+                   confidence="hoch", schweregrad=sev, trust=trust)
 
 
 def kf_of(findings, kategorie):

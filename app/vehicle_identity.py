@@ -473,11 +473,27 @@ class VehicleIdentity:
             raw_user=getattr(req, "baujahr", None),
             reference=(f"{von}-{bis or ''}" if von else None), evidence=evid_b))
 
-        # Generation: nur die DB (oder später Web) kennt sie.
+        # Generation: die DB kennt sie als Referenz — ABER manche Baureihen-
+        # Datensätze fassen mehrere Werkscodes in EINEM `generation`-Feld
+        # zusammen ("G20/G21", siehe app/chassis_codes.py). Nennt der Nutzer
+        # selbst einen dieser Codes explizit ("... F82 Coupé ..."), ist das die
+        # PRÄZISERE Angabe — sie darf nicht von der gröberen DB-Referenz
+        # überschrieben werden (Release-Hardening, Invariante "User Precision").
+        # Derselbe generische chassis_codes()-Extraktor, der auch Web-Titel
+        # liest — keine neue, baureihenspezifische Regel.
         gen = b.get("generation")
-        setze("generation", gen, _feld_eintrag(
-            gen, primary="enfal" if gen else None, confidence="hoch" if gen else "unbekannt",
-            state="reference_only" if gen else "unknown", reference=gen, evidence=evid_b))
+        gen_codes = chassis_codes(gen) if gen else set()
+        nutzer_codes = chassis_codes(f"{text} {getattr(req, 'modell', None) or ''}")
+        praezise = sorted(gen_codes & nutzer_codes)
+        if gen and len(gen_codes) > 1 and len(praezise) == 1:
+            gen_praezise = praezise[0].upper()
+            setze("generation", gen_praezise, _feld_eintrag(
+                gen_praezise, primary="user", confirmed_by=["enfal"], confidence="hoch",
+                state="user_confirmed", raw_user=gen_praezise, reference=gen, evidence=evid_b))
+        else:
+            setze("generation", gen, _feld_eintrag(
+                gen, primary="enfal" if gen else None, confidence="hoch" if gen else "unbekannt",
+                state="reference_only" if gen else "unknown", reference=gen, evidence=evid_b))
 
         # Leistung.
         db_ps = _int_oder_none(m.get("leistung_ps"))

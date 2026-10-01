@@ -458,13 +458,23 @@ def build_key_findings_kauf(req, baureihe: dict | None, motor_match: dict | None
     if schwach_hoch:
         namen = ", ".join(_bauteilname(i) for i in schwach_hoch[:3])
         n = len(schwach_hoch)
-        if all(ist_bekannt(i) for i in schwach_hoch):
+        alle_bekannt = all(ist_bekannt(i) for i in schwach_hoch)
+        if alle_bekannt:
             titel_sh = f"{n} bekannte Schwachstelle{'n' if n > 1 else ''} (hoher Schweregrad)"
         else:
             titel_sh = (f"{n} gemeldete{'r' if n == 1 else ''} Hinweis{'e' if n > 1 else ''} "
                         f"mit hohem Schweregrad")
+        # Release-Hardening (Evidence/Severity): die Titel-Formulierung milderte
+        # bereits seit Root-Cause-Closing zwischen "bekannt" und "gemeldet", aber
+        # `stufe` (Anzeigepriorität, z.B. "Wichtig"/"Kritisch" im Frontend) blieb in
+        # BEIDEN Fällen STUFE_WARNUNG — ein intrinsisch schwerer, aber unbelegter
+        # Hinweis bekam dieselbe Anzeigepriorität wie ein verifizierter. Intrinsische
+        # Schwere (schweregrad="hoch") und Beleglage/Applicability (`ist_bekannt`)
+        # sind getrennte Achsen; nur ihre Kombination darf STUFE_WARNUNG ergeben —
+        # exakt dasselbe Muster wie direkt oberhalb bei `motorprobleme`.
         findings.append(KeyFinding(
-            id="", kategorie="schwachstelle", stufe=STUFE_WARNUNG, icon="⚙️",
+            id="", kategorie="schwachstelle", stufe=STUFE_WARNUNG if alle_bekannt else STUFE_INFO,
+            icon="⚙️",
             titel=titel_sh,
             beschreibung=namen,
             aktion="Bei der Besichtigung gezielt prüfen.",
