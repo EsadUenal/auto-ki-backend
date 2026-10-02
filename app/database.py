@@ -895,6 +895,23 @@ def get_rueckruf_referenzen_kurz() -> list[dict]:
     )
 
 
+def get_alle_rueckruf_referenzen_mit_baureihe() -> list[dict]:
+    """kba_referenz + baureihe_id für ALLE Rückrufe mit befüllter Referenz — gecacht
+    (siehe oben, gleiches Muster wie `get_rueckruf_referenzen_kurz`).
+
+    Release-Hardening ("Recall Freshness"): Grundlage für
+    `app/kba_recall_refresh.py` — der generische, NIEMALS während eines
+    KaufChecks aufgerufene Abgleich, welche amtlichen Referenzen bereits
+    bekannt sind. `baureihe_id` statt `marke`, weil `import_kandidaten`
+    (app/kba_import_kandidaten.py) Abdeckung PRO PAAR (Referenz, Baureihe)
+    prüft, nicht nur pro Referenz."""
+    return _cached_alle(
+        "rueckruf_referenzen_baureihe",
+        "SELECT kba_referenz, baureihe_id FROM rueckruf "
+        "WHERE kba_referenz IS NOT NULL AND TRIM(kba_referenz) <> ''",
+    )
+
+
 def invalidate_referenzdaten_cache() -> None:
     """Nach Admin-Schreibvorgängen (neue/geänderte Baureihe) aufrufen, damit die
     Fahrzeugerkennung sofort den aktuellen Stand sieht statt bis zu 60s zu warten."""

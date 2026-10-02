@@ -352,7 +352,16 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     # Der Check bricht dabei NICHT ab: Fahrzeugangaben, Marktrecherche,
     # Inseratsanalyse, Mängeltransparenz und LLM-Bericht laufen vollständig weiter.
     baureihe_markt, identitaet = await baureihe_task
-    motor_markt = find_motor(baureihe_markt, req.motor) if baureihe_markt else None
+    # Release-Hardening ("Residual Motor-Candidate Tie"): ohne `req=` landet
+    # dieser Aufruf im LEGACY-Pfad von `find_motor`, dessen `_eingrenzen`
+    # bei verbleibender Mehrdeutigkeit (z.B. zwei Varianten mit identischer
+    # Leistung, keine im Freitext erkennbare Antriebs-/Modellbezeichnung)
+    # stillschweigend die ERSTE Zeile der DB-Liste nimmt — nachweislich
+    # reihenfolgeabhängig (siehe test_motor_tie_residual.py). `_motor_mit_request`
+    # (bereits der Pfad von app/kaufcheck.py) kennt diesen Rückfall nicht: bleibt
+    # mehr als ein Kandidat übrig, liefert sie None statt zu raten. Keine neue
+    # Logik — nur derselbe, bereits vorhandene sichere Pfad wie im KaufCheck.
+    motor_markt = find_motor(baureihe_markt, req.motor, req.modell, req=req) if baureihe_markt else None
     if identitaet["belastbar"]:
         baureihe, motor_match = baureihe_markt, motor_markt
     else:
