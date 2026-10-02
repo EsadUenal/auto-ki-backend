@@ -32,38 +32,51 @@ Modelle" — exakte Spaltenüberschriften des echten Exports). Dieses Modul
 liefert nur die fehlende Klammer darum: herunterladen, parsen, gegen den
 lokalen Bestand abgleichen, die VORHANDENE Klassifizierungslogik aufrufen.
 
-WAS DIESES MODUL NICHT TUT
----------------------------
-Es schreibt NIEMALS in die Datenbank. Es wird von KEINEM KaufCheck-/
-VerkaufsCheck-/Request-Pfad importiert oder aufgerufen — ausschließlich als
-eigenständiges Wartungskommando (`python -m app.kba_recall_refresh`),
-manuell oder über einen externen Scheduler vor einem Release ausgeführt
-(siehe Abschnitt "EINPLANUNG" im Docstring von `main()`).
+WAS DIESES MODUL TUT — UND WAS NICHT (Release-Hardening, Root Cause 1)
+------------------------------------------------------------------------
+Ohne `--apply` (Default) schreibt dieses Modul NIEMALS in die Datenbank —
+genau wie im letzten Pass. Es wird von KEINEM KaufCheck-/VerkaufsCheck-/
+Request-Pfad importiert oder aufgerufen — ausschließlich als eigenständiges
+Wartungskommando (`python -m app.kba_recall_refresh [--apply]`), manuell oder
+über einen externen Scheduler vor einem Release ausgeführt (siehe Abschnitt
+"EINPLANUNG" im Docstring von `main()` — für DIESES Deployment bewusst noch
+nicht eingerichtet).
 
-Ein als SAFE_IMPORT klassifizierter Kandidat wird NICHT automatisch
-übernommen. Ein Rückruf ist eine Sicherheitsaussage über ein reales
-Fahrzeug; dieses Projekt hat an anderer Stelle (KBA-Referenz-Trust-Gate,
-Recall-Verification-Pilot, app/recall_filter.py) wiederholt gezeigt, dass
-automatisch übernommene, ungeprüfte Sicherheitsbehauptungen real falsch
-waren. Die Übernahme bleibt ein bewusster, von einem Menschen geprüfter
-Schritt — ein neuer `kba_import_batch_e.py` nach demselben Muster wie die
-vorhandenen Chargen, nicht ein automatischer Nebeneffekt dieses Abgleichs.
+MIT `--apply` schreibt es — aber NICHT jeden SAFE_IMPORT-Kandidaten blind.
+Automatisch übernommen wird NUR die Teilmenge, die bereits die vollen
+Batch-A-Kriterien erfüllt (app/kba_import_batch_a.py: eindeutige, GESCHLOSSENE
+Zielgeneration, kein zweites plausibles Generationsziel, keine unabbildbare
+Variantenbedingung, keine Dublette, plausibles Referenzformat, keine
+markenfremde Kollision) — dieselbe, bereits manuell geprüfte Logik, mit der
+die historischen Chargen A/B1/C/D entschieden wurden, nicht neu erfunden.
+ALLES andere (ambige Generation, unklare Variante, Verdachtsdublette, kein
+belastbares Ziel, oder SAFE_IMPORT mit OFFENER Zielgeneration) landet in
+`kba_rueckruf_review` (app/database.py) zur menschlichen Prüfung — ein
+amtlicher Rückruf wird nie verworfen, aber auch nie einer Baureihe
+zugeordnet, die sich nicht sicher belegen lässt (siehe `plane_sync()`,
+`apply_sync()`). Löschungen gibt es nie: ein Datensatz, der im nächsten
+Export fehlt, bleibt unverändert stehen.
 
 ARCHITEKTUR
 -----------
     amtlicher KBA-Export (CSV)
     -> download_export() / lokal gespeicherte Datei
     -> parse_export() -> list[dict] (exakt das Format von kba_import_kandidaten)
-    -> fehlende_abgleich() lädt den LOKALEN Bestand (app/database.py)
+    -> fehlende_kandidaten() / plane_sync() lädt den LOKALEN Bestand (app/database.py)
     -> app.kba_import_kandidaten.import_kandidaten() klassifiziert
        (dieselbe Logik wie jede historische Charge — hier NICHT neu erfunden)
     -> bericht() fasst zusammen: Anzahl je Klasse + Beispiele, zur Prüfung
+    -> NUR mit --apply: apply_sync() schreibt den Plan idempotent (siehe dort)
 """
 
 import csv
+import datetime
 import io
+import json
 import logging
 from pathlib import Path
+
+from app.kba_reconciliation import normalisiere_referenz
 
 log = logging.getLogger(__name__)
 
@@ -174,8 +187,197 @@ def bericht(kandidaten) -> dict:
     return aus
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# SYNC — Release-Hardening, Root Cause 1: "KBA Freshness muss jetzt
+# produktionsfähig werden". Alles oberhalb dieser Linie bleibt unverändert
+# REIN LESEND (der strukturelle Charakter des Moduls aus dem letzten Pass).
+# Ab hier: eine explizite, opt-in `--apply`-Schreibfunktion — siehe `main()`.
+#
+# ARCHITEKTUR DER TRENNUNG (kleinste sichere Erweiterung, nichts neu erfunden):
+#   - "automatisch sicher genug": GENAU dieselben Tore wie die historische
+#     Charge A (app.kba_import_batch_a.pruefe_batch_a — SAFE_IMPORT,
+#     GESCHLOSSENE Zielgeneration, kein zweites plausibles Generationsziel,
+#     keine unabbildbare Variantenbedingung, keine Dublette, plausibles
+#     Referenzformat, keine markenfremde Kollision, kein paralleler amtlicher
+#     Datensatz). Batch A war ein einmaliger, auf einen eingefrorenen
+#     Kandidatenschnappschuss angewendeter Lauf; hier ist es derselbe,
+#     unveränderte Code, nur auf dem LIVE-Abgleich und mit dynamischer
+#     ID-Vergabe (rueckruf.id ist AUTOINCREMENT — SQLite vergibt sie, keine
+#     feste Basis wie ID_BASIS=2001 nötig).
+#   - ALLES ANDERE (AMBIGUOUS_GENERATION, VARIANT_SCOPE_UNCLEAR,
+#     POSSIBLE_DUPLICATE, UNSUPPORTED_MODEL_MAPPING, oder SAFE_IMPORT mit
+#     OFFENER Zielgeneration): landet in `kba_rueckruf_review`
+#     (app/database.py) — ein amtlicher Rückruf wird NIE verworfen, nur weil
+#     das Fahrzeugmapping nicht sicher ist, aber auch NIE einer Baureihe
+#     zugeordnet, die sich nicht belegen lässt.
+#   - Bereits importierte Paare, deren amtlicher Text sich geändert hat:
+#     `plane_aktualisierungen` — ändert NIE die Zuordnung (Baureihe/ID),
+#     frischt nur Mangel-/Abhilfetext auf.
+
+def plane_aktualisierungen(kba_zeilen: list[dict], recalls_voll: list[dict]) -> list[dict]:
+    """Bestehende VIRA-Zeilen, deren amtlicher Mangel-/Abhilfetext sich seit
+    dem letzten Import geändert hat.
+
+    Arbeitet NUR auf Paaren, die SCHON im Bestand stehen — die Zuordnung
+    Referenz->Baureihe wurde früher entschieden (Batch A/B1/C/D, G20-Nachtrag
+    o.ä.) und wird hier NICHT neu bewertet, nur ihr Text aufgefrischt. Deshalb
+    bewusst UNABHÄNGIG von `import_kandidaten()`, das genau solche Paare als
+    "schon gedeckt" aus der Kandidatenliste ausschließt (siehe dessen
+    `gedeckte_paare`-Filter).
+
+    Bewusst NUR `mangel`/`abhilfe`: `betroffene_baujahre` ist beim Erstimport
+    als Schnitt aus amtlichem Fenster und VIRA-Bauzeitraum berechnet
+    (app/kba_import_batch_a._baujahre) — das hier blind neu zu berechnen,
+    liefe demselben Risiko zuwider, das jene Funktion verhindert, falls sich
+    der VIRA-Bauzeitraum einer Baureihe zwischenzeitlich geändert hat. Bleibt
+    deshalb unangetastet; eine Korrektur dort ist ein eigener, informierter
+    Schritt wie bisher."""
+    kba_je_referenz: dict[str, dict] = {}
+    for z in kba_zeilen:
+        ref = normalisiere_referenz(z.get("KBA-Referenznummer"))
+        if ref and ref not in kba_je_referenz:
+            kba_je_referenz[ref] = z     # erste Zeile gewinnt bei Dubletten im Export
+
+    updates = []
+    for r in recalls_voll:
+        ref = normalisiere_referenz(r.get("kba_referenz"))
+        amtlich = kba_je_referenz.get(ref) if ref else None
+        if not amtlich:
+            continue
+        mangel_amtlich = (amtlich.get("Mangelbezeichnung") or "").strip()
+        if not mangel_amtlich:
+            continue
+        abhilfe_amtlich = (amtlich.get("Beschreibung der Maßnahme") or "").strip() or None
+        aenderungen = {}
+        if (r.get("mangel") or "").strip() != mangel_amtlich:
+            aenderungen["mangel"] = mangel_amtlich
+        if (r.get("abhilfe") or None) != abhilfe_amtlich:
+            aenderungen["abhilfe"] = abhilfe_amtlich
+        if aenderungen:
+            updates.append({"id": r["id"], "baureihe_id": r["baureihe_id"],
+                            "kba_referenz": r.get("kba_referenz"), "aenderungen": aenderungen})
+    return updates
+
+
+def plane_sync(kba_zeilen: list[dict]) -> dict:
+    """Voller Sync-Plan — REIN LESEND (wie der Rest des Moduls; siehe
+    `apply_sync()` für das tatsächliche Schreiben). Macht EIGENE, frische
+    DB-Reads statt der gecachten `get_alle_*`-Funktionen, damit ein
+    `--apply`-Lauf innerhalb DESSELBEN Prozesses sofort den eigenen
+    Schreibstand sieht (Idempotenz: zweimal hintereinander anwenden darf
+    beim zweiten Mal nichts mehr vorschlagen)."""
+    from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_fuer_sync
+    from app.kba_import_batch_a import klasse_a, pruefe_batch_a
+    from app.kba_import_kandidaten import import_kandidaten
+
+    baureihen = get_alle_baureihen_kurz()
+    # Die VOLLEN Zeilen (inkl. mangel/abhilfe/betroffene_baujahre), nicht die
+    # schlanke (kba_referenz, baureihe_id)-Projektion, die `fehlende_
+    # kandidaten()` für den reinen Lesebericht verwendet: `pruefe_batch_a`
+    # braucht `mangel` zwingend (A3-Dublettenprüfung über den Freitext), und
+    # `import_kandidaten`s eigene Dublettenerkennung (`_moegliche_dubletten`)
+    # wird mit den vollen Feldern zuverlässiger statt nur über die Referenz.
+    recalls_voll = get_alle_rueckrufe_fuer_sync()
+
+    kandidaten = import_kandidaten(kba_zeilen, recalls_voll, baureihen)
+    auto = klasse_a(kandidaten, baureihen)
+    auto_ids = {id(k) for k in auto}
+    review_kandidaten = [k for k in kandidaten if id(k) not in auto_ids]
+
+    neue_zeilen, ausschluesse = pruefe_batch_a(kandidaten, baureihen, recalls_voll)
+    aktualisierungen = plane_aktualisierungen(kba_zeilen, recalls_voll)
+
+    return {
+        "kandidaten": kandidaten,
+        "neue_zeilen": neue_zeilen,
+        "ausschluesse": ausschluesse,
+        "review_kandidaten": review_kandidaten,
+        "aktualisierungen": aktualisierungen,
+    }
+
+
+def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
+    """Schreibt EINEN von `plane_sync()` berechneten Plan idempotent.
+
+    Nur mit einer offenen Transaktion aufrufen (`app.database.get_conn()` —
+    commit bei Erfolg, rollback bei jedem Fehler: FAIL CLOSED). Diese
+    Funktion committet/rollbackt selbst NICHT — das bleibt beim Aufrufer, wie
+    bei jeder anderen Schreibfunktion dieses Projekts (vgl. app/db_writer.py).
+
+    Löscht NIE eine Zeile — weder aus `rueckruf` noch aus
+    `kba_rueckruf_review`. Ein amtlicher Datensatz, der im nächsten Export
+    fehlt, bleibt unangetastet stehen (siehe Moduldocstring "KEINE
+    AUTO-LÖSCHUNG" im Auftrag)."""
+    from app.kba_import_kandidaten import SAFE_IMPORT
+
+    heute = heute or datetime.date.today().isoformat()
+
+    eingefuegt = 0
+    for z in plan["neue_zeilen"]:
+        # `z["id"]` (von pruefe_batch_a vergeben, Basis ID_BASIS=2001) wird
+        # bewusst NICHT verwendet — rueckruf.id ist AUTOINCREMENT, SQLite
+        # vergibt eine garantiert kollisionsfreie ID. Dieselbe Spaltenliste
+        # wie app/db_writer.py's regulärer Rückruf-Insert.
+        conn.execute(
+            "INSERT INTO rueckruf (baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,"
+            "kba_referenz) VALUES (?,?,?,?,?,?)",
+            (z["baureihe_id"], z["datum"], z["betroffene_baujahre"], z["mangel"],
+             z["abhilfe"], z["kba_referenz"]))
+        eingefuegt += 1
+
+    aktualisiert = 0
+    for u in plan["aktualisierungen"]:
+        felder = u["aenderungen"]
+        conn.execute(
+            f"UPDATE rueckruf SET {', '.join(f'{k}=?' for k in felder)} WHERE id=?",
+            (*felder.values(), u["id"]))
+        aktualisiert += 1
+
+    review_geschrieben = 0
+    for kand in plan["review_kandidaten"]:
+        klasse = kand.klasse
+        if klasse == SAFE_IMPORT:
+            # Nur Grund, warum ein SAFE_IMPORT-Kandidat trotzdem hier landet:
+            # mindestens eine Zielbaureihe hat eine OFFENE Generation (siehe
+            # `klasse_a` in app/kba_import_batch_a.py) — eigene, unmissver-
+            # ständliche Review-Klasse statt der irreführenden Originalklasse.
+            klasse = "SAFE_IMPORT_OFFENE_GENERATION"
+        prod = (f"{kand.prod_von}-{kand.prod_bis}"
+                if kand.prod_von is not None and kand.prod_bis is not None else None)
+        conn.execute(
+            "INSERT INTO kba_rueckruf_review (kba_referenz, klasse, begruendung, marke, "
+            "modell, mangel, produktionszeitraum, veroeffentlichungsdatum, "
+            "moegliche_baureihen, zuerst_gesehen_am, zuletzt_gesehen_am) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(kba_referenz) DO UPDATE SET klasse=excluded.klasse, "
+            "begruendung=excluded.begruendung, marke=excluded.marke, "
+            "modell=excluded.modell, mangel=excluded.mangel, "
+            "produktionszeitraum=excluded.produktionszeitraum, "
+            "veroeffentlichungsdatum=excluded.veroeffentlichungsdatum, "
+            "moegliche_baureihen=excluded.moegliche_baureihen, "
+            "zuletzt_gesehen_am=excluded.zuletzt_gesehen_am",
+            (kand.referenz, klasse, kand.begruendung, kand.marke, kand.modell, kand.mangel,
+             prod, kand.datum, json.dumps(kand.ziel_ids), heute, heute))
+        review_geschrieben += 1
+
+    return {"eingefuegt": eingefuegt, "aktualisiert": aktualisiert,
+            "review_geschrieben": review_geschrieben}
+
+
 def main() -> None:
-    """Wartungskommando: `python -m app.kba_recall_refresh [pfad-zu-export.csv]`.
+    """Wartungskommando: `python -m app.kba_recall_refresh [pfad-zu-export.csv] [--apply]`.
+
+    OHNE `--apply` (Default, sicher): lädt/parst den Export, berechnet den
+    vollständigen Plan und druckt ihn — identisch zum bisherigen Verhalten,
+    KEINE Zeile wird geschrieben.
+
+    MIT `--apply`: schreibt denselben Plan idempotent (siehe `apply_sync()`)
+    — neue, sicher klassifizierte Zeilen in `rueckruf`, Textauffrischungen auf
+    bereits vorhandenen Paaren, alles andere zur menschlichen Prüfung in
+    `kba_rueckruf_review`. Läuft NIE automatisch (kein Scheduler in diesem
+    Deployment, bewusst — s. Auftrag); ein Fehler (Download, Format, DB)
+    bricht VOR jedem Schreibzugriff ab oder rollt die gesamte Transaktion
+    zurück (FAIL CLOSED) — nie ein halb angewendeter Sync.
 
     EINPLANUNG (für dieses Deployment noch NICHT eingerichtet — bewusst, s.
     Auftrag): als separater, zeitgesteuerter Job (z.B. Railway Cron Job oder
@@ -188,7 +390,10 @@ def main() -> None:
     """
     import sys
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    pfad = sys.argv[1] if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    apply_ = "--apply" in args
+    pfad_args = [a for a in args if a != "--apply"]
+    pfad = pfad_args[0] if pfad_args else None
     if pfad:
         zeilen = parse_export(pfad)
         log.info("Export aus lokaler Datei gelesen: %s (%d Zeilen)", pfad, len(zeilen))
@@ -199,17 +404,35 @@ def main() -> None:
             download_export(ziel)
             zeilen = parse_export(ziel)
         log.info("Export frisch heruntergeladen (%d Zeilen)", len(zeilen))
-    kandidaten = fehlende_kandidaten(zeilen)
-    rep = bericht(kandidaten)
+
+    plan = plane_sync(zeilen)
+    rep = bericht(plan["kandidaten"])
     log.info("=== KBA-Freshness-Abgleich: %d fehlende amtliche Rückrufe insgesamt ===",
-             len(kandidaten))
+             len(plan["kandidaten"]))
     for klasse, info in rep.items():
         log.info("%-25s %4d Rückrufe (%4d VIRA-Zeilen) %s", klasse,
                  info["anzahl_rueckrufe"], info["anzahl_zeilen_bei_import"],
                  info["beispiele"])
-    log.info("Dies ist ein REIN LESENDER Bericht — keine Zeile wurde geschrieben. "
-             "Eine Übernahme erfolgt, wie bei allen bisherigen Chargen, als eigener, "
-             "manuell geprüfter Schritt.")
+    log.info("--- Sync-Plan ---")
+    log.info("Neue Zeilen (automatisch sicher, Batch-A-Kriterien): %d",
+             len(plan["neue_zeilen"]))
+    log.info("Inhalts-Aktualisierungen (bestehende Paare, geänderter Text): %d",
+             len(plan["aktualisierungen"]))
+    log.info("Zur manuellen Prüfung (ambige/offene Zuordnung) in kba_rueckruf_review: %d",
+             len(plan["review_kandidaten"]))
+
+    if not apply_:
+        log.info("Dies ist ein REIN LESENDER Bericht — keine Zeile wurde geschrieben. "
+                 "Mit --apply wird genau dieser Plan idempotent angewendet.")
+        return
+
+    from app.database import get_conn, invalidate_referenzdaten_cache
+    with get_conn() as conn:
+        ergebnis = apply_sync(conn, plan)
+    invalidate_referenzdaten_cache()
+    log.info("=== --apply abgeschlossen: %d neu, %d aktualisiert, %d im Review-Bestand "
+             "vermerkt ===", ergebnis["eingefuegt"], ergebnis["aktualisiert"],
+             ergebnis["review_geschrieben"])
 
 
 if __name__ == "__main__":

@@ -307,6 +307,34 @@ CREATE TABLE IF NOT EXISTS einwilligung (
     akzeptiert_am DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_einwilligung_user ON einwilligung(user_id);
+
+-- Release-Hardening ("Recall Freshness", Root Cause 1): Amtliche KBA-Rückrufe,
+-- deren Zuordnung zu einer VIRA-Baureihe NICHT eindeutig genug ist, um sie
+-- automatisch in `rueckruf` zu übernehmen (AMBIGUOUS_GENERATION,
+-- VARIANT_SCOPE_UNCLEAR, POSSIBLE_DUPLICATE, UNSUPPORTED_MODEL_MAPPING, oder
+-- SAFE_IMPORT mit offener Zielgeneration — siehe app/kba_import_kandidaten.py).
+-- Ein amtlicher Rückruf ist eine reale Sicherheitsaussage; er wird deshalb
+-- NIE verworfen, nur weil VIRA das Fahrzeugmapping nicht sicher auflösen kann
+-- — er landet hier zur menschlichen Prüfung statt in der fahrzeugsichtbaren
+-- `rueckruf`-Tabelle. Diese Tabelle wird von KEINEM KaufCheck-/VerkaufsCheck-
+-- Pfad gelesen (siehe app/kba_recall_refresh.py) — rein administrativ.
+-- `kba_referenz` als alleiniger Primärschlüssel (statt Paar mit Baureihe):
+-- ein amtlicher Rückruf kann mehrere ambige Zielbaureihen haben, die werden
+-- hier als EINE Zeile mit `moegliche_baureihen` (JSON-Liste) geführt, nie
+-- künstlich auf eine davon reduziert.
+CREATE TABLE IF NOT EXISTS kba_rueckruf_review (
+    kba_referenz            TEXT PRIMARY KEY,
+    klasse                  TEXT NOT NULL,
+    begruendung             TEXT,
+    marke                   TEXT,
+    modell                  TEXT,
+    mangel                  TEXT,
+    produktionszeitraum     TEXT,
+    veroeffentlichungsdatum TEXT,
+    moegliche_baureihen     TEXT,       -- JSON-Liste von baureihe-IDs, ggf. leer
+    zuerst_gesehen_am       TEXT NOT NULL,
+    zuletzt_gesehen_am      TEXT NOT NULL
+);
 """
 
 
@@ -910,6 +938,23 @@ def get_alle_rueckruf_referenzen_mit_baureihe() -> list[dict]:
         "SELECT kba_referenz, baureihe_id FROM rueckruf "
         "WHERE kba_referenz IS NOT NULL AND TRIM(kba_referenz) <> ''",
     )
+
+
+def get_alle_rueckrufe_fuer_sync() -> list[dict]:
+    """ALLE Spalten von `rueckruf`, für ALLE Zeilen (auch ohne Referenz) —
+    UNGECACHT, bewusst keine `_cached_alle`-Hülle.
+
+    Release-Hardening ("Recall Freshness", Root Cause 1): Grundlage für den
+    Inhalts-Abgleich in `app/kba_recall_refresh.py` (erkennt geänderten
+    amtlichen Mangel-/Abhilfetext auf bereits importierten Paaren). Läuft
+    ausschließlich im Wartungskommando, nie im Request-Pfad — die 60s-TTL-
+    Cache-Verzögerung der anderen `get_alle_*`-Funktionen wäre hier falsch:
+    ein `--apply`-Lauf muss innerhalb desselben Prozesses sofort den eigenen
+    Schreibstand sehen (Idempotenz-Test: zweimal hintereinander anwenden)."""
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
+            "kba_referenz FROM rueckruf").fetchall()]
 
 
 def invalidate_referenzdaten_cache() -> None:
