@@ -668,6 +668,50 @@ _INTERVALL = re.compile(
 # Software …") zu einem scheinbaren Satz und wurden zum "Fakt".
 _SATZ = re.compile(r"(?<=[.!?])\s+|\s*\r?\n\s*\r?\n\s*|\s*#{2,}\s*")
 
+# Release-Hardening (Production Smoke 2, Root Cause 3): ein Satz, der sein
+# eigenes Thema nicht selbst nennt, sondern auf einen VORHERGEHENDEN Satz
+# verweist ("Das gilt häufig auch für ein schief stehendes Lenkrad."), wurde
+# bisher wie jeder andere Satz isoliert gegen `_PROBLEM_WORTE`/Vokabular
+# geprüft. "häufig" + "Lenkrad" reichten dafür bereits aus — ohne den
+# vorhergehenden Satz, der das eigentliche Bauteil/Problem nennt, auf das sich
+# "Das gilt auch für …" bezieht. Generisch (kein Wort über ein konkretes
+# Bauteil oder Fahrzeug): jeder Satz, der mit einem solchen Rückbezug beginnt,
+# braucht den UNMITTELBAR VORHERGEHENDEN Satz als Kontext, um überhaupt als
+# eigenständiger Claim zu gelten. Ohne auflösbaren Vorgänger (erster Satz
+# eines Treffers, oder der Vorgänger ist selbst nur ein Rückbezug) bleibt der
+# Satz unvollständig und erzeugt keinen Fakt — siehe `_KONTEXT_AUFLOESEN`.
+_AE = "(?:ä|ae)"
+_KONTEXTABHAENGIG = re.compile(
+    r"^\s*(?:"
+    r"das\s+gilt\w*"
+    r"|dies\s+(?:gilt|betrifft)\w*"
+    r"|dieses\s+problem\b"
+    r"|diese[rs]\s+(?:gilt|betrifft)\w*"
+    r"|dasselbe\s+gilt\w*"
+    r"|gleiches\s+gilt\w*"
+    r"|ebenso\s+(?:gilt|betrifft|verh" + _AE + r"lt)\w*"
+    r"|genauso\s+(?:gilt|betrifft)\w*"
+    r"|auch\s+hier\b"
+    r"|dabei\s+(?:kommt|handelt|tritt|zeigt)\w*"
+    r"|hierbei\s+(?:kommt|handelt|tritt)\w*"
+    r")", re.IGNORECASE)
+
+
+def _kontext_aufloesen(saetze: list[str], idx: int) -> str | None:
+    """Löst einen rückbezüglichen Satz mit seinem Vorgänger auf, oder meldet
+    `None`, wenn kein belastbarer Bezug existiert (Satz bleibt dann unvollständig
+    und wird NICHT als eigenständiger Claim verwendet — siehe Moduldocstring
+    Root Cause 3)."""
+    satz = saetze[idx]
+    if not _KONTEXTABHAENGIG.match(satz):
+        return satz
+    if idx == 0:
+        return None
+    vorgaenger = saetze[idx - 1]
+    if _KONTEXTABHAENGIG.match(vorgaenger):
+        return None          # der Vorgänger selbst ist unaufgelöst -> keine Kette
+    return f"{vorgaenger} {satz}"
+
 
 def _bauteil_vokabular() -> dict[str, str]:
     from app.kaufaktionen import _KOMPONENTEN
@@ -800,7 +844,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             if artikel_passt is False:
                 abgelehnt.append({"url": url, "kategorie": kategorie, "grund": grund_a})
                 continue
-        for satz in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}"):
+        satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        for idx in range(len(satz_liste)):
+            satz = _kontext_aufloesen(satz_liste, idx)
+            if satz is None:
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "kontextabhaengiger_satz_ohne_bezug",
+                                  "satz": satz_liste[idx][:120]})
+                continue
             if grund == "schwach" and not _satz_nennt_modell(satz, modell):
                 continue
             n = _norm(satz)
