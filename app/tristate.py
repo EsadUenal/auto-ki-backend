@@ -281,7 +281,17 @@ def bewerte(feld: Feld, auswahl: str | None, freitext: str | None) -> TriState:
         return t if a.state != UNKNOWN or not a.quelle else a
     if a.state != UNKNOWN:
         if t.state not in (UNKNOWN, a.state):
-            return TriState(a.state, a.quelle, a.eingeschraenkt, True, a.beleg)
+            # Release-Hardening (Root Cause 7, Test E): Regel 3 im Modulkopf
+            # gilt fuer JEDEN Widerspruch zum selben Thema, nicht nur fuer
+            # zwei Teilsaetze IM Freitext. Eine Auswahl ("ja" = unfallfrei)
+            # und ein klar gegenteiliger Freitext-Satz ("nicht unfallfrei,
+            # ein Schaden wurde repariert") sind ein Widerspruch zum selben
+            # Thema — ENFAL entscheidet nicht, welche Angabe stimmt. Vorher
+            # gewann hier unbedingt die Auswahl (nur `konflikt=True` markiert,
+            # der State blieb die Auswahl) — bei einer veralteten Checkbox
+            # neben einem aktuelleren, widersprechenden Freitext hätte das
+            # eine Behauptung ausgegeben, die das Inserat selbst bestreitet.
+            return TriState(UNKNOWN, a.quelle, a.eingeschraenkt, True, a.beleg)
         return a
     if a.quelle and a.state == UNKNOWN:
         # Das Auswahlfeld sagt ausdrücklich "keine Angabe" — eine Behauptung im
