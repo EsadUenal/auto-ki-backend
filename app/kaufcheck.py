@@ -595,7 +595,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     result["bericht"] = kanonischer_bericht(
         req, identity, baureihe, motor_match, insights, kaufaktionen, empfehlung_gruende,
         result["empfehlung"], price_assessment, markt_verfuegbar, laufleistungskontext,
-        hu, sources, fahrzeugkontext, entscheidung=entscheidung)
+        hu, sources, fahrzeugkontext, entscheidung=entscheidung, web_recherche=web_recherche)
 
     # ROOT-CAUSE-CLOSING (Befund K, 4.7): die Schreibstil-Regel gilt für JEDEN
     # Nutzertext des Ergebnisses: Bericht des Modells, Datenbanktexte, Key
@@ -643,6 +643,10 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "web_identitaet":          (web_recherche.identitaet
                                     if web_recherche and web_recherche.identitaet
                                     and web_recherche.identitaet.belegt else None),
+        # Root Cause 6: je-Phase-Status roh mitgeben, nicht nur in Prosa
+        # versteckt — Konsumenten (Diagnose, künftige UI) müssen nicht den
+        # Berichtstext parsen, um SUCCESS/PARTIAL/FAILED/NOT_RUN zu lesen.
+        "web_recherche_phasen_status": (web_recherche.phasen_status if web_recherche else {}),
     })
 
 # Die gemeinsame Schreibstil-Regel (app/schreibstil.py) wird hier eingesetzt.

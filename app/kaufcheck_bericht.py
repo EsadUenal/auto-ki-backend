@@ -112,9 +112,34 @@ def _ueberschrift(entscheidung, identity) -> str:
     return "## Fahrzeugidentität nicht bestätigt"
 
 
+# Release-Hardening (Root Cause 6): "0 Treffer" und "Recherche konnte nicht
+# ausgeführt werden" dürfen im Bericht nicht gleich aussehen. Rein additiv —
+# ändert nie Empfehlung, Floor oder Insight-Menge, nur diesen einen Hinweis.
+# Generisch über `phasen_status` (app/models.py); kein Fahrzeug-/Phasen-Wort
+# ist hartkodiert außer den beiden Phasennamen selbst.
+_PHASE_LABEL = {"rueckruf": "Rückrufrecherche", "technik": "Recherche zu technischen Schwachstellen"}
+
+
+def forschungsluecken_hinweis(web_recherche) -> list[str]:
+    """Additive Zeile(n), wenn eine inhaltlich wichtige Web-Recherchephase
+    NICHT erfolgreich abgeschlossen wurde (`phasen_status` == FAILED) — nicht
+    bei PARTIAL (dünne, aber vorhandene Abdeckung) und nicht, wenn die Phase
+    gar nicht lief (z.B. weil die Identität nicht reichte — das meldet der
+    Bericht bereits an anderer Stelle)."""
+    status = getattr(web_recherche, "phasen_status", None) or {}
+    betroffen = [name for name in ("rueckruf", "technik") if status.get(name) == "failed"]
+    if not betroffen:
+        return []
+    labels = " und ".join(_PHASE_LABEL[n] for n in betroffen)
+    return [f"Hinweis: {labels} über Webquellen konnte technisch nicht vollständig "
+            "ausgeführt werden. Das bedeutet NICHT, dass hierzu nichts vorliegt: "
+            "nur, dass diese Prüfung hier nicht abgeschlossen werden konnte und "
+            "separat nachgeholt werden sollte.", ""]
+
+
 def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommendation,
             price_assessment, market_available, mileage, hu, sources, fahrzeugkontext=None,
-            *, entscheidung=None) -> str:
+            *, entscheidung=None, web_recherche=None) -> str:
     facts = aus_request(req)
     if entscheidung is None:
         from app.empfehlungs_policy import entscheide
@@ -124,6 +149,7 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     if titel:
         lines += [f"**{titel}**", ""]
     lines += ["Datenbasis: " + "; ".join(sources) + ".", ""]
+    lines += forschungsluecken_hinweis(web_recherche)
     labels = {"make": "Marke", "model": "Modell", "generation": "Generation", "year": "Baujahr",
               "engine_name": "Motor", "engine_code": "Motorcode / Motorfamilie", "fuel": "Kraftstoff",
               "powertrain": "Antriebsart", "transmission": "Getriebe", "drivetrain": "Antrieb",

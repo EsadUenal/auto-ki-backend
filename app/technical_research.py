@@ -62,6 +62,7 @@ import logging
 import re
 from typing import Protocol
 
+from app.kraftstoff_powertrain import powertrain_aus_freitext
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
@@ -76,6 +77,42 @@ TRIGGER_DB_MISS = "db_miss"
 TRIGGER_IDENTITAET_UNSICHER = "identitaet_unsicher"
 TRIGGER_MOTOR_FEHLT = "motor_fehlt"
 TRIGGER_KONFLIKT = "konflikt"
+
+# Release-Hardening (Root Cause 6): je-Phase-Vollständigkeit — siehe
+# TechnischeRecherche.phasen_status (app/models.py) für die Begründung.
+PHASE_SUCCESS = "success"
+PHASE_PARTIAL = "partial"
+PHASE_FAILED = "failed"
+PHASE_NOT_RUN = "not_run"
+
+
+def _phase_status(*, lief: bool, anfragen_gesamt: int, anfragen_fehlgeschlagen: int,
+                  inhalt_schwach: bool = False) -> str:
+    """Generische Statuslogik, dieselbe für jede Phase (Identität/Rückruf/
+    Technik) — kein phasenspezifischer Sonderfall außer dem jeweils
+    übergebenen `inhalt_schwach`-Signal.
+
+      NOT_RUN  die Phase wurde nie versucht (z.B. Rückruf/Technik, weil die
+               Identität vorher nicht reichte).
+      FAILED   JEDE Anfrage dieser Phase schlug fehl — keine verwertbare
+               Antwort überhaupt erhalten.
+      PARTIAL  mindestens eine Anfrage schlug fehl (aber nicht alle), ODER
+               alle Anfragen kamen durch, aber der Inhalt ist zu schwach, um
+               als vollständige Abdeckung zu gelten (`inhalt_schwach`,
+               aktuell nur für die Technik-Phase verwendet: nur Tier-3-Quellen
+               oder keine Fakten trotz erfolgreicher Anfragen).
+      SUCCESS  alle Anfragen kamen durch UND der Inhalt gilt nicht als
+               schwach. Ausdrücklich UNABHÄNGIG davon, ob die Phase am Ende
+               etwas Verwertbares fand — "0 Rückrufe gefunden" ist ein
+               gültiges, vollständiges SUCCESS-Ergebnis, kein PARTIAL/FAILED.
+    """
+    if not lief:
+        return PHASE_NOT_RUN
+    if anfragen_gesamt > 0 and anfragen_fehlgeschlagen >= anfragen_gesamt:
+        return PHASE_FAILED
+    if anfragen_fehlgeschlagen > 0 or inhalt_schwach:
+        return PHASE_PARTIAL
+    return PHASE_SUCCESS
 
 MIN_SCORE_IDENTITAET = 30
 MIN_SCORE_FAKT = 30
@@ -452,6 +489,16 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     for wert, rx in _ANTRIEB_CLAIM:
         if rx.search(text):
             add("drivetrain", wert)
+    # Root Cause 5 (Stufe 2): Elektrifizierungsgrad NUR aus denselben
+    # ausdrücklichen Wörtern, die app/kraftstoff_powertrain.py bereits für
+    # Nutzer-/Inseratstext verlangt ("reiner Verbrenner"/"ICE", "Mild-Hybrid",
+    # "Plug-in-Hybrid", "BEV"/"elektrisch") — wiederverwendet, nicht neu
+    # erfunden. "Benzin"/"Diesel" allein lösen hier bewusst NICHTS aus (siehe
+    # `powertrain_aus_freitext`-Docstring): der Kraftstoff-Claim oben ist eine
+    # ANDERE Achse und impliziert nie die Elektrifizierung.
+    pt = powertrain_aus_freitext(text)
+    if pt:
+        add("powertrain", pt)
     for m in _RE_GETRIEBE_MANUELL.finditer(text):
         gaenge = m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3)
         add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None)
@@ -605,6 +652,10 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         uebernehme("displacement", konsens(claims, "displacement", bevorzugt=hub))
     kraftstoff = uebernehme("fuel", konsens(claims, "fuel"))
     antrieb = uebernehme("drivetrain", konsens(claims, "drivetrain"))
+    # Root Cause 5 (Stufe 2): wie jedes andere Feld per gewichtetem Konsens —
+    # zwei vergleichbar starke, widersprechende Quellen ergeben `None` (siehe
+    # `konsens()`), genau wie bei `fuel`/`generation`. Kein Sonderfall.
+    powertrain = uebernehme("powertrain", konsens(claims, "powertrain"))
     getriebe = uebernehme("transmission", konsens(claims, "transmission"))
     motorcode = uebernehme("engine_code", konsens(claims, "engine_code"))
     if ziel.get("baujahr") and mit_jahr and generation:
@@ -647,7 +698,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         generation=generation if isinstance(generation, str) else (feldwerte.get("generation") or {}).get("value"),
         generation_nummer=(gen_nr[0] if gen_nr else None),
         motor=motor_bestaetigt, kraftstoff=kraftstoff, leistung_ps=leistung,
-        antrieb=antrieb, getriebe=getriebe, getriebe_detail=getriebe_detail, motorcode=motorcode,
+        antrieb=antrieb, powertrain=powertrain,
+        getriebe=getriebe, getriebe_detail=getriebe_detail, motorcode=motorcode,
         confidence=conf, belegende_domains=domains, quellen=_quellen_aus(stuetzend),
         feldwerte=feldwerte, identitaet_konfidenz=identitaet_konf,
         akzeptierte_claims=akzeptiert, abgelehnte_claims=abgelehnt,
@@ -1003,10 +1055,15 @@ class TavilyTechnicalResearchProvider:
         fehler = False
         abgelehnt: list[dict] = []
         phasen: list[str] = []
+        # Root Cause 6: Anfragen/Fehlschläge JE PHASE, nicht nur ein geteiltes
+        # Bool — Grundlage für `phasen_status` unten.
+        anf_gesamt = {"identitaet": 0, "rueckruf": 0, "technik": 0}
+        anf_fehler = {"identitaet": 0, "rueckruf": 0, "technik": 0}
 
-        async def suche(query, **kw):
+        async def suche(query, *, phase, **kw):
             nonlocal anfragen, fehler
             anfragen += 1
+            anf_gesamt[phase] += 1
             try:
                 return await tavily_search(query, count=self._count,
                                            exclude_domains=None if kw.get("include_domains") else US_QUELLEN_AUSSCHLUSS,
@@ -1014,6 +1071,7 @@ class TavilyTechnicalResearchProvider:
             except Exception as exc:                    # pragma: no cover — Schutznetz
                 log.warning("Technische Teilrecherche fehlgeschlagen (%s)", type(exc).__name__)
                 fehler = True
+                anf_fehler[phase] += 1
                 return []
 
         # PHASE 1 — Identität
@@ -1022,17 +1080,22 @@ class TavilyTechnicalResearchProvider:
                                           f"{z['leistung_ps']} PS" if z.get("leistung_ps") else None]))
         q_ident = [" ".join(filter(None, [breit, jahr, motor_ps, "technische Daten"])),
                    " ".join(filter(None, [breit, jahr, "Generation Baureihe Bauzeitraum"]))]
-        ident_treffer = [r for liste in await asyncio.gather(*[suche(q) for q in q_ident])
+        ident_treffer = [r for liste in await asyncio.gather(*[suche(q, phase="identitaet") for q in q_ident])
                          for r in liste]
         identitaet, abgelehnt_i = phase_identitaet(ident_treffer, z)
         abgelehnt += abgelehnt_i
+        status_identitaet = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["identitaet"],
+                                          anfragen_fehlgeschlagen=anf_fehler["identitaet"])
         if not _identitaet_reicht(identitaet):
             log.info("Technische Recherche: Identität '%s' NICHT belegt — keine Rückruf-/"
                      "Technikphase (%d Anfragen)", breit, anfragen)
             return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, identitaet=identitaet,
                                        provider_fehler=fehler and not ident_treffer,
                                        phasen=phasen, abgelehnte_fakten=abgelehnt,
-                                       anfragen=anfragen)
+                                       anfragen=anfragen,
+                                       phasen_status={"identitaet": status_identitaet,
+                                                     "rueckruf": PHASE_NOT_RUN,
+                                                     "technik": PHASE_NOT_RUN})
 
         gen = identitaet.generation or z.get("generation")
         basis = " ".join(filter(None, [breit, gen]))
@@ -1043,10 +1106,12 @@ class TavilyTechnicalResearchProvider:
             # ob das Baujahr betroffen ist, entscheidet das Produktionsfenster im
             # Quelltext (_extrahiere_fakten). Mit Baujahr fand die Suche vor allem
             # Meldungen aus dem Baujahr selbst.
-            suche(" ".join(filter(None, [basis, "Rückruf"]))),
+            suche(" ".join(filter(None, [basis, "Rückruf"])), phase="rueckruf"),
             suche(" ".join(filter(None, [breit, "Rückruf Rückrufaktion"])),
-                  include_domains=_RUECKRUF_DOMAINS))
+                  phase="rueckruf", include_domains=_RUECKRUF_DOMAINS))
         roh = {"rueckruf": [r for liste in rr for r in liste]}
+        status_rueckruf = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["rueckruf"],
+                                        anfragen_fehlgeschlagen=anf_fehler["rueckruf"])
         # PHASE 3 — technische Hinweise
         phasen.append("technik")
         sw, wa = await asyncio.gather(
@@ -1058,16 +1123,31 @@ class TavilyTechnicalResearchProvider:
                                         count=self._count, exclude_domains=US_QUELLEN_AUSSCHLUSS),
             return_exceptions=True)
         anfragen += 2
+        anf_gesamt["technik"] = 2
+        anf_fehler["technik"] = sum(1 for r in (sw, wa) if isinstance(r, Exception))
         roh["schwachstelle"] = sw if isinstance(sw, list) else []
         roh["wartung"] = wa if isinstance(wa, list) else []
         fehler = fehler or isinstance(sw, Exception) or isinstance(wa, Exception)
         fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"), abgelehnt)
+        # Inhalts-Schwäche der Technik-Phase (Root Cause 6, Test 3): Anfragen
+        # können sauber durchgekommen sein und trotzdem nur duenne, einstufige
+        # Belege liefern. Dieselbe Tier-Pruefung wie ueberall sonst im Modul
+        # (`_tier`), kein neues Kriterium.
+        technik_fakten = [f for f in fakten if f.kategorie in ("schwachstelle", "wartung")]
+        technik_stark = any(_tier(q.url or "") <= 2 for f in technik_fakten for q in f.quellen)
+        status_technik = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["technik"],
+                                       anfragen_fehlgeschlagen=anf_fehler["technik"],
+                                       inhalt_schwach=not technik_stark)
         log.info("Technische Recherche: '%s' belegt (Gen=%s, Konf=%s), %d Fakten, %d verworfen, "
-                 "%d Anfragen", breit, gen, identitaet.identitaet_konfidenz, len(fakten),
-                 len(abgelehnt), anfragen)
+                 "%d Anfragen, Phasenstatus=%s", breit, gen, identitaet.identitaet_konfidenz, len(fakten),
+                 len(abgelehnt), anfragen,
+                 {"identitaet": status_identitaet, "rueckruf": status_rueckruf, "technik": status_technik})
         return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, identitaet=identitaet,
                                    fakten=fakten, provider_fehler=fehler, phasen=phasen,
-                                   abgelehnte_fakten=abgelehnt, anfragen=anfragen)
+                                   abgelehnte_fakten=abgelehnt, anfragen=anfragen,
+                                   phasen_status={"identitaet": status_identitaet,
+                                                 "rueckruf": status_rueckruf,
+                                                 "technik": status_technik})
 
 
 # ── Fixture-Provider (Tests) ─────────────────────────────────────────────────
@@ -1076,31 +1156,68 @@ class FixtureTechnicalResearchProvider:
     """Deterministischer Provider für Tests — kein Netzwerk. Durchläuft DIESELBE
     phasenweise Auswertung wie der Tavily-Provider: die Fixture-Liste
     "identitaet" speist Phase 1, "rueckruf" Phase 2, "schwachstelle"/"wartung"
-    Phase 3 — und Phase 2/3 laufen nur nach belegter Identität."""
+    Phase 3 — und Phase 2/3 laufen nur nach belegter Identität.
 
-    def __init__(self, treffer: dict[str, list[dict]] | None = None, *, fehler: bool = False):
+    `fehler_phasen` (Root Cause 6, additiv): Phasennamen, deren Provider-Aufruf
+    als vollständig fehlgeschlagen simuliert wird — unabhängig von `treffer`,
+    das für diese Phase ignoriert wird. Default leer: bisheriges Verhalten
+    unverändert. `fehler=True` bleibt der bestehende Totalausfall VOR Phase 1."""
+
+    def __init__(self, treffer: dict[str, list[dict]] | None = None, *, fehler: bool = False,
+                fehler_phasen: frozenset[str] | None = None):
         self._treffer = treffer or {}
         self._fehler = fehler
+        self._fehler_phasen = fehler_phasen or frozenset()
         self.phasen_aufrufe: list[str] = []
 
     async def recherchiere(self, *, marke, modell, baujahr, motor,
                            ausgeloest_durch, ziel: dict | None = None) -> TechnischeRecherche:
         if self._fehler:
-            return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, provider_fehler=True)
+            return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, provider_fehler=True,
+                                       phasen_status={"identitaet": PHASE_FAILED,
+                                                     "rueckruf": PHASE_NOT_RUN,
+                                                     "technik": PHASE_NOT_RUN})
         z = _ziel(marke, modell, baujahr, motor, ziel)
         abgelehnt: list[dict] = []
         self.phasen_aufrufe.append("identitaet")
-        identitaet, abgelehnt_i = phase_identitaet(list(self._treffer.get("identitaet") or []), z)
+        ident_fehler = "identitaet" in self._fehler_phasen
+        ident_treffer = [] if ident_fehler else list(self._treffer.get("identitaet") or [])
+        identitaet, abgelehnt_i = phase_identitaet(ident_treffer, z)
         abgelehnt += abgelehnt_i
+        status_identitaet = PHASE_FAILED if ident_fehler else PHASE_SUCCESS
         if not _identitaet_reicht(identitaet):
             return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, identitaet=identitaet,
-                                       phasen=["identitaet"], abgelehnte_fakten=abgelehnt)
+                                       phasen=["identitaet"], abgelehnte_fakten=abgelehnt,
+                                       provider_fehler=ident_fehler,
+                                       phasen_status={"identitaet": status_identitaet,
+                                                     "rueckruf": PHASE_NOT_RUN,
+                                                     "technik": PHASE_NOT_RUN})
         self.phasen_aufrufe += ["rueckruf", "technik"]
-        roh = {k: list(self._treffer.get(k) or []) for k in ("rueckruf", "schwachstelle", "wartung")}
+        rueckruf_fehler = "rueckruf" in self._fehler_phasen
+        technik_fehler = "technik" in self._fehler_phasen
+        roh = {
+            "rueckruf": [] if rueckruf_fehler else list(self._treffer.get("rueckruf") or []),
+            "schwachstelle": [] if technik_fehler else list(self._treffer.get("schwachstelle") or []),
+            "wartung": [] if technik_fehler else list(self._treffer.get("wartung") or []),
+        }
         fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"), abgelehnt)
+        status_rueckruf = PHASE_FAILED if rueckruf_fehler else PHASE_SUCCESS
+        if technik_fehler:
+            status_technik = PHASE_FAILED
+        else:
+            # Dieselbe Tier-Pruefung wie der echte Provider (Root Cause 6,
+            # Test 3): nur Tier-3-Belege oder gar keine Technik-Fakten trotz
+            # "erfolgreicher" Suche -> PARTIAL, kein stillschweigendes SUCCESS.
+            technik_fakten = [f for f in fakten if f.kategorie in ("schwachstelle", "wartung")]
+            technik_stark = any(_tier(q.url or "") <= 2 for f in technik_fakten for q in f.quellen)
+            status_technik = PHASE_SUCCESS if technik_stark else PHASE_PARTIAL
         return TechnischeRecherche(ausgeloest_durch=ausgeloest_durch, identitaet=identitaet,
                                    fakten=fakten, phasen=["identitaet", "rueckruf", "technik"],
-                                   abgelehnte_fakten=abgelehnt)
+                                   abgelehnte_fakten=abgelehnt,
+                                   provider_fehler=rueckruf_fehler or technik_fehler,
+                                   phasen_status={"identitaet": status_identitaet,
+                                                 "rueckruf": status_rueckruf,
+                                                 "technik": status_technik})
 
 
 # ── Öffentliche Fassade ──────────────────────────────────────────────────────

@@ -638,6 +638,12 @@ class WebVehicleIdentity(BaseModel):
     # Generationsnummer ("4. Generation") getrennt vom Code ("ND").
     generation_nummer: str | None = None
     antrieb: str | None = None
+    # Release-Hardening (Root Cause 5, Stufe 2): Elektrifizierungsgrad ("ICE" |
+    # "MHEV" | "PHEV" | "BEV" | "HEV", app/kraftstoff_powertrain.py) — NUR aus
+    # ausdrücklichen Elektrifizierungswörtern einer Quelle (nie aus `kraftstoff`
+    # abgeleitet: "Benzin" sagt nichts über Hybridisierung). Getrennt von
+    # `antrieb` (Front/Heck/Allrad — eine andere Achse).
+    powertrain: str | None = None
     getriebe: str | None = None
     getriebe_detail: str | None = None
     motorcode: str | None = None
@@ -707,6 +713,17 @@ class TechnischeRecherche(BaseModel):
     phasen: list[str] = Field(default_factory=list)
     abgelehnte_fakten: list[dict] = Field(default_factory=list)
     anfragen: int = 0
+    # Release-Hardening (Root Cause 6): je Phase ("identitaet"/"rueckruf"/
+    # "technik") einer von PHASE_SUCCESS/PHASE_PARTIAL/PHASE_FAILED/
+    # PHASE_NOT_RUN (app/technical_research.py). Hält auseinander, was
+    # `provider_fehler` (EIN geteiltes Bool über die GANZE Recherche) nicht
+    # konnte: "Rückrufrecherche lief, keine Treffer" (SUCCESS, 0 Fakten) vs.
+    # "Rückrufrecherche konnte nicht ausgeführt werden" (FAILED) sahen bisher
+    # identisch aus — beide "keine Rückruf-Fakten, provider_fehler evtl.
+    # False". Additiv: ein leeres Dict (ältere/gefixte Aufrufer) ist ein
+    # gültiges, nur unbekanntes Ergebnis — kein Konsument darf ein fehlendes
+    # Feld als FAILED lesen.
+    phasen_status: dict[str, str] = Field(default_factory=dict)
 
 
 class Fahrzeugkontext(BaseModel):
