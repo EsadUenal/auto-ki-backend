@@ -56,6 +56,12 @@ STATE_INSUFFICIENT = "INSUFFICIENT_IDENTITY"
 # (app/schreibstil.py) gilt auch für diese Anzeige.
 ANZEIGE_LIMITED = "Analyse eingeschränkt: Fahrzeugvariante nicht vollständig verifiziert"
 ANZEIGE_INSUFFICIENT = "Analyse eingeschränkt: Fahrzeugidentität nicht bestätigt"
+# Release-Hardening (Research Confidence): eigene Anzeige für den Fall, dass
+# die Identität selbst voll bestätigt ist, aber eine sicherheits-/technisch
+# relevante Web-Recherchephase nicht abgeschlossen werden konnte — NICHT
+# dieselbe Ursache wie ANZEIGE_LIMITED (dort fehlt die Fahrzeugvariante
+# selbst), ANZEIGE_LIMITED hier zu verwenden wäre irreführend.
+ANZEIGE_LIMITED_FORSCHUNG = "Analyse eingeschränkt: Recherche nicht vollständig abgeschlossen"
 
 # Empfehlungen, die eine Freigabe ausdrücken. Nur diese werden bei
 # unvollständiger Identität zurückgenommen.
@@ -117,14 +123,63 @@ class Empfehlungsentscheidung:
     identitaet: IdentitaetsAufloesung
 
 
-def entscheide(kandidat: str | None, identity) -> Empfehlungsentscheidung:
+# ── Release-Hardening (Research Confidence) ─────────────────────────────────
+#
+# BEFUND: eine VOLL BESTÄTIGTE Identität (Marke/Modell/Generation/Motorisierung
+# belegt) konnte trotzdem auf einer Web-Recherche beruhen, bei der die
+# Rückruf- oder Technik-Phase NICHT erfolgreich ausgeführt wurde
+# (TechnischeRecherche.phasen_status, app/technical_research.py) — der
+# Bericht zeigte dann dieselbe Sicherheit wie bei vollständig abgeschlossener
+# Recherche. "0 Rückrufe gefunden" (Phase erfolgreich, Ergebnis leer) und
+# "Rückrufrecherche konnte nicht ausgeführt werden" (Phase fehlgeschlagen)
+# duerfen nicht dieselbe Empfehlungssicherheit tragen.
+#
+# REGEL: nur FAILED senkt die Stufe — PARTIAL (duenne, aber vorhandene
+# Abdeckung) hat bereits eine eigene, niedrigere Confidence auf jedem
+# einzelnen Web-Insight (app/evidence.py) und braucht keine zusätzliche
+# Eskalation hier; NOT_RUN bedeutet entweder "Identität hat nicht gereicht"
+# (dann greift bereits der Zweig unten) oder "kein Web-Fallback noetig"
+# (reiner DB-Treffer — kein Forschungsproblem). Die Empfehlung selbst bleibt
+# UNVERÄNDERT (kein automatisches "Finger weg", kein Zuruecksetzen auf
+# "unbekannt" wie bei unzureichender Identität) — nur `state` und `hinweis`
+# machen die Lücke sichtbar.
+_FORSCHUNGSPHASEN_LABEL = {
+    "rueckruf": "Die Rückrufrecherche über Webquellen konnte nicht vollständig ausgeführt werden",
+    "technik": "Die Recherche zu technischen Schwachstellen über Webquellen konnte nicht "
+              "vollständig ausgeführt werden",
+}
+
+
+def forschung_unvollstaendig_hinweis(web_recherche) -> str | None:
+    """None, wenn keine sicherheits-/technisch relevante Recherchephase
+    fehlgeschlagen ist (FAILED). Sonst ein Hinweistext, der GENAU benennt,
+    welche Phase betroffen ist — nie eine pauschale Unsicherheitsfloskel."""
+    status = getattr(web_recherche, "phasen_status", None) or {}
+    betroffen = [n for n in ("rueckruf", "technik") if status.get(n) == "failed"]
+    if not betroffen:
+        return None
+    saetze = ". ".join(_FORSCHUNGSPHASEN_LABEL[n] for n in betroffen)
+    return (f"{saetze}. Das bedeutet NICHT, dass hierzu nichts vorliegt: die vorhandene "
+           f"Einschätzung bleibt bestehen, gilt aber nur so weit wie die tatsächlich "
+           f"abgeschlossene Recherche — die offene Prüfung sollte separat nachgeholt werden.")
+
+
+def entscheide(kandidat: str | None, identity, *, web_recherche=None) -> Empfehlungsentscheidung:
     """Die finale Empfehlung — die EINZIGE Stelle, die über den Zustand
     entscheidet. Bericht, API-Feld und Frontend lesen dieses Ergebnis."""
     aufl = identitaet_aufloesen(identity)
     kandidat = (kandidat or "unbekannt").strip().lower()
     if aufl.stufe == VERIFIED:
-        return Empfehlungsentscheidung(kandidat, STATE_NORMAL,
-                                       _ANZEIGE_NORMAL.get(kandidat, kandidat), None, aufl)
+        forschungs_hinweis = forschung_unvollstaendig_hinweis(web_recherche)
+        if forschungs_hinweis is None:
+            return Empfehlungsentscheidung(kandidat, STATE_NORMAL,
+                                           _ANZEIGE_NORMAL.get(kandidat, kandidat), None, aufl)
+        # Empfehlung bleibt UNVERÄNDERT — nur state/anzeige/hinweis machen die
+        # unvollständige Recherche sichtbar (siehe Regel oben).
+        return Empfehlungsentscheidung(
+            kandidat, STATE_LIMITED,
+            f"{_ANZEIGE_NORMAL.get(kandidat, kandidat)} ({ANZEIGE_LIMITED_FORSCHUNG})",
+            forschungs_hinweis, aufl)
     state = STATE_LIMITED if aufl.stufe == PARTIAL else STATE_INSUFFICIENT
     anzeige_basis = ANZEIGE_LIMITED if aufl.stufe == PARTIAL else ANZEIGE_INSUFFICIENT
     offen = ", ".join(aufl.fehlend)

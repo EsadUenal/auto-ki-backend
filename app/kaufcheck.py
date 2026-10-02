@@ -508,7 +508,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # keine Freigabe-Empfehlung ("Analyse eingeschränkt"). Die frühere
     # Zwei-Boolean-Prüfung (DB belastbar ODER Web "belegt") griff beim
     # DB-Miss praktisch nie, weil "belegt" nur Marke+Modell-Tokens prüfte.
-    entscheidung = entscheide_empfehlung(empfehlung_final, identity)
+    entscheidung = entscheide_empfehlung(empfehlung_final, identity, web_recherche=web_recherche)
     if entscheidung.empfehlung != empfehlung_final:
         log.info("Kaufcheck: Empfehlung %s -> %s (Identitätsstufe %s, offen: %s)",
                  empfehlung_final, entscheidung.empfehlung, entscheidung.identitaet.stufe,

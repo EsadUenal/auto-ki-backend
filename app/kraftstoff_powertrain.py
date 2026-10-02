@@ -31,6 +31,8 @@ KEINE DB-Migration: die Spalte `motorvariante.kraftstoff` bleibt unverändert.
 Dieses Modul liest sie nur und liefert zwei saubere, unabhängige Werte.
 """
 
+import re
+
 FUEL_BENZIN = "benzin"
 FUEL_DIESEL = "diesel"
 FUEL_ELEKTRO = "elektro"
@@ -145,22 +147,67 @@ HOCHVOLT_POWERTRAINS = frozenset({POWERTRAIN_PHEV, "HEV", POWERTRAIN_BEV})
 SCOPE_FUEL = frozenset({FUEL_BENZIN, FUEL_DIESEL})
 
 
+# Release-Hardening (Continuation, negation-sichere Powertrain-Erkennung):
+# BEFUND — `powertrain_aus_freitext` prüfte Hybrid-Vokabular VOR dem
+# ICE-Vokabular und ganz ohne Verneinungsprüfung. "ohne Hybridisierung"
+# enthält die Teilzeichenkette "hybrid" und wurde dadurch als "HEV"
+# zurückgegeben — das genaue Gegenteil der Aussage. Dieselbe Falle gilt für
+# jedes andere Verneinungswort ("kein Mild-Hybrid", "ohne Plug-in-Hybrid",
+# "nicht elektrifiziert").
+#
+# LÖSUNG: jede Wortgruppe wird für sich geprüft (`_positiv_erwaehnt`), und ein
+# Treffer zählt nur, wenn im selben Teilsatz UNMITTELBAR davor KEIN
+# Verneinungswort steht. Eine Verneinung liefert NIE automatisch das
+# Gegenteil (z.B. ICE) — nur eine ausdrückliche ICE-/Verbrenner-Formulierung
+# tut das. "ohne Hybridisierung" ohne eine solche Formulierung bleibt UNKNOWN
+# (None) statt erfunden — dieselbe Regel wie überall sonst in diesem Modul
+# ("lieber 'nicht sicher bekannt' als erfunden", s. Moduldocstring).
+_VERNEINUNG = re.compile(r"\b(?:kein|keine|keinen|keinem|keiner|ohne|nicht)\b", re.IGNORECASE)
+
+_PHEV_WORT = re.compile(r"plug[\s-]?in[\s-]?hybrid|\bphev\b", re.IGNORECASE)
+_MHEV_WORT = re.compile(r"mild[\s-]?hybrid|\bmhev\b|\b48\s?v\b", re.IGNORECASE)
+_BEV_WORT = re.compile(r"\bbev\b|elektro\w*|elektrisch\w*|electric", re.IGNORECASE)
+_HEV_WORT = re.compile(r"\bhev\b|hybridisier\w*|\bhybrid\w*|elektrifizier\w*", re.IGNORECASE)
+_ICE_WORT = re.compile(r"\bice\b|verbrenn\w*", re.IGNORECASE)
+
+# Wie weit vor einem Treffer nach einem Verneinungswort gesucht wird — großzügig
+# genug für "ohne jede Elektrifizierung" (23 Zeichen), aber durch die
+# Teilsatzgrenze unten ohnehin auf den eigenen Teilsatz begrenzt.
+_VERNEINUNGS_FENSTER = 40
+
+
+def _positiv_erwaehnt(pattern: re.Pattern, text: str) -> bool:
+    """True, wenn `pattern` im Text vorkommt UND an KEINER Fundstelle im
+    selben Teilsatz unmittelbar vorher verneint wird."""
+    for m in pattern.finditer(text):
+        vorspann = text[max(0, m.start() - _VERNEINUNGS_FENSTER):m.start()]
+        # Nur der eigene Teilsatz zählt — eine Verneinung in einem FRÜHEREN
+        # Teilsatz ("Nicht bekannt. Hybrid?") darf diesen Treffer nicht
+        # mitreißen.
+        eigener_teilsatz = re.split(r"[.,;:!?]", vorspann)[-1]
+        if not _VERNEINUNG.search(eigener_teilsatz):
+            return True
+    return False
+
+
 def powertrain_aus_freitext(*texte: str | None) -> str | None:
-    """Antriebsart NUR aus ausdrücklichen Elektrifizierungswörtern. "Benzin"
-    oder "Diesel" liefern hier bewusst nichts."""
-    import re
+    """Antriebsart NUR aus ausdrücklichen, NICHT verneinten
+    Elektrifizierungswörtern. "Benzin"/"Diesel" liefern bewusst nichts — und
+    eine Verneinung ("ohne Hybridisierung", "kein Mild-Hybrid") liefert NIE
+    automatisch das Gegenteil, nur eine eigene explizite ICE-/
+    Verbrenner-Formulierung tut das."""
     roh = " ".join(_norm(t) for t in texte if t)
     if not roh.strip():
         return None
-    if re.search(r"plug[\s-]?in|\bphev\b", roh):
+    if _positiv_erwaehnt(_PHEV_WORT, roh):
         return POWERTRAIN_PHEV
-    if re.search(r"mild|mhev|\b48\s?v\b", roh):
+    if _positiv_erwaehnt(_MHEV_WORT, roh):
         return POWERTRAIN_MHEV
-    if re.search(r"\bbev\b|elektro|electric", roh):
+    if _positiv_erwaehnt(_BEV_WORT, roh):
         return POWERTRAIN_BEV
-    if re.search(r"\bhev\b|hybrid", roh):
+    if _positiv_erwaehnt(_HEV_WORT, roh):
         return "HEV"
-    if re.search(r"\bice\b|verbrenner", roh):
+    if _positiv_erwaehnt(_ICE_WORT, roh):
         return POWERTRAIN_ICE
     return None
 

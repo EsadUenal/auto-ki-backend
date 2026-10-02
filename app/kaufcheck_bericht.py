@@ -120,12 +120,19 @@ def _ueberschrift(entscheidung, identity) -> str:
 _PHASE_LABEL = {"rueckruf": "Rückrufrecherche", "technik": "Recherche zu technischen Schwachstellen"}
 
 
-def forschungsluecken_hinweis(web_recherche) -> list[str]:
+def forschungsluecken_hinweis(web_recherche, entscheidung=None) -> list[str]:
     """Additive Zeile(n), wenn eine inhaltlich wichtige Web-Recherchephase
     NICHT erfolgreich abgeschlossen wurde (`phasen_status` == FAILED) — nicht
     bei PARTIAL (dünne, aber vorhandene Abdeckung) und nicht, wenn die Phase
     gar nicht lief (z.B. weil die Identität nicht reichte — das meldet der
-    Bericht bereits an anderer Stelle)."""
+    Bericht bereits an anderer Stelle).
+
+    Bei VERIFIED-Identität kommuniziert bereits `entscheidung.hinweis`
+    (app/empfehlungs_policy.py::entscheide) dieselbe Lücke, dort direkt neben
+    der Empfehlung — dann bleibt diese Zeile hier leer, damit der Bericht
+    denselben Befund nicht zweimal nennt."""
+    if entscheidung is not None and getattr(entscheidung.identitaet, "stufe", None) == "verified":
+        return []
     status = getattr(web_recherche, "phasen_status", None) or {}
     betroffen = [name for name in ("rueckruf", "technik") if status.get(name) == "failed"]
     if not betroffen:
@@ -143,13 +150,13 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     facts = aus_request(req)
     if entscheidung is None:
         from app.empfehlungs_policy import entscheide
-        entscheidung = entscheide(recommendation, identity)
+        entscheidung = entscheide(recommendation, identity, web_recherche=web_recherche)
     lines = [_ueberschrift(entscheidung, identity), ""]
     titel = fahrzeug_titel(identity)
     if titel:
         lines += [f"**{titel}**", ""]
     lines += ["Datenbasis: " + "; ".join(sources) + ".", ""]
-    lines += forschungsluecken_hinweis(web_recherche)
+    lines += forschungsluecken_hinweis(web_recherche, entscheidung)
     labels = {"make": "Marke", "model": "Modell", "generation": "Generation", "year": "Baujahr",
               "engine_name": "Motor", "engine_code": "Motorcode / Motorfamilie", "fuel": "Kraftstoff",
               "powertrain": "Antriebsart", "transmission": "Getriebe", "drivetrain": "Antrieb",
