@@ -265,10 +265,20 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
     DB-Reads statt der gecachten `get_alle_*`-Funktionen, damit ein
     `--apply`-Lauf innerhalb DESSELBEN Prozesses sofort den eigenen
     Schreibstand sieht (Idempotenz: zweimal hintereinander anwenden darf
-    beim zweiten Mal nichts mehr vorschlagen)."""
+    beim zweiten Mal nichts mehr vorschlagen).
+
+    Active-Generation-Fix (Production Smoke BMW G20/G21): zusätzlich zu den
+    unveränderten Batch-A-Zeilen (`pruefe_batch_a`, nur geschlossene
+    Generationen) berücksichtigt `app.kba_active_generation.ergaenzende_
+    zeilen()` sicher belegte Paare, die NUR wegen einer offenen Zielgeneration
+    oder wegen eines unabhängigen, mehrdeutigen ANDEREN Ziels im selben
+    mehrmodelligen amtlichen Datensatz bisher nie kanonisch wurden (siehe
+    Moduldocstring dort) — ohne die Batch-A-Tore selbst zu verändern."""
     from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_fuer_sync
+    from app.kba_active_generation import ergaenzende_zeilen
     from app.kba_import_batch_a import klasse_a, pruefe_batch_a
     from app.kba_import_kandidaten import import_kandidaten
+    from app.kba_reconciliation import normalisiere_referenz
 
     baureihen = get_alle_baureihen_kurz()
     # Die VOLLEN Zeilen (inkl. mangel/abhilfe/betroffene_baujahre), nicht die
@@ -280,20 +290,81 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
     recalls_voll = get_alle_rueckrufe_fuer_sync()
 
     kandidaten = import_kandidaten(kba_zeilen, recalls_voll, baureihen)
-    auto = klasse_a(kandidaten, baureihen)
-    auto_ids = {id(k) for k in auto}
-    review_kandidaten = [k for k in kandidaten if id(k) not in auto_ids]
 
-    neue_zeilen, ausschluesse = pruefe_batch_a(kandidaten, baureihen, recalls_voll)
+    zeilen_a, ausschluesse_a = pruefe_batch_a(kandidaten, baureihen, recalls_voll)
+    zeilen_akt, ausschluesse_akt = ergaenzende_zeilen(kandidaten, baureihen, recalls_voll)
+    neue_zeilen = zeilen_a + zeilen_akt
     aktualisierungen = plane_aktualisierungen(kba_zeilen, recalls_voll)
+
+    # Audit-Trail (Root-Cause-Closing, offener Befund): review_kandidaten wird
+    # NICHT mehr allein aus der kandidatenweiten klasse_a()-Vorauswahl
+    # abgeleitet, sondern aus dem TATSÄCHLICHEN Ergebnis von neue_zeilen — ein
+    # Kandidat, dessen Ziel(e) aus irgendeinem Grund (Batch-A-Tor A0-A5, Tor
+    # A6, oder gar nicht erst vorausgewählt) nicht ALLE kanonisch wurden,
+    # bleibt sichtbar. Vorher verschwand ein geschlossener, kandidatenweit
+    # SAFE_IMPORT-Kandidat, der an einem Batch-A-Tor scheiterte, ersatzlos
+    # (weder rueckruf noch kba_rueckruf_review) — s. `ausschluesse`.
+    importierte_paare = {(normalisiere_referenz(z["kba_referenz"]), z["baureihe_id"])
+                         for z in neue_zeilen}
+    review_kandidaten = [
+        k for k in kandidaten
+        if not k.ziel_ids or not all(
+            (normalisiere_referenz(k.referenz), z) in importierte_paare
+            for z in k.ziel_ids)
+    ]
 
     return {
         "kandidaten": kandidaten,
         "neue_zeilen": neue_zeilen,
-        "ausschluesse": ausschluesse,
+        "ausschluesse": ausschluesse_a + ausschluesse_akt,
         "review_kandidaten": review_kandidaten,
         "aktualisierungen": aktualisierungen,
+        "baureihen": baureihen,
     }
+
+
+KBA_RECALL_QUELLE = "KBA-Rueckrufdatenbank, amtlicher Gesamtexport (automatischer Freshness-Abgleich)"
+
+
+def _verifiziere_amtlich(conn, fakt_id: int, zeile: dict, *, heute: str) -> None:
+    """Markiert eine (neu eingefügte ODER inhaltlich aufgefrischte) kanonische
+    `rueckruf`-Zeile als amtlich verifiziert, mit einem Fingerprint, der zum
+    GESCHRIEBENEN Inhalt passt.
+
+    GENERISCHER PROVENANZ-FIX (Production Smoke BMW G20/G21, KBA 15632R):
+    `app.fakt_verifikation.trust_des_fakts()` verwirft eine bestehende
+    Verifikation automatisch, sobald ihr gespeicherter Fingerprint nicht mehr
+    zum aktuellen Zeileninhalt passt — by design, Inhalt hat sich seit der
+    Prüfung geändert. `apply_sync()` aktualisierte `mangel`/`abhilfe` bisher
+    aber OHNE die Verifikation mitzuziehen: jede Inhalts-Auffrischung durch
+    DENSELBEN amtlichen Export, der die Zeile überhaupt erst (oder erneut)
+    ins Haus bringt, hat damit stillschweigend eine vorhandene KBA-
+    Referenzanzeige im Bericht gelöscht (die Referenz blieb in der DB, nur
+    `kba_referenz_anzeige()` zeigte sie nicht mehr, weil `evidence.py` bei
+    nicht-verifiziertem Trust `kba_anzeige` unbedingt auf None setzt — s.
+    app/evidence.py). Diese Funktion schließt die Lücke: dieselbe amtliche
+    Quelle, die die Zeile schreibt, verifiziert sie auch — exakt das gleiche
+    Verfahren wie bei jedem historischen Batch-Import (Batch A, G20-Nachtrag),
+    nur generisch für den laufenden Sync statt für eine einmalige Charge."""
+    from app.fakt_verifikation import fingerprint
+
+    fp = fingerprint("rueckruf", zeile)
+    referenz = zeile.get("kba_referenz") or ""
+    werte = (fp, "verified", KBA_RECALL_QUELLE, "A", KBA_EXPORT_URL, referenz, heute,
+             "Automatischer KBA-Freshness-Abgleich (app.kba_recall_refresh)")
+    bestand = conn.execute(
+        "SELECT id FROM fakt_verifikation WHERE fakt_art='rueckruf' AND fakt_id=?",
+        (fakt_id,)).fetchone()
+    if bestand:
+        conn.execute(
+            "UPDATE fakt_verifikation SET fingerprint=?, status=?, quelle=?, "
+            "quelle_stufe=?, url=?, referenz=?, geprueft_am=?, notiz=? "
+            "WHERE fakt_art='rueckruf' AND fakt_id=?", (*werte, fakt_id))
+    else:
+        conn.execute(
+            "INSERT INTO fakt_verifikation (fakt_art, fakt_id, fingerprint, status, "
+            "quelle, quelle_stufe, url, referenz, geprueft_am, notiz) "
+            "VALUES ('rueckruf',?,?,?,?,?,?,?,?,?)", (fakt_id, *werte))
 
 
 def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
@@ -311,6 +382,7 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
     from app.kba_import_kandidaten import SAFE_IMPORT
 
     heute = heute or datetime.date.today().isoformat()
+    baureihen_bis = {b["id"]: b.get("bauzeitraum_bis") for b in plan.get("baureihen") or []}
 
     eingefuegt = 0
     for z in plan["neue_zeilen"]:
@@ -318,11 +390,12 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
         # bewusst NICHT verwendet — rueckruf.id ist AUTOINCREMENT, SQLite
         # vergibt eine garantiert kollisionsfreie ID. Dieselbe Spaltenliste
         # wie app/db_writer.py's regulärer Rückruf-Insert.
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO rueckruf (baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,"
             "kba_referenz) VALUES (?,?,?,?,?,?)",
             (z["baureihe_id"], z["datum"], z["betroffene_baujahre"], z["mangel"],
              z["abhilfe"], z["kba_referenz"]))
+        _verifiziere_amtlich(conn, cur.lastrowid, z, heute=heute)
         eingefuegt += 1
 
     aktualisiert = 0
@@ -331,17 +404,26 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
         conn.execute(
             f"UPDATE rueckruf SET {', '.join(f'{k}=?' for k in felder)} WHERE id=?",
             (*felder.values(), u["id"]))
+        frisch = conn.execute(
+            "SELECT baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, kba_referenz "
+            "FROM rueckruf WHERE id=?", (u["id"],)).fetchone()
+        if frisch is not None:
+            _verifiziere_amtlich(conn, u["id"], dict(zip(
+                ("baureihe_id", "datum", "betroffene_baujahre", "mangel", "abhilfe",
+                 "kba_referenz"), frisch)), heute=heute)
         aktualisiert += 1
 
     review_geschrieben = 0
     for kand in plan["review_kandidaten"]:
         klasse = kand.klasse
         if klasse == SAFE_IMPORT:
-            # Nur Grund, warum ein SAFE_IMPORT-Kandidat trotzdem hier landet:
-            # mindestens eine Zielbaureihe hat eine OFFENE Generation (siehe
-            # `klasse_a` in app/kba_import_batch_a.py) — eigene, unmissver-
-            # ständliche Review-Klasse statt der irreführenden Originalklasse.
-            klasse = "SAFE_IMPORT_OFFENE_GENERATION"
+            # Der Kandidat ist kandidatenweit SAFE_IMPORT, aber (teilweise)
+            # nicht kanonisch geworden — zwei unterscheidbare, generische
+            # Gründe statt einer irreführenden Originalklasse:
+            if kand.ziel_ids and all(baureihen_bis.get(z) is None for z in kand.ziel_ids):
+                klasse = "SAFE_IMPORT_OFFENE_GENERATION"   # Tor A6, s. kba_active_generation
+            else:
+                klasse = "SAFE_IMPORT_NICHT_UEBERNOMMEN"   # Tor A0-A5, s. ausschluesse
         prod = (f"{kand.prod_von}-{kand.prod_bis}"
                 if kand.prod_von is not None and kand.prod_bis is not None else None)
         conn.execute(
