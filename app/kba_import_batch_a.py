@@ -60,6 +60,15 @@ A3  DUBLETTE
     Zeile derselben Baureihe darf denselben Mangeltext (normalisiert) oder
     dieselbe amtliche Referenz bereits tragen.
 
+    GENERISCHE DUBLETTEN-IDENTITAET (Fix: KBA 16790R vs. 15632R, beide
+    "Brandgefahr", unterschiedliche amtliche Referenz und Produktionsfenster)
+    -- siehe `_a3_dublette()` unten: die amtliche Referenz ist die STARKE
+    Identitaet. Zwei amtlich UNTERSCHIEDLICHE, format-plausible Referenzen
+    sind zwei verschiedene Vorgaenge, auch bei identischem (oft sehr kurzem,
+    generischem) Mangeltext -- das KBA beschreibt viele unabhaengige
+    Rueckrufe mit demselben Schlagwort. Der reine Textabgleich bleibt nur
+    der konservative Rueckfall fuer Zeilen OHNE verlaessliche Referenz.
+
 A4  REFERENZFORMAT UND KOLLISION
     Die Referenz muss einem der drei tatsaechlich vorkommenden amtlichen
     Formate entsprechen (siehe `app/recall_filter.py`) und darf im Bestand
@@ -232,6 +241,35 @@ def klasse_a(kandidaten, baureihen: list[dict]) -> list:
             and all(bis.get(z) is not None for z in k.ziel_ids)]
 
 
+def _a3_dublette(kand, ziel: str, ref: str, mangel_je_baureihe: dict,
+                 ref_je_baureihe: dict) -> bool:
+    """A3: ist (Kandidat, Ziel) eine Dublette eines bereits vorhandenen
+    VIRA-Rueckrufs auf dieser Baureihe?
+
+    Generische Dubletten-Identitaet, staerkste zuerst:
+      1. GLEICHE amtliche Referenz (normalisiert) steht auf dieser Baureihe
+         schon -> Dublette (derselbe Vorgang, unabhaengig vom Text).
+      2. Die Referenz DIESES Kandidaten ist format-plausibel (siehe
+         `kba_referenz_format_plausibel`) und UNTERSCHEIDET sich von jeder
+         Referenz, die diese Baureihe schon traegt -> KEINE Dublette, selbst
+         bei identischem Mangeltext. Die amtliche Referenz ist die staerkere
+         Identitaet; gleicher (oft kurzer, generischer) Text allein darf
+         zwei dadurch bereits unterscheidbare amtliche Vorgaenge nicht
+         zusammenfassen.
+      3. Keine format-plausible Referenz vorhanden -> konservativer
+         Rueckfall auf den reinen Textabgleich (unveraendertes Verhalten) --
+         ohne verlaessliche Referenz bleibt der Text das einzige Signal.
+    """
+    from app.recall_filter import kba_referenz_format_plausibel
+
+    ref_norm = normalisiere_referenz(ref)
+    if ref_norm and ref_norm in ref_je_baureihe.get(ziel, set()):
+        return True
+    if ref and kba_referenz_format_plausibel(ref):
+        return False
+    return _norm_text(kand.mangel) in mangel_je_baureihe.get(ziel, set())
+
+
 def pruefe_batch_a(kandidaten, baureihen: list[dict], recalls: list[dict]):
     """Finale Vor-Mutations-Pruefung. Rueckgabe: (zeilen, ausschluesse).
 
@@ -291,8 +329,7 @@ def pruefe_batch_a(kandidaten, baureihen: list[dict], recalls: list[dict]):
             continue
 
         dublette = [z for z in kand.ziel_ids
-                    if _norm_text(kand.mangel) in mangel_je_baureihe.get(z, set())
-                    or normalisiere_referenz(ref) in ref_je_baureihe.get(z, set())]
+                    if _a3_dublette(kand, z, ref, mangel_je_baureihe, ref_je_baureihe)]
         if dublette:
             ausschluesse.append((*kennung, f"A3 Dublette auf {dublette}"))
             continue

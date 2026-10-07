@@ -83,8 +83,8 @@ pruefung (`app/recall_filter.py::_rueckruf_applicability` bzw.
 """
 
 from app.kba_import_batch_a import (
-    ALTERNATIV_ANTEIL, SAMMELSTEMPEL, _baujahre, _norm_text, _referenz_marken,
-    klasse_a, ziel_index,
+    ALTERNATIV_ANTEIL, SAMMELSTEMPEL, _a3_dublette, _baujahre, _norm_text,
+    _referenz_marken, klasse_a, ziel_index,
 )
 from app.kba_import_kandidaten import (
     MEDIAN_GENERATIONSDAUER, SAFE_IMPORT, _modelltokens, _ueberdeckung,
@@ -225,8 +225,7 @@ def ergaenzende_zeilen(kandidaten, baureihen: list[dict], recalls: list[dict]):
                                            f"{sorted(fremde)}"))
             continue
 
-        if (_norm_text(kand.mangel) in mangel_je_baureihe.get(ziel, set())
-                or normalisiere_referenz(ref) in ref_je_baureihe.get(ziel, set())):
+        if _a3_dublette(kand, ziel, ref, mangel_je_baureihe, ref_je_baureihe):
             ausschluesse.append((*kennung, f"A3 Dublette auf {ziel}"))
             continue
 

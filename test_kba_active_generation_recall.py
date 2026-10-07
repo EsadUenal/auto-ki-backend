@@ -19,6 +19,21 @@ Beweist generisch (KEIN Marken-/Modell-/KBA-Referenz-Hardcoding):
  12) nicht aufloesbare Mehrdeutigkeit (dasselbe Fixture, das ANDERE Paar) -> Review
  13) ein an Tor A0-A5/A6 abgelehnter SAFE_IMPORT-Kandidat bleibt im Review-/Audit-
      Bestand sichtbar (kein stilles Verschwinden)
+ 14) A3-Dubletten-Fix (KBA 16790R vs. 15632R, generisch — s. _a3_dublette()):
+     14.1 gleiche Baureihe + gleicher generischer Text + unterschiedliche
+          gueltige Referenzen -> KEINE Dublette allein durch den Text
+     14.2 gleiche Baureihe + gleiche gueltige Referenz -> Dubletten-/Update-
+          Verhalten unveraendert
+     14.3 gleiche Baureihe + keine vertrauenswuerdige Referenz + gleicher
+          Text -> konservativer Rueckfall greift weiterhin
+     14.4 unterschiedliche gueltige Referenzen + aehnlicher generischer Text
+          + ueberlappende Zeitraeume -> bleiben unterschiedliche Vorgaenge
+     14.5 markenuebergreifende Kollision (A4) bleibt unveraendert geschuetzt
+     14.6 unterschiedliche Referenzen hebeln Tor A2 nicht aus
+     14.7 unterschiedliche Referenzen hebeln Tor A6 nicht aus
+     14.8 Reihenfolge-Unabhaengigkeit des A3-Fixes
+     14.9 16790R/15632R-Regression (reale amtliche Referenzen als Testdaten,
+          KEIN Hardcoding in der Implementierung)
 
 BMW-Regressionsfixtur (NACH den generischen Tests, s. Abschnitt BMW):
  reproduziert die Production-Diagnose (bmw-3er-g20-g21 offen ab 2019,
@@ -35,7 +50,7 @@ import sqlite3
 import tempfile
 
 from app.kba_active_generation import ergaenzende_zeilen, paare_aktive_generation
-from app.kba_import_batch_a import klasse_a, pruefe_batch_a
+from app.kba_import_batch_a import _a3_dublette, klasse_a, pruefe_batch_a
 from app.kba_import_kandidaten import (
     AMBIGUOUS_GENERATION, SAFE_IMPORT, VARIANT_SCOPE_UNCLEAR, import_kandidaten,
 )
@@ -360,6 +375,114 @@ check("13.1 Kandidat wird NICHT kanonisch (Fenster vor Generationsstart, wie Fal
 check("13.2 Kandidat bleibt trotzdem im Review-/Audit-Bestand sichtbar "
       "(kein stilles Verschwinden)",
       any(k.referenz == "10013" for k in _plan13["review_kandidaten"]))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n=== 14) A3-Dubletten-Fix: amtliche Referenz ist die starke Identitaet ===")
+
+
+class _FakeKandidat:
+    """Minimaler Stand-in fuer ImportKandidat -- _a3_dublette() braucht nur
+    `.mangel`, hier direkt konstruiert statt den vollen Klassifikationspfad
+    fuer reine Einheitentests der Dubletten-Regel aufzurufen."""
+    def __init__(self, mangel):
+        self.mangel = mangel
+
+
+_mangel_je_b14 = {"ta-b14": {"brandgefahr"}}
+_ref_je_b14 = {"ta-b14": {"15632R"}}
+
+check("14.1 gleicher generischer Text + ANDERE gueltige Referenz -> KEINE Dublette",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "16790R",
+                   _mangel_je_b14, _ref_je_b14) is False)
+check("14.2 GLEICHE Referenz -> weiterhin Dublette (unveraendertes Verhalten)",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "15632R",
+                   _mangel_je_b14, _ref_je_b14) is True)
+check("14.3 KEINE vertrauenswuerdige Referenz (leer) + gleicher Text -> "
+      "konservativer Rueckfall greift (weiterhin Dublette)",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "",
+                   _mangel_je_b14, _ref_je_b14) is True)
+check("14.3b KEINE vertrauenswuerdige Referenz (unplausibles Format) + gleicher "
+      "Text -> konservativer Rueckfall greift ebenfalls",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "xx",
+                   _mangel_je_b14, _ref_je_b14) is True)
+check("14.4 unterschiedliche gueltige Referenzen bleiben auch bei abweichendem "
+      "generischem Text distinkt (keine Dublette)",
+      _a3_dublette(_FakeKandidat("Verletzungsgefahr"), "ta-b14", "16790R",
+                   _mangel_je_b14, _ref_je_b14) is False)
+
+_b14 = [baureihe("ta-brand-open", von=2019, bis=None)]
+_recalls14 = [{"id": 1, "baureihe_id": "ta-brand-open", "marke": "Testaktiv",
+              "kba_referenz": "15632R", "mangel": "Brandgefahr",
+              "betroffene_baujahre": "2015-2021"}]
+_k14_neu = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Brandgefahr",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})], _recalls14, _b14)
+_zusatz14, _aus14 = ergaenzende_zeilen(_k14_neu, _b14, _recalls14)
+# 14.5: markenuebergreifende Kollision (A4) bleibt unveraendert wirksam,
+# AUCH wenn der generische Text wie in 14.1 keine A3-Dublette mehr ergibt.
+_b14e = [baureihe("ta-brand-a4", von=2019, bis=None)]
+_recalls14e = [{"id": 2, "baureihe_id": "fremd-marke-b14", "marke": "Fremdmarke",
+               "kba_referenz": "16790R", "mangel": "etwas anderes",
+               "betroffene_baujahre": "2019"}]
+_k14e = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3", "Marke": "TESTAKTIV",
+    "Mangelbezeichnung": "Brandgefahr",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})], _recalls14e, _b14e)
+_zusatz14e, _aus14e = ergaenzende_zeilen(_k14e, _b14e, _recalls14e)
+check("14.5 markenuebergreifende Referenzkollision (A4) bleibt wirksam, "
+      "obwohl A3 den generischen Text allein nicht mehr blockiert",
+      _zusatz14e == [] and any("A4" in a[-1] for a in _aus14e))
+
+check("14.9a 16790R (andere Referenz, gleicher generischer Text 'Brandgefahr') "
+      "wird NICHT mehr allein durch A3 blockiert",
+      not any(a[0] == "16790R" and "A3" in a[-1] for a in _aus14))
+check("14.9b 16790R wird fuer die offene Generation sicher uebernommen "
+      "(alle uebrigen Tore unveraendert bestanden)",
+      any(z["kba_referenz"] == "16790R" and z["baureihe_id"] == "ta-brand-open"
+          for z in _zusatz14))
+
+# 14.6: unterschiedliche Referenz hebelt Tor A2 nicht aus
+_b14b = [baureihe("ta-brand-a2", von=2019, bis=None)]
+_k14b = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Brandgefahr",
+    "Mögliche Eingrenzung der betroffenen Modelle": "Nur Fahrzeuge mit Allradantrieb",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})], _recalls14, _b14b)
+_zusatz14b, _ = ergaenzende_zeilen(_k14b, _b14b, _recalls14)
+check("14.6 eine unterschiedliche, gueltige Referenz hebelt Tor A2 "
+      "(nicht abbildbare Variantenbeschraenkung) nicht aus",
+      _zusatz14b == [])
+
+# 14.7: unterschiedliche Referenz hebelt Tor A6 nicht aus (Fenster vor Start)
+_b14c = [baureihe("ta-brand-a6", von=2019, bis=None)]
+_k14c = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Brandgefahr",
+    "Produktionszeitraum von": "2017", "Produktionszeitraum bis": "2026",
+})], _recalls14, _b14c)
+_zusatz14c, _ = ergaenzende_zeilen(_k14c, _b14c, _recalls14)
+check("14.7 eine unterschiedliche, gueltige Referenz hebelt Tor A6 "
+      "(Fenster vor Generationsstart) nicht aus", _zusatz14c == [])
+
+# 14.8: Reihenfolge-Unabhaengigkeit des A3-Fixes
+_b14d = [baureihe("ta-brand-order", von=2019, bis=None)]
+_rows14d = [
+    kba_zeile(**{"KBA-Referenznummer": "16790R", "Modell": "3",
+                "Mangelbezeichnung": "Brandgefahr",
+                "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026"}),
+]
+_k14d_fwd = import_kandidaten(_rows14d, _recalls14, _b14d)
+_k14d_rev = import_kandidaten(list(reversed(_rows14d)), list(reversed(_recalls14)), _b14d)
+_zusatz14d_fwd, _ = ergaenzende_zeilen(_k14d_fwd, _b14d, _recalls14)
+_zusatz14d_rev, _ = ergaenzende_zeilen(_k14d_rev, _b14d, list(reversed(_recalls14)))
+check("14.8 Reihenfolge-Unabhaengigkeit: identisches Ergebnis",
+      {(z["kba_referenz"], z["baureihe_id"]) for z in _zusatz14d_fwd}
+      == {(z["kba_referenz"], z["baureihe_id"]) for z in _zusatz14d_rev})
 
 
 for _k, _v in (("AUTO_KI_DB_PATH", _alt_db_env), ("AUTO_KI_CHROMA_PATH", _alt_chroma_env)):
