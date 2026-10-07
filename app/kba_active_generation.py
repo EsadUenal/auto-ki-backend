@@ -183,12 +183,16 @@ def ergaenzende_zeilen(kandidaten, baureihen: list[dict], recalls: list[dict]):
     idx = ziel_index(baureihen)
     ref_marken = _referenz_marken(recalls, baureihen)
     mangel_je_baureihe: dict = {}
+    mangel_je_baureihe_ohne_referenz: dict = {}
     ref_je_baureihe: dict = {}
     for r in recalls:
         mangel_je_baureihe.setdefault(r["baureihe_id"], set()).add(_norm_text(r["mangel"]))
-        ref = normalisiere_referenz(r.get("kba_referenz"))
-        if ref:
-            ref_je_baureihe.setdefault(r["baureihe_id"], set()).add(ref)
+        r_ref = (r.get("kba_referenz") or "").strip()
+        if r_ref and kba_referenz_format_plausibel(r_ref):
+            ref_je_baureihe.setdefault(r["baureihe_id"], set()).add(normalisiere_referenz(r_ref))
+        else:
+            mangel_je_baureihe_ohne_referenz.setdefault(
+                r["baureihe_id"], set()).add(_norm_text(r["mangel"]))
 
     paare = sorted(
         ((kand, ziel) for kand, ziele in vorauswahl.items() for ziel in ziele),
@@ -225,7 +229,8 @@ def ergaenzende_zeilen(kandidaten, baureihen: list[dict], recalls: list[dict]):
                                            f"{sorted(fremde)}"))
             continue
 
-        if _a3_dublette(kand, ziel, ref, mangel_je_baureihe, ref_je_baureihe):
+        if _a3_dublette(kand, ziel, ref, mangel_je_baureihe,
+                        mangel_je_baureihe_ohne_referenz, ref_je_baureihe):
             ausschluesse.append((*kennung, f"A3 Dublette auf {ziel}"))
             continue
 

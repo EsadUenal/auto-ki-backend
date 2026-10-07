@@ -242,7 +242,7 @@ def klasse_a(kandidaten, baureihen: list[dict]) -> list:
 
 
 def _a3_dublette(kand, ziel: str, ref: str, mangel_je_baureihe: dict,
-                 ref_je_baureihe: dict) -> bool:
+                 mangel_je_baureihe_ohne_referenz: dict, ref_je_baureihe: dict) -> bool:
     """A3: ist (Kandidat, Ziel) eine Dublette eines bereits vorhandenen
     VIRA-Rueckrufs auf dieser Baureihe?
 
@@ -250,15 +250,22 @@ def _a3_dublette(kand, ziel: str, ref: str, mangel_je_baureihe: dict,
       1. GLEICHE amtliche Referenz (normalisiert) steht auf dieser Baureihe
          schon -> Dublette (derselbe Vorgang, unabhaengig vom Text).
       2. Die Referenz DIESES Kandidaten ist format-plausibel (siehe
-         `kba_referenz_format_plausibel`) und UNTERSCHEIDET sich von jeder
-         Referenz, die diese Baureihe schon traegt -> KEINE Dublette, selbst
-         bei identischem Mangeltext. Die amtliche Referenz ist die staerkere
-         Identitaet; gleicher (oft kurzer, generischer) Text allein darf
-         zwei dadurch bereits unterscheidbare amtliche Vorgaenge nicht
-         zusammenfassen.
-      3. Keine format-plausible Referenz vorhanden -> konservativer
-         Rueckfall auf den reinen Textabgleich (unveraendertes Verhalten) --
-         ohne verlaessliche Referenz bleibt der Text das einzige Signal.
+         `kba_referenz_format_plausibel`) -> von jeder ANDEREN, selbst
+         REFERENZIERTEN Zeile dieser Baureihe bereits unterscheidbar, auch
+         bei identischem Mangeltext (gleicher, oft kurzer, generischer Text
+         darf zwei dadurch per Referenz bereits unterscheidbare amtliche
+         Vorgaenge nicht zusammenfassen). ABER: eine Zeile dieser Baureihe
+         OHNE EIGENE vertrauenswuerdige Referenz (Altbestand, importiert
+         bevor eine Referenz erfasst wurde) koennte TROTZDEM derselbe
+         Vorgang sein wie dieser Kandidat -- die neue Referenz des
+         Kandidaten unterscheidet ihn nur von ANDEREN referenzierten Zeilen,
+         nicht automatisch von referenzlosen. Dafuer bleibt der Text
+         (konservativ) das einzige verfuegbare Signal.
+      3. Kandidat selbst hat KEINE format-plausible Referenz -> voller,
+         konservativer Rueckfall auf den reinen Textabgleich gegen ALLE
+         Zeilen dieser Baureihe (referenziert oder nicht) -- unveraendertes
+         Verhalten, ohne verlaessliche Referenz bleibt der Text das einzige
+         Signal.
     """
     from app.recall_filter import kba_referenz_format_plausibel
 
@@ -266,7 +273,7 @@ def _a3_dublette(kand, ziel: str, ref: str, mangel_je_baureihe: dict,
     if ref_norm and ref_norm in ref_je_baureihe.get(ziel, set()):
         return True
     if ref and kba_referenz_format_plausibel(ref):
-        return False
+        return _norm_text(kand.mangel) in mangel_je_baureihe_ohne_referenz.get(ziel, set())
     return _norm_text(kand.mangel) in mangel_je_baureihe.get(ziel, set())
 
 
@@ -285,12 +292,18 @@ def pruefe_batch_a(kandidaten, baureihen: list[dict], recalls: list[dict]):
     ref_marken = _referenz_marken(recalls, baureihen)
     leer_normalisiert = {_norm_text(x).replace(" ", "") for x in _KEINE_EINGRENZUNG}
     mangel_je_baureihe: dict = {}
+    mangel_je_baureihe_ohne_referenz: dict = {}
     ref_je_baureihe: dict = {}
     for r in recalls:
         mangel_je_baureihe.setdefault(r["baureihe_id"], set()).add(_norm_text(r["mangel"]))
-        ref = normalisiere_referenz(r.get("kba_referenz"))
-        if ref:
-            ref_je_baureihe.setdefault(r["baureihe_id"], set()).add(ref)
+        r_ref = (r.get("kba_referenz") or "").strip()
+        if r_ref and kba_referenz_format_plausibel(r_ref):
+            ref_je_baureihe.setdefault(r["baureihe_id"], set()).add(normalisiere_referenz(r_ref))
+        else:
+            # Altbestand ohne eigene vertrauenswuerdige Referenz -- einziges
+            # Signal fuer solche Zeilen bleibt der Text (s. _a3_dublette).
+            mangel_je_baureihe_ohne_referenz.setdefault(
+                r["baureihe_id"], set()).add(_norm_text(r["mangel"]))
 
     zeilen, ausschluesse = [], []
     for kand in sorted(klasse_a(kandidaten, baureihen),
@@ -329,7 +342,8 @@ def pruefe_batch_a(kandidaten, baureihen: list[dict], recalls: list[dict]):
             continue
 
         dublette = [z for z in kand.ziel_ids
-                    if _a3_dublette(kand, z, ref, mangel_je_baureihe, ref_je_baureihe)]
+                    if _a3_dublette(kand, z, ref, mangel_je_baureihe,
+                                    mangel_je_baureihe_ohne_referenz, ref_je_baureihe)]
         if dublette:
             ausschluesse.append((*kennung, f"A3 Dublette auf {dublette}"))
             continue

@@ -391,25 +391,95 @@ class _FakeKandidat:
 
 _mangel_je_b14 = {"ta-b14": {"brandgefahr"}}
 _ref_je_b14 = {"ta-b14": {"15632R"}}
+_leer_legacy_b14: dict = {}
 
 check("14.1 gleicher generischer Text + ANDERE gueltige Referenz -> KEINE Dublette",
       _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "16790R",
-                   _mangel_je_b14, _ref_je_b14) is False)
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is False)
 check("14.2 GLEICHE Referenz -> weiterhin Dublette (unveraendertes Verhalten)",
       _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "15632R",
-                   _mangel_je_b14, _ref_je_b14) is True)
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is True)
 check("14.3 KEINE vertrauenswuerdige Referenz (leer) + gleicher Text -> "
       "konservativer Rueckfall greift (weiterhin Dublette)",
       _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "",
-                   _mangel_je_b14, _ref_je_b14) is True)
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is True)
 check("14.3b KEINE vertrauenswuerdige Referenz (unplausibles Format) + gleicher "
       "Text -> konservativer Rueckfall greift ebenfalls",
       _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "xx",
-                   _mangel_je_b14, _ref_je_b14) is True)
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is True)
 check("14.4 unterschiedliche gueltige Referenzen bleiben auch bei abweichendem "
       "generischem Text distinkt (keine Dublette)",
       _a3_dublette(_FakeKandidat("Verletzungsgefahr"), "ta-b14", "16790R",
-                   _mangel_je_b14, _ref_je_b14) is False)
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is False)
+
+
+# ── Gemischter Altbestand: Kandidat hat eine gueltige NEUE Referenz, die
+# VORHANDENE Zeile auf dieser Baureihe hat KEINE vertrauenswuerdige Referenz
+# (Altbestand, importiert bevor eine Referenz erfasst wurde). Die neue
+# Referenz des Kandidaten unterscheidet ihn nur von ANDEREN referenzierten
+# Zeilen -- gegen referenzlose Zeilen bleibt der Text das einzige Signal.
+_mangel_legacy_b15 = {"ta-b15": {"moeglicher ausfall des bremskraftverstaerkers"}}
+_leer_ref_b15: dict = {}
+
+check("15.1 gueltige NEUE Referenz + VORHANDENE referenzlose Zeile mit "
+      "UEBEREINSTIMMENDEM Text -> konservativ weiterhin Dublette",
+      _a3_dublette(_FakeKandidat("Moeglicher Ausfall des Bremskraftverstaerkers"),
+                   "ta-b15", "16790R", {}, _mangel_legacy_b15, _leer_ref_b15) is True)
+check("15.2 gueltige NEUE Referenz + VORHANDENE referenzlose Zeile mit "
+      "ABWEICHENDEM Text (unverwandter Vorgang) -> KEINE Dublette",
+      _a3_dublette(_FakeKandidat("Mangelhafte Schweissnaehte an der Lenkung"),
+                   "ta-b15", "16790R", {}, _mangel_legacy_b15, _leer_ref_b15) is False)
+check("15.3 (Wiederholung der Invariante) unterschiedliche gueltige Referenzen "
+      "bleiben distinkt, auch wenn ZUSAETZLICH referenzlose Zeilen bekannt sind",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "16790R",
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is False)
+check("15.4 (Wiederholung der Invariante) GLEICHE Referenz bleibt Dublette, "
+      "auch wenn ZUSAETZLICH referenzlose Zeilen bekannt sind",
+      _a3_dublette(_FakeKandidat("Brandgefahr"), "ta-b14", "15632R",
+                   _mangel_je_b14, _leer_legacy_b14, _ref_je_b14) is True)
+
+# Integrationsebene (ergaenzende_zeilen): derselbe Fall end-to-end, inkl.
+# Reihenfolge-Unabhaengigkeit.
+_b15 = [baureihe("ta-legacy-open", von=2019, bis=None)]
+_recalls15_gleich = [{"id": 1, "baureihe_id": "ta-legacy-open", "marke": "Testaktiv",
+                      "kba_referenz": None,
+                      "mangel": "Moeglicher Ausfall des Bremskraftverstaerkers",
+                      "betroffene_baujahre": "2019-2020"}]
+_k15_gleich = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Moeglicher Ausfall des Bremskraftverstaerkers",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})], _recalls15_gleich, _b15)
+_zusatz15_gleich, _ = ergaenzende_zeilen(_k15_gleich, _b15, _recalls15_gleich)
+check("15.5 End-to-end: referenzlose Altzeile mit uebereinstimmendem Text "
+      "blockiert die Uebernahme trotz neuer, gueltiger Referenz",
+      _zusatz15_gleich == [])
+
+_recalls15_anders = [{"id": 1, "baureihe_id": "ta-legacy-open", "marke": "Testaktiv",
+                      "kba_referenz": None,
+                      "mangel": "Mangelhafte Schweissnaehte an der Lenkung",
+                      "betroffene_baujahre": "2019-2020"}]
+_k15_anders = import_kandidaten([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Moeglicher Ausfall des Bremskraftverstaerkers",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})], _recalls15_anders, _b15)
+_zusatz15_anders, _ = ergaenzende_zeilen(_k15_anders, _b15, _recalls15_anders)
+check("15.6 End-to-end: referenzlose Altzeile mit ABWEICHENDEM Text blockiert "
+      "die neue, gueltig referenzierte Zeile NICHT",
+      any(z["kba_referenz"] == "16790R" and z["baureihe_id"] == "ta-legacy-open"
+          for z in _zusatz15_anders))
+
+_k15_anders_rev = import_kandidaten(list(reversed([kba_zeile(**{
+    "KBA-Referenznummer": "16790R", "Modell": "3",
+    "Mangelbezeichnung": "Moeglicher Ausfall des Bremskraftverstaerkers",
+    "Produktionszeitraum von": "2020", "Produktionszeitraum bis": "2026",
+})])), list(reversed(_recalls15_anders)), _b15)
+_zusatz15_anders_rev, _ = ergaenzende_zeilen(_k15_anders_rev, _b15,
+                                             list(reversed(_recalls15_anders)))
+check("15.7 Reihenfolge-Unabhaengigkeit des gemischten Altbestand-Falls",
+      {(z["kba_referenz"], z["baureihe_id"]) for z in _zusatz15_anders}
+      == {(z["kba_referenz"], z["baureihe_id"]) for z in _zusatz15_anders_rev})
 
 _b14 = [baureihe("ta-brand-open", von=2019, bis=None)]
 _recalls14 = [{"id": 1, "baureihe_id": "ta-brand-open", "marke": "Testaktiv",
