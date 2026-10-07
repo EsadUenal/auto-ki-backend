@@ -619,9 +619,16 @@ def _scope_zahlen(rx, text) -> set[int]:
 def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
     """Varianten-Scope eines Rückrufs gegen die kanonische Identität.
 
-    Rückgabe (recall_state, begründung). Siehe Kommentar oben."""
+    Rückgabe (recall_state, begründung). Siehe Kommentar oben.
+
+    Root-Cause-Audit RC-2/RC-3: `eingrenzung_amtlich` (additive Spalte, siehe
+    `app/database.py::_migrate_schema`) fließt ab sofort in den gescannten
+    Text ein — die amtliche Eingrenzung ist die PRÄZISESTE verfügbare Quelle
+    für genau diese Scope-Dimensionen (PS/Hubraum/Motorcode/Kraftstoff), nicht
+    nur ein Nebenprodukt von `mangel`/`abhilfe`. Ohne Backfill/Neuimport ist
+    das Feld für Bestandszeilen NULL und ändert das Verhalten nicht."""
     text = " ".join(str(r.get(f) or "") for f in ("mangel", "abhilfe", "betroffene_baujahre",
-                                                  "scope_text"))
+                                                  "scope_text", "eingrenzung_amtlich"))
     passt_explizit: list[str] = []
     offen: list[str] = []
 
@@ -691,10 +698,41 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
         else:
             passt_explizit.append("Kraftstoff")
 
+    # Antriebsart aus der AMTLICHEN Eingrenzung (Root-Cause-Audit RC-2/RC-3,
+    # Reproduktionsfall: "Es sind ausschließlich Fahrzeuge mit 2.0 TFSI und
+    # Mild-Hybrid-System betroffen"). BEWUSST getrennt von der Hochvolt-/PHEV-
+    # Heuristik weiter unten in `rueckruf_applicability()` (`_HV_MUSTER`): diese
+    # erkennt nur Hochvolt-Systeme (PHEV/HEV/BEV) und würde "Mild-Hybrid" fälsch-
+    # lich wie ein Hochvolt-Wort behandeln (das Wort "hybrid" steckt in "Mild-
+    # Hybrid" drin) — MHEV ist eine eigene, NICHT-Hochvolt-Antriebsklasse
+    # (`kraftstoff_powertrain.POWERTRAIN_MHEV`). Ausdrücklich NUR aus
+    # `eingrenzung_amtlich` gelesen (nicht aus mangel/abhilfe), damit nur eine
+    # amtlich belegte Bedingung ausgewertet wird, keine freie Interpretation.
+    eingr_amtlich = str(r.get("eingrenzung_amtlich") or "")
+    if eingr_amtlich:
+        from app.kraftstoff_powertrain import powertrain_aus_freitext
+        from app.kraftstoff_powertrain import scope_passt as _antrieb_scope_passt
+        pt_wort = powertrain_aus_freitext(eingr_amtlich)
+        pt_scope = {"MHEV": "mild", "PHEV": "phev", "HEV": "phev", "BEV": "elektro"}.get(pt_wort)
+        if pt_scope:
+            fuel_id, powertrains_id = _fahrzeug_achsen(None, identity=identity)
+            ok = _antrieb_scope_passt(pt_scope, fuel_id, powertrains_id)
+            if ok is False:
+                return RECALL_NOT_APPLICABLE, (
+                    f"Amtliche Eingrenzung nennt {pt_wort}-Antrieb als Bedingung; "
+                    f"die erkannte Antriebsart passt nicht")
+            if ok is None:
+                offen.append("Antriebsart")
+            else:
+                passt_explizit.append("Antriebsart")
+
     # Komponentenabhängigkeit (Getriebe, Antrieb, Antriebsart, Ausstattung) —
-    # dieselbe zentrale Präsenzlogik wie für Schwachstellen.
+    # dieselbe zentrale Präsenzlogik wie für Schwachstellen. Amtliche
+    # Eingrenzung MIT einbezogen (RC-2/RC-3): eine Ausstattungsbedingung kann
+    # ebenso gut dort stehen wie im Mangeltext (z.B. "Ausstattung mit
+    # Handbediengerät ...").
     from app.ausstattung_praesenz import ABSENT, PRESENT as P_PRESENT, UNKNOWN as P_UNKNOWN, praesenz
-    zustand, abh, bez = praesenz(f"{r.get('mangel') or ''}", identity,
+    zustand, abh, bez = praesenz(f"{r.get('mangel') or ''} {eingr_amtlich}", identity,
                                  r.get("_ausstattung"), r.get("_freitext"))
     if zustand == ABSENT:
         return RECALL_NOT_APPLICABLE, f"Rückruf betrifft Fahrzeuge mit {abh.klasse}; nicht verbaut"
@@ -837,7 +875,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
 
 
 def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
-               marke: str | None = None) -> dict:
+               marke: str | None = None, identity=None) -> dict:
     """Baut EINE annotierte Kopie eines Rückruf-Datensatzes: Original-Felder +
     applicability/confidence/einfluss/variant_hinweis + ein fertig formatierter
     `text` (für Prompt-/DB-Kontext-Einbettung, MIT Applicability-Formulierung statt
@@ -845,12 +883,22 @@ def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
 
     KBA-Trust-Gate: `kba_referenz_anzeige` ist die EINZIGE Referenz, die Aufrufer
     dem Nutzer zeigen dürfen (Roh-`kba_referenz` bleibt über `**r` zwar im Dict,
-    aber ausschließlich für Diagnosezwecke — nicht für die Anzeige gedacht)."""
+    aber ausschließlich für Diagnosezwecke — nicht für die Anzeige gedacht).
+
+    `identity` (optional, RC-1-Fix): ohne sie prüft `rueckruf_applicability`
+    nur die Hochvolt-/PHEV-Schlüsselwort-Heuristik (HV_MUSTER/Klammerzusatz) —
+    der strukturierte `rueckruf_scope()`-Motor (Leistung/Hubraum/Motorcode/
+    Kraftstoff-Text/Ausstattungspräsenz) läuft NUR mit einer kanonischen
+    Identität. Alle Aufrufer dieses Moduls sollen ihre Identität durchreichen,
+    sobald sie eine haben — das macht `gefilterte_rueckrufe` endgültig zur
+    EINEN Allowed-List, unabhängig davon, für welchen Ausgabe-Pfad sie
+    aufgerufen wird. Ohne `identity` (Default) bleibt das Verhalten BYTEGLEICH
+    zum bisherigen Code — kein bestehender Aufrufer ändert sich ungefragt."""
     passt = _baujahr_passt(r.get("betroffene_baujahre"), baujahr)
     kba = (r.get("kba_referenz") or "").strip()
     kba_anzeige = kba_referenz_anzeige(kba, marke)
     applicability, confidence, einfluss, variant_hinweis = rueckruf_applicability(
-        r, passt, kba, motor_match, marke=marke)
+        r, passt, kba, motor_match, marke=marke, identity=identity)
     beschr = (r.get("mangel") or "").strip()
     if r.get("abhilfe"):
         beschr = f"{beschr}{'' if beschr.endswith(('.', '!', '?')) else '.'} Abhilfe: {r['abhilfe'].strip()}"
@@ -871,7 +919,8 @@ def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
 
 
 def gefilterte_rueckrufe(rueckrufe: list[dict] | None, motor_match: dict | None,
-                         baujahr: int | None, marke: str | None = None) -> list[dict]:
+                         baujahr: int | None, marke: str | None = None,
+                         identity=None) -> list[dict]:
     """Die EINE zentrale Allowed-List (§Phase 7): nur Rückrufe, die dieses Fahrzeug
     laut Datenlage betreffen KÖNNTEN — Baujahr-eindeutig-unpassende UND Antriebs-
     widersprüchliche ("incompatible", z.B. Hochvolt-Rückruf bei erkanntem Diesel)
@@ -882,13 +931,21 @@ def gefilterte_rueckrufe(rueckrufe: list[dict] | None, motor_match: dict | None,
 
     `marke` (optional, KBA-Trust-Gate): ermöglicht die markenübergreifende
     Kollisionsprüfung der `kba_referenz`. Ohne sie bleibt die Formatprüfung
-    trotzdem wirksam — nur die Kollisionsprüfung entfällt dann."""
+    trotzdem wirksam — nur die Kollisionsprüfung entfällt dann.
+
+    `identity` (optional, Root-Cause-Audit RC-1): kanonische `VehicleIdentity`.
+    Durchgereicht an `rueckruf_applicability`/`rueckruf_scope` — damit trifft
+    JEDER Aufrufer, der eine Identität besitzt, dieselbe, vollständige
+    Varianten-/Antriebs-/Ausstattungsentscheidung wie `app/evidence.py`, statt
+    nur die ältere Hochvolt-Schlüsselwort-Heuristik zu sehen. Ohne `identity`
+    (Default `None`) ist das Verhalten unverändert — bestehende Aufrufer ohne
+    Identität (z.B. der allgemeine Chat-Kontext) ändern sich nicht."""
     out = []
     for r in rueckrufe or []:
         passt = _baujahr_passt(r.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue
-        annotiert = _annotiere(r, motor_match, baujahr, marke=marke)
+        annotiert = _annotiere(r, motor_match, baujahr, marke=marke, identity=identity)
         if annotiert["applicability"] == "incompatible":
             continue
         out.append(annotiert)
@@ -896,18 +953,23 @@ def gefilterte_rueckrufe(rueckrufe: list[dict] | None, motor_match: dict | None,
 
 
 def ausgeschlossene_rueckrufe(rueckrufe: list[dict] | None, motor_match: dict | None,
-                              baujahr: int | None, marke: str | None = None) -> list[dict]:
+                              baujahr: int | None, marke: str | None = None,
+                              identity=None) -> list[dict]:
     """Komplement zu `gefilterte_rueckrufe` — Rückrufe, die für dieses Fahrzeug
     NACHWEISLICH NICHT gelten (Baujahr-unpassend ODER applicability=="incompatible").
     Grundlage für den Report-Validator (§Phase 8): welche Begriffe dürfen im
-    fertigen LLM-Bericht NICHT auftauchen."""
+    fertigen LLM-Bericht NICHT auftauchen.
+
+    `identity` (optional, RC-1): siehe `gefilterte_rueckrufe` — dieselbe
+    Durchreichung, damit Allowed- und Excluded-Liste IMMER auf derselben
+    Entscheidung beruhen, nie auf zwei unabhängig berechneten."""
     out = []
     for r in rueckrufe or []:
         passt = _baujahr_passt(r.get("betroffene_baujahre"), baujahr)
         if passt is False:
             out.append({**r, "ausschlussgrund": "baujahr_unpassend"})
             continue
-        annotiert = _annotiere(r, motor_match, baujahr, marke=marke)
+        annotiert = _annotiere(r, motor_match, baujahr, marke=marke, identity=identity)
         if annotiert["applicability"] == "incompatible":
             out.append({**annotiert, "ausschlussgrund": "antrieb_unpassend"})
     return out

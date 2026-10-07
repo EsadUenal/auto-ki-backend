@@ -404,7 +404,8 @@ with _db_mod.get_conn() as _conn_j:
     _ergebnis_j = _refresh_mod.apply_sync(_conn_j, _plan_j, heute="2026-10-05")
 _db_mod.invalidate_referenzdaten_cache()
 check("J1 leerer Export loest keine Schreibvorgaenge aus",
-      _ergebnis_j == {"eingefuegt": 0, "aktualisiert": 0, "review_geschrieben": 0})
+      _ergebnis_j == {"eingefuegt": 0, "eingefuegt_konditional": 0, "aktualisiert": 0,
+                      "review_geschrieben": 0})
 _conn_check = sqlite3.connect(_db_pfad)
 _anzahl_j = _conn_check.execute(
     "SELECT COUNT(*) FROM rueckruf WHERE baureihe_id='testsync-modelly-gen1'").fetchone()[0]

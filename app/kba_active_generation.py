@@ -44,6 +44,21 @@ ZWEI UNABHAENGIGE LUECKEN, EIN MECHANISMUS
    verliert der gesamte Kandidat JEDES seiner Ziele -- auch die, die fuer
    sich genommen eindeutig und sicher sind.
 
+   ROOT-CAUSE-AUDIT RC-4 (Nachtrag): Mechanismus B war in diesem Modul zunaechst
+   NUR fuer OFFENE Zielgenerationen geschlossen (`paare_aktive_generation()`
+   verlangte bisher zusaetzlich `_offene_generation_zulaessig`, was geschlossene
+   Ziele unbedingt ausschloss) -- GESCHLOSSENE Ziele blieben weiterhin
+   AUSSCHLIESSLICH auf den kandidatenweiten `klasse_a()`-Pfad angewiesen und
+   damit fuer dieselbe Drag-down-Schwaeche anfaellig (reproduziert an den
+   Opel-Astra-K-Gasgenerator-Faellen 6625/6490/6665/11331 -- Astra K ist eine
+   GESCHLOSSENE Generation). `_generation_zulaessig()` vereinheitlicht das:
+   ein SAFE_IMPORT-Paar, das `klasse_a()` candidatenweit nicht erreicht,
+   durchlaeuft diesen Pfad jetzt UNABHAENGIG davon, ob seine Zielgeneration
+   offen oder geschlossen ist -- Tor A6 gilt weiterhin NUR fuer offene Ziele,
+   geschlossene brauchen kein zusaetzliches Tor. Die scharfen Tore A0-A5 in
+   `ergaenzende_zeilen()` selbst waren immer schon fuer beide Faelle identisch
+   und mussten dafuer nicht geaendert werden.
+
 WARUM EIN EIGENES MODUL statt klasse_a()/pruefe_batch_a() ZU AENDERN
 ----------------------------------------------------------------------
 `app/kba_import_batch_a.py` ist die eingefrorene Logik der historischen
@@ -102,20 +117,35 @@ _LEER_NORMALISIERT = {_norm_text(x).replace(" ", "") for x in _KEINE_EINGRENZUNG
 def _offene_generation_zulaessig(kand, baureihe: dict) -> bool:
     """Tor A6: eine OFFENE Zielgeneration ist nur zulaessig, wenn das
     amtliche Produktionsfenster nicht vor ihrem eigenen Start beginnt.
-    Geschlossene Generationen sind hier nicht betroffen (die laufen
-    weiterhin ausschliesslich ueber `klasse_a()`)."""
-    if baureihe.get("bauzeitraum_bis") is not None:
-        return False
+    Nur fuer offene Generationen aufgerufen — siehe `_generation_zulaessig`."""
     von = baureihe.get("bauzeitraum_von")
     return kand.prod_von is not None and von is not None and kand.prod_von >= von
 
 
+def _generation_zulaessig(kand, baureihe: dict) -> bool:
+    """Root-Cause-Audit RC-4 ("Mechanismus B"): die Unterscheidung
+    offen/geschlossen entscheidet nur noch, WELCHES zusaetzliche Tor gilt,
+    nicht mehr OB ein Paar diesen Pfad ueberhaupt erreichen darf. Eine
+    geschlossene Zielgeneration braucht kein weiteres Tor (ihr Fenster ist
+    durch den amtlichen Bauzeitraum selbst begrenzt); eine offene Generation
+    durchlaeuft zusaetzlich Tor A6. Vorher liefen GESCHLOSSENE Ziele
+    AUSSCHLIESSLICH ueber die kandidatenweite Pruefung in `klasse_a()` — ein
+    fuer sich sicheres Paar verlor sein Ziel vollstaendig, sobald ein ANDERES,
+    unabhaengiges Ziel desselben mehrmodelligen amtlichen Datensatzes
+    mehrdeutig war (reproduziert u.a. an den Astra-K-Gasgenerator-Faellen
+    6625/6490/6665/11331 im Root-Cause-Audit)."""
+    if baureihe.get("bauzeitraum_bis") is not None:
+        return True
+    return _offene_generation_zulaessig(kand, baureihe)
+
+
 def paare_aktive_generation(kandidaten, baureihen: list[dict]) -> dict:
     """{kand: [ziel_id, ...]} -- SAFE_IMPORT-PAARE (aus `kand.paare`), die
-    NICHT schon durch `klasse_a()` abgedeckt sind (weil die Baureihe offen
-    ist ODER weil die kandidatenweite Klasse strenger war als die paarweise),
-    aber Tor A6 erfuellen. Reine Vorauswahl -- die scharfen Tore A0-A5 laufen
-    erst in `ergaenzende_zeilen()`."""
+    NICHT schon durch `klasse_a()` abgedeckt sind (weil die kandidatenweite
+    Klasse strenger war als die paarweise — unabhaengig davon, ob die
+    Zielbaureihe offen oder geschlossen ist) und `_generation_zulaessig`
+    erfuellen. Reine Vorauswahl -- die scharfen Tore A0-A5 laufen erst in
+    `ergaenzende_zeilen()`, UNVERAENDERT fuer offene wie geschlossene Ziele."""
     bereits = {id(k) for k in klasse_a(kandidaten, baureihen)}
     baureihen_je_id = {b["id"]: b for b in baureihen}
     out: dict = {}
@@ -127,7 +157,7 @@ def paare_aktive_generation(kandidaten, baureihen: list[dict]) -> dict:
             if kl != SAFE_IMPORT:
                 continue
             b = baureihen_je_id.get(bid)
-            if b is not None and _offene_generation_zulaessig(k, b):
+            if b is not None and _generation_zulaessig(k, b):
                 ziele.append(bid)
         if ziele:
             out[k] = sorted(ziele)
@@ -243,6 +273,12 @@ def ergaenzende_zeilen(kandidaten, baureihen: list[dict], recalls: list[dict]):
             "mangel": kand.mangel,
             "abhilfe": kand.massnahme or None,
             "kba_referenz": ref,
+            # Root-Cause-Audit RC-2: wie in kba_import_batch_a.pruefe_batch_a()
+            # — hier ebenfalls immer trivial (Tor A2 ungeaendert), aber
+            # verlustfrei statt implizit "N/A".
+            "eingrenzung_amtlich": eingr or None,
+            "prod_von_amtlich": kand.prod_von,
+            "prod_bis_amtlich": kand.prod_bis,
         })
 
     zeilen.sort(key=lambda z: (normalisiere_referenz(z["kba_referenz"]), z["baureihe_id"]))

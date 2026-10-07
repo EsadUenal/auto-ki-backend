@@ -361,6 +361,14 @@ def pruefe_batch_a(kandidaten, baureihen: list[dict], recalls: list[dict]):
                 "herstellercode": "" if code.upper() in {"", "N/A"} else code,
                 "amtlicher_zeitraum": f"{kand.prod_von}-{kand.prod_bis}",
                 "amtliches_datum": kand.datum,
+                # Root-Cause-Audit RC-2: verlustfrei mitfuehren statt verwerfen.
+                # Hier IMMER trivial ("" nach `kand.eingrenzung`, s. dessen
+                # Property-Definition) — Tor A2 verlangt das bereits, bevor
+                # eine Zeile ueberhaupt hierher gelangt. Siehe
+                # `app.kba_conditional_scope` fuer Zeilen MIT echter Eingrenzung.
+                "eingrenzung_amtlich": kand.eingrenzung or None,
+                "prod_von_amtlich": kand.prod_von,
+                "prod_bis_amtlich": kand.prod_bis,
             })
 
     zeilen.sort(key=lambda z: (normalisiere_referenz(z["kba_referenz"]), z["baureihe_id"]))

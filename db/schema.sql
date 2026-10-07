@@ -73,7 +73,15 @@ CREATE TABLE IF NOT EXISTS rueckruf (
     betroffene_baujahre TEXT,
     mangel              TEXT NOT NULL,
     abhilfe             TEXT,
-    kba_referenz        TEXT
+    kba_referenz        TEXT,
+    -- Root-Cause-Audit RC-2/RC-3: amtliche Eingrenzung/Produktionsfenster
+    -- verlustfrei mitfuehren statt sie beim Import zu verwerfen (siehe
+    -- app/database.py::_migrate_schema fuer dieselben additiven Spalten auf
+    -- einer bestehenden Live-DB; hier fuer eine FRISCH aus dieser Datei
+    -- angelegte DB, damit beide Wege dasselbe Schema ergeben).
+    eingrenzung_amtlich TEXT,
+    prod_von_amtlich    INTEGER,
+    prod_bis_amtlich    INTEGER
 );
 
 -- Quellen (1:n)

@@ -519,6 +519,36 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             if spalte not in mv_existing:
                 conn.execute(f"ALTER TABLE motorvariante ADD COLUMN {spalte} {sql_typ}")
 
+    # Root-Cause-Audit RC-2/RC-3 ("Official recall scope is not retained" /
+    # "Conditional recalls disappear into review"): die amtliche Eingrenzung
+    # und das amtliche Produktionsfenster wurden bisher beim Import GELESEN
+    # (um SAFE_IMPORT/VARIANT_SCOPE_UNCLEAR zu entscheiden) und danach
+    # VERWORFEN — keine Spalte hielt den Rohwert fest. Drei additive, NULLable
+    # Spalten schliessen das verlustfrei:
+    #   eingrenzung_amtlich — der rohe Text aus "Mögliche Eingrenzung der
+    #     betroffenen Modelle" (auch wörtlich "N/A"/"keine", wenn das amtlich
+    #     so steht — siehe app/recall_filter.py::rueckruf_scope, das diese
+    #     Werte wie eine fehlende Eingrenzung behandelt, nicht wie eine
+    #     fehlende Spalte).
+    #   prod_von_amtlich/prod_bis_amtlich — das amtliche Produktionsfenster
+    #     VOR der Verengung auf den VIRA-Bauzeitraum (betroffene_baujahre
+    #     bleibt die bereits geschnittene, angezeigte Spanne; diese beiden
+    #     sind die ungeschnittene amtliche Quelle für künftige Auswertung).
+    # NULL bei jeder Bestandszeile bis zum Backfill (separates, read-only
+    # Dry-Run-/Apply-Kommando — siehe app/kba_scope_backfill.py). Kein
+    # Rueckruf verliert dadurch Daten; es wird nur ergaenzt.
+    rr_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rueckruf'"
+    ).fetchone()
+    if rr_table_exists:
+        rr_existing = {r[1] for r in conn.execute("PRAGMA table_info(rueckruf)").fetchall()}
+        if "eingrenzung_amtlich" not in rr_existing:
+            conn.execute("ALTER TABLE rueckruf ADD COLUMN eingrenzung_amtlich TEXT")
+        if "prod_von_amtlich" not in rr_existing:
+            conn.execute("ALTER TABLE rueckruf ADD COLUMN prod_von_amtlich INTEGER")
+        if "prod_bis_amtlich" not in rr_existing:
+            conn.execute("ALTER TABLE rueckruf ADD COLUMN prod_bis_amtlich INTEGER")
+
     _migriere_chassis_codes(conn)
     _migriere_verification(conn)
 
@@ -778,9 +808,15 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         # Lesepunkt, damit kein Konsument die Sperre umgehen kann. Lokaler Import:
         # recall_filter importiert seinerseits aus diesem Modul.
         from app.recall_filter import nur_belegte_rueckrufe
+        # Root-Cause-Audit RC-2/RC-3: `eingrenzung_amtlich`/`prod_von_amtlich`/
+        # `prod_bis_amtlich` MIT auswählen — sonst sieht `recall_filter.
+        # rueckruf_scope()` den amtlichen Rohtext zur Laufzeit nie, egal wie
+        # vollständig Import und Backfill ihn gespeichert haben. Das ist der
+        # EINZIGE Laufzeit-Lesepunkt für `baureihe["rueckrufe"]`.
         _alle_rueckrufe = sichtbare_fakten(annotiere_fakten(conn, "rueckruf", [
             dict(r) for r in conn.execute(
-                "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz "
+                "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz,"
+                "eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich "
                 "FROM rueckruf WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
@@ -954,7 +990,8 @@ def get_alle_rueckrufe_fuer_sync() -> list[dict]:
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT id, baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
-            "kba_referenz FROM rueckruf").fetchall()]
+            "kba_referenz, eingrenzung_amtlich, prod_von_amtlich, prod_bis_amtlich "
+            "FROM rueckruf").fetchall()]
 
 
 def invalidate_referenzdaten_cache() -> None:

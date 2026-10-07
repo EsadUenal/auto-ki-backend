@@ -273,9 +273,19 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
     zeilen()` sicher belegte Paare, die NUR wegen einer offenen Zielgeneration
     oder wegen eines unabhängigen, mehrdeutigen ANDEREN Ziels im selben
     mehrmodelligen amtlichen Datensatz bisher nie kanonisch wurden (siehe
-    Moduldocstring dort) — ohne die Batch-A-Tore selbst zu verändern."""
+    Moduldocstring dort) — ohne die Batch-A-Tore selbst zu verändern.
+
+    Root-Cause-Audit RC-3: zusätzlich `app.kba_conditional_scope.
+    ergaenzende_konditionale_zeilen()` — Paare, deren Baureihen-Zuordnung
+    sicher ist und die EINZIG an Tor A2 (amtliche Eingrenzung nicht abbildbar)
+    scheitern. Sie werden NICHT unbedingt übernommen (Tor A2 bleibt
+    unverändert), sondern mit dem rohen Eingrenzungstext als eigene, klar
+    markierte Gruppe `plan["neue_zeilen_konditional"]` — siehe dessen
+    Moduldocstring. Die fahrzeugindividuelle Bewertung bleibt vollständig bei
+    `app.recall_filter.rueckruf_scope()` zur Laufzeit."""
     from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_fuer_sync
     from app.kba_active_generation import ergaenzende_zeilen
+    from app.kba_conditional_scope import ergaenzende_konditionale_zeilen
     from app.kba_import_batch_a import klasse_a, pruefe_batch_a
     from app.kba_import_kandidaten import import_kandidaten
     from app.kba_reconciliation import normalisiere_referenz
@@ -293,6 +303,8 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
 
     zeilen_a, ausschluesse_a = pruefe_batch_a(kandidaten, baureihen, recalls_voll)
     zeilen_akt, ausschluesse_akt = ergaenzende_zeilen(kandidaten, baureihen, recalls_voll)
+    zeilen_kond, ausschluesse_kond = ergaenzende_konditionale_zeilen(
+        kandidaten, baureihen, recalls_voll)
     neue_zeilen = zeilen_a + zeilen_akt
     aktualisierungen = plane_aktualisierungen(kba_zeilen, recalls_voll)
 
@@ -304,8 +316,12 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
     # bleibt sichtbar. Vorher verschwand ein geschlossener, kandidatenweit
     # SAFE_IMPORT-Kandidat, der an einem Batch-A-Tor scheiterte, ersatzlos
     # (weder rueckruf noch kba_rueckruf_review) — s. `ausschluesse`.
+    #
+    # RC-3: ein konditional admittiertes Paar (`zeilen_kond`) zählt HIER
+    # ebenfalls als "abgedeckt" — es wird kanonisch (nur eben mit erhaltener
+    # Eingrenzung), darf also nicht ZUSÄTZLICH als Review-Kandidat erscheinen.
     importierte_paare = {(normalisiere_referenz(z["kba_referenz"]), z["baureihe_id"])
-                         for z in neue_zeilen}
+                         for z in neue_zeilen + zeilen_kond}
     review_kandidaten = [
         k for k in kandidaten
         if not k.ziel_ids or not all(
@@ -316,7 +332,8 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
     return {
         "kandidaten": kandidaten,
         "neue_zeilen": neue_zeilen,
-        "ausschluesse": ausschluesse_a + ausschluesse_akt,
+        "neue_zeilen_konditional": zeilen_kond,
+        "ausschluesse": ausschluesse_a + ausschluesse_akt + ausschluesse_kond,
         "review_kandidaten": review_kandidaten,
         "aktualisierungen": aktualisierungen,
         "baureihen": baureihen,
@@ -384,19 +401,33 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
     heute = heute or datetime.date.today().isoformat()
     baureihen_bis = {b["id"]: b.get("bauzeitraum_bis") for b in plan.get("baureihen") or []}
 
+    # Root-Cause-Audit RC-2/RC-3: JEDE neue Zeile (unbedingt ODER konditional)
+    # bekommt ab sofort die drei verlustfreien Zusatzspalten mit — `.get()`
+    # statt `[...]`, falls ein älterer Aufrufer (Tests) noch Dicts ohne diese
+    # Schlüssel liefert. Bei unbedingten Zeilen ist `eingrenzung_amtlich`
+    # bauartbedingt trivial (Tor A2 verlangt das bereits); bei konditionalen
+    # Zeilen (`plan["neue_zeilen_konditional"]`) trägt sie den rohen,
+    # unaufgelösten amtlichen Text.
     eingefuegt = 0
-    for z in plan["neue_zeilen"]:
+    eingefuegt_konditional = 0
+    for z in plan["neue_zeilen"] + plan.get("neue_zeilen_konditional", []):
+        ist_konditional = bool((z.get("eingrenzung_amtlich") or "").strip())
         # `z["id"]` (von pruefe_batch_a vergeben, Basis ID_BASIS=2001) wird
         # bewusst NICHT verwendet — rueckruf.id ist AUTOINCREMENT, SQLite
         # vergibt eine garantiert kollisionsfreie ID. Dieselbe Spaltenliste
-        # wie app/db_writer.py's regulärer Rückruf-Insert.
+        # wie app/db_writer.py's regulärer Rückruf-Insert, plus die drei
+        # additiven Scope-Spalten.
         cur = conn.execute(
             "INSERT INTO rueckruf (baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,"
-            "kba_referenz) VALUES (?,?,?,?,?,?)",
+            "kba_referenz,eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (z["baureihe_id"], z["datum"], z["betroffene_baujahre"], z["mangel"],
-             z["abhilfe"], z["kba_referenz"]))
+             z["abhilfe"], z["kba_referenz"], z.get("eingrenzung_amtlich"),
+             z.get("prod_von_amtlich"), z.get("prod_bis_amtlich")))
         _verifiziere_amtlich(conn, cur.lastrowid, z, heute=heute)
         eingefuegt += 1
+        if ist_konditional:
+            eingefuegt_konditional += 1
 
     aktualisiert = 0
     for u in plan["aktualisierungen"]:
@@ -442,8 +473,8 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
              prod, kand.datum, json.dumps(kand.ziel_ids), heute, heute))
         review_geschrieben += 1
 
-    return {"eingefuegt": eingefuegt, "aktualisiert": aktualisiert,
-            "review_geschrieben": review_geschrieben}
+    return {"eingefuegt": eingefuegt, "eingefuegt_konditional": eingefuegt_konditional,
+            "aktualisiert": aktualisiert, "review_geschrieben": review_geschrieben}
 
 
 def main() -> None:

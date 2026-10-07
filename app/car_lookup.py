@@ -871,8 +871,26 @@ def _kanonischer_risikoblock(risiken: list, motor_match: dict | None) -> list[st
 
 
 def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: int | None = None,
-                     fahrzeugkontext=None, risiken: list | None = None) -> str:
+                     fahrzeugkontext=None, risiken: list | None = None, identity=None) -> str:
     """Baut den strukturierten DB-Kontext-String (Specs, Schwachstellen, Rückrufe).
+
+    Root-Cause-Audit RC-1 — `identity` (optional, Default `None`): kanonische
+    `VehicleIdentity`, durchgereicht an `gefilterte_rueckrufe` (app/recall_
+    filter.py). Ohne sie prüft die Rückruf-Zeile unten nur die ältere Hochvolt-
+    Schlüsselwort-Heuristik, NICHT den vollen `rueckruf_scope()`-Motor (Leistung/
+    Hubraum/Motorcode/Kraftstoff-Text/Ausstattungspräsenz) — genau DAS war der
+    Befund des Audits: dieselbe Rückruf-Zeile konnte hier eine andere
+    Betroffenheits-Entscheidung bekommen als in `app/evidence.py::build_insights`
+    (dort wird `identity` für `check_typ="kauf"` bereits seit dem "Final-
+    Stabilization"-Umbau durchgereicht). Diese Funktion selbst wird vom
+    KaufCheck-Hauptpfad inzwischen NICHT mehr aufgerufen (siehe
+    `app/kaufcheck_bericht.py::kontext()`/`bericht()`, die beide ausschließlich
+    die bereits identitätsbewusst gefilterten `insights` lesen) — sie bleibt
+    aber die LLM-Kontext-Quelle für VerkaufsCheck. `identity` ist deshalb rein
+    additiv: ohne sie (Default) bleibt jeder bestehende Aufruf BYTEGLEICH zum
+    bisherigen Verhalten; ein Aufrufer, der eine Identität besitzt, bekommt ab
+    sofort dieselbe vollständige Entscheidung wie jeder andere Konsument von
+    `recall_filter.gefilterte_rueckrufe`.
 
     Root-Cause-Closing — `risiken` (optional, nur KaufCheck): die kanonische
     Risikomenge aus `app/evidence.py::build_insights`. Ist sie übergeben, ersetzt
@@ -1028,7 +1046,7 @@ def build_db_context(baureihe: dict | None, motor_match: dict | None, baujahr: i
     # Referenz das Plausibilitätsgate nicht besteht — dann wird gar kein "(Ref: …)"
     # angehängt, statt eine unplausible Nummer anzuzeigen.
     erlaubte_rueckrufe = gefilterte_rueckrufe(baureihe.get("rueckrufe"), motor_match, baujahr,
-                                              marke=baureihe.get("marke"))
+                                              marke=baureihe.get("marke"), identity=identity)
     if erlaubte_rueckrufe:
         lines.append("### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
         for r in erlaubte_rueckrufe:
