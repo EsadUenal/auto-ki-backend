@@ -717,7 +717,8 @@ check(f"INV 9 Fahrzeugprofil aller {len(ALLE)} Baureihen ohne rhetorischen Gedan
 # ══ 11) Rückrufimport je (Rückruf, Baureihe) ═════════════════════════════════
 print("\n=== 11) Rückrufimport entscheidet je Paar ===")
 from app.kba_import_kandidaten import (  # noqa: E402
-    POSSIBLE_DUPLICATE, SAFE_IMPORT, import_kandidaten, verlorene_paare,
+    NOT_SAFETY_RELEVANT, POSSIBLE_DUPLICATE, SAFE_IMPORT, import_kandidaten,
+    verlorene_paare,
 )
 
 
@@ -760,11 +761,18 @@ folge = _kba(**{"KBA-Referenznummer": "9002",
                                      "Hinterachsträgers kann zu kritischen Fahrsituationen führen."})
 check("11f Sicherheitsfolge im amtlichen Text macht den Rückruf zum Kandidaten",
       bool(import_kandidaten([folge], [], _BR)))
-check("11g ohne Sicherheitsbezug weiterhin kein Kandidat",
-      import_kandidaten([_kba(**{"KBA-Referenznummer": "9003",
+# Root-Cause-Audit RC-5: vor diesem Fix war dies ein stiller `continue` in
+# `import_kandidaten()` — DER Mechanismus, der die beiden belegten Audi-
+# Anhängevorrichtungs-Rückrufe KBA 8718/10703 nie klassifiziert, nie in
+# `kba_rueckruf_review` sichtbar gemacht hat. "Ohne Sicherheitsbezug" bleibt
+# weiterhin von der automatischen Übernahme ausgeschlossen — aber als
+# explizite, auditierbare Klasse statt eines Verschwindens.
+check("11g ohne Sicherheitsbezug: EIN Kandidat mit expliziter, nicht "
+      "automatisch übernehmbarer Klasse (kein stiller Drop mehr, siehe RC-5)",
+      [k.klasse for k in import_kandidaten([_kba(**{"KBA-Referenznummer": "9003",
                                  "Mangelbezeichnung": "Das Radio zeigt die falsche Uhrzeit an.",
                                  "Beschreibung der Maßnahme": "Software-Update."})],
-                        [], _BR) == [])
+                        [], _BR)] == [NOT_SAFETY_RELEVANT])
 
 
 # ══ Baujahresangaben (offene Grenzen, Tendenzen) ═════════════════════════════

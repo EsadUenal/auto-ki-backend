@@ -60,17 +60,40 @@ AMBIGUOUS_GENERATION = "AMBIGUOUS_GENERATION"
 VARIANT_SCOPE_UNCLEAR = "VARIANT_SCOPE_UNCLEAR"
 POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
 UNSUPPORTED_MODEL_MAPPING = "UNSUPPORTED_MODEL_MAPPING"
+# Root-Cause-Closing (Audit RC-5): vorher wurde ein amtlicher, KBA-ueberwachter
+# Datensatz, dessen Bauteilgruppe/Unfallfolge nicht als sicherheitsrelevant
+# erkannt wurde, per BARE `continue` in `import_kandidaten()` verworfen — NIE
+# klassifiziert, NIE in `kba_rueckruf_review` sichtbar, NIE in `ausschluesse`.
+# Ein Scan des echten, aktuellen KBA-Exports hat 2.237 von 5.805 ueberwachten
+# Datensaetzen (~38,5 %, jede Marke) auf diesem Pfad gefunden — zwei belegte
+# Audi-Anhaengevorrichtungs-Rueckrufe (KBA 8718/10703) als Reproduktionsfall.
+# `NOT_SAFETY_RELEVANT` macht diese Entscheidung zu einer EXPLIZITEN, auditier-
+# baren Klasse statt eines stillen Lochs — sie bleibt von der automatischen
+# Uebernahme ausgeschlossen (nur `SAFE_IMPORT` wird von `klasse_a()` admittiert),
+# erscheint aber wie jede andere nicht-uebernommene Klasse in `kba_rueckruf_
+# review`, mit der erkannten Bauteilgruppe als Begruendung — nachvollziehbar
+# und spaeter manuell nachschaerfbar, falls die Sicherheits-Vokabeln einmal
+# erweitert werden.
+NOT_SAFETY_RELEVANT = "NOT_SAFETY_RELEVANT"
 
 IMPORT_KLASSEN = (SAFE_IMPORT, AMBIGUOUS_GENERATION, VARIANT_SCOPE_UNCLEAR,
-                  POSSIBLE_DUPLICATE, UNSUPPORTED_MODEL_MAPPING)
+                  POSSIBLE_DUPLICATE, UNSUPPORTED_MODEL_MAPPING,
+                  NOT_SAFETY_RELEVANT)
 
 
 # Bauteilgruppen, die einen Rueckruf sicherheitsrelevant machen. Bewusst die
 # Gruppen, die Bremse, Lenkung, Rueckhaltesystem, Fahrwerk, Rad, Brandgefahr,
 # Kraftstoff und Hochvolt betreffen — nicht Komfort oder Abgas.
+#
+# "anhaenger" (Audit RC-5): eine sich loesende Anhaengevorrichtung ist ein
+# Fremdkoerper-auf-der-Fahrbahn-Risiko wie ein sich loesendes Rad oder eine
+# abfallende Stossstange — derselbe Gefahrentyp, den "fahrwerk"/"rad" bereits
+# abdecken, nur an einem anderen Bauteil. Generisch fuer JEDE Marke (41
+# ueberwachte Faelle ueber mehrere Hersteller im aktuellen KBA-Export nutzen
+# diese Bauteilgruppe), nicht nur die beiden Audi-Reproduktionsfaelle.
 SICHERHEITSGRUPPEN = frozenset({
     "airbag", "gurt", "bremse_hydr", "bremse_mech", "bremse_elektr", "lenkung",
-    "fahrwerk", "rad", "hochvolt", "elektrik_brand", "kraftstoff",
+    "fahrwerk", "rad", "hochvolt", "elektrik_brand", "kraftstoff", "anhaenger",
 })
 
 # Root-Cause-Closing (Befund M): die Bauteilgruppen allein verloren amtliche
@@ -83,10 +106,24 @@ SICHERHEITSGRUPPEN = frozenset({
 # deshalb zusätzlich die im amtlichen Text genannte FOLGE. Kein Rückruf und kein
 # Fahrzeug steht hier namentlich: die Muster beschreiben Unfall-, Verletzungs-,
 # Brand- und Kontrollfolgen.
+# Erweiterung (Audit RC-5): "lösen|ablösen|abfallen" erkennt, wenn sich ein
+# Bauteil selbst löst/abfällt — nicht aber die semantisch gleichwertige
+# Formulierung, dass eine VERBINDUNG zwischen zwei Teilen verloren geht (z.B.
+# "kann zum Verlust der Fahrzeugverbindung führen" bei einer brechenden
+# Anhängevorrichtung, oder "kann zum Verlust der Verbindung zum Lenkgetriebe
+# führen" bei einer anderen Bauteilgruppe). Beides beschreibt denselben
+# Gefahrentyp: ein Teil trennt sich ungewollt vom Fahrzeug oder von einem
+# sicherheitsrelevanten Gegenstück. Das generische Muster unten verlangt
+# "Verlust" UND einen Verbindungsbegriff im selben Satzteil — das vermeidet
+# False Positives wie "Wertverlust" (kein Verbindungswort in der Nähe), ohne
+# an einen bestimmten Hersteller- oder Bauteilwortlaut gebunden zu sein.
 _SICHERHEITSFOLGE = re.compile(
     r"unfall|verletz|kritische[nrm]? fahrsituation|kontrollverlust"
     r"|kontrolle über das fahrzeug|brand|feuer|stromschlag|lebensgefahr"
-    r"|sicherheitsrisiko|fahrstabilit|lösen|ablösen|abfallen",
+    r"|sicherheitsrisiko|fahrstabilit|lösen|ablösen|abfallen"
+    r"|verlust\s+(?:der|des|von)\s+\S*(?:verbindung|kupplung|befestigung|halterung)"
+    r"|verliert\s+\S*(?:verbindung|kupplung|befestigung|halterung)"
+    r"|trennt sich (?:von|vom)",
     re.IGNORECASE)
 
 # Woerter im Feld "Moegliche Eingrenzung der betroffenen Modelle", die eine
@@ -522,11 +559,40 @@ def import_kandidaten(kba: list[dict], recalls: list[dict],
     out = []
     for k in kba:
         kand = ImportKandidat(k)
+        # `nur_ueberwacht` (nicht vom KBA ueberwacht) und die Markenpruefung
+        # (VIRA fuehrt diesen Hersteller ueberhaupt nicht) schliessen eine
+        # Baureihen-Zuordnung grundsaetzlich aus, unabhaengig von diesem
+        # Fahrzeugbestand — ein Audit-Trail dafuer waere nur Rauschen (jede
+        # Marke, die VIRA nicht fuehrt, jeder nicht-amtlich ueberwachte
+        # Datensatz). Beide bleiben bewusst ein stiller `continue`.
         if nur_ueberwacht and not kand.ueberwacht:
             continue
-        if nur_sicherheitsrelevant and not kand.sicherheitsrelevant:
-            continue
         if kand.marke.upper() not in vira_marken:
+            continue
+        # Audit RC-5: `nur_sicherheitsrelevant` darf NIE wieder ein stiller
+        # `continue` sein. Ein ueberwachter, markenbekannter Datensatz, der
+        # hier nicht als sicherheitsrelevant gilt, bekommt eine EXPLIZITE,
+        # auditierbare Klasse (`NOT_SAFETY_RELEVANT`) statt zu verschwinden —
+        # er wird trotzdem in `out` aufgenommen und landet damit (wie jede
+        # andere nicht-SAFE_IMPORT-Klasse) in `kba_rueckruf_review`. Das
+        # verhindert automatische Uebernahme (nur `SAFE_IMPORT` wird von
+        # `klasse_a()`/`ergaenzende_zeilen()` admittiert) OHNE die
+        # Entscheidung unsichtbar zu machen. Die Baureihen-Aufloesung
+        # (`klassifiziere_kandidat`) wird fuer diese Klasse bewusst NICHT
+        # ausgefuehrt — sie wuerde `kand.klasse` ueberschreiben und koennte
+        # einen eigentlich nicht-sicherheitsrelevanten Kandidaten wieder auf
+        # `SAFE_IMPORT` setzen, was `klasse_a()` dann automatisch admittieren
+        # wuerde. Das waere exakt die in §Auftrag ausgeschlossene Wirkung
+        # ("DO NOT simply turn the filter off and auto-import thousands of
+        # recalls").
+        if nur_sicherheitsrelevant and not kand.sicherheitsrelevant:
+            kand.klasse = NOT_SAFETY_RELEVANT
+            gefunden = sorted(bauteilgruppen(kand.mangel))
+            kand.begruendung = (
+                "weder eine sicherheitsrelevante Bauteilgruppe noch eine "
+                "erkannte Unfall-/Verletzungs-/Brandfolge im amtlichen Text "
+                f"(erkannte Bauteilgruppe(n): {gefunden or 'keine'})")
+            out.append(kand)
             continue
         kand = klassifiziere_kandidat(kand, ziel_idx, je_baureihe)
         ref = normalisiere_referenz(kand.referenz)

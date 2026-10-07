@@ -15,6 +15,7 @@ gegen die echte Datenbank — und auch das nur, wenn ein Export bereitliegt.
   F) Dublettenschutz — vorhandene Rueckrufe werden nicht erneut importiert
   G) Reale Bezugsfaelle (nur mit Export)
   H) Mehrfach erreichbare Baureihen — Determinismus bei Alias-Token
+  I) RC-5 — "nicht sicherheitsrelevant" darf nie mehr stumm verwerfen
 
     python test_kba_import_dryrun.py [pfad/zum/kba_export.csv]
 """
@@ -23,7 +24,7 @@ import sys
 
 from app.kba_import_kandidaten import (
     AMBIGUOUS_GENERATION, IMPORT_KLASSEN, MEDIAN_GENERATIONSDAUER,
-    MIN_UEBERDECKUNG, POSSIBLE_DUPLICATE, SAFE_IMPORT,
+    MIN_UEBERDECKUNG, NOT_SAFETY_RELEVANT, POSSIBLE_DUPLICATE, SAFE_IMPORT,
     UNSUPPORTED_MODEL_MAPPING, VARIANT_SCOPE_UNCLEAR, _ueberdeckung,
     import_kandidaten, zeilen_bei_import,
 )
@@ -98,11 +99,18 @@ check("B4 nicht ueberwacht -> gar kein Kandidat",
       import_kandidaten([kba_zeile(
           **{"Überwachung der Rückrufaktion durch das KBA": "nicht überwacht"})],
           [], [br()]) == [])
-check("B5 nicht sicherheitsrelevant -> gar kein Kandidat",
-      import_kandidaten([kba_zeile(
+# Audit RC-5 (Root-Cause-Closing): vor dem Fix war dies ein stiller `continue`
+# — DER exakte Mechanismus, der die beiden belegten Audi-Anhaengevorrichtungs-
+# Rueckrufe KBA 8718/10703 nie klassifiziert, nie in `kba_rueckruf_review`
+# sichtbar gemacht hat. "Nicht sicherheitsrelevant" ist jetzt eine EXPLIZITE,
+# auditierbare Klasse — der Kandidat verschwindet nicht, er wird nur nicht
+# automatisch uebernommen (siehe Abschnitt I fuer die ausfuehrlichen Tests).
+check("B5 nicht sicherheitsrelevant -> EIN Kandidat mit expliziter Klasse "
+      "(kein stiller Drop mehr)",
+      [k.klasse for k in import_kandidaten([kba_zeile(
           Mangelbezeichnung="Das Radio zeigt die falsche Uhrzeit an.",
           **{"Beschreibung der Maßnahme": "Software-Update."})],
-          [], [br()]) == [])
+          [], [br()])] == [NOT_SAFETY_RELEVANT])
 
 # Zwei Generationen desselben Modells im amtlichen Fenster
 _zwei_gen = [br(id="opel-insignia-a", generation="A",
@@ -314,6 +322,133 @@ check("H3 gleiches Ergebnis bei umgekehrter Token-Reihenfolge im amtlichen Text"
 # mengenbasiert (nicht mehr "wer zuerst kommt"), das Ergebnis darf nie kippen.
 check("H4 zehn Wiederholungen liefern immer dasselbe Ergebnis",
       all(_paare_von([_rs3_kba], [_a3, _rs3]) == _paare_h for _ in range(10)))
+
+
+# ══ I) RC-5 — "nicht sicherheitsrelevant" darf nie mehr stumm verwerfen ═══════
+print("\n--- I) RC-5: kein stiller Drop mehr ---")
+
+# I1: generische (nicht markengebundene) Bauteilgruppen-Erweiterung — JEDE
+# Marke mit einer Anhaengevorrichtung/-kupplung profitiert, nicht nur Audi.
+check("I1 'anhaenger'-Bauteilgruppe (generisch, jede Marke) macht sicherheitsrelevant "
+      "-> wird klassifiziert, nicht NOT_SAFETY_RELEVANT",
+      klasse_von([kba_zeile(
+          Marke="SKODA", Modell="OCTAVIA",
+          Mangelbezeichnung="Bruch der Anhaengerkupplung moeglich.")],
+          [], [br(id="skoda-octavia", marke="Skoda", modell="Octavia")])
+      != NOT_SAFETY_RELEVANT)
+
+# I2: die neue Konsequenz-Regel ("Verlust ... Verbindung/Kupplung/Befestigung/
+# Halterung") isoliert geprueft — FIKTIVES Bauteil, das KEINER bestehenden
+# Bauteilgruppe entspricht, damit ausschliesslich der Folge-Pfad greift.
+_fiktiv_verlust = kba_zeile(
+    Mangelbezeichnung="Bruch der Dachtraeger-Halteklammer kann zum Verlust der "
+                      "Verbindung zum Dachgepaecktraeger fuehren.")
+check("I2 generische 'Verlust der Verbindung'-Folge wird erkannt, auch ohne "
+      "bekannte Bauteilgruppe",
+      klasse_von([_fiktiv_verlust], [], [br()]) != NOT_SAFETY_RELEVANT)
+check("I2b ... tatsaechlich ueber die FOLGE, nicht ueber eine Bauteilgruppe "
+      "(isolierter Nachweis)",
+      not (bauteilgruppen_fn := __import__(
+          "app.kba_reconciliation", fromlist=["bauteilgruppen"]
+      ).bauteilgruppen)(_fiktiv_verlust["Mangelbezeichnung"]) & {
+          "airbag", "gurt", "bremse_hydr", "bremse_mech", "bremse_elektr",
+          "lenkung", "fahrwerk", "rad", "hochvolt", "elektrik_brand",
+          "kraftstoff", "anhaenger"})
+
+# I3/I4: ein echtes Komfort-/Infotainment-Beispiel bleibt korrekt NICHT
+# sicherheitsrelevant — der Filter wurde nicht einfach abgeschaltet — UND
+# die Ablehnung ist jetzt auditierbar (eigene Klasse + Begruendung).
+_komfort = import_kandidaten([kba_zeile(
+    Mangelbezeichnung="Das Radio zeigt die falsche Uhrzeit an.",
+    **{"Beschreibung der Maßnahme": "Software-Update."})], [], [br()])
+check("I3 echtes Komfortbeispiel bleibt NOT_SAFETY_RELEVANT (Filter nicht "
+      "einfach abgeschaltet)",
+      len(_komfort) == 1 and _komfort[0].klasse == NOT_SAFETY_RELEVANT)
+check("I4 die Ablehnung traegt eine nachvollziehbare Begruendung",
+      bool(_komfort) and "keine" in _komfort[0].begruendung
+      and _komfort[0].klasse != SAFE_IMPORT)
+
+# I5: kein bare-drop-Pfad mehr — fuer JEDEN ueberwachten, markenbekannten
+# Kandidaten liefert import_kandidaten() mindestens ein Ergebnis.
+for _label, _zeile in (
+    ("Komfort", kba_zeile(Mangelbezeichnung="Das Radio zeigt die falsche "
+                                            "Uhrzeit an.")),
+    ("Sicherheitsrelevant", kba_zeile()),
+    ("Anhaenger", kba_zeile(Mangelbezeichnung="Bruch der Anhaengerkupplung.")),
+    ("Verlust-Verbindung", _fiktiv_verlust),
+):
+    check(f"I5 kein stiller Drop ({_label})",
+          len(import_kandidaten([_zeile], [], [br()])) == 1)
+
+# I6: Reihenfolge-Unabhaengigkeit bei gemischten Klassen (sicherheitsrelevant
+# UND nicht-sicherheitsrelevant im selben Lauf).
+_gemischt = [kba_zeile(**{"KBA-Referenznummer": "9001"}),
+            kba_zeile(**{"KBA-Referenznummer": "9002"},
+                      Mangelbezeichnung="Das Radio zeigt die falsche Uhrzeit an."),
+            kba_zeile(**{"KBA-Referenznummer": "9003"},
+                      Mangelbezeichnung="Bruch der Anhaengerkupplung.")]
+_g1 = {k.referenz: k.klasse for k in import_kandidaten(_gemischt, [], [br()])}
+_g2 = {k.referenz: k.klasse for k in import_kandidaten(list(reversed(_gemischt)), [], [br()])}
+check("I6 gemischte Klassen sind reihenfolge-unabhaengig", _g1 == _g2)
+check("I6b alle drei Referenzen sind vertreten (keine verschwindet)",
+      set(_g1) == {"9001", "9002", "9003"})
+
+# I7/I8: die beiden REALEN, belegten Audi-Anhaengevorrichtungs-Rueckrufe
+# (KBA 8718/10703) als benannte Regressions-Fixtures — exakte Feldwerte aus
+# dem amtlichen KBA-Gesamtexport (abgerufen fuer den Root-Cause-Audit dieser
+# Serie), NICHT als Laufzeit-Bedingung irgendwo im Produktcode verwendet.
+# Minimaler Baureihenbestand, der die REAL VERIFIZIERTE Ambiguitaet reproduziert:
+# audi-a4-b9 ist nur ueber den Token "A4" erreichbar, der auch die offene
+# RS-4-Avant-B9-Generation trifft (Audi fuehrt RS4 amtlich haeufig schlicht
+# als "A4", siehe Abschnitt H fuer denselben Mechanismus bei RS3/A3).
+_audi_a4_familie = [
+    br(id="audi-a4-b9", marke="Audi", modell="A4", generation="B9",
+       bauzeitraum_von=2015, bauzeitraum_bis=2023),
+    br(id="audi-rs-4-avant-b9", marke="Audi", modell="RS 4 Avant",
+       generation="B9", bauzeitraum_von=2017, bauzeitraum_bis=None),
+]
+_kba_8718 = kba_zeile(
+    **{"KBA-Referenznummer": "8718", "Rückrufcode des Herstellers": "66K3"},
+    Marke="AUDI", Modell="A6, A7, A4, A5",
+    Mangelbezeichnung="Bruch des Sperrbolzens der Anhängevorrichtung kann "
+                      "zum Verlust der Fahrzeugverbindung führen.",
+    **{"Produktionszeitraum von": "2018", "Produktionszeitraum bis": "2018",
+       "Beschreibung der Maßnahme": "Prüfung, ob im Schwenkmechanismus ein "
+                                     "Sperrbolzen aus der betroffenen Charge "
+                                     "verbaut ist, falls ja, erfolgt der "
+                                     "Austausch des gesamten Schwenkmoduls",
+       "Mögliche Eingrenzung der betroffenen Modelle": "keine"})
+_kba_10703 = kba_zeile(
+    **{"KBA-Referenznummer": "10703", "Rückrufcode des Herstellers": "66M7"},
+    Marke="AUDI", Modell="A6, A7, A4, A5",
+    Mangelbezeichnung="Bruch des Sperrbolzens der Anhängevorrichtung kann "
+                      "zum Verlust der Fahrzeugverbindung führen.",
+    **{"Produktionszeitraum von": "2015", "Produktionszeitraum bis": "2018",
+       "Beschreibung der Maßnahme": "Überprüfung und ggf. Austausch der "
+                                     "Anhängevorrichtung",
+       "Mögliche Eingrenzung der betroffenen Modelle": "keine"})
+
+_r8718 = import_kandidaten([_kba_8718], [], _audi_a4_familie)
+check("I7 KBA 8718 verschwindet nicht mehr (mindestens ein Kandidat)",
+      len(_r8718) == 1)
+check("I7b KBA 8718 ist jetzt sicherheitsrelevant klassifiziert ('anhaenger' "
+      "ist keine NOT_SAFETY_RELEVANT-Ablehnung mehr)",
+      _r8718[0].klasse != NOT_SAFETY_RELEVANT)
+_a4_paar_8718 = dict((bid, kl) for bid, kl, _g in _r8718[0].paare)
+check("I7c das Paar (8718, audi-a4-b9) bleibt korrekt AMBIGUOUS_GENERATION — "
+      "echte, durch RS4-Avant B9 begruendete Mehrdeutigkeit, NICHT durch "
+      "M1 erzwungen canonical",
+      _a4_paar_8718.get("audi-a4-b9") == AMBIGUOUS_GENERATION)
+
+_r10703 = import_kandidaten([_kba_10703], [], _audi_a4_familie)
+check("I8 KBA 10703 verschwindet nicht mehr (mindestens ein Kandidat)",
+      len(_r10703) == 1)
+_a4_paar_10703 = dict((bid, kl) for bid, kl, _g in _r10703[0].paare)
+check("I8b das Paar (10703, audi-a4-b9) ist SAFE_IMPORT — fuer DIESES "
+      "breitere Produktionsfenster (2015-2018) deckt die offene "
+      "RS-4-Avant-B9-Generation nur 50 % ab (< 2/3-Schwelle) und faellt "
+      "damit nicht als Alternative ins Gewicht; audi-a4-b9 ist eindeutig",
+      _a4_paar_10703.get("audi-a4-b9") == SAFE_IMPORT)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
