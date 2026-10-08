@@ -10,6 +10,10 @@ Marke/Modell.
   C) Markenkonflikt wird erkannt und NICHT geschrieben
   D) Unmatched (Referenz nicht im Export) wird ausgewiesen, nicht geraten
   E) Bereits befuellte Zeilen werden nie ueberschrieben
+  F) Release-Gate-Fix: TRIVIALE amtliche Eingrenzung ("N/A") bleibt idempotent
+     (vorher schrieb der Plan dafuer `None`/NULL statt der leeren Zeichenkette
+     — dieselbe Zeile blieb nach jedem Lauf wieder "eligible", siehe A/B oben,
+     die beide nur den NICHT-trivialen Mild-Hybrid-Fall abdecken)
 
     python test_kba_scope_backfill.py
 """
@@ -106,6 +110,14 @@ _conn_setup.execute(
     "INSERT INTO rueckruf (baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
     "kba_referenz) VALUES ('testmarke-delta-d1', '2020-05', '2017-2020', "
     "'Dritter Mangeltext.', 'Dritte Abhilfe.', '60099')")
+# Zeile F: eligible, aber amtliche Eingrenzung ist TRIVIAL ("N/A") — der
+# Release-Gate-Fix-Fall. Vor dem Fix schrieb `plane_backfill()` dafuer
+# `kand.eingrenzung or None`, also NULL; die Zeile blieb damit nach JEDEM
+# Lauf wieder "eligible" statt einmal erledigt zu sein.
+_conn_setup.execute(
+    "INSERT INTO rueckruf (baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
+    "kba_referenz) VALUES ('testmarke-delta-d1', '2020-05', '2017-2020', "
+    "'Vierter Mangeltext.', 'Vierte Abhilfe.', '60003')")
 _conn_setup.commit()
 _conn_setup.close()
 _db_mod.invalidate_referenzdaten_cache()
@@ -114,6 +126,8 @@ _export_pfad = os.path.join(_tmp_dir, "export.csv")
 _schreibe_export(_export_pfad, [
     _kba_zeile(**{"KBA-Referenznummer": "60001"}),
     _kba_zeile(**{"KBA-Referenznummer": "60002", "Marke": "TESTMARKE"}),  # echte Marke, DB sagt "Anderemarke"
+    _kba_zeile(**{"KBA-Referenznummer": "60003",
+                 "Mögliche Eingrenzung der betroffenen Modelle": "N/A"}),
 ])
 
 from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_fuer_sync, get_conn
@@ -126,17 +140,20 @@ _plan = plane_backfill(_export_pfad, _recalls, _baureihen)
 
 # ══ A) Eligible Zeile wird korrekt geplant und geschrieben ══════════════════
 print("\n--- A) eligible Zeile ---")
-check("A1 genau 1 Zeile ist eligible (60001)",
-      len(_plan["updates"]) == 1 and _plan["updates"][0]["kba_referenz"] == "60001")
+check("A1 genau 2 Zeilen sind eligible (60001, 60003 -- s. F); 60002/60099 nicht",
+      len(_plan["updates"]) == 2
+      and {u["kba_referenz"] for u in _plan["updates"]} == {"60001", "60003"})
+_eintrag_60001 = next(u for u in _plan["updates"] if u["kba_referenz"] == "60001")
 check("A2 der geplante Eingrenzungstext ist der rohe amtliche Text",
-      "Mild-Hybrid" in _plan["updates"][0]["eingrenzung_amtlich"])
+      "Mild-Hybrid" in _eintrag_60001["eingrenzung_amtlich"])
 check("A3 das geplante amtliche Produktionsfenster ist ungeschnitten (2017-2020)",
-      _plan["updates"][0]["prod_von_amtlich"] == 2017
-      and _plan["updates"][0]["prod_bis_amtlich"] == 2020)
+      _eintrag_60001["prod_von_amtlich"] == 2017
+      and _eintrag_60001["prod_bis_amtlich"] == 2020)
 
 with get_conn() as _conn:
     _ergebnis_a = apply_backfill(_conn, _plan)
-check("A4 genau 1 Zeile tatsächlich aktualisiert", _ergebnis_a["aktualisiert"] == 1)
+check("A4 genau 2 Zeilen tatsächlich aktualisiert (60001, 60003)",
+      _ergebnis_a["aktualisiert"] == 2)
 
 _conn_check = sqlite3.connect(_db_pfad)
 _zeile_60001 = _conn_check.execute(
@@ -195,6 +212,24 @@ _zeile_60001_v2 = _conn_check.execute(
 check("E1 der bereits nachgetragene Text bleibt stehen, wird NICHT durch einen "
       "spaeteren, abweichenden Export ueberschrieben",
       "Mild-Hybrid" in _zeile_60001_v2[0] and "GEAENDERTER TEXT" not in _zeile_60001_v2[0])
+
+
+# ══ F) Triviale Eingrenzung bleibt idempotent (Release-Gate-Fix) ════════════
+print("\n--- F) triviale amtliche Eingrenzung ('N/A') bleibt idempotent ---")
+check("F1 60003 ist im ersten Plan eligible",
+      any(u["kba_referenz"] == "60003" for u in _plan["updates"]))
+_eintrag_60003 = next(u for u in _plan["updates"] if u["kba_referenz"] == "60003")
+check("F2 der geplante Wert fuer 60003 ist die leere Zeichenkette, NICHT None",
+      _eintrag_60003["eingrenzung_amtlich"] == "")
+# 60003 wurde bereits durch A4 oben geschrieben (derselbe erste Plan) — hier
+# nur noch die resultierende DB-Zeile und die Idempotenz des ZWEITEN Laufs pruefen.
+_zeile_60003 = _conn_check.execute(
+    "SELECT eingrenzung_amtlich FROM rueckruf WHERE kba_referenz='60003'").fetchone()
+check("F3 die DB-Zeile fuer 60003 ist jetzt '' (IS NOT NULL), nicht NULL",
+      _zeile_60003[0] == "" and _zeile_60003[0] is not None)
+_plan_f2 = plane_backfill(_export_pfad, get_alle_rueckrufe_fuer_sync(), _baureihen)
+check("F4 ein zweiter Lauf findet 60003 nicht mehr eligible (Idempotenz)",
+      all(u["kba_referenz"] != "60003" for u in _plan_f2["updates"]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

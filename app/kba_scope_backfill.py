@@ -121,9 +121,20 @@ def plane_backfill(export_pfad: str, recalls_voll: list[dict],
             continue
 
         kand = ImportKandidat(amtlich)
+        # Release-Gate-Fix: NIE `kand.eingrenzung or None` hier — anders als bei
+        # einem Neuimport (wo "schon im Bestand" ueber die (Referenz, Baureihe)-
+        # Paarung entschieden wird, nicht ueber diese Spalte) ist fuer DIESEN
+        # Nachtrag die Spalte selbst der Fortschrittsmarker: "bereits_befuellt"
+        # oben UND die serverseitige Guard-Klausel in `apply_backfill()` lesen
+        # `eingrenzung_amtlich IS NULL` als "noch nie nachgetragen". Ein
+        # trivialer amtlicher Text ("N/A"/leer) wuerde ueber `or None` erneut
+        # NULL schreiben -- dieselbe Zeile bliebe nach jedem Lauf wieder
+        # "eligible" (nicht idempotent). Die leere Zeichenkette markiert
+        # "geprueft, amtlich keine Eingrenzung" und verhaelt sich zur Laufzeit
+        # (`recall_filter.rueckruf_scope()`: `str(... or "")`) identisch zu NULL.
         updates.append({
             "id": r["id"], "kba_referenz": ref_roh,
-            "eingrenzung_amtlich": kand.eingrenzung or None,
+            "eingrenzung_amtlich": kand.eingrenzung,
             "prod_von_amtlich": kand.prod_von,
             "prod_bis_amtlich": kand.prod_bis,
         })
