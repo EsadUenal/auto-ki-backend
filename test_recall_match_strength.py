@@ -248,16 +248,22 @@ _hints_f2 = ambiguitaet_hinweise("audi-rs-4-avant-b9", _id_rs4_voellig_unklar,
 check("F3 ... und auch DANN verschwindet der Hinweis nicht einfach",
       any(h["kba_referenz"] == "9831" for h in _hints_f2))
 
-# G) Bedingung passt explizit -> Fallback bleibt IMMER "unclear", nie staerker
+# G) Bedingung passt explizit -> Fallback bleibt IMMER "unclear", nie staerker.
+# Release-Gate-Fund (Audi-9831-Shadow-Proof): "2.0 TFSI UND Mild-Hybrid-System"
+# ist eine KONJUNKTION — displacement MUSS hier ebenfalls bekannt sein, sonst
+# bleibt "Hubraum" offen und der Gesamt-Scope korrekt bei UNKNOWN (siehe
+# Kombinationsregel in rueckruf_scope: JEDE offene Dimension degradiert das
+# Ergebnis, kein einzelner Treffer darf das mehr uebertoenen).
 _id_rs4_mhev = VehicleIdentity(make="Audi", model="RS 4 Avant", fuel="Benzin",
-                               year=2018, powertrain="MHEV")
+                               displacement="2.0", year=2018, powertrain="MHEV")
 _scope_g, _ = rueckruf_scope(
     {"mangel": _review_9831["mangel"], "abhilfe": None,
      "betroffene_baujahre": "2017-2020",
      "eingrenzung_amtlich": _review_9831["eingrenzung_amtlich"]},
     _id_rs4_mhev)
-check("G1 Vorbedingung: bei explizit passendem MHEV meldet der Scope-Motor "
-      "VARIANT_POSSIBLE (staerker als UNKNOWN)", _scope_g == "VARIANT_POSSIBLE")
+check("G1 Vorbedingung: sind WIRKLICH ALLE Dimensionen bekannt und passend "
+      "(Hubraum+Kraftstoff+Antriebsart), meldet der Scope-Motor VARIANT_POSSIBLE",
+      _scope_g == "VARIANT_POSSIBLE")
 _hints_g = ambiguitaet_hinweise("audi-rs-4-avant-b9", _id_rs4_mhev, 2018, _reviews, set())
 check("G2 der Fallback-Hinweis selbst bleibt trotzdem sichtbar (Scope nicht "
       "NOT_APPLICABLE)", any(h["kba_referenz"] == "9831" for h in _hints_g))

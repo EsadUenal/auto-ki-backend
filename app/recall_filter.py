@@ -764,7 +764,30 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
     elif zustand == P_PRESENT and abh is not None:
         passt_explizit.append(abh.klasse)
 
-    if offen and not passt_explizit:
+    # Kombinationsregel ueber ALLE geprueften Bedingungen (Release-Gate-Fund,
+    # Audi-9831-Shadow-Proof: "2.0 TFSI UND Mild-Hybrid-System" ist eine
+    # KONJUNKTION — beide Teile muessen bekannt UND passend sein, bevor diese
+    # Funktion mehr behauptet als "ungeprueft"). Ein WIDERSPRUCH ist bereits
+    # oben je Dimension ein SOFORTIGER `return RECALL_NOT_APPLICABLE` (MATCH +
+    # CONTRADICTION deckt sich also strukturell ab, unabhaengig von dieser
+    # Stelle). Hier bleiben nur zwei Faelle zu trennen: mindestens EINE
+    # Dimension ist noch offen (`offen`), oder keine ist es.
+    #
+    # Vorher genuegte IRGENDEIN `passt_explizit`-Treffer, um VARIANT_POSSIBLE
+    # zurueckzugeben — auch wenn eine ANDERE, gleichrangige Bedingung
+    # derselben amtlichen Eingrenzung noch offen war (Kraftstoff passt,
+    # Antriebsart/MHEV unbekannt -> faelschlich VARIANT_POSSIBLE statt
+    # UNKNOWN). `app.empfehlungs_floor.RUECKRUF_WERKSTATT_APPLICABILITY` und
+    # mehrere weitere Konsumenten (kaufaktionen.py, dealer.py, key_findings.py)
+    # behandeln VARIANT_POSSIBLE/"variant_match" als MATERIELL staerker als
+    # UNKNOWN/"unclear" — das war also kein kosmetischer Unterschied.
+    #
+    # Generische Regel (gilt fuer JEDE Anzahl/Art von Dimensionen, nicht nur
+    # Kraftstoff+Antriebsart):
+    #   mind. eine Dimension offen                -> UNKNOWN (nie staerker)
+    #   keine offen, mind. eine passt_explizit     -> VARIANT_POSSIBLE
+    #   keine offen, keine passt_explizit          -> SERIES_RELEVANT
+    if offen:
         return RECALL_UNKNOWN, "Variantenbedingung nicht prüfbar: " + ", ".join(offen)
     if passt_explizit:
         return RECALL_VARIANT_POSSIBLE, "Variantenbedingung passt: " + ", ".join(passt_explizit)
