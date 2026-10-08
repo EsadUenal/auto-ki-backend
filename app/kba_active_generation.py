@@ -104,7 +104,7 @@ from app.kba_import_batch_a import (
 from app.kba_import_kandidaten import (
     MEDIAN_GENERATIONSDAUER, SAFE_IMPORT, _modelltokens, _ueberdeckung,
 )
-from app.kba_reconciliation import _ueberlappt, normalisiere_referenz
+from app.kba_reconciliation import _ueberlappt, match_tier, normalisiere_referenz
 from app.recall_filter import kba_referenz_format_plausibel
 
 # Dieselbe "keine Eingrenzung"-Menge wie in app.kba_import_batch_a; dort nicht
@@ -184,11 +184,20 @@ def _zweite_generation_je_ziel(kand, ziel_id: str, idx: dict):
                     and kand.prod_von > von + MEDIAN_GENERATIONSDAUER):
                 continue
             u = _ueberdeckung(kand.prod_von, kand.prod_bis, von, bis)
-            (gewinner if b["id"] == ziel_id else alternativen).append((u, b["id"]))
+            stufe = match_tier(b["marke"], b["modell"], tok)
+            (gewinner if b["id"] == ziel_id else alternativen).append((u, b["id"], stufe))
         if not gewinner or not alternativen:
             continue
-        uw, zid = max(gewinner)
-        ua, aid = max(alternativen)
+        # Match-Staerke (Ebene A) -- siehe dieselbe Begruendung in
+        # `app.kba_import_batch_a.zweite_generation()`: eine Alternative
+        # blockiert nur, wenn sie den Token mindestens so stark erreicht
+        # wie das Ziel selbst.
+        ziel_stufe = min(s for _u, _bid, s in gewinner)
+        alternativen_gefiltert = [(u, bid) for u, bid, s in alternativen if s <= ziel_stufe]
+        if not alternativen_gefiltert:
+            continue
+        uw, zid = max((u, bid) for u, bid, _s in gewinner)
+        ua, aid = max(alternativen_gefiltert)
         if ua >= uw * ALTERNATIV_ANTEIL:
             if schlimmster is None or ua > schlimmster[3]:
                 schlimmster = (zid, uw, aid, ua)

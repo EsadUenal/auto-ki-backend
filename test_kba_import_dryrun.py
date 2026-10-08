@@ -278,14 +278,24 @@ print("\n--- H) Mehrfach erreichbare Baureihen ---")
 # Realer Fall aus dem KBA-Gesamtexport (u.a. KBA 13099, Modell "A3, S3, Q2, RS3"):
 # `MODELL_MAP[("AUDI", "RS 3 SPORTBACK")] = {"RS 3", "RS3", "A3"}` indiziert die
 # RS3-Baureihe zusaetzlich unter dem breiten Alias "A3". Der Token "A3" trifft
-# dadurch ZWEI Baureihen (mehrdeutig), der Token "RS3" trifft NUR die RS3
-# (eindeutig) — dieselbe Baureihe ist also ueber zwei Token erreichbar, von
-# denen nur einer mehrdeutig ist. Vor dem Fix entschied die zufaellige
-# Set-Iterationsreihenfolge von `_modelltokens()`, WELCHER der beiden Token
-# zuerst verarbeitet wurde, und damit ob das Paar (KBA-Referenz, RS3) als
-# SAFE_IMPORT oder als AMBIGUOUS_GENERATION galt — bei GLEICHEN Eingabedaten,
-# je nach Prozessstart (PYTHONHASHSEED). Gemessen: 11 amtliche Datensaetze im
+# dadurch ZWEI Baureihen, der Token "RS3" trifft NUR die RS3 — dieselbe
+# Baureihe ist also ueber zwei Token erreichbar, von denen nur einer mehrdeutig
+# ist. Vor dem KBA-Paar-Closing-Fix entschied die zufaellige Set-Iterations-
+# reihenfolge von `_modelltokens()`, WELCHER der beiden Token zuerst
+# verarbeitet wurde, und damit ob das Paar (KBA-Referenz, RS3) als SAFE_IMPORT
+# oder als AMBIGUOUS_GENERATION galt — bei GLEICHEN Eingabedaten, je nach
+# Prozessstart (PYTHONHASHSEED). Gemessen: 11 amtliche Datensaetze im
 # KBA-Gesamtexport vom 2026-08-27 sind auf diese Weise betroffen.
+#
+# Match-Staerke (Ebene A, Audi-A4-B9-Root-Cause-Fund, s. app.kba_reconciliation.
+# match_tier): derselbe Mechanismus wie bei A4/RS4-Avant — "A3" ist der EIGENE,
+# kanonische Name von `audi-a3-8v` (Tier 1, direkter Nameplate-Treffer), aber
+# fuer `audi-rs-3-sportback-8v` NUR ueber die `MODELL_MAP`-Alias-Zuordnung
+# erreichbar (Tier 2). `audi-a3-8v` gewinnt den Token "A3" deshalb jetzt
+# eindeutig — NICHT durch einen Sonderfall, sondern durch dieselbe generische
+# Regel, die auch KBA 9831/10206 fuer `audi-a4-b9` aufloest (s. Abschnitt I7/I7c
+# unten). `audi-rs-3-sportback-8v` bleibt davon unberuehrt: es gewinnt "RS3"
+# weiterhin als einziger Insasse (unveraendert, H2).
 _a3 = br(id="audi-a3-8v", marke="Audi", modell="A3", generation="8V",
          bauzeitraum_von=2012, bauzeitraum_bis=2020)
 _rs3 = br(id="audi-rs-3-sportback-8v", marke="Audi", modell="RS 3 Sportback",
@@ -301,8 +311,9 @@ def _paare_von(kba_rows, baureihen):
 
 
 _paare_h = _paare_von([_rs3_kba], [_a3, _rs3])
-check("H1 die A3-Baureihe bleibt mehrdeutig (nur ueber 'A3' erreichbar)",
-      _paare_h.get("audi-a3-8v") == AMBIGUOUS_GENERATION)
+check("H1 die A3-Baureihe gewinnt jetzt den Token 'A3' eindeutig (Ebene A: "
+      "direkter Nameplate-Treffer schlaegt RS3s Alias-Treffer)",
+      _paare_h.get("audi-a3-8v") == SAFE_IMPORT)
 check("H2 die RS3-Baureihe ist SAFE_IMPORT (zusaetzlich ueber 'RS3' eindeutig "
       "erreichbar)",
       _paare_h.get("audi-rs-3-sportback-8v") == SAFE_IMPORT)
@@ -397,10 +408,24 @@ check("I6b alle drei Referenzen sind vertreten (keine verschwindet)",
 # (KBA 8718/10703) als benannte Regressions-Fixtures — exakte Feldwerte aus
 # dem amtlichen KBA-Gesamtexport (abgerufen fuer den Root-Cause-Audit dieser
 # Serie), NICHT als Laufzeit-Bedingung irgendwo im Produktcode verwendet.
-# Minimaler Baureihenbestand, der die REAL VERIFIZIERTE Ambiguitaet reproduziert:
-# audi-a4-b9 ist nur ueber den Token "A4" erreichbar, der auch die offene
-# RS-4-Avant-B9-Generation trifft (Audi fuehrt RS4 amtlich haeufig schlicht
-# als "A4", siehe Abschnitt H fuer denselben Mechanismus bei RS3/A3).
+# Minimaler Baureihenbestand: audi-a4-b9 ist nur ueber den Token "A4"
+# erreichbar, der auch die offene RS-4-Avant-B9-Generation trifft (Audi
+# fuehrt RS4 amtlich haeufig schlicht als "A4", siehe Abschnitt H fuer
+# denselben Mechanismus bei RS3/A3).
+#
+# Match-Staerke (Ebene A, Audi-A4-B9-Root-Cause-Fund): "A4" ist der EIGENE
+# Name von audi-a4-b9 (Tier 1), fuer audi-rs-4-avant-b9 dagegen nur per
+# MODELL_MAP-Alias erreichbar (Tier 2) — fuer BEIDE Referenzen (8718 UND
+# 9831/10206, die eigentlichen Proof-Faelle dieses Fixes) identisch. Ob
+# audi-rs-4-avant-b9 dabei ueberhaupt als Mitbewerber antritt, haengt NICHT
+# von der Match-Staerke ab, sondern vom VORGESCHALTETEN Ueberdeckungs-Filter
+# (MIN_UEBERDECKUNG, 2/3): 8718s schmales Fenster (2018-2018) wird von der
+# offenen RS4-Avant-Generation zu 100 % abgedeckt -> Mitbewerb, Ebene A
+# entscheidet -> audi-a4-b9 gewinnt. 10703s breiteres Fenster (2015-2018)
+# wird dagegen nur zu 50 % abgedeckt (< 2/3-Schwelle) -> RS4-Avant tritt gar
+# nicht erst an, audi-a4-b9 ist von vornherein der einzige Insasse (I8b,
+# unveraendert). Zwei unabhaengige Gates, zufaellig unterschiedlicher
+# Ausgang je nach Fensterbreite — kein Sonderfall fuer 8718 oder 10703.
 _audi_a4_familie = [
     br(id="audi-a4-b9", marke="Audi", modell="A4", generation="B9",
        bauzeitraum_von=2015, bauzeitraum_bis=2023),
@@ -435,10 +460,15 @@ check("I7b KBA 8718 ist jetzt sicherheitsrelevant klassifiziert ('anhaenger' "
       "ist keine NOT_SAFETY_RELEVANT-Ablehnung mehr)",
       _r8718[0].klasse != NOT_SAFETY_RELEVANT)
 _a4_paar_8718 = dict((bid, kl) for bid, kl, _g in _r8718[0].paare)
-check("I7c das Paar (8718, audi-a4-b9) bleibt korrekt AMBIGUOUS_GENERATION — "
-      "echte, durch RS4-Avant B9 begruendete Mehrdeutigkeit, NICHT durch "
-      "M1 erzwungen canonical",
-      _a4_paar_8718.get("audi-a4-b9") == AMBIGUOUS_GENERATION)
+check("I7c das Paar (8718, audi-a4-b9) gewinnt jetzt den Token 'A4' eindeutig "
+      "(Ebene A: direkter Nameplate-Treffer schlaegt RS4-Avants Alias-Treffer "
+      "— dieselbe Regel, die auch 9831/10206 aufloest, kein Sonderfall fuer "
+      "8718)",
+      _a4_paar_8718.get("audi-a4-b9") == SAFE_IMPORT)
+check("I7d das Paar (8718, audi-rs-4-avant-b9) bleibt korrekt AMBIGUOUS_GENERATION "
+      "— die schwaechere Alternative wird NICHT ausgeschlossen, nur nicht "
+      "kanonisch",
+      _a4_paar_8718.get("audi-rs-4-avant-b9") == AMBIGUOUS_GENERATION)
 
 _r10703 = import_kandidaten([_kba_10703], [], _audi_a4_familie)
 check("I8 KBA 10703 verschwindet nicht mehr (mindestens ein Kandidat)",

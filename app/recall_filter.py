@@ -682,13 +682,29 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
         else:
             offen.append("Motorcode")
 
-    # Kraftstoff (nur ausdrückliche Kraftstoffwörter)
+    # Kraftstoff (ausdrückliche Kraftstoffwörter ODER Motor-Verkaufsbezeichnung/
+    # Motorcode-Kürzel wie "TDI"/"TFSI"). Root-Cause-Fund (Audi 9831 vs. 10206,
+    # "2.0 TFSI" vs. "2.0 TDI und Mild-Hybrid-System"): die amtliche Eingrenzung
+    # nennt fast nie das ausgeschriebene Wort "Diesel"/"Benzin", sondern die
+    # Kürzel — ohne sie zu erkennen, widersprach ein TDI-spezifischer Rückruf
+    # nie einem Benzin-Fahrzeug. `fuel_aus_freitext` (app/kraftstoff_powertrain.py)
+    # leistet genau diese Ableitung bereits an anderer Stelle für dieselbe
+    # Aufgabe (TDI/CDI/... -> Diesel, TSI/TFSI/... -> Benzin) — hier
+    # wiederverwendet statt neu erfunden. Nur als Ergänzung, wenn die
+    # ausgeschriebenen Wörter nichts liefern; "elektro" bleibt bewusst
+    # außen vor (eigene, bereits bestehende Hochvolt-/Antriebsart-Prüfung
+    # unten, kein zweiter, widersprüchlicher Pfad dafür).
     fuel_scope = set(r.get("scope_kraftstoff") or [])
     if not fuel_scope:
         if _RE_SCOPE_DIESEL.search(text) and not _RE_SCOPE_BENZIN.search(text):
             fuel_scope = {"diesel"}
         elif _RE_SCOPE_BENZIN.search(text) and not _RE_SCOPE_DIESEL.search(text):
             fuel_scope = {"benzin"}
+        else:
+            from app.kraftstoff_powertrain import FUEL_BENZIN, FUEL_DIESEL, fuel_aus_freitext
+            abgeleitet = fuel_aus_freitext(text)
+            if abgeleitet in (FUEL_DIESEL, FUEL_BENZIN):
+                fuel_scope = {abgeleitet}
     if fuel_scope:
         fuel = _norm_kraftstoff(str(_bekannt(identity, "fuel") or ""))
         if fuel is None:

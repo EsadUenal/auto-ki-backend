@@ -316,12 +316,19 @@ CREATE INDEX IF NOT EXISTS idx_einwilligung_user ON einwilligung(user_id);
 -- Ein amtlicher Rückruf ist eine reale Sicherheitsaussage; er wird deshalb
 -- NIE verworfen, nur weil VIRA das Fahrzeugmapping nicht sicher auflösen kann
 -- — er landet hier zur menschlichen Prüfung statt in der fahrzeugsichtbaren
--- `rueckruf`-Tabelle. Diese Tabelle wird von KEINEM KaufCheck-/VerkaufsCheck-
--- Pfad gelesen (siehe app/kba_recall_refresh.py) — rein administrativ.
--- `kba_referenz` als alleiniger Primärschlüssel (statt Paar mit Baureihe):
--- ein amtlicher Rückruf kann mehrere ambige Zielbaureihen haben, die werden
--- hier als EINE Zeile mit `moegliche_baureihen` (JSON-Liste) geführt, nie
--- künstlich auf eine davon reduziert.
+-- `rueckruf`-Tabelle. `kba_referenz` als alleiniger Primärschlüssel (statt
+-- Paar mit Baureihe): ein amtlicher Rückruf kann mehrere ambige Zielbaureihen
+-- haben, die werden hier als EINE Zeile mit `moegliche_baureihen`
+-- (JSON-Liste) geführt, nie künstlich auf eine davon reduziert.
+--
+-- Match-Staerke + sicherer Ambiguitaets-Fallback (Audi-A4-B9-Root-Cause-
+-- Fund): `fallback_baureihen` (JSON-Teilmenge von `moegliche_baureihen`) und
+-- `eingrenzung_amtlich` machen eine schmale Auswahl dieser Zeilen (nur
+-- klasse=AMBIGUOUS_GENERATION mit echter Modell-/Generationsaufloesung, s.
+-- app/recall_ambiguity_fallback.py) seit RC-X doch ueber den KaufCheck-Pfad
+-- sichtbar — strukturiert, dieselbe Scope-/Contradiction-Pruefung wie jede
+-- kanonische Zeile, nie als "bestaetigt betroffen". Alles andere bleibt rein
+-- administrativ (siehe app/kba_recall_refresh.py).
 CREATE TABLE IF NOT EXISTS kba_rueckruf_review (
     kba_referenz            TEXT PRIMARY KEY,
     klasse                  TEXT NOT NULL,
@@ -333,7 +340,9 @@ CREATE TABLE IF NOT EXISTS kba_rueckruf_review (
     veroeffentlichungsdatum TEXT,
     moegliche_baureihen     TEXT,       -- JSON-Liste von baureihe-IDs, ggf. leer
     zuerst_gesehen_am       TEXT NOT NULL,
-    zuletzt_gesehen_am      TEXT NOT NULL
+    zuletzt_gesehen_am      TEXT NOT NULL,
+    eingrenzung_amtlich     TEXT,       -- additiv, s. _migrate_schema
+    fallback_baureihen      TEXT        -- additiv, JSON-Teilmenge von moegliche_baureihen
 );
 """
 
@@ -548,6 +557,34 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE rueckruf ADD COLUMN prod_von_amtlich INTEGER")
         if "prod_bis_amtlich" not in rr_existing:
             conn.execute("ALTER TABLE rueckruf ADD COLUMN prod_bis_amtlich INTEGER")
+
+    # Match-Staerke + sicherer Ambiguitaets-Fallback (Audi-A4-B9-Root-Cause-
+    # Fund): zwei additive, NULLable Spalten auf `kba_rueckruf_review`.
+    #   eingrenzung_amtlich — derselbe Rohtext wie auf `rueckruf` (oben), hier
+    #     zusaetzlich fuer NICHT kanonisch gewordene, aber generisch
+    #     fallback-faehige Kandidaten (siehe app/recall_ambiguity_fallback.py)
+    #     — ohne ihn koennte der Fallback keine Kraftstoff-/Antriebsart-
+    #     Widerspruchspruefung gegen `app.recall_filter.rueckruf_scope()`
+    #     durchfuehren und muesste JEDEN Kandidaten blind anzeigen.
+    #   fallback_baureihen — JSON-Teilmenge von `moegliche_baureihen`: NUR
+    #     die Baureihen, deren Unsicherheit aus echter Modell-/Generations-
+    #     aufloesung stammt (die Haupt-Ambiguitaetsregel in
+    #     `kba_import_kandidaten.klassifiziere_kandidat`), NICHT aus einer
+    #     reinen Randueberlappung oder einer ueberdehnten offenen Generation
+    #     (andere Unsicherheitsarten, fuer die der sichere Fallback laut
+    #     Auftrag NICHT gedacht ist). Wird beim Review-Schreiben einmalig aus
+    #     `kand.paare` abgeleitet (siehe app/kba_recall_refresh.py), nicht
+    #     spaeter aus Freitext geraten.
+    rr_review_existiert = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kba_rueckruf_review'"
+    ).fetchone()
+    if rr_review_existiert:
+        rrr_existing = {r[1] for r in conn.execute(
+            "PRAGMA table_info(kba_rueckruf_review)").fetchall()}
+        if "eingrenzung_amtlich" not in rrr_existing:
+            conn.execute("ALTER TABLE kba_rueckruf_review ADD COLUMN eingrenzung_amtlich TEXT")
+        if "fallback_baureihen" not in rrr_existing:
+            conn.execute("ALTER TABLE kba_rueckruf_review ADD COLUMN fallback_baureihen TEXT")
 
     _migriere_chassis_codes(conn)
     _migriere_verification(conn)
@@ -956,6 +993,23 @@ def get_rueckruf_referenzen_kurz() -> list[dict]:
         "rueckruf_referenzen",
         "SELECT r.kba_referenz, b.marke FROM rueckruf r JOIN baureihe b ON b.id = r.baureihe_id "
         "WHERE r.kba_referenz IS NOT NULL AND TRIM(r.kba_referenz) <> ''",
+    )
+
+
+def get_alle_review_fallback_kurz() -> list[dict]:
+    """Alle `kba_rueckruf_review`-Zeilen mit einer NICHT-leeren
+    `fallback_baureihen`-Liste — gecacht (siehe oben, gleiches Muster).
+
+    Match-Staerke + sicherer Ambiguitaets-Fallback (Audi-A4-B9-Root-Cause-
+    Fund): die GRUNDLAGE fuer `app.recall_ambiguity_fallback`. Bewusst eine
+    eigene, schlanke Abfrage statt der vollen Review-Tabelle (die auch
+    tausende rein-administrative Zeilen ohne Fallback-Eignung enthaelt) —
+    dieselbe Begruendung wie bei `get_rueckruf_referenzen_kurz` oben."""
+    return _cached_alle(
+        "review_fallback",
+        "SELECT kba_referenz, klasse, marke, modell, mangel, produktionszeitraum, "
+        "eingrenzung_amtlich, fallback_baureihen FROM kba_rueckruf_review "
+        "WHERE fallback_baureihen IS NOT NULL AND fallback_baureihen <> '[]'",
     )
 
 

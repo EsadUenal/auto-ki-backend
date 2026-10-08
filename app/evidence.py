@@ -421,6 +421,53 @@ def build_insights(
             einfluss=recall_handlung(recall_status(applicability)),
         ))
 
+    # ── 2b) Sicherer Ambiguitaets-Fallback (Ebene B, Audi-A4-B9-Root-Cause-
+    # Fund) ──────────────────────────────────────────────────────────────────
+    # Nur KaufCheck (identity erforderlich — dieselbe Gating-Bedingung wie
+    # `_rueckruf_applicability` oben) und nur, wenn diese Baureihe ueberhaupt
+    # in mindestens einer `fallback_baureihen`-Liste steht (billige Vorab-
+    # pruefung, bevor irgendetwas geladen wird). Siehe
+    # app/recall_ambiguity_fallback.py fuer die vollstaendige Begruendung:
+    # NIEMALS kanonisch, NIEMALS staerker als "unclear" (= dieselbe,
+    # produktive FIN-Pruef-Stufe wie jeder unsichere kanonische Rueckruf),
+    # NIE wenn bereits ein kanonischer Treffer fuer dieselbe Referenz an
+    # dieser Baureihe vorliegt (Dedupe-Vorrang kanonisch > Fallback).
+    if check_typ == "kauf" and identity is not None and baureihe and baureihe.get("id"):
+        from app.database import get_alle_review_fallback_kurz
+        from app.kba_reconciliation import normalisiere_referenz
+        from app.recall_ambiguity_fallback import ambiguitaet_hinweise
+
+        bereits_kanonisch = {normalisiere_referenz(r.get("kba_referenz"))
+                             for r in (baureihe.get("rueckrufe") or [])
+                             if (r.get("kba_referenz") or "").strip()}
+        for h in ambiguitaet_hinweise(baureihe["id"], identity, baujahr,
+                                      get_alle_review_fallback_kurz(), bereits_kanonisch):
+            kurz = rueckruf_kurztitel(h.get("mangel"))
+            beschr = (h.get("mangel") or "").strip()
+            beschr = (f"{beschr}{'' if beschr.endswith(('.', '!', '?')) else '.'} "
+                     f"Die genaue Baureihen-/Generationszuordnung dieses amtlichen "
+                     f"Rückrufs ist mit den verfügbaren Daten nicht eindeutig.")
+            quellen = [EvidenceQuelle(typ="rueckruf_kba", ref=h.get("kba_anzeige"),
+                                      titel=("KBA-Rückrufdatenbank (Baureihenzuordnung "
+                                             "unsicher)" if h.get("kba_anzeige") else
+                                             "Rückrufhinweis (Baureihenzuordnung unsicher)"))]
+            insights.append(Insight(
+                id=_id("rueckruf"),
+                kategorie="rueckruf",
+                risk_type="recall",
+                kurztitel=kurz,
+                titel=f"{kurz} (möglicherweise relevanter Rückruf, Zuordnung unsicher)",
+                beschreibung=beschr,
+                quellen_typen=_typen(quellen),
+                quellen=quellen,
+                confidence="niedrig",
+                applicability="unclear",
+                recall_status=recall_status("unclear"),
+                recall_state=RECALL_STATE_AUS_APPLICABILITY.get("unclear"),
+                trust="unverified_db",
+                einfluss=recall_handlung(recall_status("unclear")),
+            ))
+
     # ── 3) Motorspezifische Probleme (nur bei ERKANNTEM Motor) ─────────────────
     if motor_match:
         for s in motor_match.get("schwachstellen_motor") or []:

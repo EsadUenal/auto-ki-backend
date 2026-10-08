@@ -101,7 +101,7 @@ from app.kba_import_kandidaten import (
 )
 from app.kba_reconciliation import (
     _modelltokens, _ueberlappt, _vira_modellkandidaten, kba_marke,
-    normalisiere_referenz,
+    match_tier, normalisiere_referenz,
 )
 
 # ── Amtliche Quelle und Lizenz ───────────────────────────────────────────────
@@ -211,11 +211,26 @@ def zweite_generation(kand, idx: dict):
                     and kand.prod_von > von + MEDIAN_GENERATIONSDAUER):
                 continue
             u = _ueberdeckung(kand.prod_von, kand.prod_bis, von, bis)
-            (gewinner if b["id"] in ziel else alternativen).append((u, b["id"]))
+            stufe = match_tier(b["marke"], b["modell"], tok)
+            (gewinner if b["id"] in ziel else alternativen).append((u, b["id"], stufe))
         if not gewinner or not alternativen:
             continue
-        uw, zid = max(gewinner)
-        ua, aid = max(alternativen)
+        # Match-Staerke (Ebene A, Audi-A4-B9-Root-Cause-Fund): eine
+        # "Alternative" blockiert das Ziel nur, wenn sie denselben Token
+        # MINDESTENS so stark erreicht wie das Ziel selbst. Eine Baureihe,
+        # die den Token NUR ueber eine schwaechere `MODELL_MAP`-Alias-
+        # Zuordnung erreicht (z.B. eine Performance-Variante wie "RS 4
+        # Avant", die das KBA manchmal unter dem Namen des Basismodells
+        # "A4" fuehrt), zaehlt nicht mehr als ebenso plausible zweite
+        # Generation fuer den direkten Nameplate-Treffer. Bei GLEICHER
+        # Staerke (der Normalfall) aendert sich nichts: beide bleiben
+        # gegenseitig blockierende Alternativen wie bisher.
+        ziel_stufe = min(s for _u, _bid, s in gewinner)
+        alternativen_gefiltert = [(u, bid) for u, bid, s in alternativen if s <= ziel_stufe]
+        if not alternativen_gefiltert:
+            continue
+        uw, zid = max((u, bid) for u, bid, _s in gewinner)
+        ua, aid = max(alternativen_gefiltert)
         if ua >= uw * ALTERNATIV_ANTEIL:
             if schlimmster is None or ua > schlimmster[3]:
                 schlimmster = (zid, uw, aid, ua)

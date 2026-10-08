@@ -262,6 +262,23 @@ def kba_marke(marke: str) -> str:
     return MARKE_MAP.get(m, m)
 
 
+def _eigene_modelltokens(marke: str, modell: str) -> set[str]:
+    """Modelltokens aus dem EIGENEN, kanonischen VIRA-Modellnamen dieser
+    Baureihe — OHNE die `MODELL_MAP`-Alias-Erweiterung.
+
+    Match-Staerke (Ebene A, generische Ambiguitaetsaufloesung): die
+    Grundlage fuer Tier 1 (direkter Nameplate-Treffer) in `match_tier()`
+    unten. Bewusst dieselbe Normalisierung wie `_vira_modellkandidaten`,
+    nur ohne dessen Alias-Zweig — kein neues Feld, keine neue Information,
+    nur der bereits vorhandene "eigene Name"-Teil separat benennbar."""
+    vm = _falte_modell(modell).upper()
+    kand = {vm}
+    ohne_er = re.sub(r"ER$", "", vm)        # BMW "3ER" -> "3"
+    if ohne_er != vm and ohne_er:
+        kand.add(ohne_er)
+    return kand
+
+
 def _vira_modellkandidaten(marke: str, modell: str) -> set[str]:
     """Mit welchen KBA-Modelltokens darf diese VIRA-Baureihe matchen?"""
     km = kba_marke(marke)
@@ -269,11 +286,38 @@ def _vira_modellkandidaten(marke: str, modell: str) -> set[str]:
     explizit = MODELL_MAP.get((km, vm))
     if explizit:
         return set(explizit)
-    kand = {vm}
-    ohne_er = re.sub(r"ER$", "", vm)        # BMW "3ER" -> "3"
-    if ohne_er != vm and ohne_er:
-        kand.add(ohne_er)
-    return kand
+    return _eigene_modelltokens(marke, modell)
+
+
+# Match-Staerke eines (Baureihe, amtlicher-Token)-Paares (Ebene A).
+#
+# Tier 1 (staerker): der Token IST der eigene, kanonische Modellname dieser
+# Baureihe (`_eigene_modelltokens`) — ein direkter Nameplate-Treffer.
+# Tier 2 (schwaecher): die Baureihe erreicht den Token NUR ueber eine
+# explizite `MODELL_MAP`-Alias-Zuordnung (z.B. eine Performance-Variante,
+# die das KBA manchmal unter dem Namen des Basismodells fuehrt — "RS 4
+# AVANT" ueber den Token "A4").
+#
+# Rein strukturell aus den bereits vorhandenen Daten abgeleitet (dem
+# Unterschied zwischen `_eigene_modelltokens` und `_vira_modellkandidaten`)
+# — keine Marken-, Modell- oder Referenz-Fallunterscheidung, kein neues
+# Feld. Zwei Baureihen auf DEMSELBEN Tier bleiben einander ebenbuertig
+# (siehe `kba_import_kandidaten.klassifiziere_kandidat`): diese Funktion
+# entscheidet nur, OB ein Treffer direkt oder nur per Alias zustande kommt,
+# nicht, WELCHE von zwei gleich starken Baureihen gemeint ist.
+MATCH_TIER_NAMEPLATE = 1
+MATCH_TIER_ALIAS = 2
+
+
+def match_tier(marke: str, modell: str, token: str) -> int:
+    """Wie stark erreicht diese Baureihe den amtlichen Modelltoken `token`?
+
+    1 = eigener kanonischer Modellname, 2 = nur ueber einen `MODELL_MAP`-
+    Alias erreichbar. Der Aufrufer entscheidet, ob/wie er das fuer die
+    Ambiguitaetsaufloesung nutzt — diese Funktion trifft selbst keine
+    Admissions-Entscheidung."""
+    return (MATCH_TIER_NAMEPLATE if token in _eigene_modelltokens(marke, modell)
+            else MATCH_TIER_ALIAS)
 
 
 _JAHR = re.compile(r"\b(?:19|20)\d{2}\b")

@@ -52,7 +52,7 @@ import re
 from app.kba_reconciliation import (
     STARKE_GRUPPEN, _kba_jahr, _modelltokens, _ueberlappt,
     _vira_modellkandidaten, bauteilgruppen, distinktive_tokens, kba_marke,
-    normalisiere_referenz,
+    match_tier, normalisiere_referenz,
 )
 
 SAFE_IMPORT = "SAFE_IMPORT"
@@ -79,6 +79,15 @@ NOT_SAFETY_RELEVANT = "NOT_SAFETY_RELEVANT"
 IMPORT_KLASSEN = (SAFE_IMPORT, AMBIGUOUS_GENERATION, VARIANT_SCOPE_UNCLEAR,
                   POSSIBLE_DUPLICATE, UNSUPPORTED_MODEL_MAPPING,
                   NOT_SAFETY_RELEVANT)
+
+# Die EINE der drei AMBIGUOUS_GENERATION-Teilursachen (siehe
+# `klassifiziere_kandidat`), die aus einer echten Modell-/Generations-
+# Mehrdeutigkeit stammt — nicht aus einer reinen Randueberlappung oder einer
+# ueberdehnten offenen Generation (zwei andere, eigene Fehlertexte). Als
+# Konstante exportiert, damit `app.kba_recall_refresh` beim Review-Schreiben
+# dieselbe Unterscheidung treffen kann wie hier, ohne den Text zu duplizieren
+# — Grundlage fuer `fallback_baureihen` (app.recall_ambiguity_fallback).
+GRUND_MODELL_AMBIGUITAET = "keiner der erreichenden Token trifft nur diese Baureihe"
 
 
 # Bauteilgruppen, die einen Rueckruf sicherheitsrelevant machen. Bewusst die
@@ -459,8 +468,40 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
     toks_je_ziel: dict[str, set[str]] = collections.defaultdict(set)
     for tok, b in kandidaten_ziele:
         toks_je_ziel[b["id"]].add(tok)
+
+    # Match-Staerke (Ebene A, generische Ambiguitaetsaufloesung — Audi-A4-
+    # B9-Root-Cause-Fund): "wenigstens einer der Token trifft nur diese
+    # Baureihe ALLEIN" ist zu grob, wenn zwei Baureihen denselben Token aus
+    # UNTERSCHIEDLICH starken Gruenden erreichen — z.B. "A4" fuer
+    # audi-a4-b9 (eigener, kanonischer Name) UND fuer
+    # audi-rs-4-avant-b9 (NUR ueber die `MODELL_MAP`-Alias-Zuordnung
+    # {"RS4","A4"}, weil das KBA eine Performance-Variante manchmal unter
+    # dem Namen des Basismodells fuehrt). Bisher zaehlten beide gleich und
+    # blockierten sich gegenseitig, obwohl der direkte Nameplate-Treffer
+    # eindeutig staerker ist.
+    #
+    # `_gewinnt_token` verallgemeinert die alte Regel (`len(je_token[t])==1`)
+    # STRIKT additiv: bei GLEICHER Staerke (der Normalfall — zwei echte
+    # Geschwister-Generationen, beide ueber ihren eigenen Namen erreicht,
+    # oder zwei Baureihen beide nur per Alias) bleibt das Ergebnis exakt wie
+    # zuvor (niemand gewinnt bei mehr als einem Mitbewerber). Nur wenn
+    # GENAU EINE Baureihe die STAERKSTE Stufe unter den Mitbewerbern dieses
+    # Tokens belegt, gilt der Token fuer sie als eindeutig belegt — der
+    # schwaechere Mitbewerber wird dadurch NICHT ausgeschlossen, er bleibt
+    # schlicht weiterhin (wie bisher) nicht-eindeutig ueber DIESEN Token.
+    baureihe_je_id = {b["id"]: b for _t, b in kandidaten_ziele}
+
+    def _gewinnt_token(bid: str, tok: str) -> bool:
+        inhaber = je_token[tok]
+        if len(inhaber) == 1:
+            return True
+        staerken = {i: match_tier(baureihe_je_id[i]["marke"], baureihe_je_id[i]["modell"], tok)
+                   for i in inhaber}
+        beste = min(staerken.values())
+        return staerken[bid] == beste and sum(1 for s in staerken.values() if s == beste) == 1
+
     mehrdeutige_ids = {bid for bid, toks in toks_je_ziel.items()
-                       if not any(len(je_token[t]) == 1 for t in toks)}
+                       if not any(_gewinnt_token(bid, t) for t in toks)}
     kand.generation_eindeutig = not mehrdeutige_ids
 
     # ── Variantenbeschraenkung ──────────────────────────────────────────────
@@ -489,8 +530,7 @@ def klassifiziere_kandidat(kand: ImportKandidat, ziel_idx: dict,
             kand.paare.append((bid, POSSIBLE_DUPLICATE, "; ".join(gruende)))
         elif bid in mehrdeutige_ids:
             kand.paare.append((bid, AMBIGUOUS_GENERATION,
-                               f"{sorted(toks_je_ziel[bid])}: keiner der erreichenden "
-                               f"Token trifft nur diese Baureihe"))
+                               f"{sorted(toks_je_ziel[bid])}: {GRUND_MODELL_AMBIGUITAET}"))
         elif kand.variantenbeschraenkung:
             kand.paare.append((bid, VARIANT_SCOPE_UNCLEAR,
                                "amtliche Eingrenzung nicht abbildbar"))

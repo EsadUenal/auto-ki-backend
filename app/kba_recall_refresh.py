@@ -396,7 +396,9 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
     `kba_rueckruf_review`. Ein amtlicher Datensatz, der im nächsten Export
     fehlt, bleibt unangetastet stehen (siehe Moduldocstring "KEINE
     AUTO-LÖSCHUNG" im Auftrag)."""
-    from app.kba_import_kandidaten import SAFE_IMPORT
+    from app.kba_import_kandidaten import (
+        AMBIGUOUS_GENERATION, GRUND_MODELL_AMBIGUITAET, SAFE_IMPORT,
+    )
 
     heute = heute or datetime.date.today().isoformat()
     baureihen_bis = {b["id"]: b.get("bauzeitraum_bis") for b in plan.get("baureihen") or []}
@@ -457,20 +459,36 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
                 klasse = "SAFE_IMPORT_NICHT_UEBERNOMMEN"   # Tor A0-A5, s. ausschluesse
         prod = (f"{kand.prod_von}-{kand.prod_bis}"
                 if kand.prod_von is not None and kand.prod_bis is not None else None)
+        # Match-Staerke + sicherer Ambiguitaets-Fallback (Audi-A4-B9-Root-
+        # Cause-Fund): NUR Paare, deren Unsicherheit aus echter Modell-/
+        # Generationsaufloesung stammt (`GRUND_MODELL_AMBIGUITAET`-Suffix),
+        # werden als fallback-faehig markiert — eine reine Randueberlappung
+        # oder eine ueberdehnte offene Generation (beide ebenfalls
+        # AMBIGUOUS_GENERATION) sind KEIN Fall fuer den sicheren Fallback:
+        # dort ist die Baureihen-Zuordnung selbst zu schwach belegt, nicht
+        # nur die Wahl zwischen zwei plausiblen Zielen. Siehe
+        # app/recall_ambiguity_fallback.py fuer die Laufzeitseite.
+        fallback_ids = sorted({bid for bid, kl, grund in kand.paare
+                               if kl == AMBIGUOUS_GENERATION
+                               and grund.endswith(GRUND_MODELL_AMBIGUITAET)})
         conn.execute(
             "INSERT INTO kba_rueckruf_review (kba_referenz, klasse, begruendung, marke, "
             "modell, mangel, produktionszeitraum, veroeffentlichungsdatum, "
-            "moegliche_baureihen, zuerst_gesehen_am, zuletzt_gesehen_am) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "moegliche_baureihen, zuerst_gesehen_am, zuletzt_gesehen_am, "
+            "eingrenzung_amtlich, fallback_baureihen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(kba_referenz) DO UPDATE SET klasse=excluded.klasse, "
             "begruendung=excluded.begruendung, marke=excluded.marke, "
             "modell=excluded.modell, mangel=excluded.mangel, "
             "produktionszeitraum=excluded.produktionszeitraum, "
             "veroeffentlichungsdatum=excluded.veroeffentlichungsdatum, "
             "moegliche_baureihen=excluded.moegliche_baureihen, "
-            "zuletzt_gesehen_am=excluded.zuletzt_gesehen_am",
+            "zuletzt_gesehen_am=excluded.zuletzt_gesehen_am, "
+            "eingrenzung_amtlich=excluded.eingrenzung_amtlich, "
+            "fallback_baureihen=excluded.fallback_baureihen",
             (kand.referenz, klasse, kand.begruendung, kand.marke, kand.modell, kand.mangel,
-             prod, kand.datum, json.dumps(kand.ziel_ids), heute, heute))
+             prod, kand.datum, json.dumps(kand.ziel_ids), heute, heute,
+             kand.eingrenzung or None, json.dumps(fallback_ids)))
         review_geschrieben += 1
 
     return {"eingefuegt": eingefuegt, "eingefuegt_konditional": eingefuegt_konditional,
