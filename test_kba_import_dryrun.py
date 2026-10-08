@@ -95,10 +95,26 @@ check("B2 kein VIRA-Ziel -> UNSUPPORTED_MODEL_MAPPING",
       == UNSUPPORTED_MODEL_MAPPING)
 check("B3 Marke nicht in VIRA -> gar kein Kandidat",
       import_kandidaten([kba_zeile(Marke="FERRARI")], [], [br()]) == [])
-check("B4 nicht ueberwacht -> gar kein Kandidat",
+check("B4 nicht ueberwacht UND nicht sicherheitsrelevant -> gar kein Kandidat "
+      "(administrative Angabe ohne eigenstaendigen Sicherheitsgehalt bleibt "
+      "stiller continue)",
       import_kandidaten([kba_zeile(
-          **{"Überwachung der Rückrufaktion durch das KBA": "nicht überwacht"})],
+          **{"Überwachung der Rückrufaktion durch das KBA": "nicht überwacht",
+             "Mangelbezeichnung": "Das Infotainment-Display flackert gelegentlich."})],
           [], [br()]) == [])
+# Opel-Astra-K-Root-Cause-Fund (KBA 8322, Hauptbremszylinder): "nicht
+# ueberwacht" ist eine AUFSICHTS-/VERFAHRENSANGABE des KBA, keine Aussage
+# ueber Realitaet oder Sicherheitsrelevanz des Mangels. Ein "nicht
+# ueberwacht"-Datensatz, der UEBER DIE BAUTEILGRUPPE/UNFALLFOLGE (wie jeder
+# andere Kandidat) sicherheitsrelevant ist, darf deshalb NICHT mehr blind
+# verworfen werden — er durchlaeuft dieselben Gates wie jeder ueberwachte
+# Datensatz (hier: der Default-Mangeltext "Die Lenkspindel kann brechen."
+# ist ueber die Bauteilgruppe "lenkung" bereits sicherheitsrelevant).
+check("B4b nicht ueberwacht ABER sicherheitsrelevant -> WIRD zum Kandidaten "
+      "(durchlaeuft die normale Klassifikation, kein automatischer Import)",
+      klasse_von([kba_zeile(
+          **{"Überwachung der Rückrufaktion durch das KBA": "nicht überwacht"})],
+          [], [br()]) == SAFE_IMPORT)
 # Audit RC-5 (Root-Cause-Closing): vor dem Fix war dies ein stiller `continue`
 # — DER exakte Mechanismus, der die beiden belegten Audi-Anhaengevorrichtungs-
 # Rueckrufe KBA 8718/10703 nie klassifiziert, nie in `kba_rueckruf_review`

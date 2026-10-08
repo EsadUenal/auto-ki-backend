@@ -599,14 +599,27 @@ def import_kandidaten(kba: list[dict], recalls: list[dict],
     out = []
     for k in kba:
         kand = ImportKandidat(k)
-        # `nur_ueberwacht` (nicht vom KBA ueberwacht) und die Markenpruefung
-        # (VIRA fuehrt diesen Hersteller ueberhaupt nicht) schliessen eine
-        # Baureihen-Zuordnung grundsaetzlich aus, unabhaengig von diesem
-        # Fahrzeugbestand — ein Audit-Trail dafuer waere nur Rauschen (jede
-        # Marke, die VIRA nicht fuehrt, jeder nicht-amtlich ueberwachte
-        # Datensatz). Beide bleiben bewusst ein stiller `continue`.
-        if nur_ueberwacht and not kand.ueberwacht:
+        # Root-Cause-Fund (Opel-Astra-K-Shadow-Proof, KBA 8322 "Hauptbrems-
+        # zylinder"): `nur_ueberwacht` ("Ueberwachung der Rueckrufaktion durch
+        # das KBA") ist eine AUFSICHTS-/VERFAHRENSANGABE des Amts — sie sagt,
+        # ob das KBA die Durchfuehrung dieser Kampagne selbst begleitet, NICHT,
+        # ob der Mangel real oder sicherheitsrelevant ist (ein vom Hersteller
+        # ohne amtliche Begleitung durchgefuehrter Rueckruf ist kein optionaler
+        # Hinweis). Ein "nicht ueberwacht"-Datensatz, der ZUSAETZLICH ueber
+        # `sicherheitsrelevant` (Bauteilgruppe/Unfallfolge, s. RC-5 unten)
+        # qualifiziert, wird deshalb NICHT mehr blind verworfen, sondern
+        # durchlaeuft dieselben Gates wie jeder ueberwachte Datensatz
+        # (Marke/Generation/Dublette/Variantenscope entscheiden ueber die
+        # tatsaechliche Uebernahme, nicht dieses Feld). Ein "nicht ueberwacht"
+        # UND nicht sicherheitsrelevanter Datensatz bleibt wie zuvor ein
+        # stiller `continue` — dafuer waere ein Audit-Trail nur Rauschen.
+        if nur_ueberwacht and not kand.ueberwacht and not kand.sicherheitsrelevant:
             continue
+        # Markenpruefung (VIRA fuehrt diesen Hersteller ueberhaupt nicht)
+        # schliesst eine Baureihen-Zuordnung grundsaetzlich aus, unabhaengig
+        # von diesem Fahrzeugbestand — ein Audit-Trail dafuer waere nur
+        # Rauschen (jede Marke, die VIRA nicht fuehrt). Bleibt ein stiller
+        # `continue`.
         if kand.marke.upper() not in vira_marken:
             continue
         # Audit RC-5: `nur_sicherheitsrelevant` darf NIE wieder ein stiller
