@@ -148,6 +148,11 @@ class LueckenSpeichernRequest(BaseModel):
     daten: dict    # nur die zu patchenden Felder (kaufberatung / schwachstellen / rueckrufe)
 
 
+class GrantKaufchecksRequest(BaseModel):
+    email: str
+    anzahl: int    # additiv (kein Reset/Ueberschreiben), muss > 0 sein
+
+
 # ---------- Endpunkte ----------
 
 def _llm_error(exc: Exception) -> HTTPException:
@@ -417,4 +422,40 @@ def client_ip_diagnose(request: Request):
             "forwarded": request.headers.get("forwarded"),
         },
         "verwendeter_limit_schluessel": klient_ip(request),
+    }
+
+
+# ---------- Temporaer: manueller Kaufcheck-Grant (Test-Account) ----------
+# Nur fuer gezielte, einmalige Gutschriften auf einen bekannten Account (z.B.
+# eigener Testaccount), ausschliesslich admin-geschuetzt. Additiv, nie ein
+# Reset -- ein bestehendes Guthaben wird nie ueberschrieben/geloescht.
+
+@router.post("/grant-kaufchecks", summary="Schreibt additiv KaufChecks auf einen Account gut (Admin-Key)")
+def grant_kaufchecks(body: GrantKaufchecksRequest, request: Request):
+    verify_admin_key(request)
+    if body.anzahl <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"fehler": {"code": "invalid_anzahl", "nachricht": "anzahl muss > 0 sein."}},
+        )
+    with get_conn() as conn:
+        vorher = conn.execute(
+            "SELECT id, kaufchecks_verbleibend FROM users WHERE email=?", (body.email,)
+        ).fetchone()
+        if vorher is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"fehler": {"code": "not_found", "nachricht": "Kein Account mit dieser E-Mail."}},
+            )
+        conn.execute(
+            "UPDATE users SET kaufchecks_verbleibend = kaufchecks_verbleibend + ? WHERE email=?",
+            (body.anzahl, body.email),
+        )
+        nachher = conn.execute(
+            "SELECT id, kaufchecks_verbleibend FROM users WHERE email=?", (body.email,)
+        ).fetchone()
+    return {
+        "email": body.email,
+        "kaufchecks_verbleibend_vorher": vorher["kaufchecks_verbleibend"],
+        "kaufchecks_verbleibend_nachher": nachher["kaufchecks_verbleibend"],
     }
