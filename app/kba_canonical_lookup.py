@@ -41,10 +41,25 @@ def get_rueckrufe_fuer_identity(identity) -> tuple[list[dict], str]:
         return [], vertrauen
 
     from app.database import get_rueckrufe_canonical_fuer_identity
-    from app.kba_reconciliation import _vira_modellkandidaten, kba_marke
+    from app.kba_reconciliation import _falte_modell, _vira_modellkandidaten, kba_marke
 
     canonical_make = kba_marke(identity.make)
-    nameplate_kandidaten = _vira_modellkandidaten(identity.make, identity.model)
+    nameplate_kandidaten = set(_vira_modellkandidaten(identity.make, identity.model))
+    # Root-Cause-Fix (RC-W6 B4): der amtliche KBA-Export schreibt Modellnamen
+    # durchgaengig mit Bindestrich ("MX-5", "T-ROC", "C-KLASSE") -- `_falte_modell`
+    # erhaelt genau deshalb den Bindestrich (s. dessen Docstring). Nutzer-/Web-
+    # Freitext schreibt dieselbe Bezeichnung oft mit Leerzeichen ("MX 5", "T ROC").
+    # Fuer eine katalogisierte Baureihe faengt die vorherige DB-Reconciliation
+    # (Import-Kuratierung + `find_baureihe`) diesen Unterschied bereits ab; der
+    # canonical-only Pfad hat keine solche Zwischenstufe und vergleicht den rohen
+    # Identitaetstext zum ersten Mal direkt gegen den amtlichen Token. Ohne diese
+    # Ergaenzung lieferte "MX 5" (identisch bestaetigte Identitaet, Trust=ALLOWED)
+    # still `[]`, obwohl "MX-5" exakt in `rueckruf.canonical_nameplate` steht.
+    # Generisch fuer jede Marke/jedes Modell, keine Sonderliste.
+    gefaltet = _falte_modell(identity.model).upper()
+    if gefaltet:
+        nameplate_kandidaten.add(gefaltet.replace(" ", "-"))
+        nameplate_kandidaten.add(gefaltet.replace("-", " "))
     zeilen = get_rueckrufe_canonical_fuer_identity(canonical_make, nameplate_kandidaten,
                                                    identity.year)
     return zeilen, vertrauen
