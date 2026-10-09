@@ -855,6 +855,95 @@ def _artikel_geltung(text: str, baujahr: int | None, hubraum=None,
     return None, None, None
 
 
+# ── RC-W2: Sentence-Level-Fremdmarken-Prüfung (Release-Hardening) ───────────
+#
+# BEFUND (Forensik-Audit, realer Web-Smoke-Test): ein als Mazda-MX-5 stark
+# ausgerichteter Artikel (Titel nennt Marke+Modell) enthielt in einem "Mehr
+# zum Thema"-Block einen Satz über einen VW/Skoda-Lenkungsrückruf. Die
+# Artikel-Ebene (`ausgerichtet()`) prüft nur Titel+Gesamttext, nie den
+# einzelnen Satz, der am Ende zu einem Fakt wird — ein völlig fremder Rückruf
+# wurde dadurch dem Zielfahrzeug zugeschrieben.
+#
+# Generische Regel (keine Marken-Sonderfälle): nennt der SATZ, der zu einem
+# Rückruf-Fakt werden soll, eine ANDERE bekannte Marke (dieselbe `MARKEN`-
+# Liste, die bereits `ausgerichtet()` verwendet), ohne auch die eigene Marke
+# oder das eigene Modell zu nennen, ist der Satz fremdthematisch und wird
+# verworfen. Nennt der Satz BEIDE (eigene und fremde Marke, z.B. ein Vergleich
+# mit einem Schwestermodell), wird NICHT verworfen — das wäre eine aggressive
+# Überreaktion, die echte Sätze verliert.
+def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str | None:
+    from app.vehicle_identity import MARKEN
+    satz_tokens = _tokens(satz)
+    marke_tokens = _tokens(marke)
+    modell_tokens = _tokens(modell)
+    fremde = (satz_tokens & MARKEN) - marke_tokens
+    if not fremde:
+        return None
+    if marke_tokens & satz_tokens:
+        return None
+    if modell_tokens and modell_tokens <= satz_tokens:
+        return None
+    return ",".join(sorted(fremde))
+
+
+# ── RC-W1: Substanz-Schwelle gegen scope-lose Teaser/Index-Seiten ───────────
+#
+# BEFUND (Forensik-Audit, realer Web-Smoke-Test): eine Kategorie-/Teaser-Seite
+# ("Mazda MX-5 ► aktuelle Artikel & Tests") nennt nur die Schlagzeile eines
+# Rückrufs ("Kraftstoffleitungs-Rückruf für Mazda MX-5 (ND)"), ohne jede
+# Scope-Information. Die reine Schlagzeile wurde bisher trotzdem zu einem
+# eigenen "series_only"-Fakt — "fehlende Scope-Information" wurde faktisch wie
+# "Scope = gesamte Baureihe" behandelt.
+#
+# Generische Regel: eine Rückruf-Aussage ohne jede Scope-Information braucht
+# mindestens etwas inhaltlichen Überschuss über die reine Kombination aus
+# Marke + Modell + Bauteil + dem Rückruf-Vokabular hinaus — sonst ist sie
+# strukturell nicht von einer bloßen Schlagzeile zu unterscheiden. Ein
+# Mindestmaß von 3 verbleibenden, inhaltstragenden Tokens (kein Fahrzeug-,
+# Marken- oder Funktionswort) gilt generisch für JEDE Marke/jedes Bauteil.
+_FUELLWOERTER = frozenset({
+    "der", "die", "das", "des", "dem", "den", "ein", "eine", "einen", "einem", "einer",
+    "und", "oder", "fuer", "von", "im", "am", "zu", "ist", "sind", "auch", "nur", "bei",
+    "aus", "auf", "als", "mit", "nach", "vor", "ueber", "unter", "sich", "es", "er", "sie",
+})
+
+
+def _inhaltstokens(satz: str, marke: str | None, modell: str | None,
+                   bauteil: str | None) -> set[str]:
+    """Die INHALTSTRAGENDEN Tokens eines Satzes — alles ausser Marke, Modell,
+    Bauteil, dem Rückruf-Vokabular und generischen Füllwörtern. Grundlage
+    sowohl für die Substanz-Schwelle (`_ist_substanziell`) als auch für den
+    Event-Gleichheits-Abgleich (`_gleiches_rueckruf_ereignis`)."""
+    kern = _tokens(marke) | _tokens(modell) | _tokens(bauteil)
+    uebrig = _tokens(satz) - _FUELLWOERTER - {"rueckruf", "recall", "rueckrufaktion"} - kern
+    # Kompositum-Flexionsformen ("kraftstoffleitungs" aus "Kraftstoffleitungs-
+    # Rückruf") zählen ebenfalls zum Kern — exakte Mengendifferenz reicht dafür
+    # nicht, deshalb zusätzlich ein fuzzy Präfix-Abgleich für längere Tokens.
+    return {t for t in uebrig
+           if not any(len(k) >= 4 and (t.startswith(k) or k.startswith(t)) for k in kern)}
+
+
+def _ist_substanziell(satz: str, marke: str | None, modell: str | None,
+                      bauteil: str | None) -> bool:
+    return len(_inhaltstokens(satz, marke, modell, bauteil)) >= 3
+
+
+# Release-Hardening (Cross-Source-Review): wie viele INHALTSTRAGENDE Tokens
+# (nicht Marke/Modell/Bauteil/Rückruf-Vokabular — s.o.) zwei Rückruf-Aussagen
+# teilen müssen, um als dieselbe Meldung zu gelten. Bauteil ALLEIN reicht
+# nicht (siehe `_gleiches_rueckruf_ereignis`) — zwei völlig unabhängige
+# Kraftstoffleitungs-Rückrufe dürfen sich nicht gegenseitig sperren. Bewusst
+# konservativ: im Zweifel NICHT als dasselbe Ereignis gelten (das überlässt
+# die Entscheidung dann der eigenen Scope-Prüfung des jeweiligen Kandidaten).
+_MIN_GLEICHHEIT_TOKENS = 2
+
+
+def _gleiches_rueckruf_ereignis(kandidat_tokens: set[str],
+                                ausgeschlossene_tokens: list[set[str]]) -> bool:
+    return any(len(kandidat_tokens & ex) >= _MIN_GLEICHHEIT_TOKENS
+              for ex in ausgeschlossene_tokens)
+
+
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        marke: str | None = None, modell: str | None = None,
                        baujahr: int | None = None, generation: str | None = None,
@@ -876,6 +965,48 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
     kandidaten: dict[str, dict] = {}
     abgelehnt = abgelehnt if abgelehnt is not None else []
+
+    # RC-W1 (Release-Hardening, Cross-Source-Review): welche Rückruf-Bauteil-
+    # Themen wurden durch einen ausgerichteten Artikel mit explizitem Scope-
+    # Widerspruch (Baujahr/Hubraum/Leistung) bereits ausgeschlossen? Eine
+    # SPÄTERE, scope-lose Quelle zum SELBEN Thema (z.B. eine Kategorie-/
+    # Teaser-Seite, die nur die Schlagzeile derselben Meldung zeigt) darf
+    # diesen Ausschluss nicht wieder aufheben.
+    #
+    # Bauteil ALLEIN ist dafür NICHT genug (Review-Fund): zwei völlig
+    # unabhängige Kraftstoffleitungs-Rückrufe (anderer Defekt, andere
+    # Kampagne) dürfen sich nicht gegenseitig sperren, nur weil sie dasselbe
+    # Bauteil nennen. Gespeichert werden deshalb je Bauteil-Schlüssel die
+    # INHALTSTRAGENDEN Tokens der ausschliessenden Aussage — der eigentliche
+    # Gleichheits-Check (`_gleiches_rueckruf_ereignis`) erfolgt erst am
+    # Einsatzort, UND nur für Kandidaten, die selbst keinen eigenen,
+    # passenden Scope tragen (`passt is not True` — ein Kandidat mit eigenem
+    # Scope-Beleg wird NIE durch eine andere Quelle gesperrt).
+    ausgeschlossene_themen: dict[str, list[set[str]]] = {}
+    if kategorie == "rueckruf":
+        for r in treffer:
+            url_x = r.get("url") or ""
+            if score_domain(url_x, _WEB_KATEGORIE[kategorie]) < min_score:
+                continue
+            ok_x, _ = ausgerichtet(r, marke, modell) if (marke or modell) else (True, None)
+            if not ok_x:
+                continue
+            text_x = f"{r.get('title') or ''}. {r.get('content') or ''}"
+            passt_x, _grund_x, _fenster_x = _artikel_geltung(text_x, baujahr, hubraum, leistung_ps)
+            if passt_x is not False:
+                continue
+            for satz_x in _saetze(text_x):
+                if not any(w in _norm(satz_x) for w in _RUECKRUF_WORTE):
+                    continue
+                voc_x = [(m, s) for m, s in vokabular.items() if m in _norm(satz_x)][:1]
+                muster_x, schluessel_x = voc_x[0] if voc_x else (None, None)
+                bauteil_x = (_anzeige_bauteil(satz_x, muster_x) if muster_x
+                            else _rueckruf_bauteil(satz_x))
+                if not schluessel_x and bauteil_x:
+                    schluessel_x = "rr:" + _norm(bauteil_x).replace(" ", "")
+                if schluessel_x:
+                    ausgeschlossene_themen.setdefault(schluessel_x, []).append(
+                        _inhaltstokens(satz_x, marke, modell, bauteil_x))
 
     for r in treffer:
         url = r.get("url") or ""
@@ -906,6 +1037,13 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 continue
             if grund == "schwach" and not _satz_nennt_modell(satz, modell):
                 continue
+            if kategorie == "rueckruf":
+                fremde_marke = _fremde_marke_satz(satz, marke, modell)
+                if fremde_marke:
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": f"fremde_marke_satz:{fremde_marke}",
+                                      "satz": satz[:120]})
+                    continue
             n = _norm(satz)
             if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
                 continue
@@ -932,6 +1070,16 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 if teil:
                     treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
             for muster, schluessel in treffer_voc:
+                if (kategorie == "rueckruf" and passt is not True
+                        and schluessel in ausgeschlossene_themen):
+                    bauteil_kandidat = (_anzeige_bauteil(satz, muster) if muster
+                                        else _rueckruf_bauteil(satz))
+                    kandidat_tokens = _inhaltstokens(satz, marke, modell, bauteil_kandidat)
+                    if _gleiches_rueckruf_ereignis(kandidat_tokens, ausgeschlossene_themen[schluessel]):
+                        abgelehnt.append({"url": url, "kategorie": kategorie,
+                                          "grund": "rueckruf_thema_bereits_ausgeschlossen",
+                                          "satz": satz[:120]})
+                        continue
                 eintrag = kandidaten.setdefault(
                     schluessel, {"aussage": satz,
                                  "bauteil": (_anzeige_bauteil(satz, muster) if muster
@@ -968,7 +1116,6 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             confidence = "niedrig"
         scope_text = None
         if kategorie == "rueckruf":
-            applicability = "vehicle_possible" if e["passt"] is True else "series_only"
             # Release-Hardening: die zentrale Scope-Policy (recall_filter.rueckruf_scope)
             # darf nicht nur den EINEN gewaehlten Anzeige-Satz (`aussage`) sehen —
             # ein Kraftstoff-/Leistungs-/Motorcode-/Hubraum-Scope kann im Nachbarsatz
@@ -979,6 +1126,20 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                             for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
                             if _RE_BETROFFEN.search(s)]
             scope_text = " ".join(scope_saetze)[:2000] or None
+            # RC-W1: ohne Scope-Match UND ohne jede Scope-Information (kein
+            # betroffenheits-tragender Satz in irgendeiner beitragenden
+            # Quelle) ist "series_only" nur gerechtfertigt, wenn die Aussage
+            # selbst mehr ist als eine blosse Schlagzeile (Marke+Modell+
+            # Bauteil+"Rückruf", ohne jeden inhaltlichen Überschuss). Fehlende
+            # Scope-Information ist NICHT dasselbe wie "gesamte Baureihe
+            # betroffen" — siehe Moduldocstring `_ist_substanziell`.
+            if (e["passt"] is not True and not scope_text
+                    and not _ist_substanziell(e["aussage"], marke, modell, e["bauteil"])):
+                quelle_url = e["treffer"][0].get("url") if e["treffer"] else None
+                abgelehnt.append({"url": quelle_url, "kategorie": kategorie,
+                                  "grund": "rueckruf_ohne_substanz", "satz": e["aussage"][:120]})
+                continue
+            applicability = "vehicle_possible" if e["passt"] is True else "series_only"
         else:
             applicability = None
         fakten.append(WebFakt(
