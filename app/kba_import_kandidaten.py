@@ -312,6 +312,14 @@ def _kraftstoff_qualifier(eingrenzung: str) -> str | None:
     return m.group(0) if m else None
 
 
+def variantenbeschraenkung_unabbildbar(eingrenzung: str | None) -> bool:
+    """Oeffentlicher Wrapper um die Variantenwoerter-/Kraftstoff-Pruefung
+    (RC-W6: von `app.kba_canonical_import` wiederverwendet, damit dort keine
+    zweite Canonicalisierung und kein Import privater Modulnamen noetig ist)."""
+    eingr = eingrenzung or ""
+    return bool(eingr and _VARIANTENWOERTER.search(eingr) and _kraftstoff_qualifier(eingr) is None)
+
+
 def _ziel_index(baureihen: list[dict]) -> dict:
     idx = collections.defaultdict(list)
     for b in baureihen:

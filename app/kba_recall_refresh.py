@@ -343,7 +343,7 @@ def plane_sync(kba_zeilen: list[dict]) -> dict:
 KBA_RECALL_QUELLE = "KBA-Rueckrufdatenbank, amtlicher Gesamtexport (automatischer Freshness-Abgleich)"
 
 
-def _verifiziere_amtlich(conn, fakt_id: int, zeile: dict, *, heute: str) -> None:
+def verifiziere_amtlich(conn, fakt_id: int, zeile: dict, *, heute: str) -> None:
     """Markiert eine (neu eingefügte ODER inhaltlich aufgefrischte) kanonische
     `rueckruf`-Zeile als amtlich verifiziert, mit einem Fingerprint, der zum
     GESCHRIEBENEN Inhalt passt.
@@ -426,7 +426,7 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
             (z["baureihe_id"], z["datum"], z["betroffene_baujahre"], z["mangel"],
              z["abhilfe"], z["kba_referenz"], z.get("eingrenzung_amtlich"),
              z.get("prod_von_amtlich"), z.get("prod_bis_amtlich")))
-        _verifiziere_amtlich(conn, cur.lastrowid, z, heute=heute)
+        verifiziere_amtlich(conn, cur.lastrowid, z, heute=heute)
         eingefuegt += 1
         if ist_konditional:
             eingefuegt_konditional += 1
@@ -441,7 +441,7 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
             "SELECT baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, kba_referenz "
             "FROM rueckruf WHERE id=?", (u["id"],)).fetchone()
         if frisch is not None:
-            _verifiziere_amtlich(conn, u["id"], dict(zip(
+            verifiziere_amtlich(conn, u["id"], dict(zip(
                 ("baureihe_id", "datum", "betroffene_baujahre", "mangel", "abhilfe",
                  "kba_referenz"), frisch)), heute=heute)
         aktualisiert += 1
@@ -493,6 +493,52 @@ def apply_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
 
     return {"eingefuegt": eingefuegt, "eingefuegt_konditional": eingefuegt_konditional,
             "aktualisiert": aktualisiert, "review_geschrieben": review_geschrieben}
+
+
+def plane_canonical_sync(kba_zeilen: list[dict]) -> dict:
+    """RC-W6: Sync-Plan fuer amtliche KBA-Rueckrufe OHNE ENFAL-Baureihen-
+    Katalogeintrag — REIN LESEND, wie `plane_sync()`. Bewusst GETRENNT von
+    `plane_sync()`/`apply_sync()`: der bestehende, baureihe-gebundene Pfad
+    bleibt vollstaendig unveraendert (Audi/Mercedes/Opel etc. durchlaufen
+    weiterhin exakt denselben Code wie vorher)."""
+    from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_canonical_bestand
+    from app.kba_canonical_import import canonical_kandidaten, zaehle_klassen
+    from app.kba_reconciliation import kba_marke
+
+    baureihen = get_alle_baureihen_kurz()
+    vira_marken = {kba_marke(b["marke"]) for b in baureihen}
+    bestand = get_alle_rueckrufe_canonical_bestand()
+    kandidaten = canonical_kandidaten(kba_zeilen, vira_marken, bestand)
+    return {"kandidaten": kandidaten, "klassen": zaehle_klassen(kandidaten)}
+
+
+def apply_canonical_sync(conn, plan: dict, *, heute: str | None = None) -> dict:
+    """RC-W6: schreibt NUR die `CANONICAL_SAFE_IMPORT`-Kandidaten eines
+    `plane_canonical_sync()`-Plans — idempotent (siehe `app.database.
+    get_alle_rueckrufe_canonical_bestand`, das bereits importierte Paare aus
+    `kandidaten` herausfiltert, BEVOR diese Funktion je einen Insert sieht).
+
+    `CANONICAL_REVIEW`/`CANONICAL_NOT_SAFETY_RELEVANT`-Kandidaten werden
+    NICHT geschrieben (kein `kba_rueckruf_review`-Analogon in dieser ersten
+    Version — sie bleiben im naechsten Dry-Run-Bericht sichtbar, statt
+    verloren zu gehen, aber ohne eigene Persistenz-Tabelle; siehe
+    Abschlussbericht, 'bekannte Risiken').
+
+    Dieselbe FAIL-CLOSED-Konvention wie `apply_sync()`: nur mit einer
+    offenen Transaktion aufrufen, committet/rollbackt selbst NICHT."""
+    from app.database import insert_rueckruf_canonical
+    from app.kba_canonical_import import CANONICAL_SAFE_IMPORT, zeile_fuer_insert
+
+    heute = heute or datetime.date.today().isoformat()
+    eingefuegt = 0
+    for kand in plan["kandidaten"]:
+        if kand.klasse != CANONICAL_SAFE_IMPORT:
+            continue
+        zeile = zeile_fuer_insert(kand)
+        neue_id = insert_rueckruf_canonical(conn, zeile)
+        verifiziere_amtlich(conn, neue_id, zeile, heute=heute)
+        eingefuegt += 1
+    return {"eingefuegt": eingefuegt}
 
 
 def main() -> None:

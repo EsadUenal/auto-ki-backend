@@ -588,8 +588,17 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     _migriere_chassis_codes(conn)
     _migriere_verification(conn)
-
     conn.commit()
+
+    # Eigene, von der obigen Transaktion getrennte Commit-Grenze (Tabellen-
+    # Rebuild statt additivem ALTER TABLE) — ein Fehlschlag rollt intern
+    # zurueck und darf den Serverstart trotzdem nicht verhindern (gleiche
+    # "nicht fatal"-Konvention wie app/data_migrations.py).
+    try:
+        _migriere_rueckruf_canonical(conn)
+    except Exception:
+        log.exception("RC-W6-Schema-Migration uebersprungen — App startet mit "
+                      "unveraendertem rueckruf-Schema weiter.")
 
 
 def _migriere_verification(conn: sqlite3.Connection) -> None:
@@ -667,6 +676,113 @@ def _migriere_chassis_codes(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO schema_migrations (name) VALUES (?)", (SEED_MARKER,))
     log.info("chassis_codes-Seed: %d Baureihen gesetzt, %d nicht gefunden (%s).",
              gesetzt, len(fehlend), fehlend or "-")
+
+
+_RUECKRUF_SPALTEN = ("id", "baureihe_id", "datum", "betroffene_baujahre", "mangel",
+                    "abhilfe", "kba_referenz", "eingrenzung_amtlich",
+                    "prod_von_amtlich", "prod_bis_amtlich")
+
+
+def _migriere_rueckruf_canonical(conn: sqlite3.Connection) -> None:
+    """RC-W6: `rueckruf.baureihe_id` NULLABLE machen + `canonical_make`/
+    `canonical_nameplate` ergaenzen — fuer amtliche KBA-Rueckrufe OHNE
+    ENFAL-Baureihen-Katalogeintrag (app/kba_canonical_import.py).
+
+    SQLite kennt kein `ALTER TABLE ... ALTER COLUMN ... DROP NOT NULL` —
+    einzig moeglicher Weg ist ein Tabellen-Neubau. Diese Funktion macht das
+    TRANSAKTIONAL, mit Row-Count- und FK-Integritaetspruefung VOR dem Commit:
+    weicht irgendetwas ab, wird zurueckgerollt, die alte Tabelle bleibt
+    unveraendert stehen, und die Funktion wirft (kein stilles Weiterlaufen
+    mit einem halb migrierten Schema).
+
+    Idempotent: eine bereits migrierte Tabelle (baureihe_id nullable UND
+    beide neuen Spalten vorhanden — z.B. eine frisch aus db/schema.sql
+    angelegte DB, die das neue Schema direkt mitbringt) wird nicht erneut
+    angefasst.
+
+    Bewusst NICHT in `_migrate_schema` selbst: die anderen Migrationen dort
+    sind additive `ALTER TABLE ADD COLUMN`-Aufrufe ohne eigenes Risiko; diese
+    hier ist ein Tabellen-Rebuild und braucht eine eigene, von der
+    vorangehenden Transaktion getrennte Commit-Grenze (siehe Aufrufer).
+    """
+    existiert = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rueckruf'").fetchone()
+    if not existiert:
+        return
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(rueckruf)").fetchall()}
+    # PRAGMA table_info Zeile: (cid, name, type, notnull, dflt_value, pk)
+    baureihe_id_nullable = cols["baureihe_id"][3] == 0
+    hat_canonical_spalten = "canonical_make" in cols and "canonical_nameplate" in cols
+    if baureihe_id_nullable and hat_canonical_spalten:
+        return
+
+    vorher = conn.execute("SELECT COUNT(*) FROM rueckruf").fetchone()[0]
+    log.info("RC-W6-Migration: baue Tabelle 'rueckruf' neu (baureihe_id nullable, "
+             "canonical_make/canonical_nameplate ergaenzt), %d Bestandszeilen ...", vorher)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("""
+            CREATE TABLE rueckruf_rcw6_neu (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                baureihe_id         TEXT REFERENCES baureihe(id) ON DELETE CASCADE,
+                datum               TEXT,
+                betroffene_baujahre TEXT,
+                mangel              TEXT NOT NULL,
+                abhilfe             TEXT,
+                kba_referenz        TEXT,
+                eingrenzung_amtlich TEXT,
+                prod_von_amtlich    INTEGER,
+                prod_bis_amtlich    INTEGER,
+                canonical_make      TEXT,
+                canonical_nameplate TEXT,
+                CHECK (baureihe_id IS NOT NULL
+                       OR (canonical_make IS NOT NULL AND canonical_nameplate IS NOT NULL))
+            )
+        """)
+        # Bereits per ALTER TABLE vorhandene canonical-Spalten (teilmigrierter
+        # Zwischenzustand) mitnehmen statt zu verlieren; sonst NULL (Bestand).
+        if "canonical_make" in cols:
+            select_cols = list(_RUECKRUF_SPALTEN) + ["canonical_make", "canonical_nameplate"]
+        else:
+            select_cols = list(_RUECKRUF_SPALTEN) + ["NULL", "NULL"]
+        spalten_sql = ", ".join(_RUECKRUF_SPALTEN) + ", canonical_make, canonical_nameplate"
+        auswahl_sql = ", ".join(select_cols)
+        conn.execute(f"INSERT INTO rueckruf_rcw6_neu ({spalten_sql}) "
+                    f"SELECT {auswahl_sql} FROM rueckruf")
+        nachher = conn.execute("SELECT COUNT(*) FROM rueckruf_rcw6_neu").fetchone()[0]
+        if nachher != vorher:
+            raise RuntimeError(
+                f"RC-W6-Migration: Zeilenzahl weicht ab ({vorher} vorher, "
+                f"{nachher} in der neuen Tabelle) — Abbruch ohne Swap.")
+        alte_refs = {r[0] for r in conn.execute(
+            "SELECT kba_referenz FROM rueckruf WHERE kba_referenz IS NOT NULL")}
+        neue_refs = {r[0] for r in conn.execute(
+            "SELECT kba_referenz FROM rueckruf_rcw6_neu WHERE kba_referenz IS NOT NULL")}
+        if alte_refs != neue_refs:
+            raise RuntimeError("RC-W6-Migration: KBA-Referenzen vor/nach Rebuild weichen ab.")
+        alte_links = {(r[0], r[1]) for r in conn.execute(
+            "SELECT id, baureihe_id FROM rueckruf")}
+        neue_links = {(r[0], r[1]) for r in conn.execute(
+            "SELECT id, baureihe_id FROM rueckruf_rcw6_neu")}
+        if alte_links != neue_links:
+            raise RuntimeError("RC-W6-Migration: Baureihe-Verknuepfungen (id, baureihe_id) "
+                               "vor/nach Rebuild weichen ab.")
+        conn.execute("DROP TABLE rueckruf")
+        conn.execute("ALTER TABLE rueckruf_rcw6_neu RENAME TO rueckruf")
+        fk_fehler = conn.execute("PRAGMA foreign_key_check(rueckruf)").fetchall()
+        if fk_fehler:
+            raise RuntimeError(f"RC-W6-Migration: FK-Integritaet verletzt: {fk_fehler}")
+        conn.execute("COMMIT")
+        log.info("RC-W6-Migration erfolgreich: 'rueckruf' neu aufgebaut, "
+                 "%d Zeilen unveraendert erhalten.", vorher)
+    except Exception:
+        conn.execute("ROLLBACK")
+        log.exception("RC-W6-Migration fehlgeschlagen — 'rueckruf' bleibt UNVERAENDERT "
+                      "(alte Tabelle), App startet trotzdem mit altem Schema.")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def ensure_tables() -> None:
@@ -1046,6 +1162,79 @@ def get_alle_rueckrufe_fuer_sync() -> list[dict]:
             "SELECT id, baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
             "kba_referenz, eingrenzung_amtlich, prod_von_amtlich, prod_bis_amtlich "
             "FROM rueckruf").fetchall()]
+
+
+def get_alle_rueckrufe_canonical_bestand() -> set[tuple[str, str, str]]:
+    """RC-W6: (normalisierte KBA-Referenz, canonical_make, canonical_nameplate)
+    JEDER bereits vorhandenen canonical-only Zeile (`baureihe_id IS NULL`).
+
+    Grundlage fuer die Idempotenz von `app.kba_canonical_import.
+    canonical_kandidaten()` — ein bereits importiertes Paar wird nicht
+    erneut als Kandidat vorgeschlagen. UNGECACHT, aus demselben Grund wie
+    `get_alle_rueckrufe_fuer_sync()`: ein `--apply`-Lauf muss den eigenen,
+    gerade erst geschriebenen Stand sofort sehen."""
+    from app.kba_reconciliation import normalisiere_referenz
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT kba_referenz, canonical_make, canonical_nameplate FROM rueckruf "
+            "WHERE baureihe_id IS NULL").fetchall()
+    return {(normalisiere_referenz(r["kba_referenz"]), r["canonical_make"], r["canonical_nameplate"])
+            for r in rows}
+
+
+def insert_rueckruf_canonical(conn, zeile: dict) -> int:
+    """RC-W6: fuegt EINE canonical-only `rueckruf`-Zeile ein (baureihe_id
+    NULL, canonical_make/canonical_nameplate gesetzt — siehe
+    `app.kba_canonical_import.zeile_fuer_insert`). Erwartet eine bereits
+    offene Transaktion (wie jede andere Schreibfunktion dieses Projekts,
+    vgl. `app/db_writer.py`); committet NICHT selbst. Gibt die neue
+    `rueckruf.id` zurueck."""
+    cur = conn.execute(
+        "INSERT INTO rueckruf (baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,"
+        "kba_referenz,eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich,"
+        "canonical_make,canonical_nameplate) VALUES (NULL,?,?,?,?,?,?,?,?,?,?)",
+        (zeile["datum"], zeile["betroffene_baujahre"], zeile["mangel"], zeile["abhilfe"],
+         zeile["kba_referenz"], zeile["eingrenzung_amtlich"], zeile["prod_von_amtlich"],
+         zeile["prod_bis_amtlich"], zeile["canonical_make"], zeile["canonical_nameplate"]))
+    return cur.lastrowid
+
+
+def get_rueckrufe_canonical_fuer_identity(canonical_make: str, nameplate_kandidaten: set[str],
+                                          baujahr: int | None) -> list[dict]:
+    """RC-W6: canonical-only KBA-Kandidaten fuer EXAKT diese Marke + eines der
+    gegebenen Nameplate-Tokens, zeitlich gefiltert gegen `baujahr`.
+
+    NUR der Lesepfad — der Aufrufer MUSS vorher `app.kba_canonical_trust.
+    kba_lookup_vertrauen()` auf KBA_LOOKUP_ALLOWED geprueft haben (diese
+    Funktion kennt die Identitaet selbst nicht und erzwingt das Trust-Gate
+    deshalb nicht erneut). `canonical_make` MUSS bereits ueber
+    `kba_marke()` normalisiert sein (derselbe Namensraum wie die beim
+    Import gespeicherten Werte).
+
+    Dieselbe Verifikations-/Sperr-Pipeline wie `get_baureihe()`
+    (`annotiere_fakten` + `sichtbare_fakten` + `recall_filter.
+    nur_belegte_rueckrufe`) — EIN Lesepfad, EINE Wahrheit, keine zweite
+    Trust-Policy fuer canonical-only Zeilen."""
+    from app.recall_filter import nur_belegte_rueckrufe
+    if not nameplate_kandidaten:
+        return []
+    platzhalter = ",".join("?" for _ in nameplate_kandidaten)
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz,"
+            f"eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich,canonical_make,"
+            f"canonical_nameplate FROM rueckruf WHERE baureihe_id IS NULL "
+            f"AND canonical_make=? AND canonical_nameplate IN ({platzhalter}) "
+            # Veroeffentlichungsdatum != Produktionszeitraum (Abschnitt 7 des
+            # Audits): gefiltert wird AUSSCHLIESSLICH gegen das amtliche
+            # Produktionsfenster, nie gegen `datum`.
+            f"AND (prod_von_amtlich IS NULL OR ? IS NULL OR prod_von_amtlich<=?) "
+            f"AND (prod_bis_amtlich IS NULL OR ? IS NULL OR prod_bis_amtlich>=?)",
+            (canonical_make, *sorted(nameplate_kandidaten), baujahr, baujahr, baujahr, baujahr),
+        ).fetchall()]
+        rows = annotiere_fakten(conn, "rueckruf", rows)
+    rows = sichtbare_fakten(rows)
+    return nur_belegte_rueckrufe(rows, marke=canonical_make)
 
 
 def invalidate_referenzdaten_cache() -> None:

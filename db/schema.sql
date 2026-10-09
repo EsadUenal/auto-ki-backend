@@ -65,10 +65,18 @@ CREATE TABLE IF NOT EXISTS schwachstelle_baureihe (
     schweregrad         TEXT NOT NULL CHECK(schweregrad IN ('gering','mittel','hoch'))
 );
 
--- KBA-Rückrufe (1:n)
+-- KBA-Rückrufe (1:n zu Baureihe, ODER canonical-only ohne Baureihe — RC-W6)
 CREATE TABLE IF NOT EXISTS rueckruf (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    baureihe_id         TEXT NOT NULL REFERENCES baureihe(id) ON DELETE CASCADE,
+    -- RC-W6: NICHT mehr NOT NULL. Ein amtlicher KBA-Rueckruf fuer eine Marke
+    -- ohne ENFAL-Baureihen-Katalogeintrag (z.B. Mazda) wird "canonical-only"
+    -- gespeichert (baureihe_id NULL, canonical_make/canonical_nameplate
+    -- stattdessen gesetzt — s.u. und app/kba_canonical_import.py). Siehe
+    -- app/database.py::_migriere_rueckruf_canonical fuer dieselbe Aenderung
+    -- auf einer bestehenden Live-DB (Tabellen-Rebuild, da SQLite kein
+    -- ALTER COLUMN DROP NOT NULL kennt); hier fuer eine FRISCH aus dieser
+    -- Datei angelegte DB, damit beide Wege dasselbe Schema ergeben.
+    baureihe_id         TEXT REFERENCES baureihe(id) ON DELETE CASCADE,
     datum               TEXT,
     betroffene_baujahre TEXT,
     mangel              TEXT NOT NULL,
@@ -81,7 +89,16 @@ CREATE TABLE IF NOT EXISTS rueckruf (
     -- angelegte DB, damit beide Wege dasselbe Schema ergeben).
     eingrenzung_amtlich TEXT,
     prod_von_amtlich    INTEGER,
-    prod_bis_amtlich    INTEGER
+    prod_bis_amtlich    INTEGER,
+    -- RC-W6: amtliche Marke (Provenienz, KBA-Rohtext ueber kba_marke()
+    -- normalisiert matchbar) und das EINE aufgeloeste Modelltoken dieses
+    -- PAARES (app.kba_canonical_import — "Importeinheit ist ein PAAR", nie
+    -- die rohe, oft mehrmodellige KBA-Modellspalte). Beide NULL bei jeder
+    -- baureihe-gebundenen Zeile; beide gesetzt bei jeder canonical-only Zeile.
+    canonical_make      TEXT,
+    canonical_nameplate TEXT,
+    CHECK (baureihe_id IS NOT NULL
+           OR (canonical_make IS NOT NULL AND canonical_nameplate IS NOT NULL))
 );
 
 -- Quellen (1:n)

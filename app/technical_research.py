@@ -901,47 +901,19 @@ def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str 
 # strukturell nicht von einer bloßen Schlagzeile zu unterscheiden. Ein
 # Mindestmaß von 3 verbleibenden, inhaltstragenden Tokens (kein Fahrzeug-,
 # Marken- oder Funktionswort) gilt generisch für JEDE Marke/jedes Bauteil.
-_FUELLWOERTER = frozenset({
-    "der", "die", "das", "des", "dem", "den", "ein", "eine", "einen", "einem", "einer",
-    "und", "oder", "fuer", "von", "im", "am", "zu", "ist", "sind", "auch", "nur", "bei",
-    "aus", "auf", "als", "mit", "nach", "vor", "ueber", "unter", "sich", "es", "er", "sie",
-})
-
-
-def _inhaltstokens(satz: str, marke: str | None, modell: str | None,
-                   bauteil: str | None) -> set[str]:
-    """Die INHALTSTRAGENDEN Tokens eines Satzes — alles ausser Marke, Modell,
-    Bauteil, dem Rückruf-Vokabular und generischen Füllwörtern. Grundlage
-    sowohl für die Substanz-Schwelle (`_ist_substanziell`) als auch für den
-    Event-Gleichheits-Abgleich (`_gleiches_rueckruf_ereignis`)."""
-    kern = _tokens(marke) | _tokens(modell) | _tokens(bauteil)
-    uebrig = _tokens(satz) - _FUELLWOERTER - {"rueckruf", "recall", "rueckrufaktion"} - kern
-    # Kompositum-Flexionsformen ("kraftstoffleitungs" aus "Kraftstoffleitungs-
-    # Rückruf") zählen ebenfalls zum Kern — exakte Mengendifferenz reicht dafür
-    # nicht, deshalb zusätzlich ein fuzzy Präfix-Abgleich für längere Tokens.
-    return {t for t in uebrig
-           if not any(len(k) >= 4 and (t.startswith(k) or k.startswith(t)) for k in kern)}
+#
+# RC-W6 (Abschnitt 9): nach `app.recall_event_matching` extrahiert — derselbe
+# Event-Gleichheits-Abgleich wird jetzt auch von `app.kaufcheck` fuer die
+# KBA-vs-Web-Quellenprioritaet wiederverwendet, statt ihn dort ein zweites
+# Mal (und ggf. abweichend) zu implementieren. Lokale Aliase, damit der
+# restliche Code dieser Datei unveraendert bleibt.
+from app.recall_event_matching import gleiches_rueckruf_ereignis as _gleiches_rueckruf_ereignis
+from app.recall_event_matching import inhaltstokens as _inhaltstokens
 
 
 def _ist_substanziell(satz: str, marke: str | None, modell: str | None,
                       bauteil: str | None) -> bool:
     return len(_inhaltstokens(satz, marke, modell, bauteil)) >= 3
-
-
-# Release-Hardening (Cross-Source-Review): wie viele INHALTSTRAGENDE Tokens
-# (nicht Marke/Modell/Bauteil/Rückruf-Vokabular — s.o.) zwei Rückruf-Aussagen
-# teilen müssen, um als dieselbe Meldung zu gelten. Bauteil ALLEIN reicht
-# nicht (siehe `_gleiches_rueckruf_ereignis`) — zwei völlig unabhängige
-# Kraftstoffleitungs-Rückrufe dürfen sich nicht gegenseitig sperren. Bewusst
-# konservativ: im Zweifel NICHT als dasselbe Ereignis gelten (das überlässt
-# die Entscheidung dann der eigenen Scope-Prüfung des jeweiligen Kandidaten).
-_MIN_GLEICHHEIT_TOKENS = 2
-
-
-def _gleiches_rueckruf_ereignis(kandidat_tokens: set[str],
-                                ausgeschlossene_tokens: list[set[str]]) -> bool:
-    return any(len(kandidat_tokens & ex) >= _MIN_GLEICHHEIT_TOKENS
-              for ex in ausgeschlossene_tokens)
 
 
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,

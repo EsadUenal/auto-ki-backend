@@ -61,6 +61,7 @@ TRUST_USER = "user"
 TRUST_ABGELEITET = "abgeleitet"
 
 from app.rueckruf_titel import rueckruf_kurztitel  # noqa: E402
+from app.recall_event_matching import gleiches_rueckruf_ereignis, inhaltstokens  # noqa: E402
 
 # Titel "<Bauteil>: <Art>" (neu) bzw. "<Bauteil> — <Art>" (bis RC1, noch in
 # gespeicherten Ergebnissen und Fixtures). Beide Formen werden verstanden.
@@ -202,6 +203,7 @@ def build_insights(
     marktanalyse: Marktanalyse | None = None,
     web_recherche=None,
     identity: VehicleIdentity | None = None,
+    canonical_rueckrufe: list[dict] | None = None,
 ) -> list[Insight]:
     """Baut die Liste nachvollziehbarer Insights aus deterministischen Daten.
 
@@ -213,6 +215,14 @@ def build_insights(
     EIGENE Kategorien (`web_schwachstelle`/`web_rueckruf`/`web_wartung`) mit
     `typ="web_technik"`-Quellen ausgegeben — nie vermischt mit der geprüften
     Fahrzeugdatenbank. Nur für den Kaufcheck; der Verkaufscheck bleibt unberührt.
+
+    `canonical_rueckrufe` (RC-W6, optional): amtliche KBA-Rueckrufe OHNE
+    ENFAL-Baureihen-Katalogeintrag (`app.kba_canonical_lookup.
+    get_rueckrufe_fuer_identity`, bereits durch das Trust-Gate UND dieselbe
+    Verifikations-/Sperr-Pipeline gelaufen wie jede baureihe-gebundene Zeile).
+    Laufen durch GENAU DIESELBE Rückruf-Schleife wie `baureihe["rueckrufe"]`
+    (Kategorie `"rueckruf"`, nicht `"web_rueckruf"`) — keine zweite
+    Applicability, keine zweite Trust-Policy.
     """
     insights: list[Insight] = []
     baujahr = getattr(req, "baujahr", None)
@@ -306,15 +316,20 @@ def build_insights(
             fakt_ref=_fakt_ref("schwachstelle_baureihe", s),
         ))
 
-    # ── 2) Rückrufe (KBA-Daten) ────────────────────────────────────────────────
-    for r in (baureihe or {}).get("rueckrufe") or []:
+    # ── 2) Rückrufe (KBA-Daten; RC-W6: + canonical-only ohne Baureihe) ──────────
+    for r in ((baureihe or {}).get("rueckrufe") or []) + (canonical_rueckrufe or []):
         if not allowed(r):
             continue
         passt = _baujahr_passt(r.get("betroffene_baujahre"), baujahr)
         if passt is False:
             continue
         kba = (r.get("kba_referenz") or "").strip()
-        marke = (baureihe or {}).get("marke")
+        # RC-W6: ohne Baureihe (canonical-only) ist die amtliche Marke nur auf
+        # der Zeile selbst bekannt (`canonical_make`, beim Import ueber
+        # `kba_marke()` normalisiert — derselbe Namensraum, den
+        # `kba_referenz_anzeige`/`_rueckruf_applicability` fuer das
+        # KBA-Trust-Gate erwarten).
+        marke = (baureihe or {}).get("marke") or r.get("canonical_make")
         # KBA-Trust-Gate (DATA-TRUST-AUDIT): eine unplausible oder markenübergreifend
         # kollidierende Referenz wird NICHT als Quelle gezeigt — `kba_anzeige` ist
         # dann None, exakt wie eine fehlende Referenz. Der Rohwert `kba` bleibt nur
@@ -666,6 +681,23 @@ def build_insights(
             # (NOT_APPLICABLE) schließt den Web-Rückruf genauso aus wie einen
             # DB-Rückruf; ohne bekannten Gegenbeweis bleibt er sichtbar.
             if fakt.kategorie == "rueckruf":
+                # RC-W6 (Abschnitt 9): KBA ist primaer. Beschreibt dieser
+                # Web-Rückruf-Fakt (nach Inhalt, nicht nur Bauteil) dieselbe
+                # Meldung wie ein bereits gefundener canonical-only
+                # KBA-Rueckruf, entfaellt der Web-Fakt — sonst entstuenden
+                # zwei Insights fuer EIN amtliches Ereignis. Bauteil allein
+                # reicht nicht (siehe `app.recall_event_matching`); bewusst
+                # konservativ, im Zweifel bleibt der Web-Fakt bestehen.
+                if canonical_rueckrufe:
+                    fakt_marke = getattr(identity, "make", None)
+                    fakt_modell = getattr(identity, "model", None)
+                    fakt_tokens = inhaltstokens(fakt.aussage, fakt_marke, fakt_modell, fakt.bauteil)
+                    kba_tokens = [inhaltstokens(kr.get("mangel") or "", fakt_marke, fakt_modell)
+                                 for kr in canonical_rueckrufe]
+                    if gleiches_rueckruf_ereignis(fakt_tokens, kba_tokens):
+                        log.info("Web-Rückruf '%s' entfällt: deckt sich inhaltlich mit einem "
+                                 "bereits gefundenen amtlichen KBA-Rückruf.", fakt.bauteil)
+                        continue
                 # `scope_text` (alle betroffenheits-tragenden Saetze des Artikels,
                 # siehe app/technical_research.py) gibt der zentralen Policy mehr
                 # als nur den einen Anzeige-Satz zu sehen — ein Scope im Nachbarsatz

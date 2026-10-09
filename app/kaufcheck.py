@@ -59,6 +59,7 @@ from app.preisurteil import (
     prompt_block as preis_prompt_block,
 )
 from app.kaufaktionen import build_kaufaktionen
+from app.kba_canonical_lookup import get_rueckrufe_fuer_identity
 from app.hu_termin import bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
 from app.markt_quellen import geeignete_marktquellen
 from app.empfehlung_gruende import baue_empfehlung_gruende
@@ -403,8 +404,19 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # 2.0 ist jetzt bereits vor dem LLM berechnet) und dem LLM kompakt zum
     # Referenzieren mitgeben. Die IDs sind stabil, sodass die vom LLM referenzierten
     # IDs anschließend gegen genau diese Insights validiert werden können.
+    # RC-W6: amtliche KBA-Rueckrufe ohne ENFAL-Baureihen-Katalogeintrag — NUR
+    # ein Zusatzangebot fuer den Fall, dass keine Baureihe gefunden wurde
+    # (sonst liefe der bestehende, unveraenderte Baureihen-Pfad bereits
+    # vollstaendig; ein zweiter, ueberfluessiger Lookup koennte sonst
+    # theoretisch denselben Rueckruf doppelt einspeisen). Das Trust-Gate
+    # (app.kba_canonical_trust) entscheidet intern, ob ueberhaupt gelesen
+    # wird — eine unsichere Identitaet liefert hier immer `[]`.
+    canonical_rueckrufe: list[dict] = []
+    if baureihe is None:
+        canonical_rueckrufe, _kba_vertrauen = get_rueckrufe_fuer_identity(identity)
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
-                              marktanalyse=marktanalyse, web_recherche=web_recherche, identity=identity)
+                              marktanalyse=marktanalyse, web_recherche=web_recherche, identity=identity,
+                              canonical_rueckrufe=canonical_rueckrufe)
     evidence_block = format_evidence_for_prompt(insights)
     # Root-Cause-Closing (Befund C/E, 4.5): der DB-Kontext zeigt dem Modell die
     # KANONISCHE Risikomenge mit Beleglage, nicht mehr die drei Rohlisten. Der
