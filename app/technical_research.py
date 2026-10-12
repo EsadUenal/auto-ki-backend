@@ -1032,6 +1032,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         url = r.get("url") or ""
         score = score_domain(url, _WEB_KATEGORIE[kategorie])
         if score < min_score:
+            # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
+            # Verwerfung ganzer Treffer unterhalb der Quellenschwelle.
+            abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "source_quality"})
             continue
         ok, grund = ausgerichtet(r, marke, modell) if (marke or modell) else (True, None)
         if not ok:
@@ -1056,6 +1059,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                   "satz": satz_liste[idx][:120]})
                 continue
             if grund == "schwach" and not _satz_nennt_modell(satz, modell):
+                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
+                # Verwerfung auf einer schwach ausgerichteten Seite, wenn der
+                # einzelne Satz Marke/Modell nicht selbst nennt.
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "schwach_ausgerichtet_ohne_modellnennung",
+                                  "satz": satz[:120]})
                 continue
             if kategorie == "rueckruf":
                 fremde_marke = _fremde_marke_satz(satz, marke, modell)
@@ -1070,10 +1079,18 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                   "grund": "benign_relativiert", "satz": satz[:120]})
                 continue
             if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
+                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
+                # Verwerfung, wenn kein Wort aus `_PROBLEM_WORTE` vorkommt.
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "no_problem_signal", "satz": satz[:120]})
                 continue
             if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "no_recall_signal", "satz": satz[:120]})
                 continue
             if kategorie == "wartung" and not _INTERVALL.search(satz):
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "no_maintenance_interval", "satz": satz[:120]})
                 continue
             z = zeitraum(satz) if kategorie != "wartung" else None
             passt = _im_zeitraum(baujahr, z)
@@ -1093,6 +1110,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 teil = _rueckruf_bauteil(satz)
                 if teil:
                     treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
+            if not treffer_voc:
+                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
+                # Verwerfung, wenn der Satz zwar ein Problem-/Rückrufwort bzw.
+                # Wartungsintervall enthält, aber kein bekanntes Bauteil (und,
+                # nur bei "rueckruf", auch kein generischer Bauteil-Fallback).
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "no_component", "satz": satz[:120]})
+                continue
             for muster, schluessel in treffer_voc:
                 if (kategorie == "rueckruf" and passt is not True
                         and schluessel in ausgeschlossene_themen):
