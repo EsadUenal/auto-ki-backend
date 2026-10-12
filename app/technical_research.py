@@ -737,12 +737,219 @@ _RELATIVIERUNG = re.compile(
     re.IGNORECASE)
 
 
+# RC-W3 (struktureller Coverage-Fix): ein kleiner, geschlossener Satz
+# zusätzlicher Defekt-/Verschleiss-Signale für Fälle OHNE jedes Wort aus
+# `_PROBLEM_WORTE` — bewusst klein (keine Ontologie, keine Symptome, keine
+# vergleichenden Leistungs-/Verbrauchsaussagen, kein freies Kausalverb):
+#   * Material/Zustand: Korrosion/Rost sind, anders als z.B. "Rasseln" oder
+#     "Problem", in der Praxis NIE eine neutrale Beschreibung — ihr einziges
+#     Risiko ist die VERNEINUNG ("kein Rost"), die unten generisch abgefangen
+#     wird, nicht eine andere, harmlose Bedeutung des Wortes selbst.
+#   * Verschleiss-Veränderung ("wird länger/porös/undicht/locker"): nur mit
+#     EINEM der fest gelisteten Verschleiss-Adjektive, nicht mit beliebigen
+#     Vergleichsformen ("geringer", "höher" bleiben bewusst aussen vor).
+#   * "Spiel" ist allein zu mehrdeutig (Zweideutigkeit mit "Spiel"=Spielen) —
+#     nur zusammen mit einem Erwerbs-Verb ("bekommt/hat/zeigt/entwickelt
+#     Spiel") ein Signal.
+_STRUKTUR_MATERIAL_WORTE = ("korrosion", "rost", "durchrostung")
+_STRUKTUR_VERSCHLEISS_ADJ = ("laenger", "poroes", "undicht", "locker", "lose", "sproede")
+_RE_STRUKTUR_VERSCHLEISS = re.compile(
+    r"\b(?:" + "|".join(_STRUKTUR_VERSCHLEISS_ADJ) + r")\w*\s+(?:wird|werden)\b"
+    # Negations-Stresstest (Fall N): "wird mit der Zeit porös" — das haeufige
+    # Zeit-Idiom darf das generische Fuellwort-Budget nicht aufbrauchen, sonst
+    # geht die normale, 0-2-Woerter-Formulierung ("wird deutlich laenger")
+    # verloren, wenn stattdessen dieses eine Idiom extra zugelassen wuerde.
+    r"|\b(?:wird|werden)\s+(?:mit\s+der\s+zeit\s+|im\s+laufe\s+der\s+zeit\s+|nach\s+und\s+nach\s+)?"
+    r"(?:\w+\s+){0,2}(?:" + "|".join(_STRUKTUR_VERSCHLEISS_ADJ) + r")\w*\b",
+    re.IGNORECASE)
+_RE_STRUKTUR_SPIEL = re.compile(
+    r"\b(?:bekomm\w*|hat|haben|zeig\w*|entwickel\w*)\s+(?:\w+\s+){0,2}spiel\b", re.IGNORECASE)
+
+
+def _hat_strukturelles_defektsignal(n: str, satz: str) -> bool:
+    """True, wenn der Satz eines der oben genannten, kleinen strukturellen
+    Signale enthält — zusätzlich zu, nicht statt, `_PROBLEM_WORTE`. `n` ist
+    die bereits normalisierte Form des Satzes (siehe `_norm`)."""
+    return (any(w in n for w in _STRUKTUR_MATERIAL_WORTE)
+            or bool(_RE_STRUKTUR_VERSCHLEISS.search(satz))
+            or bool(_RE_STRUKTUR_SPIEL.search(satz)))
+
+
+# RC-W3: generische Verneinung ÜBER jedes bekannte Defekt-/Verschleisswort
+# (bestehend aus `_PROBLEM_WORTE` UND neu aus den obigen Struktursignalen),
+# statt nur die feste Phrasenliste in `_RELATIVIERUNG` zu erweitern. "kein(e)
+# <Defektwort>" bzw. "nicht <Verschleiss-Adjektiv>" galt VORHER für KEIN
+# Wort generisch (auch "kein Schaden"/"kein Defekt" wären mit der alten,
+# rein phrasenbasierten `_RELATIVIERUNG` nicht erkannt worden) — das wird
+# hier für die gesamte Wortliste auf einmal geschlossen, nicht pro Wort.
+_DEFEKT_NOMEN_FUER_NEGATION = _PROBLEM_WORTE + _STRUKTUR_MATERIAL_WORTE + ("spiel",)
+_RE_NEGATION_NOMEN = re.compile(
+    r"\bkein\w*\s+(?:\w+\s+){0,2}(?:" + "|".join(_DEFEKT_NOMEN_FUER_NEGATION) + r")\w*\b",
+    re.IGNORECASE)
+_RE_NEGATION_ADJ = re.compile(
+    r"\bnicht\s+(?:\w+\s+){0,2}(?:" + "|".join(_STRUKTUR_VERSCHLEISS_ADJ) + r")\w*\b",
+    re.IGNORECASE)
+
+# RC-W3 (Negations-Stresstest nach Korrosion/Rost-Aufnahme): "kein(e) X" und
+# "nicht <Adjektiv>" allein reichen nicht — reale Quellen formulieren Abwesenheit
+# auch als "X ist nicht vorhanden/feststellbar", "ohne X", "frei von X",
+# "X ausgeschlossen" und "weder X noch Y". Jedes dieser Muster ist generisch
+# (kein Fahrzeug-/Markenwort) und bewusst eng gefasst:
+#   * "ohne"/"frei von" mit max. 1 Füllwort, DAMIT "Ohne rechtzeitige Reparatur
+#     kann Rost die Struktur schwächen" (4 Wörter bis "Rost") NICHT mit-matcht —
+#     ein echter Claim, kein negierter.
+#   * "nicht vorhanden/feststellbar/erkennbar/..." ist als Phrase selbst schon
+#     eindeutig Abwesenheit, unabhängig vom vorausgehenden Wort — kein Risiko
+#     für "nicht nur ..." o.ä. (andere Fortsetzung, kein Match).
+_RE_ABWESENHEIT_PHRASE = re.compile(
+    r"\bnicht\s+(?:\w+\s+){0,2}(?:vorhanden|feststellbar|erkennbar|nachweisbar|sichtbar|auffindbar)\b",
+    re.IGNORECASE)
+_RE_OHNE_FREI_VON = re.compile(
+    r"\bohne\s+(?:\w+\s+){0,1}(?:" + "|".join(_DEFEKT_NOMEN_FUER_NEGATION) + r")\w*\b"
+    r"|\bfrei\s+von\s+(?:\w+\s+){0,1}(?:" + "|".join(_DEFEKT_NOMEN_FUER_NEGATION) + r")\w*\b",
+    re.IGNORECASE)
+_RE_AUSGESCHLOSSEN = re.compile(
+    r"\b(?:" + "|".join(_DEFEKT_NOMEN_FUER_NEGATION) + r")\w*\s+(?:\w+\s+){0,3}ausgeschlossen\b",
+    re.IGNORECASE)
+_RE_WEDER_NOCH = re.compile(
+    # Multi-Claim-Stresstest: "weder porös noch undicht" nennt zwei Adjektive,
+    # keine Nomen — ohne die Verschleiss-Adjektivliste hier mit aufzunehmen,
+    # rutscht diese Verneinung durch (gefundener False Positive).
+    r"\bweder\s+(?:\w+\s+){0,1}"
+    r"(?:" + "|".join(_DEFEKT_NOMEN_FUER_NEGATION + _STRUKTUR_VERSCHLEISS_ADJ) + r")\w*\b",
+    re.IGNORECASE)
+
+
 def _ist_benign_relativiert(satz: str) -> bool:
     """True, wenn der Satz seine eigene Problem-/Defektaussage relativiert oder
     verneint. Wirkt NUR auf den geprüften Satz selbst (Satz-, nicht
     Absatzebene) — ein echter Defekt-Claim im Nachbarsatz derselben Quelle
     bleibt davon unberührt."""
-    return bool(_RELATIVIERUNG.search(satz or ""))
+    n = _norm(satz)
+    return bool(_RELATIVIERUNG.search(satz or "")
+                or _RE_NEGATION_NOMEN.search(n)
+                or _RE_NEGATION_ADJ.search(n)
+                or _RE_ABWESENHEIT_PHRASE.search(n)
+                or _RE_OHNE_FREI_VON.search(n)
+                or _RE_AUSGESCHLOSSEN.search(n)
+                or _RE_WEDER_NOCH.search(n))
+
+
+# RC-W3 (Mixed-Polarity / Claim-Segmentierung): `_ist_benign_relativiert()`
+# prüft EINEN Textabschnitt als Ganzes. Ein Satz wie "Korrosion ist nicht
+# feststellbar, ABER die Dichtung ist undicht." enthält zwei durch ein
+# Kontrastwort verbundene, GEGENSÄTZLICHE Teilaussagen — die erste benign,
+# die zweite ein eigener, echter Claim; ein Satz kann auch 3+ solche
+# Teilaussagen enthalten ("... aber ..., jedoch ..., während ..."). Eine
+# erste Version dieses Fixes (Einmal-Split am ERSTEN Kontrastwort, Rest als
+# EIN Block weiterverarbeitet) versagte bereits bei einem dritten Claim: der
+# "Rest" blieb seinerseits ein gemischter Block, der als Ganzes wieder
+# benign ODER wieder akzeptiert werden konnte, nie beides getrennt — und es
+# konnte strukturell nie mehr als EIN WebFakt aus einem Satz entstehen.
+#
+# `_segmentiere_claims()` zerlegt stattdessen VOLLSTÄNDIG (nicht nur am
+# ersten Treffer) in beliebig viele Claim-Segmente, in EINEM linearen
+# `re.split()`-Durchlauf (kein Rekursion, keine Schleife, kein
+# Endlosrisiko). Jedes Segment wird danach vom Aufrufer UNABHÄNGIG
+# bewertet (benign/Problem-/Struktursignal/Komponente/Zeitraum) — ein
+# benigner Claim verwirft nur sich selbst, ein echter Claim wird nur für
+# sich selbst akzeptiert.
+#
+# Zwei Trenner-Arten:
+#   1. Kontrastkonnektoren (aber/jedoch/allerdings/während/hingegen/dagegen/
+#      dafür/zugleich/außerdem/zudem/dennoch/trotzdem) trennen IMMER — sie
+#      signalisieren per Definition einen Wechsel der Aussage.
+#   2. "und"/"sowie"/"oder" trennen NUR, wenn unmittelbar danach ein neuer
+#      Subjekt-Claim beginnt (Artikel/Possessiv + Nomen: "... und DIE
+#      WASSERPUMPE fällt aus") — sonst bleibt es ein zusammenhängender Claim
+#      ("wird porös UND undicht", "Wasserpumpe UND Thermostat wurden
+#      ersetzt"). Das ist eine bewusst kleine, generische Heuristik (keine
+#      Grammatik-Analyse): sie erkennt nicht JEDEN Fall korrekt, vermeidet
+#      aber das Hauptrisiko (Adjektiv-/Objekt-Aufzählung fälschlich als
+#      neuer Claim).
+_KONTRAST_KONNEKTOREN = ("aber", "jedoch", "allerdings", "waehrend", "während",
+                        "hingegen", "dagegen", "dafuer", "dafür", "zugleich",
+                        "ausserdem", "außerdem", "zudem", "dennoch", "trotzdem")
+_RE_KONTRASTTEILUNG = re.compile(r"\b(?:" + "|".join(_KONTRAST_KONNEKTOREN) + r")\b",
+                                 re.IGNORECASE)
+_NEUER_CLAIM_ANKER = (r"(?:der|die|das|den|dem|des|ein|eine|einer|eines|einem|einen|"
+                     r"sein|seine|ihr|ihre)\s+\w+")
+_RE_UND_ALS_TRENNER = re.compile(r"\b(?:und|sowie|oder)\b\s+(?=" + _NEUER_CLAIM_ANKER + r")",
+                                 re.IGNORECASE)
+# Multi-Claim-Stresstest: "Die Wasserpumpe UND der Thermostat wurden ersetzt."
+# erfüllt den Anker oben (Artikel+Nomen nach "und"), ist aber ein
+# zusammengesetztes SUBJEKT vor EINEM gemeinsamen Prädikat, kein zweiter
+# Claim — anders als "Die Dichtung ist undicht UND die Wasserpumpe zeigt
+# einen Defekt" (zwei VOLLSTÄNDIGE Teilsätze). Unterscheidung: hat der Teil
+# VOR "und" bereits sein eigenes finites Verb, ist es ein abgeschlossener
+# Teilsatz — sonst meist nur ein Aufzählungs-Subjekt vor dem gemeinsamen
+# Prädikat. Kleine, geschlossene Liste gängiger finiter Verbformen (kein
+# Fahrzeugwort, keine Grammatik-Engine).
+_RE_FINITES_VERB_ANKER = re.compile(
+    r"\b(?:ist|sind|war|waren|wird|werden|wurde|wurden|hat|haben|hatte|hatten|"
+    r"kann|k(?:ö|oe)nnen|konnte|muss|m(?:ü|ue)ssen|musste|sollte|sollten|"
+    r"zeigt|zeigen|zeigte|tritt|treten|trat|f(?:ä|ae)llt|fallen|fiel|"
+    r"bekommt|bekommen|bekam|entwickelt|entwickeln|entwickelte)\b",
+    re.IGNORECASE)
+
+
+def _und_segmente(text: str) -> list[str]:
+    """Teilt `text` an "und/sowie/oder" + neuer Subjekt-Claim — aber NUR an
+    Trennpunkten, an denen der Teil DAVOR (seit dem letzten Trennpunkt)
+    bereits ein eigenes finites Verb trägt (siehe oben). Ein linearer
+    Durchlauf über alle Treffer, keine Rekursion."""
+    segmente: list[str] = []
+    pos = 0
+    for m in _RE_UND_ALS_TRENNER.finditer(text):
+        vorher = text[pos:m.start()]
+        if _RE_FINITES_VERB_ANKER.search(vorher):
+            segmente.append(text[pos:m.start()])
+            pos = m.end()
+    segmente.append(text[pos:])
+    return segmente
+# Release-Review: eine frühere Fassung begrenzte die Segmentzahl künstlich
+# (_MAX_CLAIM_SEGMENTE) und fiel bei Überschreitung zunächst sogar auf
+# `[satz]` zurück — das MERGT bereits korrekt getrennte Claims wieder zu
+# einem Block und bringt genau das Problem zurück, das die Segmentierung
+# lösen soll (Polarität wirkt wieder quer über Claims, echte Claims gehen
+# verloren). Ein reiner Truncation-Cap verwarf danach immerhin nur die
+# Segmente über der Grenze, aber IMMER NOCH echte Information ohne
+# nachweisbaren Grund.
+#
+# Performance-Messung (siehe Sessionbericht): `re.split()` + die lineare
+# `_und_segmente()`-Suche bleiben bei 2000 (!) künstlich verketteten Claims
+# in einem 71 KB "Satz" bei 4,6 ms — weit unterhalb jeder Tavily-Snippet-
+# Realität (einzelne Suchtreffer liegen im Bereich einiger hundert bis
+# wenige tausend Zeichen, zusätzlich auf `max_results=8` Treffer pro
+# Kategorie begrenzt). Es gibt keinen nachweisbaren Grund für ein
+# künstliches Claim-Anzahl-Limit, das reale Information verlieren könnte —
+# daher: KEIN Cap. Die eigentliche, sinnvolle Grenze ist die ohnehin
+# vorhandene, begrenzte Eingabegröße (Suchtreffer-Anzahl und -Länge), nicht
+# eine willkürliche Segmentzahl.
+def _segmentiere_claims(satz: str) -> list[str]:
+    """Zerlegt `satz` vollständig in eigenständige Claim-Segmente (siehe
+    Moduldocstring oben). Liefert immer mindestens `[satz]` — nur wenn KEIN
+    Trenner gefunden wird, bleibt der ganze Satz EIN Segment (identisch zum
+    Verhalten ohne diesen Fix). Kein Limit auf die Segmentzahl (siehe
+    Performance-Begründung oben) — jedes gefundene Segment wird behalten."""
+    if not satz:
+        return [satz]
+    segmente: list[str] = []
+    for grobstueck in _RE_KONTRASTTEILUNG.split(satz):
+        segmente.extend(_und_segmente(grobstueck))
+    segmente = [s.strip(" ,;.") for s in segmente if s and s.strip(" ,;.")]
+    return segmente or [satz]
+
+
+# Release-Review (Risiko 2): explizite ALLOWLIST statt `!= "rueckruf"`. Eine
+# Negativ-Prüfung hätte JEDE heutige oder künftige Kategorie außer "rueckruf"
+# automatisch in die neue Claim-Semantik gezogen, auch ohne bewussste
+# Entscheidung. RC-W3 betrifft ausschließlich die technische Schwachstellen-/
+# Wartungs-Extraktion — "rueckruf" (Package A, bereits freigegeben/CLOSED)
+# bleibt auf dem alten, satzweisen Pfad; jede andere/künftige Kategorie
+# bekommt NICHT automatisch neue Semantik, sondern müsste hier explizit
+# aufgenommen werden.
+_CLAIM_SEGMENTIERUNG_KATEGORIEN = frozenset({"schwachstelle", "wartung"})
 
 
 _INTERVALL = re.compile(
@@ -804,9 +1011,20 @@ def _bauteil_vokabular() -> dict[str, str]:
             for eintrag in _KOMPONENTEN for muster in eintrag["muster"]}
 
 
-def _saetze(text: str) -> list[str]:
+def _saetze(text: str, *, max_len: int | None = 300) -> list[str]:
+    """`max_len` (Default 300, unverändertes Alt-Verhalten für ALLE
+    bestehenden Aufrufer, insb. Recall/Package A): obere Zeichengrenze pro
+    Satz. RC-W3-Fund: ein realistischer, langer Multi-Claim-Satz (>300
+    Zeichen) verschwand dadurch VOLLSTÄNDIG, bevor `_segmentiere_claims()`
+    überhaupt lief — kein Kürzen, kein Mitten-im-Wort-Split, einfach weg,
+    ohne jede Diagnose. Für die Kategorien, die Claim-Segmentierung nutzen
+    (`schwachstelle`/`wartung`), wird `max_len=None` übergeben: die
+    Sicherheitsgrenze gegen pathologischen Text liegt dort bereits bei
+    `_segmentiere_claims()`/`_MAX_CLAIM_SEGMENTE`, eine zusätzliche
+    Zeichengrenze auf Satzebene ist redundant und kostet nur echte Claims."""
     return [s.strip() for s in _SATZ.split(text or "")
-            if 20 <= len(s.strip()) <= 300 and len(s.split()) >= 5]
+            if len(s.strip()) >= 20 and (max_len is None or len(s.strip()) <= max_len)
+            and len(s.split()) >= 5]
 
 
 # Package C / RC-W3 (Root Cause H): "erste beiden Getriebe-Generationen" ist im
@@ -959,6 +1177,189 @@ from app.recall_event_matching import gleiches_rueckruf_ereignis as _gleiches_ru
 from app.recall_event_matching import inhaltstokens as _inhaltstokens
 
 
+# RC-W3 (Release-Review, Risiko 3 + Dedupe-Semantik-Nachprüfung): `kandidaten.
+# setdefault(schluessel, ...)` dedupte bisher AUSSCHLIESSLICH über die
+# Komponente — zwei fachlich UNTERSCHIEDLICHE Risiken derselben Komponente
+# ("Die Wasserpumpe ist undicht" UND "die Wasserpumpe hat einen Lagerschaden")
+# teilten sich denselben Schlüssel; `setdefault()` verwarf den zweiten Claim
+# dadurch stillschweigend (kein Eintrag in `abgelehnt`, einfach verschluckt).
+#
+# Eine erste Fassung dieses Fixes verwendete dafür `_inhaltstokens()` +
+# `_gleiches_rueckruf_ereignis()` wieder — dieselbe Prüfung, die bereits für
+# den Rückruf-Cross-Source-Vergleich existiert. Das war FALSCH: diese
+# Funktion ist auf längere, scope-tragende Rückruf-Artikelsätze kalibriert
+# (`MIN_GLEICHHEIT_TOKENS = 2`, absolute Mindestanzahl). Beweis dafür: "Die
+# Wasserpumpe ist undicht." gegen SICH SELBST verglichen bleibt bei genau
+# EINEM übrigen Inhaltstoken ("undicht", nach Abzug von Bauteil "Wasserpumpe"
+# und Füllwort "ist") — unterhalb der Schwelle. Die Funktion hätte also
+# selbst zwei WORTGLEICHE kurze technische Claims als "verschieden" gewertet.
+# Technische Schwachstellen-/Wartungs-Einzelsätze sind typischerweise viel
+# kürzer als Rückruf-Artikelsätze — ein absoluter Schwellenwert von 2 passt
+# hier nicht.
+#
+# `_gleiches_technisches_risiko()` ersetzt das für Schwachstelle/Wartung
+# durch ein GRÖSSENRELATIVES Kriterium (mindestens die Hälfte der kleineren
+# Tokenmenge muss übereinstimmen) — funktioniert auch für Ein-Wort-Reste,
+# bleibt aber bei Überlappung 0 (komplett andere Aussage) immer bei
+# "verschieden". Kein Stemming, keine Ontologie: "undicht" und
+# "undichtigkeit" bzw. "verliert Kühlmittel" werden NICHT als dieselbe
+# Aussage erkannt (0 gemeinsame Tokens) — bewusst konservativ, siehe
+# Abschlussbericht. "rueckruf" bleibt unverändert bei
+# `_gleiches_rueckruf_ereignis()`, nicht Teil dieses Fixes.
+# Dedupe-Nachprüfung (Wartungs-Matrix, Fall B): ein Wartungssatz ist textuell
+# fast immer fast identisch zu einem anderen DESSELBEN Bauteils ("sollte alle
+# ... km gewechselt werden") — das WIRKLICH unterscheidende Merkmal ist fast
+# nur das Intervall selbst, das als einzelnes Token unter vielen geteilten
+# "Boilerplate"-Tokens (sollte/alle/km/gewechselt/werden) in der reinen
+# Überlappungsquote untergeht. "alle 60.000 km" vs. "alle 90.000 km" würden
+# sonst trotz WIDERSPRÜCHLICHEM Intervall als dasselbe Risiko gelten. Ein
+# optionales HARTES Unterscheidungsmerkmal (hier: der exakte Intervalltext)
+# erzwingt "verschieden", wenn beide Seiten eines tragen und es abweicht —
+# unabhängig von der sonstigen Textüberlappung.
+# Adversarialer Stresstest (Release-Review): bei kurzen Claims kann ein
+# einzelnes generisches, inhaltsarmes Verb/Wort bereits die Hälfte der
+# kleineren Tokenmenge ausmachen und so zwei fachlich UNTERSCHIEDLICHE
+# Risiken fälschlich zusammenführen — konkret nachgewiesen für "zeigt" ("W.
+# zeigt Verschleiss" vs. "W. zeigt Lagerschaden" -> faelschlich gleich) und
+# ebenso fuer "hat"/"haeufig"/"schaden"/"defekt"/"tritt"/"kann". NUR diese
+# empirisch nachgewiesenen Wörter werden hier herausgefiltert — bewusst KEINE
+# spekulative Erweiterung (z.B. "stark"/"deutlich"/"früh"/"problem" zeigten in
+# denselben Tests KEINEN Fehleffekt und bleiben daher drin). Diese Liste gilt
+# NUR für diesen Comparator, nicht für `_inhaltstokens()` selbst (Rückruf und
+# `_ist_substanziell()` bleiben unverändert).
+_TECHNISCHE_DEDUPE_NIEDRIGINFO = frozenset({
+    "zeigt", "zeigen", "tritt", "treten", "kann", "koennen",
+    "hat", "haben", "schaden", "schaeden", "defekt", "haeufig",
+})
+
+
+# Release-Review (Getriebeöl/Getriebefilter-Kollision): die kanonische
+# Oberkomponente (`schluessel`, z.B. "getriebe") ist NICHT dieselbe Identität
+# wie das konkrete Wartungs-/Schwachstellenobjekt ("Getriebeöl" vs.
+# "Getriebefilter" matchen beide nur "getriebe"). `_anzeige_bauteil()`
+# bewahrt diese konkrete Mention bereits korrekt — der alte Fehler war, sie
+# anschließend über `_inhaltstokens(..., bauteil=...)` als "kern" WIEDER
+# herauszufiltern, bevor der Dedupe-Vergleich sie je sah. Fix: die konkrete
+# Mention wird hier als ZWEITES hartes Unterscheidungsmerkmal übergeben
+# (zusätzlich zum Wartungsintervall) — unterscheiden sich zwei konkrete
+# Mentions, gelten sie als verschieden, UNABHÄNGIG von der sonstigen
+# Textüberlappung — genau wie beim Intervall.
+#
+# Release-Review (Folgefund): eine reine PRÄFIX-Regel ("kürzeres Wort ist
+# Anfang des längeren") verwechselt echte Wortformen ("Getriebeöl" vs.
+# "Getriebeöls") mit fachlich ANDEREN Komposita, die zufällig mit demselben
+# Wort beginnen ("Kühlmittel" vs. "Kühlmittelpumpe", "Getriebeöl" vs.
+# "Getriebeölstand") — JEDES längere Kompositum, das mit dem kürzeren Wort
+# beginnt, würde sonst als dasselbe Objekt gelten. Ersetzt durch eine
+# kleine, geschlossene Flexions-Endungsliste (s/es/en/e/er): zwei Mentions
+# gelten nur gleich, wenn nach Abzug HÖCHSTENS einer dieser Endungen
+# identische Stämme übrig bleiben — ein Kompositum wie "Kühlmittelpumpe"
+# wird dadurch NIE zu "Kühlmittel" (der Unterschied liegt mitten im Wort,
+# nicht an einer Flexionsendung). Keine Morphologie-Engine: bleibt eine
+# echte Wortform (z.B. Umlaut-Pluralverschiebung "Belag"/"Beläge") dennoch
+# ungematcht, gilt bewusst der konservative Grundsatz — lieber ein
+# gelegentlicher Doppel-Fakt als ein False Merge.
+_OBJEKT_FLEXIONS_ENDUNGEN = ("es", "en", "er", "e", "s")
+
+
+def _objekt_stammformen(wort: str) -> set[str]:
+    formen = {wort}
+    for endung in _OBJEKT_FLEXIONS_ENDUNGEN:
+        if len(wort) >= len(endung) + 4 and wort.endswith(endung):
+            formen.add(wort[:-len(endung)])
+    return formen
+
+
+def _gleiches_objekt_mention(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return True  # keine Mention auf einer Seite -> kein Widerspruch, nicht blockieren
+    if a == b:
+        return True
+    return bool(_objekt_stammformen(a) & _objekt_stammformen(b))
+
+
+def _gleiches_technisches_risiko(kandidat_tokens: set[str], andere_tokens: set[str], *,
+                                 kandidat_merkmal: str | None = None,
+                                 andere_merkmal: str | None = None,
+                                 kandidat_objekt: str | None = None,
+                                 andere_objekt: str | None = None) -> bool:
+    if (kandidat_merkmal is not None and andere_merkmal is not None
+            and kandidat_merkmal != andere_merkmal):
+        return False
+    if not _gleiches_objekt_mention(kandidat_objekt, andere_objekt):
+        return False
+    kandidat_tokens = kandidat_tokens - _TECHNISCHE_DEDUPE_NIEDRIGINFO
+    andere_tokens = andere_tokens - _TECHNISCHE_DEDUPE_NIEDRIGINFO
+    if not kandidat_tokens or not andere_tokens:
+        return kandidat_tokens == andere_tokens
+    ueberlappung = len(kandidat_tokens & andere_tokens)
+    if ueberlappung == 0:
+        return False
+    kleinere = min(len(kandidat_tokens), len(andere_tokens))
+    return ueberlappung * 2 >= kleinere
+
+
+def _wartungsintervall_merkmal(claim: str) -> str | None:
+    m = _INTERVALL.search(claim)
+    return _norm(m.group(0)) if m else None
+
+
+# Adversarialer Stresstest (Wartungs-Kollisionen C/D): bei GLEICHEM Intervall
+# überdeckt das Wartungs-Boilerplate ("sollte alle X km gewechselt werden")
+# selbst dann noch einen echten Unterschied, wenn (C) zwei VERSCHIEDENE
+# Komponenten denselben groben Vokabular-Schlüssel teilen ("Getriebeöl" UND
+# "Getriebefilter" matchen beide nur "getriebe") oder (D) dieselbe Komponente
+# bei identischem Intervall eine ANDERE Arbeit beschreibt ("gewechselt" vs.
+# "Füllstand geprüft") — die Zahl/Einheit selbst ("60.000", "km") bleibt nach
+# Abzug der Füllwörter übrig und dominiert die Überlappung. Fix: für Wartung
+# werden zusätzlich die eigenen Wartungs-Füllwörter UND die Tokens des
+# bereits separat geprüften Intervalltexts selbst aus dem Vergleich entfernt
+# — bewusst konservativ: ein Nebeneffekt ist, dass zwei reine SYNONYME
+# ("wechseln"/"erneuern" bei identischem Intervall) jetzt eher als 2 Fakten
+# statt 1 enden können. Lieber ein gelegentliches Doppelrisiko als eine
+# falsche Fusion zweier echter Unterschiede (siehe Abschlussbericht).
+_WARTUNG_DEDUPE_NIEDRIGINFO = frozenset({"sollte", "sollten", "wird", "werden", "alle",
+                                        "spaetestens"})
+
+
+def _wartung_vergleichs_tokens(tokens: set[str], merkmal: str | None) -> set[str]:
+    bereinigt = tokens - _WARTUNG_DEDUPE_NIEDRIGINFO
+    if merkmal:
+        bereinigt = bereinigt - _tokens(merkmal)
+    return bereinigt
+
+
+def _kandidat_schluessel_fuer_risiko(kandidaten: dict, basis_schluessel: str, claim: str,
+                                     marke: str | None, modell: str | None,
+                                     bauteil: str | None, *,
+                                     kategorie: str | None = None) -> tuple:
+    kandidat_tokens = _inhaltstokens(claim, marke, modell, bauteil)
+    kandidat_merkmal = _wartungsintervall_merkmal(claim) if kategorie == "wartung" else None
+    kandidat_objekt = _norm(bauteil) if bauteil else None
+    if kategorie == "wartung":
+        kandidat_tokens = _wartung_vergleichs_tokens(kandidat_tokens, kandidat_merkmal)
+    i = 0
+    while True:
+        key = (basis_schluessel, i)
+        bestehend = kandidaten.get(key)
+        if bestehend is None:
+            return key
+        bestehende_tokens = _inhaltstokens(bestehend["aussage"], marke, modell,
+                                           bestehend["bauteil"])
+        bestehendes_merkmal = (_wartungsintervall_merkmal(bestehend["aussage"])
+                               if kategorie == "wartung" else None)
+        bestehendes_objekt = _norm(bestehend["bauteil"]) if bestehend["bauteil"] else None
+        if kategorie == "wartung":
+            bestehende_tokens = _wartung_vergleichs_tokens(bestehende_tokens, bestehendes_merkmal)
+        if _gleiches_technisches_risiko(kandidat_tokens, bestehende_tokens,
+                                        kandidat_merkmal=kandidat_merkmal,
+                                        andere_merkmal=bestehendes_merkmal,
+                                        kandidat_objekt=kandidat_objekt,
+                                        andere_objekt=bestehendes_objekt):
+            return key
+        i += 1
+
+
 def _ist_substanziell(satz: str, marke: str | None, modell: str | None,
                       bauteil: str | None) -> bool:
     return len(_inhaltstokens(satz, marke, modell, bauteil)) >= 3
@@ -1050,7 +1451,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             if artikel_passt is False:
                 abgelehnt.append({"url": url, "kategorie": kategorie, "grund": grund_a})
                 continue
-        satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        # RC-W3 (Release-Risiko 1): die obere 300-Zeichen-Grenze von `_saetze()`
+        # verwarf einen realistischen, langen Multi-Claim-Satz VOLLSTÄNDIG,
+        # bevor die Claim-Segmentierung ihn überhaupt sehen konnte — nur für
+        # die Kategorien in `_CLAIM_SEGMENTIERUNG_KATEGORIEN` aufgehoben
+        # (`max_len=None`); "rueckruf" behält die Grenze unverändert.
+        satz_liste = _saetze(
+            f"{r.get('title') or ''}. {r.get('content') or ''}",
+            max_len=None if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN else 300)
         for idx in range(len(satz_liste)):
             satz = _kontext_aufloesen(satz_liste, idx)
             if satz is None:
@@ -1066,80 +1474,116 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                   "grund": "schwach_ausgerichtet_ohne_modellnennung",
                                   "satz": satz[:120]})
                 continue
-            if kategorie == "rueckruf":
-                fremde_marke = _fremde_marke_satz(satz, marke, modell)
-                if fremde_marke:
-                    abgelehnt.append({"url": url, "kategorie": kategorie,
-                                      "grund": f"fremde_marke_satz:{fremde_marke}",
-                                      "satz": satz[:120]})
-                    continue
-            n = _norm(satz)
-            if kategorie == "schwachstelle" and _ist_benign_relativiert(satz):
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "benign_relativiert", "satz": satz[:120]})
-                continue
-            if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
-                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
-                # Verwerfung, wenn kein Wort aus `_PROBLEM_WORTE` vorkommt.
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "no_problem_signal", "satz": satz[:120]})
-                continue
-            if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "no_recall_signal", "satz": satz[:120]})
-                continue
-            if kategorie == "wartung" and not _INTERVALL.search(satz):
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "no_maintenance_interval", "satz": satz[:120]})
-                continue
-            z = zeitraum(satz) if kategorie != "wartung" else None
-            passt = _im_zeitraum(baujahr, z)
-            if passt is None and artikel_passt is True:
-                # Der Satz selbst nennt kein Fenster, der Artikel schon.
-                passt, z = True, artikel_fenster
-            if passt is False:
-                abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "baujahr_ausserhalb",
-                                  "satz": satz[:120]})
-                continue
-            vage = _RE_VAGE.search(satz) if kategorie != "rueckruf" else None
-            treffer_voc = [(m, s) for m, s in vokabular.items() if m in n][:1]
-            if not treffer_voc and kategorie == "rueckruf":
-                # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
-                # ("Kraftstoffleitung"). Ein Rückruf darf daran nicht verloren
-                # gehen: das Bauteil wird dann aus dem Satz selbst gelesen.
-                teil = _rueckruf_bauteil(satz)
-                if teil:
-                    treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
-            if not treffer_voc:
-                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
-                # Verwerfung, wenn der Satz zwar ein Problem-/Rückrufwort bzw.
-                # Wartungsintervall enthält, aber kein bekanntes Bauteil (und,
-                # nur bei "rueckruf", auch kein generischer Bauteil-Fallback).
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "no_component", "satz": satz[:120]})
-                continue
-            for muster, schluessel in treffer_voc:
-                if (kategorie == "rueckruf" and passt is not True
-                        and schluessel in ausgeschlossene_themen):
-                    bauteil_kandidat = (_anzeige_bauteil(satz, muster) if muster
-                                        else _rueckruf_bauteil(satz))
-                    kandidat_tokens = _inhaltstokens(satz, marke, modell, bauteil_kandidat)
-                    if _gleiches_rueckruf_ereignis(kandidat_tokens, ausgeschlossene_themen[schluessel]):
+            # RC-W3 (Claim-Segmentierung): ein Satz kann mehrere, auch
+            # gegensätzliche Claims enthalten ("Korrosion ist nicht
+            # feststellbar, aber die Dichtung ist undicht."). Jedes Segment
+            # wird jetzt UNABHÄNGIG durch die gesamte restliche Prüfkette
+            # geschickt — ein benignes Segment verwirft nur sich selbst, ein
+            # echtes Segment wird nur für sich selbst akzeptiert, und mehrere
+            # echte Segmente desselben Satzes können mehrere Kandidaten
+            # erzeugen (vorher strukturell unmöglich: höchstens EIN Kandidat
+            # pro Satz). Ohne Trenner liefert `_segmentiere_claims` `[satz]`
+            # unverändert — identisches Verhalten zu vorher.
+            #
+            # Release-Scope (Review-Risiko 2): EXPLIZITE Allowlist statt
+            # "!= rueckruf" — eine Negativ-Prüfung hätte jede heutige oder
+            # künftige Kategorie automatisch in die neue Claim-Semantik
+            # gezogen. "rueckruf" (Package A, bereits freigegeben/CLOSED)
+            # bleibt auf dem alten, satzweisen Pfad; jede andere/künftige
+            # Kategorie bekommt NICHT automatisch neue Semantik.
+            claim_segmente = (_segmentiere_claims(satz)
+                              if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN
+                              else [satz])
+            for claim in claim_segmente:
+                if kategorie == "rueckruf":
+                    fremde_marke = _fremde_marke_satz(claim, marke, modell)
+                    if fremde_marke:
                         abgelehnt.append({"url": url, "kategorie": kategorie,
-                                          "grund": "rueckruf_thema_bereits_ausgeschlossen",
-                                          "satz": satz[:120]})
+                                          "grund": f"fremde_marke_satz:{fremde_marke}",
+                                          "satz": claim[:120]})
                         continue
-                eintrag = kandidaten.setdefault(
-                    schluessel, {"aussage": satz,
-                                 "bauteil": (_anzeige_bauteil(satz, muster) if muster
-                                             else _rueckruf_bauteil(satz)),
-                                 "treffer": [],
-                                 "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None})
-                if r not in eintrag["treffer"]:
-                    eintrag["treffer"].append(r)
-                if passt is True and eintrag["passt"] is not True:
-                    eintrag.update(aussage=satz, zeitraum=z, passt=True, vage=None)
-                break
+                n = _norm(claim)
+                if kategorie == "schwachstelle" and _ist_benign_relativiert(claim):
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "benign_relativiert", "satz": claim[:120]})
+                    continue
+                if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
+                    # RC-W3 (struktureller Coverage-Fix): ohne klassisches
+                    # Problemwort zählt zusätzlich das kleine, geschlossene
+                    # Struktursignal-Set (Material/Zustand, Verschleiss-
+                    # Veränderung, "Spiel" mit Erwerbs-Verb) — siehe
+                    # `_hat_strukturelles_defektsignal`. Nur interne Diagnose
+                    # (log.debug), keine neue, user-sichtbare Ausgabe.
+                    if _hat_strukturelles_defektsignal(n, claim):
+                        log.debug("Technische Recherche: Claim akzeptiert via "
+                                 "structural_damage_signal statt no_problem_signal: %r",
+                                 claim[:120])
+                    else:
+                        abgelehnt.append({"url": url, "kategorie": kategorie,
+                                          "grund": "no_problem_signal", "satz": claim[:120]})
+                        continue
+                if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "no_recall_signal", "satz": claim[:120]})
+                    continue
+                if kategorie == "wartung" and not _INTERVALL.search(claim):
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "no_maintenance_interval", "satz": claim[:120]})
+                    continue
+                z = zeitraum(claim) if kategorie != "wartung" else None
+                passt = _im_zeitraum(baujahr, z)
+                if passt is None and artikel_passt is True:
+                    # Das Claim-Segment selbst nennt kein Fenster, der Artikel schon.
+                    passt, z = True, artikel_fenster
+                if passt is False:
+                    abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "baujahr_ausserhalb",
+                                      "satz": claim[:120]})
+                    continue
+                vage = _RE_VAGE.search(claim) if kategorie != "rueckruf" else None
+                treffer_voc = [(m, s) for m, s in vokabular.items() if m in n][:1]
+                if not treffer_voc and kategorie == "rueckruf":
+                    # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
+                    # ("Kraftstoffleitung"). Ein Rückruf darf daran nicht verloren
+                    # gehen: das Bauteil wird dann aus dem Claim-Segment selbst gelesen.
+                    teil = _rueckruf_bauteil(claim)
+                    if teil:
+                        treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
+                if not treffer_voc:
+                    # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
+                    # Verwerfung, wenn das Claim-Segment zwar ein Problem-/
+                    # Rückrufwort bzw. Wartungsintervall enthält, aber kein
+                    # bekanntes Bauteil (und, nur bei "rueckruf", auch kein
+                    # generischer Bauteil-Fallback).
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "no_component", "satz": claim[:120]})
+                    continue
+                for muster, schluessel in treffer_voc:
+                    if (kategorie == "rueckruf" and passt is not True
+                            and schluessel in ausgeschlossene_themen):
+                        bauteil_kandidat = (_anzeige_bauteil(claim, muster) if muster
+                                            else _rueckruf_bauteil(claim))
+                        kandidat_tokens = _inhaltstokens(claim, marke, modell, bauteil_kandidat)
+                        if _gleiches_rueckruf_ereignis(kandidat_tokens, ausgeschlossene_themen[schluessel]):
+                            abgelehnt.append({"url": url, "kategorie": kategorie,
+                                              "grund": "rueckruf_thema_bereits_ausgeschlossen",
+                                              "satz": claim[:120]})
+                            continue
+                    bauteil_claim = (_anzeige_bauteil(claim, muster) if muster
+                                     else _rueckruf_bauteil(claim))
+                    kandidat_key = (
+                        _kandidat_schluessel_fuer_risiko(kandidaten, schluessel, claim,
+                                                         marke, modell, bauteil_claim,
+                                                         kategorie=kategorie)
+                        if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN else schluessel)
+                    eintrag = kandidaten.setdefault(
+                        kandidat_key, {"aussage": claim, "bauteil": bauteil_claim,
+                                      "treffer": [],
+                                      "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None})
+                    if r not in eintrag["treffer"]:
+                        eintrag["treffer"].append(r)
+                    if passt is True and eintrag["passt"] is not True:
+                        eintrag.update(aussage=claim, zeitraum=z, passt=True, vage=None)
+                    break
 
     fakten: list[WebFakt] = []
     for schluessel, e in kandidaten.items():
