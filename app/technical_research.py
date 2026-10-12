@@ -712,6 +712,39 @@ _PROBLEM_WORTE = ("defekt", "problem", "schwachstelle", "verschleiss", "verschle
                   "ausfall", "undicht", "riss", "bruch", "schaden", "haeufig",
                   "häufig", "anfaellig", "anfällig", "typisch", "bekannt")
 _RUECKRUF_WORTE = ("rueckruf", "rückruf", "recall", "rueckrufaktion", "rückrufaktion")
+
+# Package C / RC-W3 (Root Cause: reiner Substring-Treffer gegen `_PROBLEM_WORTE`
+# ohne jede Prüfung der SATZRICHTUNG). Ein Satz, der ein Problemwort enthält,
+# aber seine eigene Aussage relativiert oder verneint ("... muss NICHT auf
+# einen Unfall hindeuten", "... ist unproblematisch", "... kann bereits so vom
+# Band gekommen sein"), ist kein positiver Defekt-Claim — er sagt genau das
+# Gegenteil. Generisch (kein Marken-/Modell-/Bauteilwort): jede dieser
+# Wendungen, unabhängig vom Satzinhalt sonst.
+_RELATIVIERUNG = re.compile(
+    r"muss(?:te)?\s+nicht\b"
+    r"|nicht\s+(?:unbedingt|zwingend|notwendigerweise)\b"
+    r"|kein\w*\s+(?:bekannt\w*\s+)?(?:problem|hinweis|grund)\b"
+    r"|kein\s+grund\s+zur\s+sorge\b"
+    r"|deutet\s+nicht\s+(?:unbedingt\s+)?auf\b"
+    r"|unproblematisch\w*"
+    r"|unbedenklich\w*"
+    r"|unkritisch\w*"
+    r"|harmlos\w*"
+    r"|konstruktionsbedingt\b"
+    r"|werksseitig\s+so\b"
+    r"|(?:ab|von)\s+werk\s+(?:so|bereits)\b"
+    r"|bereits\s+so\s+vom\s+band\b",
+    re.IGNORECASE)
+
+
+def _ist_benign_relativiert(satz: str) -> bool:
+    """True, wenn der Satz seine eigene Problem-/Defektaussage relativiert oder
+    verneint. Wirkt NUR auf den geprüften Satz selbst (Satz-, nicht
+    Absatzebene) — ein echter Defekt-Claim im Nachbarsatz derselben Quelle
+    bleibt davon unberührt."""
+    return bool(_RELATIVIERUNG.search(satz or ""))
+
+
 _INTERVALL = re.compile(
     r"(?:alle\s+)?(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*km"
     r"|(?:alle\s+)?(\d{1,3})\s*(monate|jahre?)", re.IGNORECASE)
@@ -776,12 +809,27 @@ def _saetze(text: str) -> list[str]:
             if 20 <= len(s.strip()) <= 300 and len(s.split()) >= 5]
 
 
+# Package C / RC-W3 (Root Cause H): "erste beiden Getriebe-Generationen" ist im
+# Satz ein einziges Bindestrich-Kompositum — der Fund-Regex oben griff deshalb
+# "Getriebe-Generationen" komplett als Bauteilnamen ab, statt nur "Getriebe".
+# Dieselbe Scope-/Zeitangabe (Generation/Revision/Version/Serie/Charge/
+# Ausbaustufe) wird bereits separat als `vage`/`geltungsbereich` abgebildet
+# (siehe `_RE_VAGE`) — sie darf nicht zusätzlich im Bauteilnamen selbst
+# landen. Generisch: JEDES Bauteilwort mit einer solchen Endung verliert nur
+# diese Endung, nie markenspezifisch.
+_BAUTEIL_SCOPE_ENDUNG = re.compile(
+    r"-?(?:generation|revision|version|serie|charge|ausbaustufe)\w*$", re.IGNORECASE)
+
+
 def _anzeige_bauteil(satz: str, muster: str) -> str:
     """Das Bauteil so, wie die Quelle es nennt ("Kraftstoffpumpe", "Verdeck") —
-    nie der interne Dedup-Schlüssel ("einspritzung", "dach_fenster")."""
+    nie der interne Dedup-Schlüssel ("einspritzung", "dach_fenster") und ohne
+    eine angehängte Generations-/Revisions-/Serienangabe (die gehört in den
+    Geltungsbereich, nicht in den Bauteilnamen)."""
     for wort in re.findall(r"[A-Za-zÄÖÜäöüß][\wÄÖÜäöüß-]*", satz or ""):
         if muster in _norm(wort).replace(" ", ""):
-            return wort[:1].upper() + wort[1:]
+            kern = _BAUTEIL_SCOPE_ENDUNG.sub("", wort) or wort
+            return kern[:1].upper() + kern[1:]
     return muster[:1].upper() + muster[1:]
 
 
@@ -1017,6 +1065,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "satz": satz[:120]})
                     continue
             n = _norm(satz)
+            if kategorie == "schwachstelle" and _ist_benign_relativiert(satz):
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "benign_relativiert", "satz": satz[:120]})
+                continue
             if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
                 continue
             if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
