@@ -1152,6 +1152,139 @@ def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str 
     return ",".join(sorted(fremde))
 
 
+# ── RC-W4: lokale Modellkontext-Vererbung für schwach ausgerichtete Treffer ──
+#
+# BEFUND (Offline-Alignment-Matrix, Fälle C/D): nennt der TITEL eines Treffers
+# das Modell nicht ("schwach" ausgerichtet), musste bisher JEDER einzelne Satz
+# das Modell selbst erneut nennen (`_satz_nennt_modell`) — ein Folgesatz, der
+# nur aus dem UNMITTELBAR VORHERIGEN Satz seinen Fahrzeugbezug erbt ("Beim
+# Golf ... . Die Wasserpumpe kann undicht werden."), verlor diesen Bezug
+# ersatzlos, obwohl der Artikel eindeutig weiter vom selben Fahrzeug spricht.
+#
+# FIX: ein Satz, der das Modell selbst nennt, ETABLIERT lokalen Kontext für
+# GENAU die nächsten `_RC_W4_MAX_KONTEXT_DISTANZ` Sätze DESSELBEN Treffers —
+# nicht grenzenlos (siehe Review-Korrektur unten) — und wird durch einen Satz
+# mit EXPLIZITEM Widerspruch (fremde Marke, oder eine der engen "ein anderes
+# Fahrzeug"-Konstruktionen wie "Beim Passat...") sofort zurückgesetzt. Ohne
+# jemals etablierten Kontext bleibt das bisherige Verhalten exakt erhalten
+# (Reject). Diese Vererbung gilt NUR für `grund == "schwach"` — titel-
+# ausgerichtete Treffer sind von diesem Fix unverändert (§7 Auftrag).
+#
+# REVIEW-KORREKTUR: eine erste Fassung ließ den Kontext bis zum NÄCHSTEN
+# expliziten Widerspruch unbegrenzt weiterleben (beliebig viele neutrale
+# Zwischensätze). Das wurde als zu riskant verworfen — "lokal" heißt NICHT
+# "result-weit dauerhaft". Jetzt zählt eine Distanz (Sätze seit der letzten
+# EXPLIZITEN Modellnennung, NICHT seit der letzten geerbten Akzeptanz — ein
+# geerbter Satz verlängert die Kette nicht, er nennt das Modell ja nicht
+# selbst). `_RC_W4_MAX_KONTEXT_DISTANZ = 1`: NUR der unmittelbar auf eine
+# Modellnennung folgende Satz darf erben — bewusst die striktere der beiden
+# im Auftrag vorgeschlagenen Optionen (Distanz 1 "bevorzugt" vs. Distanz 2
+# "maximal"), weil ein zusätzlicher neutraler Brückensatz nicht sicher von
+# einem Themen-/Absatzwechsel unterscheidbar ist, ohne eine neue, fehler-
+# anfällige Segment-Erkennung einzuführen — Priorität liegt auf False-
+# Negative- statt False-Positive-Vermeidung (§9 Auftrag).
+#
+# Bewusste Begrenzung (kein Fahrzeug-/Modell-Katalog, keine neue große NER-
+# Logik): "anderes Modell derselben Marke" wird NUR über die engen, in echten
+# Vergleichsartikeln empirisch üblichen Konstruktionen "beim/bei dem X" und
+# "für den/die/das X" erkannt (reale Beispiele: "Beim Golf...", "Beim
+# Passat...", "Für den Passat..."). Eine BARE "Der/Die/Das X"-Erkennung ohne
+# Präposition wurde BEWUSST NICHT ergänzt: das ist die normale Form jedes
+# deutschen Satzanfangs mit Subjekt (auch "Der Besitzer...", "Die Werkstatt...",
+# "Die Wasserpumpe..." — letzteres wäre sonst fälschlich als Widerspruch
+# erkannt worden), ohne Modellkatalog nicht sicher von einer anderen
+# Fahrzeug-Erwähnung unterscheidbar — genau der Fall, in dem der Auftrag
+# "Kontext lieber konservativ verfallen lassen" verlangt. Die Distanz-1-TTL
+# fängt den Großteil des Restrisikos ab: ein nicht erkannter "Der Passat
+# hat X"-Satz kann nur an GENAU Distanz 1 fälschlich erben; ab Distanz 2 ist
+# er durch die TTL ohnehin schon ausgeschlossen (siehe Abschlussbericht).
+# Ein Bauteilname nach der Präposition ("Beim Turbolader...") zählt NICHT als
+# anderes Fahrzeug — reuse des bestehenden Bauteil-Vokabulars.
+_RE_ANDERES_SUBJEKT = re.compile(
+    r"\b(?:[Bb]ei(?:m|\s+dem)|[Ff]ür\s+(?:den|die|das))\s+([A-ZÄÖÜ][\wÄÖÜäöüß-]*)")
+# Häufige, idiomatische Füllwörter nach "beim"/"für den" X, die KEIN
+# Fahrzeug-Subjekt sind (Aktivitäten/Nominalisierungen/Akteure, kein
+# Modellkatalog).
+_KEIN_FAHRZEUG_SUBJEKT_LOKAL = frozenset({
+    "kauf", "verkauf", "start", "anlassen", "kaltstart", "fahren", "bremsen",
+    "beschleunigen", "parken", "tanken", "service", "wechsel", "einbau",
+    "ausbau", "pruefen", "test", "fahrzeug", "auto", "modell", "vorgaenger",
+    "nachfolger", "facelift", "besitzer", "vorbesitzer", "eigentuemer",
+    "fahrer", "haendler", "verkaeufer", "mechaniker", "werkstatt", "pruefer",
+    "gutachter", "tuev", "anfahren", "abbremsen", "lenken", "schalten",
+    "hochschalten", "runterschalten", "warmlaufen", "abstellen", "beladen",
+})
+_RC_W4_MAX_KONTEXT_DISTANZ = 1
+
+
+def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
+    """Enge Erkennung eines ANDEREN, explizit genannten Fahrzeug-Subjekts in
+    der "beim/für den X"-Konstruktion — None, wenn keine solche Konstruktion
+    vorliegt oder X das Zielmodell/ein Bauteil/ein bekanntes Füllwort ist."""
+    m = _RE_ANDERES_SUBJEKT.search(satz)
+    if not m:
+        return None
+    wort = _norm(m.group(1))
+    modell_tokens = _tokens(modell)
+    if not wort or wort in modell_tokens or wort in _KEIN_FAHRZEUG_SUBJEKT_LOKAL:
+        return None
+    vokabular = _bauteil_vokabular()
+    if any(wort in muster or wort == schluessel for muster, schluessel in vokabular.items()):
+        return None
+    return wort
+
+
+# RC-W4 (Review-Korrektur 2): die "beim/für den X"-Erkennung allein lässt eine
+# bare Konstruktion wie "Der Passat hat Probleme ..." unentdeckt durch — bei
+# Distanz 1 (direkt nächster Satz) ist das ein echtes False-Positive-Risiko
+# (anders als bei Distanz >=2, wo die TTL es ohnehin abfängt). Eine naive
+# "Der/Die/Das X"-Regel würde aber jedes technische Subjekt ("Die Wasserpumpe",
+# "Der Motor", "Das Getriebe") zerstören. Lösung: Satzanfang "Der/Die/Das X"
+# wird NUR dann als unsicher/widersprüchlich behandelt, wenn X WEDER das
+# Zielmodell NOCH ein bekanntes Bauteil (bestehendes Bauteil-Vokabular) NOCH
+# ein bekannter Nicht-Fahrzeug-Akteur (`_KEIN_FAHRZEUG_SUBJEKT_LOKAL`, z.B.
+# "Fahrer", "Werkstatt") ist. Ohne Fahrzeugkatalog lässt sich ein übrig
+# bleibendes X ("Passat", "Tiguan", aber z.B. auch ein unbekanntes Wort) nicht
+# sicher als "anderes Fahrzeug" bestätigen — §5 Auftrag verlangt in diesem
+# Fall explizit: nicht raten, Kontextvererbung lieber konservativ blockieren.
+_RE_SATZANFANG_NOMINALPHRASE = re.compile(r"^\s*[Dd](?:er|ie|as)\s+([A-ZÄÖÜ][\wÄÖÜäöüß-]*)")
+
+
+def _unsichere_satzanfangs_nominalphrase(satz: str, modell: str | None) -> str | None:
+    """Satz beginnt mit "Der/Die/Das X", X ist nicht als Zielmodell, Bauteil
+    oder bekannter Nicht-Fahrzeug-Akteur identifizierbar — konservativ als
+    nicht vererbbar behandelt (siehe Kommentar oben)."""
+    m = _RE_SATZANFANG_NOMINALPHRASE.match(satz)
+    if not m:
+        return None
+    wort = _norm(m.group(1))
+    modell_tokens = _tokens(modell)
+    if not wort or wort in modell_tokens or wort in _KEIN_FAHRZEUG_SUBJEKT_LOKAL:
+        return None
+    vokabular = _bauteil_vokabular()
+    if any(wort in muster or wort == schluessel for muster, schluessel in vokabular.items()):
+        return None
+    return wort
+
+
+def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
+                                       modell: str | None) -> str | None:
+    """Expliziter Widerspruch auf Satzebene (schlägt geerbten Kontext IMMER):
+    fremde Marke (bestehende `_fremde_marke_satz`-Logik), die enge "beim/für
+    den <anderes Fahrzeug>"-Konstruktion, oder eine unsichere, nicht als
+    Bauteil/Akteur klassifizierbare Satzanfangs-Nominalphrase."""
+    fremde_marke = _fremde_marke_satz(satz, marke, modell)
+    if fremde_marke:
+        return f"fremde_marke_lokal:{fremde_marke}"
+    unsicher = _unsichere_satzanfangs_nominalphrase(satz, modell)
+    if unsicher:
+        return f"unsichere_nominalphrase_lokal:{unsicher}"
+    anderes = _anderes_fahrzeug_lokal(satz, modell)
+    if anderes:
+        return f"anderes_fahrzeug_lokal:{anderes}"
+    return None
+
+
 # ── RC-W1: Substanz-Schwelle gegen scope-lose Teaser/Index-Seiten ───────────
 #
 # BEFUND (Forensik-Audit, realer Web-Smoke-Test): eine Kategorie-/Teaser-Seite
@@ -1459,6 +1592,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         satz_liste = _saetze(
             f"{r.get('title') or ''}. {r.get('content') or ''}",
             max_len=None if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN else 300)
+        # RC-W4: lokaler Modellkontext — je Treffer neu, NIE über Treffer-
+        # Grenzen hinweg. `abstand_seit_nennung` zählt Sätze seit der letzten
+        # EXPLIZITEN Modellnennung (None = noch keine/zurückgesetzt). Ein
+        # geerbter (nicht selbst nennender) Satz verlängert die Kette NICHT
+        # auf 0 zurück — er erhöht den Abstand normal weiter, sonst könnte
+        # eine Folge rein geerbter Sätze beliebig lang werden (siehe
+        # `_RC_W4_MAX_KONTEXT_DISTANZ`-Kommentar oben).
+        abstand_seit_nennung: int | None = None
         for idx in range(len(satz_liste)):
             satz = _kontext_aufloesen(satz_liste, idx)
             if satz is None:
@@ -1466,14 +1607,40 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                   "grund": "kontextabhaengiger_satz_ohne_bezug",
                                   "satz": satz_liste[idx][:120]})
                 continue
-            if grund == "schwach" and not _satz_nennt_modell(satz, modell):
-                # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
-                # Verwerfung auf einer schwach ausgerichteten Seite, wenn der
-                # einzelne Satz Marke/Modell nicht selbst nennt.
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "schwach_ausgerichtet_ohne_modellnennung",
-                                  "satz": satz[:120]})
-                continue
+            if grund == "schwach":
+                widerspruch = _claim_widerspricht_fahrzeug_lokal(satz, marke, modell)
+                if widerspruch:
+                    # Expliziter Widerspruch schlägt geerbten Kontext IMMER
+                    # und setzt ihn für die nachfolgenden Sätze zurück (kein
+                    # "sticky" Modellbezug über einen Modellwechsel hinweg).
+                    abstand_seit_nennung = None
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "schwach_ausgerichtet_ohne_modellnennung",
+                                      "satz": satz[:120]})
+                    continue
+                if _satz_nennt_modell(satz, modell):
+                    abstand_seit_nennung = 0
+                else:
+                    abstand = None if abstand_seit_nennung is None else abstand_seit_nennung + 1
+                    if abstand is None or abstand > _RC_W4_MAX_KONTEXT_DISTANZ:
+                        # RC-W3 (Observability, kein Verhaltenswechsel): bisher
+                        # stille Verwerfung auf einer schwach ausgerichteten
+                        # Seite, wenn der einzelne Satz Marke/Modell nicht
+                        # selbst nennt UND kein lokaler Kontext innerhalb der
+                        # TTL geerbt werden kann (RC-W4).
+                        abstand_seit_nennung = abstand
+                        abgelehnt.append({"url": url, "kategorie": kategorie,
+                                          "grund": "schwach_ausgerichtet_ohne_modellnennung",
+                                          "satz": satz[:120]})
+                        continue
+                    # RC-W4-Observability (nur log.debug, keine User-UI, keine
+                    # neuen persistenten Felder — Provenance-Ausbau bleibt
+                    # separat dokumentiert): der Claim selbst nennt das Modell
+                    # NICHT, wird aber via lokalem Kontext (Distanz `abstand`
+                    # seit letzter Modellnennung) akzeptiert.
+                    log.debug("RC-W4: Claim akzeptiert via alignment_source=local_context, "
+                             "context_distance=%d: %r", abstand, satz[:120])
+                    abstand_seit_nennung = abstand
             # RC-W3 (Claim-Segmentierung): ein Satz kann mehrere, auch
             # gegensätzliche Claims enthalten ("Korrosion ist nicht
             # feststellbar, aber die Dichtung ist undicht."). Jedes Segment
