@@ -1768,20 +1768,54 @@ class TavilyTechnicalResearchProvider:
                                         anfragen_fehlgeschlagen=anf_fehler["rueckruf"])
         # PHASE 3 — technische Hinweise
         phasen.append("technik")
-        sw, wa = await asyncio.gather(
-            tavily_search_with_fallback([" ".join(filter(None, [basis, jahr, "typische Probleme Schwachstellen"])),
-                                         f"{breit} bekannte Schwachstellen"],
-                                        count=self._count, exclude_domains=US_QUELLEN_AUSSCHLUSS),
+        # Schwachstelle: zwei ORTHOGONALE Search-Intents, beide werden IMMER
+        # ausgeführt — kein Early Exit zwischen ihnen (RC-W5-Query-Audit,
+        # Scratch-Beweis: die bisherigen Q1/Q2 waren nur Synonym-Varianten
+        # desselben Intents ["typische Probleme Schwachstellen" ≈ "bekannte
+        # Schwachstellen"] und haben per `tavily_search_with_fallback`
+        # "erster Treffer gewinnt" nachweislich echte, komplementäre Fakten
+        # verpasst — ein Live-A/B-Test fand z. B. bei identischem Fahrzeug
+        # über den zweiten Intent 4 zusätzliche valide Fakten, die der erste
+        # nie fand, UND umgekehrt). Der spätere intelligente RC-W5-Early-Exit
+        # entscheidet erst zwischen weiteren Suchrunden, nicht zwischen diesen
+        # beiden Basis-Intents. Wartung bleibt unverändert beim bestehenden
+        # Fallback — dafür existiert noch kein entsprechender A/B-Beweis.
+        sw_intents = (
+            ("technical_weakness",
+             " ".join(filter(None, [basis, jahr, "bekannte Probleme Schwachstellen"]))),
+            ("used_car_review", f"{breit} Gebrauchtwagen Test TÜV Kaufberatung"),
+        )
+        sw_treffer_je_intent, wa = await asyncio.gather(
+            asyncio.gather(*[suche(q, phase="technik") for _, q in sw_intents]),
             tavily_search_with_fallback([" ".join(filter(None, [basis, "Wartungsintervall Serviceintervall"])),
                                          f"{breit} Inspektionsintervall"],
                                         count=self._count, exclude_domains=US_QUELLEN_AUSSCHLUSS),
             return_exceptions=True)
-        anfragen += 2
-        anf_gesamt["technik"] = 2
-        anf_fehler["technik"] = sum(1 for r in (sw, wa) if isinstance(r, Exception))
-        roh["schwachstelle"] = sw if isinstance(sw, list) else []
+        if isinstance(sw_treffer_je_intent, Exception):           # pragma: no cover — Schutznetz
+            fehler = True
+            sw_treffer_je_intent = [[] for _ in sw_intents]
+        # `suche()` zählt die beiden Schwachstelle-Calls bereits einzeln in
+        # anfragen/anf_gesamt["technik"] mit — hier kommt nur die Wartung-
+        # Fallback-Gruppe als EIN weiterer Anfrage-Block hinzu (wie bisher).
+        anfragen += 1
+        anf_gesamt["technik"] += 1
+        if isinstance(wa, Exception):
+            anf_fehler["technik"] += 1
+            fehler = True
+            wa = []
+        # Observability (RC-W5-Vorbereitung, nur log.debug — keine User-UI,
+        # keine zweite Extraction-Pipeline): pro Intent Rohtreffer- und
+        # High-Quality-Domain-Zahl, BEVOR die Listen zusammengeführt werden.
+        # Die eigentliche Faktenbildung läuft weiterhin EINMAL unten, auf der
+        # vereinten Liste, durch die unveränderte Pipeline (curate_results +
+        # _extrahiere_fakten inkl. bestehender RC-W3-Dedupe).
+        for (intent, q), treffer in zip(sw_intents, sw_treffer_je_intent):
+            hoch = sum(1 for r in treffer
+                      if score_domain(r.get("url") or "", _WEB_KATEGORIE["schwachstelle"]) >= MIN_SCORE_FAKT)
+            log.debug("Schwachstelle-Intent '%s' (%r): %d Rohtreffer, %d High-Quality-Domains",
+                     intent, q, len(treffer), hoch)
+        roh["schwachstelle"] = [r for treffer in sw_treffer_je_intent for r in treffer]
         roh["wartung"] = wa if isinstance(wa, list) else []
-        fehler = fehler or isinstance(sw, Exception) or isinstance(wa, Exception)
         fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"), abgelehnt)
         # Inhalts-Schwäche der Technik-Phase (Root Cause 6, Test 3): Anfragen
         # können sauber durchgekommen sein und trotzdem nur duenne, einstufige
