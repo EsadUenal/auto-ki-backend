@@ -1819,6 +1819,572 @@ _WEB_KATEGORIE = {
 }
 
 
+# ── Wartungs-Evidence-Schicht (Source-Trust-Fix, Scope: NUR kategorie=="wartung") ──
+#
+# Forensik-Befund (Audit-Sitzung Wartungs-Quellenvertrauen, s.o.):
+# `_extrahiere_fakten()` verwirft JEDEN Treffer mit
+# `score_domain(url, kategorie) < MIN_SCORE_FAKT` komplett (grund=
+# "source_quality"), BEVOR dessen Inhalt ueberhaupt gelesen wird. Fuer
+# "wartung" traf das real Werkstatt-/Teileportale, die im Audit die
+# konkretesten motor-/generationsspezifischen Werte lieferten, WAEHREND
+# Hersteller-Landingpages (score>=48, PRIMARY) haeufig GAR KEINE modellscharfe
+# Zahl nennen. Diese Schicht AENDERT NICHTS an `_extrahiere_fakten()` und
+# dessen bestehendem Gate -- Treffer mit score >= MIN_SCORE_FAKT laufen
+# UNVERAENDERT durch den bestehenden Pfad. Betroffen sind AUSSCHLIESSLICH
+# Treffer UNTERHALB der Schwelle, UND AUSSCHLIESSLICH kategorie=="wartung".
+#
+# HAERTUNGSRUNDE (Review-Befund): "2 Secondary-Quellen stimmen überein" wurde
+# in einer ersten Fassung DIREKT als bestätigter WebFakt behandelt. Das ist zu
+# großzügig -- app/evidence.py zeigt JEDEN Eintrag aus `fakten` ungefiltert
+# als User-Insight (kategorie="web_wartung", risk_type="maintenance"); es
+# gibt dort KEIN Confidence-Gate. Root-Domain-Verschiedenheit beweist zudem
+# KEINE echte Unabhängigkeit (zwei Portale können dieselbe Aftermarket-
+# Faustregel kopieren). Deshalb jetzt zwei GETRENNTE Konzepte:
+#
+#   AGREEMENT    -- rein mechanisch: stimmen >=2 unabhängige, intern
+#                   konsistente Source-Families im selben Themen-Key überein?
+#                   Ergebnis: MATCH (ja) / CONFLICT (widersprechen sich) /
+#                   UNVERIFIED (0-1 Family).
+#   VERIFICATION -- darf dieser MATCH tatsächlich ein User-sichtbarer,
+#                   harter WebFakt werden? Ein reines Secondary/Unknown-
+#                   MATCH bleibt CORROBORATED (nur intern/Observability,
+#                   NIE in `fakten`), außer mindestens eine zusätzliche
+#                   Bedingung greift (siehe `_wartung_verification_status`).
+#
+# UNKNOWN vs. SECONDARY (§6 Auftrag): "Sonstige Quelle"/"Nachrichten" (per
+# `_qualitaets_label`, score_domain) sind NICHT automatisch "secondary" --
+# ohne eine neue Domainliste gibt es dafür kein zuverlässiges generisches
+# Signal auf Domain-Ebene. Stattdessen wird die SELBSTBESCHREIBUNG der Seite
+# geprüft (Titel enthält ein Wartungs-/Service-Wort, z.B. "Inspektion",
+# "Wartungsplan") -- ein generisches Textsignal, kein Firmen-Hardcode. Ohne
+# dieses Signal bleibt die Quelle UNKNOWN; UNKNOWN+UNKNOWN wird NIE VERIFIED
+# (§6), selbst nicht über die Provenienz-/Cross-Tier-Bedingungen unten.
+
+WARTUNG_SOURCE_PRIMARY = "primary"
+WARTUNG_SOURCE_STRONG_SECONDARY = "strong_secondary"
+WARTUNG_SOURCE_SECONDARY = "secondary"
+WARTUNG_SOURCE_UNKNOWN = "unknown"
+WARTUNG_SOURCE_COMMUNITY = "community"
+
+WARTUNG_STATUS_UNVERIFIED = "unverified"
+WARTUNG_STATUS_CORROBORATED = "corroborated"
+WARTUNG_STATUS_CONFLICT = "conflict"
+WARTUNG_STATUS_VERIFIED = "verified"
+
+# Mapping auf die BESTEHENDEN, bereits produktiv genutzten Labels aus
+# `_qualitaets_label()` (app/web_search.py) -- keine neue Domainliste, keine
+# Verhaltensaenderung an score_domain()/_qualitaets_label() selbst (§3 Auftrag
+# der ersten Runde). "Nachschlagewerk" (= Wikipedia-artige, redaktionell
+# gepflegte Nachschlagequelle) zählt als SECONDARY; "Sonstige Quelle" und
+# "Nachrichten" (keine erkennbare Fach-/Amtsautorität UND kein redaktionelles
+# Nachschlagewerk) werden NICHT pauschal SECONDARY, sondern per Titel-Signal
+# geprüft (siehe `_wartung_source_type`).
+#
+# Reichweiten-Hinweis (Pre-Commit-Review): PRIMARY/STRONG_SECONDARY sind in
+# dieser Map vollständigkeitshalber enthalten (sie dokumentieren, wohin die
+# BESTEHENDEN Top-Tiers gehören), werden aber von `_wartung_source_type()" in
+# der Praxis NIE zurückgegeben -- jeder Aufrufer in diesem Modul prüft vorher
+# `score_domain(...) < MIN_SCORE_FAKT`, und genau diese beiden Tiers liegen
+# IMMER darüber. Absichtlich nicht entfernt: eine Map ohne sie wäre für
+# künftige Leser verwirrend ("wo bleiben Hersteller/Amtlich?").
+_WARTUNG_SOURCE_TYPE_MAP = {
+    "Amtlich/Prüforganisation": WARTUNG_SOURCE_PRIMARY,
+    "Hersteller": WARTUNG_SOURCE_PRIMARY,
+    "Fachmedien": WARTUNG_SOURCE_STRONG_SECONDARY,
+    "Technik-Hersteller": WARTUNG_SOURCE_STRONG_SECONDARY,
+    "Community/Erfahrungsbericht": WARTUNG_SOURCE_COMMUNITY,
+    "Nachschlagewerk": WARTUNG_SOURCE_SECONDARY,
+}
+
+# Generisches Titel-Signal für "das ist eine Wartungs-/Serviceseite" -- prüft
+# die SELBSTBESCHREIBUNG der Seite (ihren Titel), nicht den Domainnamen eines
+# einzelnen Anbieters (§6/§13 Auftrag: kein Firmen-Hardcode). Bewusst klein
+# und auf Wartungs-/Inspektionsvokabular beschränkt.
+_WARTUNG_TITEL_SERVICE_SIGNAL = re.compile(
+    r"inspektion|wartung|serviceplan|werkstatt|ölwechsel|oelwechsel|"
+    r"ersatzteil|reparatur\b", re.IGNORECASE)
+
+
+def _wartung_source_type(r: dict) -> str:
+    url = r.get("url") or ""
+    mapped = _WARTUNG_SOURCE_TYPE_MAP.get(_qualitaets_label(url))
+    if mapped:
+        return mapped
+    if _WARTUNG_TITEL_SERVICE_SIGNAL.search(r.get("title") or ""):
+        return WARTUNG_SOURCE_SECONDARY
+    return WARTUNG_SOURCE_UNKNOWN
+
+
+# Zwei-teilige Public-Suffixe, die im deutschsprachigen Kfz-Kontext vorkommen
+# -- KEIN vollstaendiger Public-Suffix-Abgleich, nur genug, um z.B.
+# "club.autodoc.de" und "autodoc.de" als eine Quellfamilie zu erkennen, ohne
+# einen einzelnen Anbieter hart zu kodieren (§8/§13 Auftrag der ersten Runde).
+_ZWEITEILIGE_TLD = frozenset({"co.uk", "org.uk", "co.at", "or.at", "co.nz", "com.au"})
+
+
+def _source_family(url: str) -> str:
+    """Registrierbare Root-Domain (eTLD+1-Näherung). WICHTIG (Härtungsrunde,
+    §7 Auftrag): `source_family` beweist NUR das Gegenteil seiner Aussage --
+    gleiche Family => sicher NICHT unabhängig. Verschiedene Family bedeutet
+    NICHT automatisch "nachgewiesen unabhängig" (zwei Portale können dieselbe
+    Quelle kopieren) -- siehe `_wartung_verification_status`, wo eine
+    Family-Verschiedenheit nur zu CORROBORATED, nie direkt zu VERIFIED führt."""
+    dom = _domain_von(url) or ""
+    labels = dom.split(".")
+    if len(labels) <= 2:
+        return dom
+    tail2 = ".".join(labels[-2:])
+    if tail2 in _ZWEITEILIGE_TLD and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return tail2
+
+
+# Motor-Kennzeichnung (Hubraum + Kraftstoff-/Antriebskürzel) -- bewusst
+# geschlossenes, kleines Set gängiger Kürzel. Erkennt NUR eine EXPLIZITE
+# Kennzeichnung; ein Claim ohne jede solche Angabe gilt als NICHT
+# widersprechend (unresolved), NICHT als Konflikt -- kein Fahrzeug-Hardcode,
+# rein lexikalisch.
+_MOTOR_KENNZEICHEN = re.compile(
+    r"(\d[.,]\d)\s*[- ]?(tdi|tsi|tfsi|fsi|tce|dci|crdi|hdi|cdti|skyactiv-g|skyactiv-d|"
+    r"vti|thp|bluehdi|multijet)", re.IGNORECASE)
+
+
+def _motor_kennzeichen(text: str | None) -> set[str]:
+    return {f"{h.replace(',', '.')}:{s.lower()}" for h, s in _MOTOR_KENNZEICHEN.findall(text or "")}
+
+
+def _motor_widerspricht(claim: str, motor_ziel: str | None) -> bool:
+    """True NUR bei einer EXPLIZITEN, anderen Motor-Kennzeichnung im Claim als
+    der Zielmotorisierung. Weder Ziel noch Claim mit erkennbarer Kennzeichnung
+    -> kein Widerspruch (konservativ, siehe Moduldocstring)."""
+    ziel_kennzeichen = _motor_kennzeichen(motor_ziel)
+    if not ziel_kennzeichen:
+        return False
+    claim_kennzeichen = _motor_kennzeichen(claim)
+    if not claim_kennzeichen:
+        return False
+    return not (claim_kennzeichen & ziel_kennzeichen)
+
+
+# Getriebe-Kennzeichnung (§5 Auftrag, Härtungsrunde): NUR eine explizite
+# EXKLUSIVITÄTS-Formulierung ("nur Schaltgetriebe", "ausschließlich DSG")
+# gilt als Widerspruch -- eine bloße Erwähnung ("mit DSG erhältlich") ist
+# keine Ausschluss-Aussage. Generisch, kein Modell-/Hersteller-Hardcode.
+_GETRIEBE_ART = re.compile(r"\b(dsg|automatik|tiptronic|wandlerautomatik|cvt|"
+                           r"schaltgetriebe|handschalter)\b", re.IGNORECASE)
+_GETRIEBE_AUTOMATIK_WORTE = frozenset({"dsg", "automatik", "tiptronic", "wandlerautomatik", "cvt"})
+
+
+def _getriebe_art(text: str | None) -> str | None:
+    m = _GETRIEBE_ART.search(text or "")
+    if not m:
+        return None
+    return "automatik" if m.group(1).lower() in _GETRIEBE_AUTOMATIK_WORTE else "schalter"
+
+
+def _getriebe_widerspricht(claim: str, getriebe_ziel: str | None) -> bool:
+    ziel_art = _getriebe_art(getriebe_ziel)
+    if not ziel_art:
+        return False
+    nur = re.search(r"\b(?:nur|ausschlie(?:ß|ss)lich)\b[^.;]{0,25}?\b"
+                    r"(dsg|automatik|tiptronic|wandlerautomatik|cvt|schaltgetriebe|handschalter)\b",
+                    claim or "", re.IGNORECASE)
+    if not nur:
+        return False
+    claim_art = "automatik" if nur.group(1).lower() in _GETRIEBE_AUTOMATIK_WORTE else "schalter"
+    return claim_art != ziel_art
+
+
+# Markt-/Region-Signal (§5 Auftrag): ENFAL zielt implizit auf den deutsch-/
+# europäischen Markt -- eine Quelle, die sich EXPLIZIT als US-/Nordamerika-
+# spezifisch zu erkennen gibt, wird nicht blind als Beleg für hiesige
+# Intervalle verwertet (US-Modelljahre/-Ausstattungen weichen ab, vgl.
+# US_QUELLEN_AUSSCHLUSS in app/web_search.py für denselben Gedanken bei
+# Domains). Rein lexikalisch auf den Claim-Text selbst, kein Domain-Hardcode.
+_US_MARKT_SIGNAL = re.compile(
+    r"\bus[- ]?market\b|united states|\busa\b|amerikanisch|nordamerika", re.IGNORECASE)
+
+
+def _ist_us_markt_claim(claim: str) -> bool:
+    return bool(_US_MARKT_SIGNAL.search(claim or ""))
+
+
+# Service-Regime (§9/§10 Auftrag): LongLife/flexible Intervalle duerfen NICHT
+# gegen ein festes Intervall als Widerspruch gewertet werden -- sie bilden
+# stattdessen eine EIGENE Gruppe. Ebenso "prüfen" vs. "ersetzen" (`_aktion`):
+# unterschiedliche WartungsHANDLUNGEN beim gleichen Intervall sind KEIN
+# Widerspruch, sondern zwei unterschiedliche Aussagen -- auch sie bilden
+# eigene Gruppen statt gegeneinander verglichen zu werden. Rein lexikalisch;
+# ohne Erkennung bleibt "fest"/"unbestimmt" der neutrale Default.
+_WARTUNG_REGIME_LONGLIFE = re.compile(r"long\s*life|flexibel|flexible", re.IGNORECASE)
+_WARTUNG_AKTION_ERSETZEN = re.compile(r"wechsel|ersetz|tausch|erneuer", re.IGNORECASE)
+_WARTUNG_AKTION_PRUEFEN = re.compile(r"pr(?:ü|ue)f|kontroll|inspizier|sichtpr(?:ü|ue)f", re.IGNORECASE)
+
+
+def _wartung_regime(claim: str) -> str:
+    return "longlife" if _WARTUNG_REGIME_LONGLIFE.search(claim or "") else "fest"
+
+
+def _wartung_aktion(claim: str) -> str:
+    if _WARTUNG_AKTION_ERSETZEN.search(claim or ""):
+        return "ersetzen"
+    if _WARTUNG_AKTION_PRUEFEN.search(claim or ""):
+        return "pruefen"
+    return "unbestimmt"
+
+
+# Intervall-Normalisierung (§8 Auftrag, Härtungsrunde): "alle 120.000 km",
+# "120000 km" und "120.000 Kilometer" sollen als DASSELBE km-Intervall
+# gelten -- der alte strikte Textvergleich (`_wartungsintervall_merkmal`,
+# weiterhin UNVERÄNDERT für den bestehenden Schwachstelle/Wartung-Dedupe-Pfad
+# in Gebrauch) hätte sie als verschieden behandelt. NUR Ziffern-Trennzeichen
+# und "Kilometer"/"km"-Schreibvarianten werden vereinheitlicht -- keine große
+# NLP-Engine. "prüfen bei X" vs. "ersetzen bei X" bleiben über `_wartung_aktion`
+# (oben) getrennt, nicht über diese Funktion.
+_WARTUNG_INTERVALL_ZAHL = re.compile(
+    r"(\d{1,3}(?:[.\s]\d{3})*|\d{4,6})\s*(km|kilometer)"
+    r"|(\d{1,3})\s*(monate?|jahre?)", re.IGNORECASE)
+
+
+def _wartung_merkmal_normalisiert(claim: str) -> str | None:
+    m = _WARTUNG_INTERVALL_ZAHL.search(claim or "")
+    if not m:
+        return None
+    if m.group(1):
+        zahl = re.sub(r"[.\s]", "", m.group(1))
+        return f"{zahl}km"
+    einheit = "monate" if m.group(4).lower().startswith("monat") else "jahre"
+    return f"{m.group(3)}{einheit}"
+
+
+# Provenienz-SELBSTAUSKUNFT (§1/§7 Auftrag, Härtungsrunde 3): "laut Hersteller",
+# "Original-Herstellerdaten" (real bei repareo.de beobachtet) ist eine reine
+# BEHAUPTUNG der Quelle selbst -- kein Nachweis. Getrennt in zwei Signale:
+#   provenance_claimed  = Quelle behauptet Herstellerherkunft (Textmuster).
+#   provenance_verified = eine konkrete, technisch nachprüfbare Primärquelle
+#                         (z.B. verlinktes Herstellerdokument) ist tatsächlich
+#                         vorhanden. Es gibt HEUTE keine Infrastruktur, das zu
+#                         prüfen -- bleibt deshalb bewusst IMMER False. NUR
+#                         `provenance_verified` dürfte Verification beeinflussen;
+#                         da es nie True wird, beeinflusst Provenienz die
+#                         VERIFIED-Entscheidung aktuell NICHT mehr (nur noch als
+#                         Observability-Feld `provenance_claimed` geloggt).
+_WARTUNG_PROVENIENZ_HINWEIS = re.compile(
+    r"laut\s+hersteller|herstellerangabe|werksvorgabe|laut\s+serviceplan|"
+    r"laut\s+betriebsanleitung|laut\s+wartungsplan|offizielle\s+angabe|"
+    r"original[- ]?herstellerdaten", re.IGNORECASE)
+
+
+def _provenienz_behauptet(claim: str) -> bool:
+    """`provenance_claimed` -- NUR Observability, beeinflusst KEINE Entscheidung.
+    Ein Gegenstück `provenance_verified` existiert bewusst NICHT als Funktion:
+    es gibt heute keine Infrastruktur, eine Herkunfts-Selbstauskunft technisch
+    zu verifizieren (z.B. ein verlinktes Herstellerdokument gegenzuprüfen) --
+    eine Funktion, die nur immer `False` liefert, wäre toter Code. Die Policy-
+    Entscheidung selbst steht in `_wartung_verification_status()`: Bedingung B
+    (Provenienz hebt CORROBORATED auf VERIFIED) wurde ENTFERNT, nicht nur
+    deaktiviert -- siehe dortigen Kommentar."""
+    return bool(_WARTUNG_PROVENIENZ_HINWEIS.search(claim or ""))
+
+
+def _vokabular_match(normalisierter_text: str, vokabular: dict[str, str]) -> tuple[str, str] | None:
+    """Liefert (muster, bauteil_schluessel) des ERSTEN passenden Vokabular-
+    Eintrags, oder None. Eine Stelle für den Candidate-Loop UND die Cross-
+    Tier-Signatur-Ableitung (Pre-Commit-Review: vorher an zwei Stellen
+    dasselbe Listen-Comprehension dupliziert)."""
+    for muster, schluessel in vokabular.items():
+        if muster in normalisierter_text:
+            return muster, schluessel
+    return None
+
+
+def _wartung_signature(bauteil_key: str, aktion: str, regime: str, merkmal: str | None
+                       ) -> tuple[str, str, str, str] | None:
+    """Gemeinsame 'dieselbe Wartungsaussage'-Signatur (§6 Auftrag, Härtungsrunde
+    3): Bauteil/Wartungsposten + Aktion (prüfen/ersetzen) + Regime (fest/
+    longlife) + normalisiertes Intervall MÜSSEN ALLE VIER übereinstimmen.
+    Ein zufälliges Substring-Vorkommen desselben Komponentenbegriffs reicht
+    NICHT (§2/§3 Auftrag: "Getriebeöl prüfen" vs. "Getriebeöl wechseln" bei
+    gleichem Intervall ist NICHT dieselbe Aussage)."""
+    if not merkmal:
+        return None
+    return (bauteil_key, aktion, regime, merkmal)
+
+
+def _wartung_signature_aus_text(text: str, vokabular: dict[str, str]
+                                ) -> tuple[str, str, str, str] | None:
+    """Leitet dieselbe Signatur aus einem rohen Aussagetext ab (für
+    Haupt-Pfad-WebFakt-Objekte, die keine strukturierten Felder tragen --
+    siehe Moduldocstring §12 Auftrag: keine Model-Migration)."""
+    treffer = _vokabular_match(_norm(text), vokabular)
+    if not treffer:
+        return None
+    _, schluessel = treffer
+    return _wartung_signature(schluessel, _wartung_aktion(text), _wartung_regime(text),
+                              _wartung_merkmal_normalisiert(text))
+
+
+def _cross_tier_treffer(signatur: tuple, motor_ziel: str | None, getriebe_ziel: str | None,
+                        haupt_fakten: list[WebFakt], vokabular: dict[str, str]) -> WebFakt | None:
+    """Bedingung A (§2/§5 Auftrag, Härtungsrunde 3): liefert den bereits vom
+    BESTEHENDEN, unveränderten Pfad (PRIMARY/STRONG_SECONDARY) erzeugten
+    WebFakt, der STRUKTURELL dieselbe `_wartung_signature` trägt (Bauteil UND
+    Aktion UND Regime UND Intervall -- nicht nur ein zufälliges Substring-
+    Vorkommen), oder `None`. Zusätzlich: die Hauptpfad-Aussage darf der
+    Motor-/Getriebe-Zielvorgabe nicht explizit widersprechen --
+    `_extrahiere_fakten()` prüft das selbst nicht, deshalb hier als
+    zusätzliches, additives Gate (ändert NICHTS an `_extrahiere_fakten()`
+    selbst). Gibt den TREFFER-Fakt zurück statt nur `True`/`False`, damit der
+    Aufrufer ihn um zusätzliche Candidate-Quellen ANREICHERN kann statt einen
+    zweiten, inhaltsgleichen WebFakt zu erzeugen (Pre-Commit-Review §6E:
+    kein doppelter Fact durch alten + neuen Pfad)."""
+    if not signatur:
+        return None
+    for f in haupt_fakten:
+        if f.kategorie != "wartung":
+            continue
+        if _motor_widerspricht(f.aussage, motor_ziel):
+            continue
+        if _getriebe_widerspricht(f.aussage, getriebe_ziel):
+            continue
+        if _ist_us_markt_claim(f.aussage):
+            continue
+        if _wartung_signature_aus_text(f.aussage, vokabular) == signatur:
+            return f
+    return None
+
+
+def _wartung_kandidat_saetze(r: dict, marke: str | None, modell: str | None,
+                             abgelehnt: list[dict]) -> list[str]:
+    """Liefert die für Wartungs-Candidates nutzbaren Sätze EINES Treffers --
+    dieselbe Entity-Alignment-/RC-W4-Kontext-Logik wie `_extrahiere_fakten()`
+    (dupliziert, siehe Moduldocstring oben)."""
+    url = r.get("url") or ""
+    ok, grund = ausgerichtet(r, marke, modell)
+    if not ok:
+        abgelehnt.append({"url": url, "kategorie": "wartung", "grund": grund,
+                          "source_type": _wartung_source_type(r)})
+        return []
+    satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
+    ergebnis: list[str] = []
+    abstand_seit_nennung: int | None = None
+    for idx in range(len(satz_liste)):
+        satz = _kontext_aufloesen(satz_liste, idx)
+        if satz is None:
+            continue
+        if grund == "schwach":
+            if _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
+                abstand_seit_nennung = None
+                continue
+            if _satz_nennt_modell(satz, modell):
+                abstand_seit_nennung = 0
+            else:
+                abstand = None if abstand_seit_nennung is None else abstand_seit_nennung + 1
+                if abstand is None or abstand > _RC_W4_MAX_KONTEXT_DISTANZ:
+                    abstand_seit_nennung = abstand
+                    continue
+                abstand_seit_nennung = abstand
+        ergebnis.append(satz)
+    return ergebnis
+
+
+def _gruppiere_wartung_kandidaten(kandidaten: list[dict]) -> dict[tuple[str, str, str], list[dict]]:
+    gruppen: dict[tuple[str, str, str], list[dict]] = {}
+    for k in kandidaten:
+        gruppen.setdefault((k["bauteil_key"], k["regime"], k["aktion"]), []).append(k)
+    return gruppen
+
+
+def _wartung_verification_status(gruppe: list[dict], *, motor_ziel: str | None,
+                                 getriebe_ziel: str | None, haupt_fakten: list[WebFakt],
+                                 vokabular: dict[str, str]
+                                 ) -> tuple[str, dict[str, str], list[str], bool, WebFakt | None]:
+    """AGREEMENT (mechanisch) getrennt von VERIFICATION (Policy). Rückgabe:
+    (status, {family: wert} der zählenden Stimmen, Families mit interner
+    Inkonsistenz, provenance_claimed, ziel_fakt -- NUR bei VERIFIED gesetzt,
+    s.u.).
+
+    status in (UNVERIFIED, CONFLICT, CORROBORATED, VERIFIED):
+      UNVERIFIED     0-1 zählende Family.
+      CONFLICT       >=2 Families, UNTERSCHIEDLICHE Werte.
+      CORROBORATED   >=2 Families, GLEICHER Wert, aber KEINE Zusatzbedingung
+                     erfüllt -- bleibt NICHT user-visible (app/evidence.py
+                     zeigt jeden Eintrag aus `fakten` ungefiltert).
+      VERIFIED       >=2 Families, gleicher Wert, UND dieselbe STRUKTURIERTE
+                     `_wartung_signature` ist bereits über den bestehenden
+                     PRIMARY/STRONG_SECONDARY-Pfad belegt (Bedingung A) --
+                     `ziel_fakt` ist genau DIESER bereits existierende
+                     WebFakt (der Aufrufer reichert ihn um die Candidate-
+                     Quellen an, statt einen zweiten, inhaltsgleichen
+                     WebFakt zu erzeugen; §6E Pre-Commit-Review). NIE, wenn
+                     eine beitragende Family UNKNOWN ist (§6 Auftrag Runde
+                     2). Härtungsrunde 3 (§1 Auftrag): eine reine Provenienz-
+                     SELBSTAUSKUNFT ("laut Hersteller") erzeugt KEIN VERIFIED
+                     mehr -- das war zu großzügig (jede Seite kann das
+                     behaupten, ohne es zu belegen). Da Bedingung A damit der
+                     EINZIGE verbleibende VERIFIED-Pfad ist, kann der
+                     Candidate-Pfad aktuell NIE einen komplett neuen, zuvor
+                     unbelegten Wartungsfakt sichtbar machen -- nur einen
+                     bereits vom Hauptpfad belegten um weitere Quellen
+                     anreichern. `provenance_claimed` bleibt nur Logging.
+    """
+    nicht_community = [k for k in gruppe if k["source_type"] != WARTUNG_SOURCE_COMMUNITY]
+    werte_je_family: dict[str, set[str]] = {}
+    for k in nicht_community:
+        werte_je_family.setdefault(k["family"], set()).add(k["merkmal"])
+    inkonsistent = [fam for fam, werte in werte_je_family.items() if len(werte) > 1]
+    stimmen = {fam: next(iter(werte)) for fam, werte in werte_je_family.items() if len(werte) == 1}
+    distinct_werte = set(stimmen.values())
+
+    if len(distinct_werte) > 1:
+        return WARTUNG_STATUS_CONFLICT, stimmen, inkonsistent, False, None
+    if len(stimmen) < 2:
+        return WARTUNG_STATUS_UNVERIFIED, stimmen, inkonsistent, False, None
+
+    beitraege = [k for k in gruppe if k["family"] in stimmen]
+    provenance_claimed = any(_provenienz_behauptet(k["claim"]) for k in beitraege)
+    tiers = {k["source_type"] for k in beitraege}
+    if WARTUNG_SOURCE_UNKNOWN in tiers:
+        # §6 Auftrag Runde 2: UNKNOWN (auch gemischt mit SECONDARY) wird NIE VERIFIED.
+        return WARTUNG_STATUS_CORROBORATED, stimmen, inkonsistent, provenance_claimed, None
+    signatur = _wartung_signature(gruppe[0]["bauteil_key"], gruppe[0]["aktion"],
+                                  gruppe[0]["regime"], next(iter(distinct_werte)))
+    ziel_fakt = _cross_tier_treffer(signatur, motor_ziel, getriebe_ziel, haupt_fakten, vokabular)
+    if ziel_fakt is not None:
+        return WARTUNG_STATUS_VERIFIED, stimmen, inkonsistent, provenance_claimed, ziel_fakt   # Bedingung A
+    # Bedingung B (Provenienz) wurde in Härtungsrunde 3 bewusst ENTFERNT statt
+    # nur deaktiviert (§1 Auftrag) -- eine reine Selbstauskunft ("laut
+    # Hersteller") hebt CORROBORATED nicht mehr auf VERIFIED. `provenance_claimed`
+    # bleibt nur ein Logging-Signal (siehe `_provenienz_behauptet()`-Docstring).
+    return WARTUNG_STATUS_CORROBORATED, stimmen, inkonsistent, provenance_claimed, None
+
+
+def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell: str | None,
+                              generation: str | None, motor: str | None,
+                              getriebe: str | None = None,
+                              haupt_fakten: list[WebFakt] | None = None,
+                              ) -> tuple[list[WebFakt], list[dict]]:
+    """Candidate-Evidence-Pfad NUR für Treffer UNTERHALB von MIN_SCORE_FAKT
+    (siehe Moduldocstring oben). Treffer darüber werden hier NICHT nochmal
+    verarbeitet -- die laufen unverändert durch `_extrahiere_fakten()`.
+    `haupt_fakten`: die vom BESTEHENDEN Pfad für "wartung" bereits erzeugten
+    WebFakt-Objekte -- für die Cross-Tier-Bedingung A gelesen UND (bei
+    VERIFIED) direkt per Objekt-Mutation um Candidate-Quellen angereichert
+    (siehe unten), nie ersetzt.
+
+    Der zurückgegebene `fakten`-Teil bleibt nach heutigem Stand IMMER leer:
+    Bedingung B (Provenienz) wurde entfernt, und Bedingung A (einziger
+    verbleibender VERIFIED-Pfad) setzt per Definition einen bereits in
+    `haupt_fakten` vorhandenen Treffer voraus, der dann angereichert statt
+    neu erzeugt wird. Der Rückgabewert bleibt trotzdem `list[WebFakt]` (statt
+    ersatzlos entfernt), damit eine künftige, unabhängig von einem
+    Hauptpfad-Treffer gültige Verification-Bedingung (z.B. ein echter
+    `provenance_verified`-Mechanismus) ohne Signatur-Änderung andockt."""
+    haupt_fakten = haupt_fakten or []
+    abgelehnt: list[dict] = []
+    kandidaten: list[dict] = []
+    vokabular = _bauteil_vokabular()
+
+    for r in treffer:
+        url = r.get("url") or ""
+        if score_domain(url, KATEGORIE_WARTUNG) >= MIN_SCORE_FAKT:
+            continue   # bestehender Pfad greift bereits -- hier nicht doppelt verarbeiten
+        if _fremde_generation(r, modell, generation):
+            abgelehnt.append({"url": url, "kategorie": "wartung", "grund": "andere_generation",
+                              "source_type": _wartung_source_type(r)})
+            continue
+        source_type = _wartung_source_type(r)
+        family = _source_family(url)
+        for satz in _wartung_kandidat_saetze(r, marke, modell, abgelehnt):
+            for claim in _segmentiere_claims(satz):
+                # Eigene Intervall-Erkennung statt des alten `_INTERVALL` (nur
+                # "km", kein "Kilometer") -- siehe `_wartung_merkmal_normalisiert`
+                # (§8 Auftrag, Härtungsrunde). `_INTERVALL` bleibt für den
+                # BESTEHENDEN Pfad (`_extrahiere_fakten`) unverändert in Nutzung.
+                merkmal = _wartung_merkmal_normalisiert(claim)
+                if not merkmal:
+                    continue
+                treffer_voc = _vokabular_match(_norm(claim), vokabular)
+                if not treffer_voc:
+                    continue
+                muster, schluessel = treffer_voc
+                if _motor_widerspricht(claim, motor):
+                    abgelehnt.append({"url": url, "kategorie": "wartung",
+                                      "grund": "wartung_motor_widerspricht",
+                                      "satz": claim[:120], "source_type": source_type})
+                    continue
+                if _getriebe_widerspricht(claim, getriebe):
+                    abgelehnt.append({"url": url, "kategorie": "wartung",
+                                      "grund": "wartung_getriebe_widerspricht",
+                                      "satz": claim[:120], "source_type": source_type})
+                    continue
+                if _ist_us_markt_claim(claim):
+                    abgelehnt.append({"url": url, "kategorie": "wartung",
+                                      "grund": "wartung_us_markt_claim",
+                                      "satz": claim[:120], "source_type": source_type})
+                    continue
+                kandidaten.append({
+                    "bauteil_key": schluessel, "bauteil": _anzeige_bauteil(claim, muster),
+                    "regime": _wartung_regime(claim), "aktion": _wartung_aktion(claim),
+                    "merkmal": merkmal, "family": family, "source_type": source_type,
+                    "url": url, "claim": claim, "treffer": r,
+                })
+
+    fakten: list[WebFakt] = []
+    for gruppe in _gruppiere_wartung_kandidaten(kandidaten).values():
+        status, stimmen, inkonsistent, provenance_claimed, ziel_fakt = _wartung_verification_status(
+            gruppe, motor_ziel=motor, getriebe_ziel=getriebe, haupt_fakten=haupt_fakten,
+            vokabular=vokabular)
+        for fam in inkonsistent:
+            for k in gruppe:
+                if k["family"] == fam:
+                    abgelehnt.append({"url": k["url"], "kategorie": "wartung",
+                                      "grund": "wartung_quelle_intern_inkonsistent",
+                                      "satz": k["claim"][:120], "source_type": k["source_type"]})
+        if status == WARTUNG_STATUS_CONFLICT:
+            for k in gruppe:
+                abgelehnt.append({"url": k["url"], "kategorie": "wartung",
+                                  "grund": "wartung_candidate_conflict",
+                                  "satz": k["claim"][:120], "source_type": k["source_type"]})
+        elif status == WARTUNG_STATUS_VERIFIED and ziel_fakt is not None:
+            # §6E Pre-Commit-Review: Bedingung A setzt per Definition einen
+            # bereits user-sichtbaren Hauptpfad-Fakt voraus (`ziel_fakt`) --
+            # ein ZWEITER, inhaltsgleicher WebFakt würde als Duplikat-Insight
+            # erscheinen (app/evidence.py hat keine Wartungs-Dedupe-Logik).
+            # Stattdessen wird `ziel_fakt` (dieselbe Objektinstanz, die auch
+            # im Rückgabewert von `phase_fakten()` steht) um die zusätzlichen,
+            # unabhängig bestätigenden Candidate-Quellen angereichert.
+            beitraege = [k for k in gruppe if k["family"] in stimmen]
+            neue_quellen = _quellen_aus([k["treffer"] for k in beitraege])
+            vorhandene_urls = {q.url for q in ziel_fakt.quellen}
+            for q in neue_quellen:
+                if q.url not in vorhandene_urls:
+                    ziel_fakt.quellen.append(q)
+                    vorhandene_urls.add(q.url)
+        elif status == WARTUNG_STATUS_CORROBORATED:
+            # §3/§4 Auftrag: CORROBORATED bleibt bewusst NICHT user-visible
+            # (kein Eintrag in `fakten`) -- nur Observability. `provenance_claimed`
+            # wird mitgeloggt (§7 Auftrag), beeinflusst aber NICHT den Status.
+            for k in gruppe:
+                if k["family"] in stimmen:
+                    abgelehnt.append({"url": k["url"], "kategorie": "wartung",
+                                      "grund": "wartung_corroborated_not_verified",
+                                      "satz": k["claim"][:120], "source_type": k["source_type"],
+                                      "provenance_claimed": provenance_claimed})
+        else:
+            for k in gruppe:
+                abgelehnt.append({"url": k["url"], "kategorie": "wartung",
+                                  "grund": "wartung_candidate_unverified",
+                                  "satz": k["claim"][:120], "source_type": k["source_type"]})
+
+    log.debug("Wartungs-Evidence: %d Candidate-Claims, %d verified, %d Themen-Gruppen, "
+             "source_type_mix=%s", len(kandidaten), len(fakten),
+             len({(k["bauteil_key"], k["regime"], k["aktion"]) for k in kandidaten}),
+             {t: sum(1 for k in kandidaten if k["source_type"] == t)
+              for t in (WARTUNG_SOURCE_SECONDARY, WARTUNG_SOURCE_UNKNOWN, WARTUNG_SOURCE_COMMUNITY)})
+    return fakten, abgelehnt
+
+
 # ── Gemeinsame, phasenweise Auswertung ───────────────────────────────────────
 
 def _ziel(marke, modell, baujahr, motor, ziel: dict | None) -> dict:
@@ -1848,6 +2414,18 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                      generation=identitaet.generation or ziel.get("generation"),
                                      abgelehnt=abgelehnt, hubraum=ziel.get("hubraum"),
                                      leistung_ps=ziel.get("leistung_ps"))
+        if kategorie == "wartung":
+            # Source-Trust-Fix (Scope: NUR wartung) -- siehe Moduldocstring
+            # oben. Rein additiv: verarbeitet ausschliesslich Treffer, die
+            # `_extrahiere_fakten()` bereits (unveraendert) verworfen hat.
+            cand_fakten, cand_abgelehnt = _wartung_candidate_fakten(
+                treffer, marke=ziel.get("marke"), modell=ziel.get("modell"),
+                generation=identitaet.generation or ziel.get("generation"),
+                motor=ziel.get("motor"), getriebe=ziel.get("getriebe"),
+                haupt_fakten=[f for f in fakten if f.kategorie == "wartung"])
+            bisherige_wartung = sum(1 for f in fakten if f.kategorie == "wartung")
+            fakten += cand_fakten[:max(0, MAX_FAKTEN_JE_KATEGORIE - bisherige_wartung)]
+            abgelehnt += cand_abgelehnt
     return fakten
 
 
