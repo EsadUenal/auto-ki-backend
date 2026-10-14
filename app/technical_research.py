@@ -1285,6 +1285,203 @@ def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
     return None
 
 
+# ── RC-W4 Runde 2: Segment-Kontext statt fixer Distanz-1-TTL ───────────────
+#
+# BEFUND (Auftrag "RC-W4 neu aufrollen"): die Distanz-1-TTL (`_RC_W4_MAX_
+# KONTEXT_DISTANZ = 1`) verliert Kontext bereits nach GENAU einem neutralen
+# Brückensatz ("Beim Golf ... . Viele Fahrer berichten davon. Die Wasserpumpe
+# kann undicht werden." -- der dritte Satz würde verworfen). Zu konservativ:
+# eine fixe Satzanzahl kann einen echten Themenwechsel nicht von einem
+# gewöhnlich langen, neutralen Absatz unterscheiden.
+#
+# STRUKTUR-AUDIT (vor der Implementierung geprüft, siehe Abschlussbericht):
+# Tavily-`content`-Snippets liefern in der Praxis so gut wie NIE zuverlässige
+# `\n\n`-Absatzgrenzen (verifiziert an echten, in dieser Sitzungsreihe
+# gespeicherten Treffern) -- `_SATZ` (oben) behandelt `\n\n` zwar technisch
+# als Trenner, dieses Signal ist aber in echten Snippets fast nie vorhanden
+# und damit keine verlässliche Grundlage. Eine HTML-/Absatzstruktur ist zu
+# diesem Zeitpunkt (nach `_saetze()`) ohnehin schon vollständig zu einer
+# flachen Satzliste verarbeitet -- es gibt keine Absatzinformation mehr, die
+# man "wiederherstellen" könnte.
+#
+# NEUE REGEL (inhaltsgetrieben statt distanzgetrieben): ein Satz, der das
+# Modell selbst nennt -- ODER, bei einem titel-stark ausgerichteten Treffer,
+# der Treffer von Anfang an -- etabliert lokalen Fahrzeugkontext für ALLE
+# nachfolgenden Sätze DESSELBEN Treffers, UNBEGRENZT in der Satzanzahl.
+# Kontext endet NICHT nach einer fixen Distanz, sondern NUR durch einen
+# echten inhaltlichen Kontextbruch -- exakt dieselbe, bereits bestehende und
+# gut getestete `_claim_widerspricht_fahrzeug_lokal()`-Prüfung (fremde Marke,
+# "beim/für den <anderes Fahrzeug>", unsichere Satzanfangs-Nominalphrase).
+# KEINE neue Erkennung, KEIN Fahrzeug-/Modell-Katalog -- dieselben drei
+# Signale wie bisher, nur ohne die zusätzliche künstliche Distanz-Schranke.
+#
+# KEINE unbegrenzte result-weite Vererbung (§2 Auftrag): ein Kontextbruch
+# wirkt weiterhin sofort und vollständig -- danach ist wieder eine explizite
+# Modellnennung nötig, bevor erneut geerbt werden darf (siehe Test F/H in der
+# Testmatrix). Das unterscheidet dies von der in Runde 1 bereits VERWORFENEN
+# "einmal erkannt -> für immer" Variante.
+#
+# NEU (§10 Auftrag): bisher lief die Widerspruchsprüfung NUR für `grund ==
+# "schwach"` -- ein titel-stark ausgerichteter Treffer ("VW Golf 8
+# Gebrauchtwagen-Test") akzeptierte JEDEN Satz ungeprüft, auch einen
+# expliziten Vergleichssatz über ein anderes Fahrzeug. Jetzt gilt dieselbe
+# Widerspruchsprüfung auch hier: ein expliziter Fremdfahrzeug-Satz schlägt
+# den Titel-Kontext, bis das Zielmodell erneut explizit genannt wird.
+#
+# SCOPE (§15 Auftrag -- Recall/KBA und der Wartungs-Evidence-Layer bleiben
+# unangetastet): NUR für `kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN`
+# (schwachstelle/wartung) in `_extrahiere_fakten()` aktiv. "rueckruf" nutzt
+# weiterhin `_distanz1_kontext_saetze()` -- ein unveränderter Port der alten
+# Distanz-1-Logik, siehe dort. Der Wartungs-Evidence-Candidate-Pfad
+# (`_wartung_kandidat_saetze()`, app/technical_research.py, soeben committed)
+# bleibt ebenfalls unverändert bei der alten Distanz-1-Logik -- er ist Teil
+# des gerade freigegebenen Wartungs-Evidence-Layers und wird in dieser Runde
+# bewusst nicht angefasst, auch wenn er dieselbe TTL-Einschränkung hätte.
+#
+# STRUKTURAUDIT (§3/§11 Auftrag): echte Tavily-`content`-Snippets liefern so
+# gut wie NIE ein doppeltes Newline oder eine Markdown-Überschrift (an über
+# 20 real gespeicherten Treffern verschiedener Domains verifiziert, siehe
+# Abschlussbericht) -- `_saetze_mit_segmentgrenze()` baut deshalb KEINE neue,
+# dort real nicht vorkommende Absatzlogik, sondern macht nur das bestehende
+# Signal nutzbar, das `_SATZ` (oben) schon immer als Trenner kennt (es ging
+# bisher nur verloren, weil `_saetze()` eine flache Liste ohne Markierung
+# zurückgibt). Verteidigung in der Tiefe für den seltenen Fall, dass dieses
+# Signal doch vorhanden ist -- NICHT der Regelfall, auf den sich die
+# Segment-Logik stützt (das bleibt `_claim_widerspricht_fahrzeug_lokal`).
+_ABSATZ_ODER_UEBERSCHRIFT_TRENNER = re.compile(r"\r?\n\s*\r?\n|#{2,}")
+
+
+def _saetze_mit_segmentgrenze(text: str) -> list[tuple[str, bool]]:
+    """Wie `_saetze(text, max_len=None)`, zusätzlich mit einem Flag pro Satz:
+    True für den ERSTEN Satz nach einer echten Absatz-/Überschriften-Grenze
+    im Originaltext (siehe Kommentar oben). `_saetze()` selbst bleibt für
+    alle anderen Aufrufer unverändert -- nur diese Funktion liest zusätzlich
+    die Trennerposition mit."""
+    out: list[tuple[str, bool]] = []
+    for i, chunk in enumerate(_ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text or "")):
+        for j, s in enumerate(_saetze(chunk, max_len=None)):
+            out.append((s, i > 0 and j == 0))
+    return out
+
+
+def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell: str | None,
+                            titel_stark: bool, pruefe_widerspruch_bei_titel_stark: bool = True,
+                            segment_marker: list[bool] | None = None,
+                            abgelehnt: list[dict] | None = None,
+                            url: str | None = None, kategorie: str | None = None
+                            ) -> list[str]:
+    """Liefert die Sätze EINES Treffers, die lokalen Fahrzeugkontext haben --
+    entweder durch eigene Modellnennung oder durch Vererbung innerhalb des
+    aktuellen, noch nicht widersprochenen Segments (siehe Moduldocstring
+    oben). `kontext_aktiv` ist rein lokal für DIESEN Aufruf/Treffer -- nie
+    über den Aufruf hinaus gespeichert, also keine result- oder
+    treffer-übergreifende Vererbung.
+
+    `segment_marker[idx] == True` (optional, siehe `_saetze_mit_segmentgrenze`):
+    eine ECHTE Absatz-/Überschriften-Grenze im Originaltext liegt direkt vor
+    diesem Satz -- das Segment endet dort IMMER (Verteidigung in der Tiefe),
+    unabhängig davon, ob der erste Satz des neuen Segments selbst einen
+    Widerspruch enthält. Fällt zurück auf den Baseline-Kontext (`titel_stark`
+    für stark ausgerichtete Treffer, "kein Kontext" für schwache) -- ein
+    titel-starker Treffer darf nach einem Absatzwechsel wieder vom Titel
+    profitieren, ein schwacher braucht erneut eine eigene Bestätigung.
+
+    `pruefe_widerspruch_bei_titel_stark=False` (Regression-Fund, Pre-Commit-
+    Review Runde 2): die §10-Erweiterung ("auch ein starker Titel wird durch
+    einen expliziten Fremdfahrzeug-Satz geschlagen") ist NUR sicher, wenn ein
+    echtes Zielmodell bekannt ist -- `_unsichere_satzanfangs_nominalphrase()`
+    kann ein unbekanntes Bauteil-Kompositum ("Verdeckmechanismus",
+    "Getriebeöl") sonst nie als "das ist mein Zielmodell" ausschließen und
+    würde es faelschlich als Fremdfahrzeug werten. Caller setzt dies
+    deshalb nur `True`, wenn `kategorie=="schwachstelle"` UND `marke`/
+    `modell` tatsächlich gesetzt sind (identische Vorbedingung, die
+    `ausgerichtet()` für den schwach-Fall ohnehin schon verlangt) -- "wartung"
+    (Wartungs-Evidence-Layer, §15 Auftrag nicht angefasst) bleibt IMMER
+    `False` und damit exakt beim alten, ungeprüften Verhalten für titel-
+    starke Treffer."""
+    kontext_aktiv = titel_stark
+    pruefe_widerspruch = (not titel_stark) or pruefe_widerspruch_bei_titel_stark
+    grund_blockiert = "fremdfahrzeug_segment" if titel_stark else "schwach_ausgerichtet_ohne_modellnennung"
+    ergebnis: list[str] = []
+    for idx in range(len(satz_liste)):
+        if segment_marker and segment_marker[idx]:
+            kontext_aktiv = titel_stark
+        satz = _kontext_aufloesen(satz_liste, idx)
+        if satz is None:
+            if abgelehnt is not None:
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "kontextabhaengiger_satz_ohne_bezug",
+                                  "satz": satz_liste[idx][:120]})
+            continue
+        if not pruefe_widerspruch:
+            ergebnis.append(satz)
+            continue
+        if _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
+            # Expliziter Widerspruch schlägt geerbten ODER Titel-Kontext IMMER
+            # und beendet das aktuelle Segment -- erst eine erneute explizite
+            # Modellnennung darf wieder erben (kein "sticky" Modellbezug über
+            # einen Fahrzeugwechsel hinweg, siehe Test F/H).
+            kontext_aktiv = False
+            if abgelehnt is not None:
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": grund_blockiert, "satz": satz[:120]})
+            continue
+        if _satz_nennt_modell(satz, modell):
+            kontext_aktiv = True
+            ergebnis.append(satz)
+            continue
+        if kontext_aktiv:
+            log.debug("RC-W4(v2): Claim akzeptiert via Segment-Kontext "
+                     "(titel_stark=%s): %r", titel_stark, satz[:120])
+            ergebnis.append(satz)
+            continue
+        if abgelehnt is not None:
+            abgelehnt.append({"url": url, "kategorie": kategorie,
+                              "grund": grund_blockiert, "satz": satz[:120]})
+    return ergebnis
+
+
+def _distanz1_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell: str | None,
+                             grund: str | None, abgelehnt: list[dict], url: str,
+                             kategorie: str) -> list[str]:
+    """EXAKTER Verhaltens-Port der ursprünglichen RC-W4-Distanz-1-TTL (Runde 1)
+    -- NUR noch für kategorie=="rueckruf" in Gebrauch (Recall/KBA bleibt
+    bewusst unangetastet, siehe Moduldocstring oben). schwachstelle/wartung
+    nutzen jetzt `_segment_kontext_saetze()`."""
+    ergebnis: list[str] = []
+    abstand_seit_nennung: int | None = None
+    for idx in range(len(satz_liste)):
+        satz = _kontext_aufloesen(satz_liste, idx)
+        if satz is None:
+            abgelehnt.append({"url": url, "kategorie": kategorie,
+                              "grund": "kontextabhaengiger_satz_ohne_bezug",
+                              "satz": satz_liste[idx][:120]})
+            continue
+        if grund == "schwach":
+            widerspruch = _claim_widerspricht_fahrzeug_lokal(satz, marke, modell)
+            if widerspruch:
+                abstand_seit_nennung = None
+                abgelehnt.append({"url": url, "kategorie": kategorie,
+                                  "grund": "schwach_ausgerichtet_ohne_modellnennung",
+                                  "satz": satz[:120]})
+                continue
+            if _satz_nennt_modell(satz, modell):
+                abstand_seit_nennung = 0
+            else:
+                abstand = None if abstand_seit_nennung is None else abstand_seit_nennung + 1
+                if abstand is None or abstand > _RC_W4_MAX_KONTEXT_DISTANZ:
+                    abstand_seit_nennung = abstand
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "schwach_ausgerichtet_ohne_modellnennung",
+                                      "satz": satz[:120]})
+                    continue
+                log.debug("RC-W4: Claim akzeptiert via alignment_source=local_context, "
+                         "context_distance=%d: %r", abstand, satz[:120])
+                abstand_seit_nennung = abstand
+        ergebnis.append(satz)
+    return ergebnis
+
+
 # ── RC-W1: Substanz-Schwelle gegen scope-lose Teaser/Index-Seiten ───────────
 #
 # BEFUND (Forensik-Audit, realer Web-Smoke-Test): eine Kategorie-/Teaser-Seite
@@ -1589,58 +1786,36 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # bevor die Claim-Segmentierung ihn überhaupt sehen konnte — nur für
         # die Kategorien in `_CLAIM_SEGMENTIERUNG_KATEGORIEN` aufgehoben
         # (`max_len=None`); "rueckruf" behält die Grenze unverändert.
-        satz_liste = _saetze(
-            f"{r.get('title') or ''}. {r.get('content') or ''}",
-            max_len=None if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN else 300)
-        # RC-W4: lokaler Modellkontext — je Treffer neu, NIE über Treffer-
-        # Grenzen hinweg. `abstand_seit_nennung` zählt Sätze seit der letzten
-        # EXPLIZITEN Modellnennung (None = noch keine/zurückgesetzt). Ein
-        # geerbter (nicht selbst nennender) Satz verlängert die Kette NICHT
-        # auf 0 zurück — er erhöht den Abstand normal weiter, sonst könnte
-        # eine Folge rein geerbter Sätze beliebig lang werden (siehe
-        # `_RC_W4_MAX_KONTEXT_DISTANZ`-Kommentar oben).
-        abstand_seit_nennung: int | None = None
-        for idx in range(len(satz_liste)):
-            satz = _kontext_aufloesen(satz_liste, idx)
-            if satz is None:
-                abgelehnt.append({"url": url, "kategorie": kategorie,
-                                  "grund": "kontextabhaengiger_satz_ohne_bezug",
-                                  "satz": satz_liste[idx][:120]})
-                continue
-            if grund == "schwach":
-                widerspruch = _claim_widerspricht_fahrzeug_lokal(satz, marke, modell)
-                if widerspruch:
-                    # Expliziter Widerspruch schlägt geerbten Kontext IMMER
-                    # und setzt ihn für die nachfolgenden Sätze zurück (kein
-                    # "sticky" Modellbezug über einen Modellwechsel hinweg).
-                    abstand_seit_nennung = None
-                    abgelehnt.append({"url": url, "kategorie": kategorie,
-                                      "grund": "schwach_ausgerichtet_ohne_modellnennung",
-                                      "satz": satz[:120]})
-                    continue
-                if _satz_nennt_modell(satz, modell):
-                    abstand_seit_nennung = 0
-                else:
-                    abstand = None if abstand_seit_nennung is None else abstand_seit_nennung + 1
-                    if abstand is None or abstand > _RC_W4_MAX_KONTEXT_DISTANZ:
-                        # RC-W3 (Observability, kein Verhaltenswechsel): bisher
-                        # stille Verwerfung auf einer schwach ausgerichteten
-                        # Seite, wenn der einzelne Satz Marke/Modell nicht
-                        # selbst nennt UND kein lokaler Kontext innerhalb der
-                        # TTL geerbt werden kann (RC-W4).
-                        abstand_seit_nennung = abstand
-                        abgelehnt.append({"url": url, "kategorie": kategorie,
-                                          "grund": "schwach_ausgerichtet_ohne_modellnennung",
-                                          "satz": satz[:120]})
-                        continue
-                    # RC-W4-Observability (nur log.debug, keine User-UI, keine
-                    # neuen persistenten Felder — Provenance-Ausbau bleibt
-                    # separat dokumentiert): der Claim selbst nennt das Modell
-                    # NICHT, wird aber via lokalem Kontext (Distanz `abstand`
-                    # seit letzter Modellnennung) akzeptiert.
-                    log.debug("RC-W4: Claim akzeptiert via alignment_source=local_context, "
-                             "context_distance=%d: %r", abstand, satz[:120])
-                    abstand_seit_nennung = abstand
+        # RC-W4 Runde 2: Segment-Kontext (schwachstelle/wartung) statt der
+        # alten Distanz-1-TTL -- siehe Moduldocstring bei
+        # `_segment_kontext_saetze()`. "rueckruf" bleibt bewusst auf dem
+        # unveränderten `_distanz1_kontext_saetze()`-Port (Recall/KBA nicht
+        # angefasst, §15 Auftrag).
+        if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN:
+            satz_markiert = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+            satz_liste = [s for s, _ in satz_markiert]
+            erlaubte_saetze = _segment_kontext_saetze(
+                satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
+                # §10-Erweiterung NUR für schwachstelle MIT echtem Zielmodell
+                # -- "wartung" (Wartungs-Evidence-Layer, §15 Auftrag) bleibt
+                # beim alten, ungeprüften Verhalten für titel-starke Treffer
+                # (siehe Docstring/Regression-Fund bei `_segment_kontext_saetze`).
+                pruefe_widerspruch_bei_titel_stark=(kategorie == "schwachstelle"
+                                                    and bool(marke or modell)),
+                segment_marker=[m for _, m in satz_markiert],
+                abgelehnt=abgelehnt, url=url, kategorie=kategorie)
+        else:
+            # RC-W3 (Release-Risiko 1): die obere 300-Zeichen-Grenze von
+            # `_saetze()` verwarf einen realistischen, langen Multi-Claim-
+            # Satz VOLLSTÄNDIG, bevor die Claim-Segmentierung ihn überhaupt
+            # sehen konnte -- nur für die Kategorien in
+            # `_CLAIM_SEGMENTIERUNG_KATEGORIEN` aufgehoben (oben, `max_len=
+            # None`); "rueckruf" behält die Grenze unverändert.
+            satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=300)
+            erlaubte_saetze = _distanz1_kontext_saetze(
+                satz_liste, marke=marke, modell=modell, grund=grund,
+                abgelehnt=abgelehnt, url=url, kategorie=kategorie)
+        for satz in erlaubte_saetze:
             # RC-W3 (Claim-Segmentierung): ein Satz kann mehrere, auch
             # gegensätzliche Claims enthalten ("Korrosion ist nicht
             # feststellbar, aber die Dichtung ist undicht."). Jedes Segment

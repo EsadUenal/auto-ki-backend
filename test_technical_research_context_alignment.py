@@ -1,19 +1,32 @@
 """
-RC-W4-Fix: lokale Modellkontext-Vererbung für schwach ausgerichtete Treffer.
+RC-W4-Fix: lokale Modellkontext-Vererbung für schwache UND starke Ausrichtung.
 
-BEFUND (Offline-Alignment-Matrix-Audit, Fälle C/D)
-----------------------------------------------------
+BEFUND Runde 1 (Offline-Alignment-Matrix-Audit, Fälle C/D)
+-------------------------------------------------------------
 Nennt der TITEL eines Treffers das Modell nicht ("schwach" ausgerichtet),
 musste bisher JEDER einzelne Satz das Modell selbst erneut nennen
 (`_satz_nennt_modell`) — ein Folgesatz, der seinen Fahrzeugbezug nur aus dem
 unmittelbar vorherigen Satz erbt ("Beim Golf ... . Die Wasserpumpe kann
 undicht werden."), verlor diesen Bezug ersatzlos.
 
-FIX (app/technical_research.py): ein Satz, der das Modell selbst nennt,
-etabliert lokalen Kontext für nachfolgende Sätze DESSELBEN Treffers — bis ein
-Satz mit EXPLIZITEM Widerspruch (fremde Marke, oder die enge "beim <anderes
-Nomen>"-Konstruktion wie "Beim Passat...") ihn zurücksetzt. Titel-ausgerichtete
-("stark") Treffer sind unverändert; nur `grund == "schwach"` ist betroffen.
+FIX Runde 1: ein Satz, der das Modell selbst nennt, etabliert lokalen Kontext
+für nachfolgende Sätze DESSELBEN Treffers — zunächst nur für GENAU den
+nächsten Satz (Distanz-1-TTL), zurückgesetzt durch einen Satz mit EXPLIZITEM
+Widerspruch (fremde Marke, "beim <anderes Nomen>", unsichere Satzanfangs-
+Nominalphrase).
+
+BEFUND Runde 2 ("RC-W4 neu aufrollen")
+---------------------------------------
+Die Distanz-1-TTL war zu konservativ: ein zweiter neutraler Brückensatz
+("Viele Fahrer berichten davon.") verwarf einen eigentlich klar zum selben
+Fahrzeug gehörenden Folgesatz. FIX: die fixe Distanz entfällt für
+schwachstelle/wartung (`_segment_kontext_saetze()`) — Kontext bleibt
+bestehen, bis ein ECHTER inhaltlicher Widerspruch auftritt, unabhängig von
+der Satzanzahl dazwischen. Zusätzlich gilt dieselbe Widerspruchsprüfung jetzt
+auch für titel-stark ausgerichtete Treffer (ein expliziter Fremdfahrzeug-Satz
+schlägt auch einen starken Titel-Kontext). "rueckruf" bleibt unverändert auf
+der alten Distanz-1-TTL (`_distanz1_kontext_saetze()`, Recall/KBA nicht
+angefasst).
 
     python test_technical_research_context_alignment.py
 """
@@ -196,32 +209,33 @@ check("N) echter Problemclaim mit geerbtem Kontext -> ACCEPT",
       any(x.bauteil == "Kupplung" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
 print("\n" + "=" * 78)
-print("RC-W4 Distanz-TTL O-V (Review-Korrektur: Distanz-1-Begrenzung)")
+print("RC-W4 Runde 2: Segment-Kontext statt fixer Distanz-1-TTL (O-V)")
 print("=" * 78)
 
-# O) Golf-Satz -> DIREKT Wasserpumpen-Claim -> ACCEPT (Distanz 1)
+# O) Golf-Satz -> DIREKT Wasserpumpen-Claim -> ACCEPT
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-o", TITEL_SCHWACH,
              "Beim Golf treten Alterungsprobleme auf. "
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
-check("O) Distanz 1 (direkt nächster Satz) -> ACCEPT",
+check("O) direkt nächster Satz -> ACCEPT",
       any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
-# P) Golf-Satz -> 1 neutraler Brückensatz -> Claim -> REJECT (Distanz 2,
-# bewusst NICHT akzeptiert -- siehe Begründung im Abschlussbericht/Code)
+# P) Golf-Satz -> 1 neutraler Brückensatz -> Claim -> JETZT ACCEPT (RC-W4
+# Runde 2: kein echter Kontextbruch, also bleibt das Segment aktiv -- die
+# alte Distanz-1-TTL hätte das fälschlich verworfen, siehe Abschlussbericht)
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-p", TITEL_SCHWACH,
              "Beim Golf treten mehrere typische Alterungsprobleme auf. "
              "Besonders bei höheren Laufleistungen ist Vorsicht sinnvoll. "
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
-check("P) Distanz 2 (1 neutraler Brückensatz) -> REJECT (bewusst konservativ)",
-      not any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
-check("P) explizit via schwach_ausgerichtet_ohne_modellnennung abgelehnt",
-      any("Wasserpumpe" in (x.get("satz") or "") for x in a))
+check("P) 1 neutraler Brückensatz, KEIN Kontextbruch -> ACCEPT (RC-W4 Runde 2)",
+      any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
-# Q) Golf-Satz -> 2+ neutrale Sätze -> Claim -> REJECT (Distanz >= 3)
+# Q) Golf-Satz -> 2+ neutrale Sätze, weiterhin KEIN echter Kontextbruch ->
+# JETZT ACCEPT (RC-W4 Runde 2: Segment lebt beliebig lang, solange kein
+# echter Widerspruch auftritt -- genau das war der Auftrag "keine fixe TTL")
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-q", TITEL_SCHWACH,
              "Beim Golf treten mehrere typische Alterungsprobleme auf. "
@@ -229,8 +243,8 @@ f, a = _fakten_und_gruende(
              "Ein Gebrauchtwagenkauf sollte immer mit Probefahrt erfolgen. "
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
-check("Q) Distanz >=3 (2+ neutrale Sätze) -> REJECT",
-      not any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
+check("Q) 3 neutrale Sätze, KEIN Kontextbruch -> ACCEPT (RC-W4 Runde 2)",
+      any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
 # R) Golf-Satz -> "Der Passat ..." -> neutraler Claim -> darf NICHT Golf erben
 f, a = _fakten_und_gruende(
@@ -240,7 +254,8 @@ f, a = _fakten_und_gruende(
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
 check("R) 'Der Passat ...' als Brückensatz -> Wasserpumpe NICHT dem Golf zugeordnet "
-      "(unabhängig davon, ob 'Der Passat' selbst erkannt wird: Distanz-TTL fängt es ohnehin ab)",
+      "(RC-W4 Runde 2: ohne TTL-Fallback -- einzig die Widerspruchserkennung selbst "
+      "muss hier greifen, siehe _unsichere_satzanfangs_nominalphrase)",
       not any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
 # S) Golf-Satz -> "Für den Passat ..." -> neutraler Claim -> darf NICHT Golf erben
@@ -267,9 +282,8 @@ check("T) fremde Marke (Ford) direkt nach Golf-Satz (Distanz 1) -> Reset, "
       "Wasserpumpe NICHT dem Golf zugeordnet",
       not any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
-# U) Golf-Satz -> Absatz-/Segmentwechsel (mehrere neutrale Sätze) -> Claim -> REJECT
-# (identisch zu Q -- Distanz-TTL kennt keine explizite Absatzgrenze, deckt
-# den Fall aber bereits rein über die Distanz ab)
+# U) Golf-Satz -> mehrere neutrale Sätze, aber KEIN echter Themenwechsel
+# (kein anderes Fahrzeug genannt) -> JETZT ACCEPT (RC-W4 Runde 2)
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-u", TITEL_SCHWACH,
              "Beim Golf treten mehrere typische Alterungsprobleme auf. "
@@ -277,8 +291,8 @@ f, a = _fakten_und_gruende(
              "Dazu gehört auch ein Blick ins Serviceheft. "
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
-check("U) mehrere neutrale Sätze (Themenwechsel) -> REJECT",
-      not any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
+check("U) mehrere neutrale Sätze, kein echter Kontextbruch -> ACCEPT (RC-W4 Runde 2)",
+      any(x.bauteil == "Wasserpumpe" for x in f), str([(x.bauteil, x.aussage) for x in f]))
 
 # V) Golf-Satz -> mehrere neutrale Sätze -> SPÄTER wieder explizit Golf ->
 # neuer Kontext darf korrekt (fresh) starten
