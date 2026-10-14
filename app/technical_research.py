@@ -68,7 +68,7 @@ from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
     _domain_von, _qualitaets_label, curate_results, score_domain,
-    tavily_search, tavily_search_with_fallback,
+    tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -2696,46 +2696,53 @@ class TavilyTechnicalResearchProvider:
         # "erster Treffer gewinnt" nachweislich echte, komplementäre Fakten
         # verpasst — ein Live-A/B-Test fand z. B. bei identischem Fahrzeug
         # über den zweiten Intent 4 zusätzliche valide Fakten, die der erste
-        # nie fand, UND umgekehrt). Der spätere intelligente RC-W5-Early-Exit
-        # entscheidet erst zwischen weiteren Suchrunden, nicht zwischen diesen
-        # beiden Basis-Intents. Wartung bleibt unverändert beim bestehenden
-        # Fallback — dafür existiert noch kein entsprechender A/B-Beweis.
+        # nie fand, UND umgekehrt).
         sw_intents = (
             ("technical_weakness",
              " ".join(filter(None, [basis, jahr, "bekannte Probleme Schwachstellen"]))),
             ("used_car_review", f"{breit} Gebrauchtwagen Test TÜV Kaufberatung"),
         )
-        sw_treffer_je_intent, wa = await asyncio.gather(
-            asyncio.gather(*[suche(q, phase="technik") for _, q in sw_intents]),
-            tavily_search_with_fallback([" ".join(filter(None, [basis, "Wartungsintervall Serviceintervall"])),
-                                         f"{breit} Inspektionsintervall"],
-                                        count=self._count, exclude_domains=US_QUELLEN_AUSSCHLUSS),
-            return_exceptions=True)
-        if isinstance(sw_treffer_je_intent, Exception):           # pragma: no cover — Schutznetz
-            fehler = True
-            sw_treffer_je_intent = [[] for _ in sw_intents]
-        # `suche()` zählt die beiden Schwachstelle-Calls bereits einzeln in
-        # anfragen/anf_gesamt["technik"] mit — hier kommt nur die Wartung-
-        # Fallback-Gruppe als EIN weiterer Anfrage-Block hinzu (wie bisher).
-        anfragen += 1
-        anf_gesamt["technik"] += 1
-        if isinstance(wa, Exception):
-            anf_fehler["technik"] += 1
-            fehler = True
-            wa = []
-        # Observability (RC-W5-Vorbereitung, nur log.debug — keine User-UI,
-        # keine zweite Extraction-Pipeline): pro Intent Rohtreffer- und
-        # High-Quality-Domain-Zahl, BEVOR die Listen zusammengeführt werden.
-        # Die eigentliche Faktenbildung läuft weiterhin EINMAL unten, auf der
+        # RC-W5 (Wartung, Design-Audit + Entscheidung): dieselbe Lehre gilt hier.
+        # Der bisherige `tavily_search_with_fallback([Q1, Q2])`-Pfad prüfte nur,
+        # ob Q1 ROH nichtleer war — VOR jeder Curation/Extraktion. Lieferte Q1
+        # ausschliesslich Treffer, die `_extrahiere_fakten()`/der Wartungs-
+        # Evidence-Layer (Commit 55873be) vollständig verwarfen (z.B.
+        # "source_quality", "no_maintenance_interval"), wurde Q2 trotzdem NIE
+        # ausgeführt — und ausgerechnet der Evidence-Layer verlor damit die
+        # zweite Source-Family, die einen CORROBORATED-Fakt zu VERIFIED heben
+        # (Cross-Tier-Bedingung A) oder einen CONFLICT aufdecken könnte.
+        # Entscheidung: kein Coverage-Score, kein Early-Exit — Q1 und Q2 sind
+        # zwei Basis-Suchzugänge zum selben Wartungsraum, nicht Primary+Fallback.
+        # Qualität geht vor einem gesparten Tavily-Call.
+        wa_intents = (
+            ("service_interval",
+             " ".join(filter(None, [basis, "Wartungsintervall Serviceintervall"]))),
+            ("inspection_interval", f"{breit} Inspektionsintervall"),
+        )
+        technik_intents = sw_intents + wa_intents
+        technik_treffer_je_intent = await asyncio.gather(
+            *[suche(q, phase="technik") for _, q in technik_intents])
+        sw_treffer_je_intent = technik_treffer_je_intent[:len(sw_intents)]
+        wa_treffer_je_intent = technik_treffer_je_intent[len(sw_intents):]
+        # Observability (nur log.debug — keine User-UI, keine zweite
+        # Extraction-Pipeline): pro Intent Rohtreffer- und High-Quality-Domain-
+        # Zahl, BEVOR die Listen zusammengeführt werden. Die eigentliche
+        # Faktenbildung läuft weiterhin EINMAL unten, auf der je Kategorie
         # vereinten Liste, durch die unveränderte Pipeline (curate_results +
-        # _extrahiere_fakten inkl. bestehender RC-W3-Dedupe).
+        # _extrahiere_fakten/Wartungs-Evidence-Layer inkl. bestehender
+        # RC-W3-Dedupe/Agreement/Conflict-Logik).
         for (intent, q), treffer in zip(sw_intents, sw_treffer_je_intent):
             hoch = sum(1 for r in treffer
                       if score_domain(r.get("url") or "", _WEB_KATEGORIE["schwachstelle"]) >= MIN_SCORE_FAKT)
             log.debug("Schwachstelle-Intent '%s' (%r): %d Rohtreffer, %d High-Quality-Domains",
                      intent, q, len(treffer), hoch)
+        for (intent, q), treffer in zip(wa_intents, wa_treffer_je_intent):
+            hoch = sum(1 for r in treffer
+                      if score_domain(r.get("url") or "", _WEB_KATEGORIE["wartung"]) >= MIN_SCORE_FAKT)
+            log.debug("Wartung-Intent '%s' (%r): %d Rohtreffer, %d High-Quality-Domains",
+                     intent, q, len(treffer), hoch)
         roh["schwachstelle"] = [r for treffer in sw_treffer_je_intent for r in treffer]
-        roh["wartung"] = wa if isinstance(wa, list) else []
+        roh["wartung"] = [r for treffer in wa_treffer_je_intent for r in treffer]
         fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"), abgelehnt)
         # Inhalts-Schwäche der Technik-Phase (Root Cause 6, Test 3): Anfragen
         # können sauber durchgekommen sein und trotzdem nur duenne, einstufige

@@ -18,8 +18,18 @@ Unterschiedliche Suchintentionen liefern also echte, komplementäre Information.
 FIX: Schwachstelle führt jetzt IMMER beide Intents aus (kein Early Exit
 zwischen ihnen) und vereint die Rohergebnisse VOR der unveränderten
 Extraktions-/Dedupe-Pipeline (`curate_results` + `_extrahiere_fakten`, inkl.
-bestehender RC-W3-Dedupe-Logik). Wartung bleibt unverändert beim bisherigen
-Fallback-Mechanismus.
+bestehender RC-W3-Dedupe-Logik).
+
+NACHTRAG (RC-W5-Design-Audit + Entscheidung): Wartung trug denselben
+"erster Treffer gewinnt"-Fallback (`tavily_search_with_fallback`) weiterhin —
+und zwar auf ROHEN Treffern, VOR jeder Curation/Extraktion. Das konnte den
+Wartungs-Evidence-Layer (Commit 55873be) entwerten: lieferte Q1 nur Treffer,
+die komplett verworfen wurden, lief Q2 trotzdem nie, und eine zweite
+Source-Family (für CORROBORATED→VERIFIED oder CONFLICT-Erkennung) bekam nie
+eine Chance. Entscheidung: kein Coverage-Score, kein Early-Exit — Wartung
+führt jetzt ebenfalls IMMER beide Queries aus, analog zu Schwachstelle (siehe
+`test_wartung_immer_beide_queries` unten statt der alten
+`test_wartung_unveraendert`).
 
     python test_technical_research_schwachstelle_intents.py
 """
@@ -229,9 +239,11 @@ async def test_schlechte_quelle_gefiltert():
           any(a.get("grund") == "source_quality" for a in recherche.abgelehnte_fakten))
 
 
-# ── J) Wartung bleibt UNVERÄNDERT: exakt dieselben 2 Query-Strings wie vor
-# diesem Fix, UND weiterhin "erster Treffer gewinnt" (Fallback-Skip bleibt) ─
-async def test_wartung_unveraendert():
+# ── J) RC-W5 (Wartung): Q1-String bleibt wie zuvor, UND Q2 läuft jetzt IMMER
+# -- selbst wenn Q1 bereits einen nichtleeren Rohtreffer lieferte (Ersatz für
+# die alte test_wartung_unveraendert(), die das bisherige Fallback-Skip-
+# Verhalten als Soll-Zustand festschrieb) ──────────────────────────────────
+async def test_wartung_immer_beide_queries():
     fake = FakeTavily({
         "bekannte Probleme Schwachstellen": [],
         "Gebrauchtwagen Test TÜV Kaufberatung": [],
@@ -243,11 +255,11 @@ async def test_wartung_unveraendert():
     await provider.recherchiere(marke="Mazda", modell="MX-5", baujahr=2019,
                                motor="2.0 SKYACTIV-G 184 PS", ausgeloest_durch="test")
     wa_calls = [c for c in fake.calls if "Wartungsintervall" in c or "Inspektionsintervall" in c]
-    check("J) Wartung-Q1-String exakt wie vor dem Fix",
+    check("J) Wartung-Q1-String unverändert",
           any(c == "Mazda MX-5 Wartungsintervall Serviceintervall" for c in wa_calls))
-    check("J) Wartung-Q2 wurde NICHT ausgeführt (Q1 war nichtleer -> Fallback-Skip "
-          "bleibt für Wartung unverändert bestehen)",
-          not any("Inspektionsintervall" in c for c in wa_calls), str(wa_calls))
+    check("J) Wartung-Q2 WURDE ausgeführt, OBWOHL Q1 bereits nichtleer war "
+          "(RC-W5: kein Early-Exit mehr zwischen den beiden Wartungs-Queries)",
+          any("Inspektionsintervall" in c for c in wa_calls), str(wa_calls))
 
 
 async def _run_all():
@@ -257,7 +269,7 @@ async def _run_all():
     await test_dedupe_identisch_und_verschieden()
     await test_benign_bleibt_rejected()
     await test_schlechte_quelle_gefiltert()
-    await test_wartung_unveraendert()
+    await test_wartung_immer_beide_queries()
 
 
 asyncio.run(_run_all())
