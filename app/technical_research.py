@@ -156,6 +156,28 @@ def _tier(url: str) -> int:
     return 3
 
 
+# Lexus-RC-F-Forensik (Root Cause 1, CONFIRMED): `_ist_herstellerseite()`
+# (app/web_search.py) prüft gegen eine GESCHLOSSENE Markenliste
+# (`_HERSTELLER_MARKEN`) — fehlt eine Marke dort (z.B. Lexus, Infiniti,
+# Genesis, …), erhält deren EIGENE offizielle Domain score_domain()==0 und
+# zählt für `_identitaet_belegt()` nicht als Stützquelle. Keine neue
+# Markenliste (ausdrücklich verworfen) — stattdessen eine GENERISCHE,
+# anfragegebundene Erkennung: die registrierbare Domain muss dem
+# NORMALISIERTEN Zielmarkennamen aus der Anfrage EXAKT entsprechen.
+# "lexus.de" passt zu Marke "Lexus"; "lexus-forum.de"/"lexus-ersatzteile24.de"
+# NICHT (zusätzlicher Wortbestandteil nach dem Bindestrich-Entfernen bleibt
+# ein anderer String). Bewusst NUR additiv zur Identitätsstufe hier
+# (`_tier_identitaet`) — ändert NICHT `score_domain()` selbst und wirkt damit
+# NICHT auf Markt-/Rückruf-/Schwachstellen-/Wartungs-Faktenbewertung (bewusst
+# unangetastet, siehe Modul-Scope).
+def _marke_eigene_domain(domain: str, marke: str | None) -> bool:
+    if not domain or not marke:
+        return False
+    kern = domain.split(".")[0].replace("-", "")
+    marke_norm = _norm(marke).replace(" ", "")
+    return bool(marke_norm) and kern == marke_norm
+
+
 # Identitätsquellen der Stufe 2, die die allgemeine Domainliste
 # (app/web_search.py, auch für Markt und Fakten genutzt) nicht als Fachmedien
 # führt: etablierte Fachpresse und technische Datenbanken. Gilt NUR für Phase 1
@@ -168,8 +190,10 @@ _IDENTITAET_TIER2 = frozenset({
 })
 
 
-def _tier_identitaet(url: str) -> int:
+def _tier_identitaet(url: str, marke: str | None = None) -> int:
     dom = _domain_von(url) or ""
+    if _marke_eigene_domain(dom, marke):
+        return 1
     if any(dom == d or dom.endswith("." + d) for d in _IDENTITAET_TIER2):
         return min(_tier(url), 2)
     return _tier(url)
@@ -226,6 +250,81 @@ def fallback_trigger(req, baureihe_roh: dict | None, identitaet: dict,
     return None
 
 
+# ── Modell-/Codetrennung ─────────────────────────────────────────────────────
+#
+# Lexus-RC-F-Forensik (Root Cause 2, CONFIRMED): `ausgerichtet()`/
+# `_identitaet_belegt()` verlangen ALLE Tokens des `modell`-Strings als
+# zwingendes UND auf der Quelle. Tippt ein Nutzer einen präzisierenden
+# Generations-/Chassiscode direkt ins Modellfeld ("RC F USC10", "M4 F82"),
+# scheitert JEDE Quelle, die diesen Code nicht wortgenau nennt — meist ALLE,
+# weil Chassiscodes selten in normalem Fließtext stehen. Es gibt dafür heute
+# kein eigenes Eingabefeld (Package A rührt das Frontend bewusst noch nicht
+# an) — der Nutzer hat nur das `modell`-Feld. Diese Funktion trennt einen
+# optionalen, NACHGESTELLTEN Code generisch ab, OHNE Marken-/Modellkatalog:
+# die zwingende Ausrichtungsprüfung verlangt danach nur noch den KERN-
+# Modellnamen; der abgetrennte Code wird unten (siehe `_ziel()`) als
+# Generations-KANDIDAT weitergegeben — er HEBT die Confidence, wenn eine
+# Quelle ihn bestätigt (über die bestehende `_generationscodes()`/`konsens()`-
+# Maschinerie, siehe dort), zerstört aber nie mehr die Mindest-Identität nur
+# weil er selbst unbestätigt bleibt.
+_MODELL_CODE_AUSSCHLUSS = frozenset({"ps", "kw", "tdi", "tsi", "tfsi", "fsi", "tce", "dci",
+                                     "crdi", "hdi", "cdti", "vti", "thp", "bluehdi", "multijet"})
+
+
+def _ist_modell_code_kandidat(token: str) -> bool:
+    """Ob ein NACHGESTELLTES Token eines mehrteiligen `modell`-Strings eher
+    ein zusätzlicher Code ist als Teil des eigentlichen Modellnamens. Rein
+    formbasiert (kein Katalog):
+
+      * enthält mindestens eine Ziffer — ein normales Wort ("Avant", "Touring",
+        "Plaid", "Sport") hat nie eine Ziffer; das ist das robusteste hier
+        verfügbare, generische Signal, UND
+      * Gesamtlänge 2-8 Zeichen (ein Chassiscode ist immer kompakt), UND
+      * kein bekanntes Leistungs-/Kraftstoff-/Getriebe-Kürzel.
+
+    Bewusst NUR das letzte Token eines MEHRTEILIGEN Strings wird je geprüft
+    (siehe `parse_core_model`) — ein einzelnes Token ("GT86", "C300", "A4")
+    wird dadurch NIE zerlegt, weil es gar nicht erst als "letztes von
+    mehreren" betrachtet wird.
+
+    Package-A-Hardening (reine Alignment-Entlastung, s. `parse_core_model`-
+    Docstring und `_ziel()`): ein rein NUMERISCHES Token mit 2-3 Ziffern
+    ("992", "991") zählt ZUSÄTZLICH als Kandidat. Das betrifft NUR, ob der
+    harte Modell-Alignment-Vergleich dieses Token noch mitverlangt — ein
+    solcher Kandidat kann NIE zu einer bestätigten Generation werden, weil
+    `_generationscodes()` für jeden Code mindestens einen Buchstaben verlangt
+    (s. dort). Vier Ziffern bleiben bewusst ausgeschlossen, weil das meist
+    eine inline genannte Jahreszahl ist, kein Chassiscode."""
+    t = (token or "").strip()
+    if not (2 <= len(t) <= 8) or not re.fullmatch(r"[A-Za-z0-9]+", t):
+        return False
+    if re.fullmatch(r"\d{2,3}", t):
+        return True   # z.B. "992"/"991" -- reine Alignment-Entlastung, s. Docstring
+    if not (re.search(r"\d", t) and re.search(r"[A-Za-z]", t)):
+        return False
+    t_norm = _norm(t)
+    if t_norm in _MODELL_CODE_AUSSCHLUSS or any(t_norm.endswith(suf) for suf in _MODELL_CODE_AUSSCHLUSS):
+        return False   # z.B. "350PS"/"180KW" -- Leistungsangabe, kein Code
+    return True
+
+
+def parse_core_model(modell: str | None) -> tuple[str | None, str | None]:
+    """(kern_modell, code_kandidat). `code_kandidat` ist None, wenn kein
+    abspaltbarer Kandidat erkannt wurde. Bewusst konservativ: nur das LETZTE
+    Token eines mehrteiligen Strings kommt überhaupt in Frage — "RC F USC10"
+    -> ("RC F", "USC10"), aber "GT86"/"C300"/"A4"/"M4" (je ein einzelnes
+    Token) bleiben unverändert und unzerlegt."""
+    if not modell or not modell.strip():
+        return modell, None
+    teile = modell.strip().split()
+    if len(teile) < 2:
+        return modell, None
+    *kern_teile, letztes = teile
+    if _ist_modell_code_kandidat(letztes):
+        return " ".join(kern_teile), letztes
+    return modell, None
+
+
 # ── Entity-Alignment ─────────────────────────────────────────────────────────
 
 def _modell_im_titel(titel_tokens: set[str], modell_tokens: set[str]) -> bool:
@@ -280,7 +379,7 @@ def _identitaet_belegt(modell: str | None, marke: str | None,
     for r in treffer:
         url = r.get("url") or ""
         if (score_domain(url, KATEGORIE_TECHNISCHE_DATEN) < MIN_SCORE_IDENTITAET
-                and _tier_identitaet(url) > 2):
+                and _tier_identitaet(url, marke) > 2):
             continue
         ok, _ = ausgerichtet(r, marke, modell)
         if not ok:
@@ -419,14 +518,30 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
         return []
     out: list[dict] = []
     # Modellname case-insensitiv, der Generationscode selbst in Großbuchstaben.
-    for m in re.finditer(r"(?i:" + modell_rx + r")\s*\(?\s*([A-Z]{1,2}\d{0,3}|[IVX]{1,4})\b\)?", text):
+    #
+    # Lexus-RC-F-Forensik (Root Cause 3, CONFIRMED): die vorherige Fassung
+    # begrenzte JEDEN Code auf max. 2 Buchstaben (`[A-Z]{1,2}\d{0,3}`) — ein
+    # willkürliches, an europäischen Konventionen (F82, W205, B9) orientiertes
+    # Limit, das japanische/US-Konventionen mit 3+ Buchstaben-Präfix (Lexus
+    # "USC10") STRUKTURELL nie erfassen konnte, selbst bei perfekter Quelle.
+    # Statt die Zahl einfach auf 3 zu erhöhen (verworfen — repariert nur diesen
+    # einen Fall): die eigentlich unterscheidende, generische Eigenschaft ist
+    # NICHT die Buchstabenzahl, sondern ob Ziffern vorhanden sind. Ein Code MIT
+    # Ziffern ("USC10", "F82", "W205") ist durch die Ziffer bereits eindeutig
+    # von einem normalen Wort unterscheidbar — dort darf der Buchstaben-Präfix
+    # länger sein. Ein Code OHNE Ziffern ("ND", "RF") bleibt bewusst auf 1-2
+    # Buchstaben begrenzt, sonst würden normale Wörter ("Test", "Plus") mit-
+    # erfasst. Beide Zweige durchlaufen weiterhin unverändert die bestehende
+    # Jahr-/Kontext-Bestätigung (`_generationen_pruefen` unten) — dieses Gate,
+    # nicht die Capture-Breite, ist der eigentliche Schutz gegen Fehltreffer.
+    for m in re.finditer(r"(?i:" + modell_rx + r")\s*\(?\s*([A-Z]{1,4}\d{1,4}|[A-Z]{1,2}|[IVX]{1,4})\b\)?", text):
         code = m.group(1)
         if code.upper() in ("PS", "KW", "TDI", "TSI", "GT", "S", "I"):
             continue
         ende = m.end()
         nummer = None
         if code in _ROEMISCH:
-            folge = re.match(r"\s*\(\s*([A-Z]{1,2}\d{0,3})\b", text[m.end():])
+            folge = re.match(r"\s*\(\s*([A-Z]{1,4}\d{1,4}|[A-Z]{1,2})\b", text[m.end():])
             if folge:
                 nummer, code = _ROEMISCH[code], folge.group(1)
                 ende = m.end() + folge.end()
@@ -441,7 +556,7 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
 def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
     url = r.get("url") or ""
-    dom, tier = _domain_von(url), _tier_identitaet(url)
+    dom, tier = _domain_von(url), _tier_identitaet(url, ziel.get("marke"))
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe.
@@ -569,7 +684,7 @@ def _conf(info: dict) -> str:
     return "hoch" if info["gewicht"] >= 6 else "mittel" if info["gewicht"] >= 4 else "niedrig"
 
 
-def _generationen_pruefen(claims: list[dict]) -> None:
+def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None) -> None:
     """Verwirft (in place) Generations-Claims ohne Beleg für DIESES Fahrzeug.
 
       * Ein Code, dessen Jahresfenster in irgendeiner Quelle das Baujahr
@@ -579,13 +694,34 @@ def _generationen_pruefen(claims: list[dict]) -> None:
         ist dann meist eine Ausstattungs-, Karosserie- oder Leistungsbezeichnung
         ("… G 184", "… RF"). Vorher entstanden daraus Konflikte, die jede
         Generation auf "unbekannt" setzten.
-    """
+
+    `bekannter_code` (Package-A-Hardening, RC-W6-B4-Nachfolge): ein aus dem
+    `modell`-Feld rein FORMBASIERT abgetrennter Kandidat (`parse_core_model`/
+    `_ziel`, dort als `auxiliary_code` geführt). Er ist ABSICHTLICH KEIN
+    Freifahrschein mehr: ein bloßer String-Treffer gegen `bekannter_code`
+    befreit eine Quelle NICHT von der Jahr-/Kontext-Pflicht — sonst würde ein
+    reiner Trimname/eine reine Variantenbezeichnung, die der Nutzer (ohne es
+    zu wissen) ins Modellfeld geschrieben hat ("911 GT3", "Golf R32"), bei
+    JEDER Quelle, die das Fahrzeug nur beim Namen nennt ("911 GT3 im Test"),
+    sofort als "bestätigte Generation" durchgehen — obwohl GT3/R32 echte
+    Leistungsvarianten sind, keine Chassis-/Baureihengenerationen. Der
+    Parameter bleibt nur zur Kennzeichnung erhalten (`passend_zum_kandidat`),
+    OHNE Wirkung auf das Verwerfen: ein Code braucht weiterhin ENTWEDER ein
+    passendes Jahresfenster ODER echten Generationskontext — exakt dieselbe
+    Schwelle wie jeder andere Code, unabhängig davon, ob er zufällig mit der
+    Nutzereingabe übereinstimmt. Ein ANDERER, abweichender Code bleibt
+    unverändert an dieselbe Schwelle gebunden — ein expliziter Widerspruch
+    (ein zweiter, kontext-/jahrbelegter Code) wird weiterhin von `konsens()`
+    als Konflikt erkannt, nie blind übernommen."""
     gen = [c for c in claims if c["feld"] == "generation"]
     aus = {c["wert"] for c in gen if c.get("verworfen") == "baujahr_ausserhalb"}
     ein = {c["wert"] for c in gen if c.get("jahr_belegt")}
+    bekannt_norm = (bekannter_code or "").strip().upper()
     for c in gen:
         if c.get("verworfen"):
             continue
+        if bekannt_norm and str(c["wert"]).upper() == bekannt_norm:
+            c["passend_zum_kandidat"] = True
         if c["wert"] in aus - ein:
             c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
         elif not (c.get("jahr_belegt") or c.get("kontext")):
@@ -615,7 +751,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     claim_quellen = [r for r in treffer if score_domain(r.get("url") or "") >= 0
                      and ausgerichtet(r, marke, modell)[0]]
     claims = [c for r in claim_quellen for c in _identitaets_claims(r, ziel)]
-    _generationen_pruefen(claims)
+    _generationen_pruefen(claims, ziel.get("auxiliary_code"))
     abgelehnt += [{"url": c["url"], "feld": c["feld"], "wert": c["wert"], "grund": c["verworfen"]}
                   for c in claims if c.get("verworfen")]
     feldwerte: dict[str, dict] = {}
@@ -679,8 +815,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
             kern = kern | {hub.group(1), hub.group(2)}
         doms = {_domain_von(r.get("url") or "") for r in claim_quellen
                 if kern <= _tokens(f"{r.get('title') or ''} {r.get('content') or ''}")
-                and _tier_identitaet(r.get("url") or "") <= 2}
-        if kern and (len(doms) >= 2 or any(_tier_identitaet(r.get("url") or "") == 1
+                and _tier_identitaet(r.get("url") or "", marke) <= 2}
+        if kern and (len(doms) >= 2 or any(_tier_identitaet(r.get("url") or "", marke) == 1
                                            for r in claim_quellen
                                            if kern <= _tokens(f"{r.get('title')} {r.get('content')}"))):
             motor_bestaetigt = motor
@@ -1009,6 +1145,37 @@ def _bauteil_vokabular() -> dict[str, str]:
     from app.kaufaktionen import _KOMPONENTEN
     return {muster: eintrag["schluessel"]
             for eintrag in _KOMPONENTEN for muster in eintrag["muster"]}
+
+
+# Lexus-RC-F-Forensik (Root Cause 5, CONFIRMED): `_bauteil_vokabular()` (aus
+# `app.kaufaktionen._KOMPONENTEN`, mit "schwachstelle" GETEILT) kennt kein
+# generisches "Motoröl/Ölwechsel"-Muster — nur Symptom-Komposita wie
+# "oelverlust"/"oelverbrauch"/"oelpumpe"/"oelwanne". Eine der häufigsten,
+# best-dokumentiertesten Wartungsaussagen überhaupt ("Motoröl alle X km
+# wechseln") erreichte dadurch NIE `treffer_voc` — unabhängig von
+# Quellenqualität. Bewusst NICHT in `_KOMPONENTEN` selbst ergänzt (Auftrag:
+# "nicht blind erweitern, wenn dadurch Schwachstellen-Erkennung sich
+# ändert") — eine separate, NUR für kategorie=="wartung" gemergte
+# Erweiterung. Kein markenspezifischer Begriff.
+_WARTUNG_VOKABULAR_ERWEITERUNG: dict[str, str] = {
+    "motoroel": "motoroel", "oelwechsel": "motoroel", "motorenoel": "motoroel",
+}
+
+
+def _wartung_vokabular() -> dict[str, str]:
+    """`_bauteil_vokabular()` PLUS die Motoröl-Erweiterung oben — NUR für
+    kategorie=="wartung" verwenden, nie für "schwachstelle"/"rueckruf".
+
+    Reihenfolge WICHTIG: `_vokabular_match()` gibt den ERSTEN Treffer nach
+    Dict-Iterationsreihenfolge zurück (reiner Teilstring-Test, kein Longest-
+    Match). Die Erweiterung MUSS vor `_bauteil_vokabular()` stehen — sonst
+    gewinnt das bereits bestehende, generische Muster "motor" (Schlüssel
+    "motor") den Teilstring-Wettlauf gegen "motoroel"/"motorenoel" (beide
+    enthalten "motor" als Präfix), und jede Motoröl-Aussage würde fälschlich
+    unter dem allgemeinen "motor"-Schlüssel landen statt unter "motoroel" —
+    zwei an sich übereinstimmende Quellen würden dann nie derselben Gruppe
+    zugeordnet (empirisch beim Testaufbau gefunden und hier verhindert)."""
+    return {**_WARTUNG_VOKABULAR_ERWEITERUNG, **_bauteil_vokabular()}
 
 
 def _saetze(text: str, *, max_len: int | None = 300) -> list[str]:
@@ -1712,7 +1879,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
       * Rückrufe: Produktionsfenster deckt das Baujahr -> "vehicle_possible",
         ohne Fenster -> "series_only".
     """
-    vokabular = _bauteil_vokabular()
+    # Root Cause 5: Motoröl-Erweiterung NUR für "wartung" (siehe
+    # `_wartung_vokabular()`) — "schwachstelle"/"rueckruf" bleiben exakt beim
+    # bisherigen, geteilten `_bauteil_vokabular()`.
+    vokabular = _wartung_vokabular() if kategorie == "wartung" else _bauteil_vokabular()
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
     kandidaten: dict[str, dict] = {}
     abgelehnt = abgelehnt if abgelehnt is not None else []
@@ -2222,14 +2392,24 @@ _WARTUNG_INTERVALL_ZAHL = re.compile(
 
 
 def _wartung_merkmal_normalisiert(claim: str) -> str | None:
-    m = _WARTUNG_INTERVALL_ZAHL.search(claim or "")
-    if not m:
+    """Lexus-RC-F-Forensik (Root Cause, §10 Auftrag): ".search()" fand bisher
+    NUR das ERSTE Intervall im Claim -- "Motoröl alle 15.000 km oder 12
+    Monate" verlor die Monatsangabe stillschweigend. ".finditer()" sammelt
+    jetzt ALLE Intervall-Angaben; mehrere werden zu einer deterministischen,
+    sortierten (Reihenfolge im Satz darf das Gruppieren nicht beeinflussen),
+    deduplizierten Signatur zusammengefasst. Für den (weiterhin häufigsten)
+    Fall mit genau EINEM Intervall ist die Ausgabe byte-identisch zu vorher."""
+    teile: list[str] = []
+    for m in _WARTUNG_INTERVALL_ZAHL.finditer(claim or ""):
+        if m.group(1):
+            zahl = re.sub(r"[.\s]", "", m.group(1))
+            teile.append(f"{zahl}km")
+        else:
+            einheit = "monate" if m.group(4).lower().startswith("monat") else "jahre"
+            teile.append(f"{m.group(3)}{einheit}")
+    if not teile:
         return None
-    if m.group(1):
-        zahl = re.sub(r"[.\s]", "", m.group(1))
-        return f"{zahl}km"
-    einheit = "monate" if m.group(4).lower().startswith("monat") else "jahre"
-    return f"{m.group(3)}{einheit}"
+    return "+".join(sorted(set(teile)))
 
 
 # Provenienz-SELBSTAUSKUNFT (§1/§7 Auftrag, Härtungsrunde 3): "laut Hersteller",
@@ -2458,7 +2638,9 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
     haupt_fakten = haupt_fakten or []
     abgelehnt: list[dict] = []
     kandidaten: list[dict] = []
-    vokabular = _bauteil_vokabular()
+    # Root Cause 5: Motoröl-Erweiterung (siehe `_wartung_vokabular()`) --
+    # dieser Pfad ist ohnehin ausschliesslich für kategorie=="wartung".
+    vokabular = _wartung_vokabular()
 
     for r in treffer:
         url = r.get("url") or ""
@@ -2481,6 +2663,13 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                     continue
                 treffer_voc = _vokabular_match(_norm(claim), vokabular)
                 if not treffer_voc:
+                    # Root Cause 5/Observability (§12 Auftrag): vorher
+                    # stilles Verschwinden ohne jeden Reject-Eintrag, obwohl
+                    # ein Wartungsintervall erkannt wurde -- derselbe
+                    # Reject-Grund wie im Hauptpfad (`_extrahiere_fakten`),
+                    # keine neue Logging-Architektur.
+                    abgelehnt.append({"url": url, "kategorie": "wartung", "grund": "no_component",
+                                      "satz": claim[:120], "source_type": source_type})
                     continue
                 muster, schluessel = treffer_voc
                 if _motor_widerspricht(claim, motor):
@@ -2563,8 +2752,41 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
 # ── Gemeinsame, phasenweise Auswertung ───────────────────────────────────────
 
 def _ziel(marke, modell, baujahr, motor, ziel: dict | None) -> dict:
-    z = {"marke": marke, "modell": modell, "baujahr": baujahr, "motor": (motor or "").strip() or None}
+    # Lexus-RC-F-Forensik (Root Cause 2/3, CONFIRMED) + Package-A-Hardening
+    # (Folgeauftrag): ein vom Nutzer ins `modell`-Feld getippter Generations-/
+    # Chassiscode ("RC F USC10") wird hier EINMALIG, zentral abgetrennt (siehe
+    # `parse_core_model`) — danach arbeitet die GESAMTE Recherche (Queries,
+    # Alignment, Fakten-Extraktion) einheitlich mit dem Kern-Modellnamen, ohne
+    # dass jede einzelne Aufrufstelle das selbst wissen müsste.
+    #
+    # DREI STUFEN, bewusst nicht mehr vermischt:
+    #   CORE MODEL           z["modell"] -- einzige Pflichtangabe fuer das
+    #                        harte Alignment (`ausgerichtet()`).
+    #   AUXILIARY CANDIDATE  z["auxiliary_code"] -- rein formbasiert abge-
+    #                        trennt, OHNE jede Aussagekraft. Darf Queries
+    #                        anreichern (s. Aufrufer in `recherchiere()`),
+    #                        darf NIEMALS allein eine Generation bestaetigen
+    #                        und darf NIEMALS `modell_fehlt` ausloesen.
+    #   CONFIRMED GENERATION z["generation"] -- NUR, wenn der Aufrufer sie
+    #                        explizit uebergibt (z.B. eine bereits amtlich/
+    #                        per DB bekannte Baureihen-Generation). Der
+    #                        Kandidat wird hier NICHT mehr automatisch
+    #                        hochgestuft (Befund: das liess einen reinen
+    #                        Trimnamen wie "GT3"/"R32" bei jeder Quelle, die
+    #                        das Fahrzeug nur beim Namen nennt, sofort als
+    #                        "bestaetigte Generation" durchgehen UND liess
+    #                        `_fremde_generation()` Quellen mit der
+    #                        tatsaechlichen, korrekten Generation faelschlich
+    #                        als "andere Generation" verwerfen).
+    # Der Kandidat durchlaeuft weiterhin die BESTEHENDE, unveraenderte
+    # Bestaetigungs-/Konflikt-Logik (`_generationscodes()`/
+    # `_generationen_pruefen()`/`konsens()`, siehe deren Docstrings) — nur
+    # ohne den frueheren Freifahrschein eines bloßen String-Treffers.
+    kern_modell, code_kandidat = parse_core_model(modell)
+    z = {"marke": marke, "modell": kern_modell, "baujahr": baujahr, "motor": (motor or "").strip() or None}
     z.update({k: v for k, v in (ziel or {}).items() if v is not None})
+    if not z.get("auxiliary_code") and code_kandidat:
+        z["auxiliary_code"] = code_kandidat
     if not z.get("leistung_ps") and motor:
         m = _RE_PS.search(motor)
         z["leistung_ps"] = int(m.group(1)) if m else None
@@ -2623,7 +2845,11 @@ class TavilyTechnicalResearchProvider:
     async def recherchiere(self, *, marke, modell, baujahr, motor,
                            ausgeloest_durch, ziel: dict | None = None) -> TechnischeRecherche:
         z = _ziel(marke, modell, baujahr, motor, ziel)
-        breit = " ".join(filter(None, [marke, modell]))
+        # `z["modell"]` statt des rohen `modell`-Parameters: `_ziel()` hat einen
+        # etwaigen Generations-/Chassiscode bereits abgetrennt (siehe dort) —
+        # Queries sollen mit dem Kern-Modellnamen suchen, nicht mit einem Code,
+        # der in normalem Webtext ohnehin fast nie vorkommt.
+        breit = " ".join(filter(None, [marke, z["modell"]]))
         jahr = str(baujahr) if baujahr else None
         anfragen = 0
         fehler = False
@@ -2671,7 +2897,13 @@ class TavilyTechnicalResearchProvider:
                                                      "rueckruf": PHASE_NOT_RUN,
                                                      "technik": PHASE_NOT_RUN})
 
-        gen = identitaet.generation or z.get("generation")
+        # Query-Anreicherung (Abschnitt 4 Auftrag): bestätigte Generation hat
+        # Vorrang; ohne sie darf der rein formbasierte Auxiliary-Kandidat die
+        # Suche trotzdem anreichern -- "query richness" ist KEIN Alignment-
+        # Anspruch, nur ein breiteres Netz. Nie umgekehrt: der Kandidat fließt
+        # NIE in `generation=` einer Scope-/Applicability-Prüfung ein (siehe
+        # `_ziel()`-Docstring).
+        gen = identitaet.generation or z.get("generation") or z.get("auxiliary_code")
         basis = " ".join(filter(None, [breit, gen]))
         # PHASE 2 — Rückrufe (amtlich/Fachquellen bevorzugt)
         phasen.append("rueckruf")
