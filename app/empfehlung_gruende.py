@@ -149,8 +149,16 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
             fe.get("primary_source") == "web" or "web" in (fe.get("confirmed_by") or [])
             for fe in identity.field_evidence.values()):
         # DB-Miss mit Web-Identität: dieselbe kanonische Bezeichnung, mit Herkunft.
+        # Reporting-Hardening: `nur_web_bestaetigt=True` -- dieser Satz behauptet
+        # ausdrücklich Web-Bestätigung, darf also NUR Felder zeigen, die
+        # `_web_bestaetigt()` auch tatsächlich bestätigt. Eine reine
+        # Nutzerangabe (z.B. unbestätigter Motor/Antrieb) fehlt hier dann
+        # einfach -- ihre Herkunft steht ohnehin separat in der Feldliste
+        # weiter unten im Bericht (`feldzeile()`/`herkunft()`), nicht hier
+        # doppelt mit anderer Kennzeichnung.
+        web_titel = fahrzeug_titel(identity, mit_jahr=False, nur_web_bestaetigt=True)
         gruende.append(f"Fahrzeugidentität über Webquellen plausibilisiert: "
-                       f"{fahrzeug_titel(identity, mit_jahr=False)} (keine ENFAL-Referenz).")
+                       f"{web_titel or '(keine web-bestätigten Einzelfelder)'} (keine ENFAL-Referenz).")
         web_risiken = [i for i in insights or [] if str(getattr(i, "kategorie", "")).startswith("web_")]
         if web_risiken:
             n = len(web_risiken)

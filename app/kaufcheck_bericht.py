@@ -100,11 +100,22 @@ def kontext(identity, req, insights) -> str:
     }, ensure_ascii=False)
 
 
+def _ist_web_plausibilisiert(entscheidung) -> bool:
+    """Ob die Überschrift ausdrücklich Web-Bestätigung behauptet (einzige
+    Stelle, die das für beide Konsumenten — Überschrift UND Fahrzeugtitel —
+    entscheidet, damit sie nie auseinanderlaufen können)."""
+    from app.empfehlungs_policy import VERIFIED
+    if not entscheidung or entscheidung.identitaet.stufe != VERIFIED:
+        return False
+    quellen = entscheidung.identitaet.quellen
+    return "enfal" not in quellen and "web" in quellen
+
+
 def _ueberschrift(entscheidung, identity) -> str:
     from app.empfehlungs_policy import VERIFIED, PARTIAL
     stufe = entscheidung.identitaet.stufe if entscheidung else None
     if stufe == VERIFIED:
-        if "enfal" not in entscheidung.identitaet.quellen and "web" in entscheidung.identitaet.quellen:
+        if _ist_web_plausibilisiert(entscheidung):
             return "## Fahrzeug über Webquellen plausibilisiert"
         return "## Fahrzeug erkannt"
     if stufe == PARTIAL:
@@ -152,7 +163,14 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
         from app.empfehlungs_policy import entscheide
         entscheidung = entscheide(recommendation, identity, web_recherche=web_recherche)
     lines = [_ueberschrift(entscheidung, identity), ""]
-    titel = fahrzeug_titel(identity)
+    # Reporting-Hardening: dieselbe Entscheidung wie für die Überschrift
+    # (`_ist_web_plausibilisiert`) steuert hier, ob der Titel NUR web-
+    # bestätigte Felder zeigt -- die Überschrift und der direkt darunter
+    # stehende Titel dürfen nie Unterschiedliches behaupten. In jeder
+    # anderen Stufe (DB erkannt / eingeschränkt / nicht bestätigt) bleibt
+    # der volle, unveränderte Titel inkl. klar herkunftsgekennzeichneter
+    # Nutzerangaben (siehe `feldzeile()`/`herkunft()` weiter unten).
+    titel = fahrzeug_titel(identity, nur_web_bestaetigt=_ist_web_plausibilisiert(entscheidung))
     if titel:
         lines += [f"**{titel}**", ""]
     lines += ["Datenbasis: " + "; ".join(sources) + ".", ""]

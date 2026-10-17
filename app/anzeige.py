@@ -167,18 +167,63 @@ def feldzeile(label: str, feld: str, value, fe: dict | None) -> str:
 
 # ── Fahrzeugtitel ────────────────────────────────────────────────────────────
 
-def fahrzeug_titel(identity, *, mit_jahr: bool = True, mit_motor: bool = True) -> str:
-    """EINE deduplizierte Fahrzeugbezeichnung für jede Berichtsstelle."""
+# Reporting-Hardening (Lexus-RC-F-Forensik, Folgeauftrag): BEFUND — ein
+# Produktions-Satz wie "Fahrzeugidentität über Webquellen plausibilisiert:
+# Lexus RC F 5.0 V8, Heckantrieb 477 PS" behauptet WEB-Bestätigung für die
+# GANZE Zeichenkette, obwohl `fahrzeug_titel()` jedes gesetzte Feld blind
+# aufnahm — unabhängig von dessen `verification_state`. "5.0 V8, Heckantrieb"
+# stammte hier ausschließlich aus der Nutzereingabe (`state="user_only"`,
+# siehe `VehicleIdentity.from_check_context()`), "Lexus"/"RC F"/"477 PS" WAREN
+# tatsächlich web-bestätigt — der Satz unterschied das nicht.
+#
+# `_web_bestaetigt()` ist die EINE, generische Definition von "web-bestätigt"
+# für ein kanonisches Feld, wiederverwendet von `herkunft()`s bestehender
+# `state == "web_only"`-Semantik: entweder hat Web eine echte Lücke gefüllt
+# (`web_only`) oder einen vorhandenen Wert zusätzlich bestätigt
+# (`"web" in confirmed_by`, siehe `VehicleIdentity.apply_web_evidence()`).
+# Kein Feld-/Fahrzeug-Spezialfall — gilt gleich für make/model/model_variant/
+# generation/year/engine_name/engine_code/horsepower.
+def _web_bestaetigt(identity, feld: str) -> bool:
+    fe = (identity.field_evidence or {}).get(feld) or {}
+    if fe.get("verification_state") == "web_only":
+        return True
+    return "web" in (fe.get("confirmed_by") or [])
+
+
+def fahrzeug_titel(identity, *, mit_jahr: bool = True, mit_motor: bool = True,
+                   nur_web_bestaetigt: bool = False) -> str:
+    """EINE deduplizierte Fahrzeugbezeichnung für jede Berichtsstelle.
+
+    `nur_web_bestaetigt=True` (Reporting-Hardening): für Sätze, die
+    AUSDRÜCKLICH Web-Bestätigung behaupten (z.B. "Fahrzeugidentität über
+    Webquellen plausibilisiert: ..."). Ein gesetztes Feld ohne Web-Anteil
+    (reine Nutzer-/ENFAL-Angabe, `_web_bestaetigt()` == False) wird dann
+    STILLSCHWEIGEND WEGGELASSEN — nie stillschweigend mit-bestätigt. Die
+    NORMALE Fahrzeugüberschrift (Default `False`, z.B. `anzeige_titel` in
+    app/kaufcheck.py oder die DB-Referenzvariante in
+    app/empfehlung_gruende.py) zeigt weiterhin alle gesetzten Felder, auch
+    reine, klar als solche herkunftsgekennzeichnete Nutzereingaben
+    (`herkunft()` trägt diese Kennzeichnung bereits je Feldzeile)."""
     if identity is None:
         return ""
-    code = identity.engine_code if (identity.field_evidence.get("engine_code", {})
-                                    .get("verification_state") not in ("ambiguous",)) else None
-    ps = f"{identity.horsepower} PS" if (mit_motor and identity.horsepower) else None
+
+    def nur_wenn_web(feld: str, value):
+        if nur_web_bestaetigt and value is not None and not _web_bestaetigt(identity, feld):
+            return None
+        return value
+
+    code_roh = identity.engine_code if (identity.field_evidence.get("engine_code", {})
+                                        .get("verification_state") not in ("ambiguous",)) else None
+    ps_roh = f"{identity.horsepower} PS" if (mit_motor and identity.horsepower) else None
     return ohne_wiederholung(
-        identity.make, identity.model, identity.model_variant, identity.generation,
-        str(identity.year) if (mit_jahr and identity.year) else None,
-        identity.engine_name if mit_motor else None,
-        code if mit_motor else None, ps)
+        nur_wenn_web("make", identity.make),
+        nur_wenn_web("model", identity.model),
+        nur_wenn_web("model_variant", identity.model_variant),
+        nur_wenn_web("generation", identity.generation),
+        nur_wenn_web("year", str(identity.year) if (mit_jahr and identity.year) else None),
+        nur_wenn_web("engine_name", identity.engine_name if mit_motor else None),
+        nur_wenn_web("engine_code", code_roh if mit_motor else None),
+        nur_wenn_web("horsepower", ps_roh))
 
 
 # ── Kosten ───────────────────────────────────────────────────────────────────

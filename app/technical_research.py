@@ -3015,11 +3015,20 @@ def phase_identitaet(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentit
 
 
 def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleIdentity,
-                 kategorien: tuple[str, ...], abgelehnt: list[dict]) -> list[WebFakt]:
+                 kategorien: tuple[str, ...], abgelehnt: list[dict],
+                 *, stats: dict[str, dict] | None = None) -> list[WebFakt]:
+    """`stats` (optional, Fact-Phase-Observability, Folgeauftrag): wenn
+    übergeben, trägt diese Funktion je Kategorie `{"roh": N, "curated": M}`
+    ein — rein additiv, ändert nichts an Auswahl/Extraktion selbst. Rückwärts-
+    kompatibel: bestehende Aufrufer (u.a. Tests, `FixtureTechnicalResearchProvider`)
+    lassen `stats` weg und verhalten sich byte-identisch wie vorher."""
     fakten: list[WebFakt] = []
     for kategorie in kategorien:
-        treffer = curate_results(roh.get(kategorie) or [],
+        roh_kategorie = roh.get(kategorie) or []
+        treffer = curate_results(roh_kategorie,
                                  kategorie=_WEB_KATEGORIE[kategorie], max_results=8)
+        if stats is not None:
+            stats[kategorie] = {"roh": len(roh_kategorie), "curated": len(treffer)}
         fakten += _extrahiere_fakten(treffer, kategorie, marke=ziel.get("marke"),
                                      modell=ziel.get("modell"), baujahr=ziel.get("baujahr"),
                                      generation=identitaet.generation or ziel.get("generation"),
@@ -3083,6 +3092,56 @@ def _log_identitaet_phase(treffer: list[dict], marke: str | None, modell: str | 
             score_domain(url, KATEGORIE_TECHNISCHE_DATEN), "ok" if grund is None else grund,
             ok, grund or "-",
         )
+
+
+# Fact-Phase-Observability (Folgeauftrag, Abschnitt 2): BEFUND — die bisherige
+# Zusammenfassung ("'%s' belegt (...), %d Fakten, %d verworfen, ...") fasst
+# rueckruf+schwachstelle+wartung in EINER Zahl zusammen. Beim realen Lexus-
+# RC-F-Request (0 Fakten, 98 verworfen gesamt) ließ sich dadurch NICHT sagen,
+# auf welcher Stufe (Search/Alignment/Source-Trust/Extraction/Konsens) welche
+# Kategorie tatsächlich verlor.
+#
+# Bewusst KEINE Architekturänderung (Auftrag §2: "nicht umbauen, nur loggen,
+# was mit minimalem Aufwand verfügbar ist"): jede Zahl hier kommt aus bereits
+# vorhandenen Werten (`stats` aus `phase_fakten()`, dem bereits bestehenden,
+# je-Treffer mit `kategorie`+`grund` gefüllten `abgelehnt`-Mechanismus, und
+# der finalen `fakten`-Liste) — keine neue Zählstruktur in der eigentlichen
+# Extraktion. "aligned" wird aus den vorhandenen Reject-Gründen REKONSTRUIERT
+# (alles, was nicht "source_quality"/Alignment-Grund ist, hat beide Stufen
+# überlebt); eine Differenz zwischen "weiterverarbeitet" und "finale Fakten"
+# OHNE passenden Grund in der Liste macht einen STILLEN Verlust (z.B. eine
+# Vokabular-Nichtübereinstimmung ohne eigenen Log-Eintrag im Haupt-Pfad von
+# `_extrahiere_fakten`) sichtbar, statt ihn zu verschleiern.
+_ALIGNMENT_GRUENDE = ("modell_fehlt", "marke_fehlt", "titel_fremde_marke", "andere_generation")
+
+
+def _log_fakten_phase(kategorie: str, anfragen: int, stats: dict, abgelehnt_delta: list[dict],
+                      fakten: list) -> None:
+    eigene_rejects = [a for a in abgelehnt_delta if a.get("kategorie") == kategorie]
+    roh = (stats.get(kategorie) or {}).get("roh", 0)
+    curated = (stats.get(kategorie) or {}).get("curated", 0)
+    source_trust_verworfen = sum(1 for a in eigene_rejects if a.get("grund") == "source_quality")
+    alignment_verworfen = sum(1 for a in eigene_rejects
+                              if str(a.get("grund") or "").split(":", 1)[0] in _ALIGNMENT_GRUENDE)
+    weiterverarbeitet = curated - source_trust_verworfen - alignment_verworfen
+    finale = sum(1 for f in fakten if f.kategorie == kategorie)
+    sonstige_rejects = len(eigene_rejects) - source_trust_verworfen - alignment_verworfen
+    stiller_verlust = max(0, weiterverarbeitet - finale - sonstige_rejects)
+    reject_histogramm: dict[str, int] = {}
+    for a in eigene_rejects:
+        g = str(a.get("grund") or "unbekannt").split(":", 1)[0]
+        reject_histogramm[g] = reject_histogramm.get(g, 0) + 1
+    log.info(
+        "Faktenphase[%s]: %d Anfragen, %d Rohtreffer, %d kuratiert, "
+        "source_trust: %d bestanden/%d verworfen, alignment: %d bestanden/%d verworfen, "
+        "weiterverarbeitet=%d, sonstige_rejects=%d, stiller_verlust=%d, finale_fakten=%d — "
+        "rejects(%s)",
+        kategorie, anfragen, roh, curated,
+        curated - source_trust_verworfen, source_trust_verworfen,
+        weiterverarbeitet, alignment_verworfen,
+        weiterverarbeitet, sonstige_rejects, stiller_verlust, finale,
+        ", ".join(f"{k}={n}" for k, n in sorted(reject_histogramm.items())) or "-",
+    )
 
 
 # Identity-Hardening, Abschnitt 5 "International Sources": der US-/Regionen-
@@ -3244,7 +3303,14 @@ class TavilyTechnicalResearchProvider:
                      intent, q, len(treffer), hoch)
         roh["schwachstelle"] = [r for treffer in sw_treffer_je_intent for r in treffer]
         roh["wartung"] = [r for treffer in wa_treffer_je_intent for r in treffer]
-        fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"), abgelehnt)
+        fakten_stats: dict[str, dict] = {}
+        abgelehnt_vor_fakten = len(abgelehnt)
+        fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"),
+                              abgelehnt, stats=fakten_stats)
+        abgelehnt_delta = abgelehnt[abgelehnt_vor_fakten:]
+        for kat, anz_anfragen in (("rueckruf", 2), ("schwachstelle", len(sw_intents)),
+                                  ("wartung", len(wa_intents))):
+            _log_fakten_phase(kat, anz_anfragen, fakten_stats, abgelehnt_delta, fakten)
         # Inhalts-Schwäche der Technik-Phase (Root Cause 6, Test 3): Anfragen
         # können sauber durchgekommen sein und trotzdem nur duenne, einstufige
         # Belege liefern. Dieselbe Tier-Pruefung wie ueberall sonst im Modul
