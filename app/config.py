@@ -184,6 +184,13 @@ PLUS_VERKAUFSCHECKS_PRO_MONAT = int(os.environ.get("AUTO_KI_PLUS_VERKAUFSCHECKS"
 # alle log.info(...)-Meldungen der App (DB-Pfad, Backups, Retries) sind unsichtbar.
 LOG_LEVEL = os.environ.get("AUTO_KI_LOG_LEVEL", "INFO").upper()
 
+# Identity-Hardening (Lexus-RC-F-Forensik, Folgeauftrag): schaltet die
+# Pro-Treffer-Observability der Web-Identitätsphase frei (app/technical_research.py,
+# `_log_identitaet_debug`). Default AUS — nur für eine gezielte Forensik-Session
+# setzen, niemals dauerhaft in Produktion (Volumen, keine Secrets/Env/Request-
+# Payloads enthalten, aber dennoch nicht als Standardrauschen gedacht).
+IDENTITY_DEBUG = os.environ.get("AUTO_KI_IDENTITY_DEBUG", "0").strip() == "1"
+
 # --- Auth (Phase 2b) ---
 # In Produktion: langen Zufalls-String setzen, z.B. `openssl rand -hex 32`
 JWT_SECRET = os.environ.get("AUTO_KI_JWT_SECRET", DEV_JWT_SECRET).strip()

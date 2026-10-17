@@ -634,6 +634,10 @@ class WebVehicleIdentity(BaseModel):
     # der `confidence` und zugleich der Schutz gegen eine einzelne SEO-Seite.
     belegende_domains: int = 0
     quellen: list[EvidenceQuelle] = Field(default_factory=list)
+    # Identity-Hardening (Folgeauftrag): welcher Beleg-Pfad griff —
+    # "zwei_domain" (bestehend) | "primaerquelle" (neu, NUR Marke+Modell,
+    # siehe app/technical_research.py `_identitaet_belegt()`) | None (nicht belegt).
+    identitaets_pfad: str | None = None
     # ── KaufCheck-Final-Stabilization: Identität aus Quellentexten ───────────
     # Generationsnummer ("4. Generation") getrennt vom Code ("ND").
     generation_nummer: str | None = None

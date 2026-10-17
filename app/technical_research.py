@@ -62,13 +62,14 @@ import logging
 import re
 from typing import Protocol
 
+from app.config import IDENTITY_DEBUG
 from app.kraftstoff_powertrain import powertrain_aus_freitext
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
-    _domain_von, _qualitaets_label, curate_results, score_domain,
-    tavily_search,
+    _domain_von, _psl_teile, _qualitaets_label, curate_results, ist_amtliche_quelle,
+    registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -147,6 +148,108 @@ def _tokens(text: str | None) -> set[str]:
     return {t for t in _norm(text).split() if t}
 
 
+# Identity-Hardening (Lexus-RC-F-Forensik, Folgeauftrag, Root Cause "RC F"):
+# `_tokens()` zerlegt NUR an Nicht-Alphanumerisch (Leerzeichen, Bindestrich,
+# Punkt) — zwischen Buchstabe und Ziffer wird NICHT getrennt. "RC F"/"RC-F"
+# ergeben dadurch bereits {"rc","f"}, aber "RCF" (ohne jedes Trennzeichen)
+# ergibt EIN Token "rcf" — ungleich {"rc","f"}, das harte Alignment in
+# `ausgerichtet()` schlägt dann fehl, obwohl dieselbe Quelle dasselbe Fahrzeug
+# meint. Gleiches Muster umgekehrt: Nutzereingabe "GR86" (ein Token) matcht
+# keine Quelle, die "GR 86" mit Leerzeichen schreibt.
+#
+# Lösung: KEINE fuzzy/Ähnlichkeits-Suche, KEIN freies Substring-Matching
+# (verworfen — "cx5" dürfte sonst in "cx50" anschlagen). Stattdessen zwei
+# KONTROLLIERTE, deterministische Signaturen pro Modellname, beide aus
+# `_fein_zerlegt()` abgeleitet (Zerlegung an JEDER Buchstabe<->Ziffer-Grenze,
+# zusätzlich zu den bestehenden Nicht-Alphanumerisch-Trennern):
+#   * die VOLLSTÄNDIG GETRENNTE Token-MENGE (z.B. {"rc","f"}, {"gr","86"})
+#   * das VOLLSTÄNDIG ZUSAMMENGESCHRIEBENE Einzel-Token (z.B. "rcf", "gr86")
+# Ein Treffer gilt als modell-ausgerichtet, wenn EINE dieser beiden Signaturen
+# als GANZE Menge in den Ziel-Tokens enthalten ist (weiterhin Mengen-
+# Inklusion, kein Teilstring-Test) — das deckt symmetrisch jede Schreibweise
+# auf BEIDEN Seiten ab (Nutzereingabe UND Quelle), ohne die Tokengrenzen von
+# `_tokens()` für Marke/Freitext/andere Felder anzutasten.
+_RE_FEIN = re.compile(r"[a-z]+|[0-9]+")
+
+
+def _fein_zerlegt(token: str) -> list[str]:
+    """Spaltet EIN (bereits `_norm()`-normalisiertes, nur a-z0-9 enthaltendes)
+    Token an jeder Buchstabe<->Ziffer-Grenze. "rc" -> ["rc"]; "gr86" ->
+    ["gr","86"]; "86" -> ["86"]. Rein formbasiert, kein Katalog."""
+    return _RE_FEIN.findall(token)
+
+
+def _modell_signaturen(modell: str | None) -> list[frozenset[str]]:
+    """Kontrollierte Match-Signaturen für EINEN Modellnamen (kein Katalog,
+    keine Ähnlichkeitssuche). Leer, wenn `modell` keine Tokens ergibt."""
+    roh = _norm(modell).split()
+    if not roh:
+        return []
+    fein = [teil for tok in roh for teil in _fein_zerlegt(tok)]
+    if not fein:
+        return []
+    signaturen = {frozenset(fein)}
+    zusammen = "".join(fein)
+    if zusammen:
+        signaturen.add(frozenset({zusammen}))
+    return list(signaturen)
+
+
+# Identity-Hardening (Folgeauftrag, Abschnitt 2 "Alphabetische Schreib-
+# varianten"): die obige Ziffer-Anker-Zerlegung löst "RC F"/"RCF"/"GR 86"/
+# "GR86", aber NICHT rein alphabetische Fälle ohne jede Ziffer ("C-HR"/"CHR",
+# "E-Pace"/"EPace") in der Richtung "Ziel-Modell zusammengeschrieben, Quelle
+# trennt" — ein zusammengeschriebenes Token wie "chr" hat KEINEN Ziffer-Anker,
+# an dem es sich wieder zerlegen ließe, und ein generisches "probiere alle
+# Buchstaben-Trennstellen" wäre genau die verworfene fuzzy-/Wörterbuch-Logik
+# (jedes kurze Wort könnte dann an beliebiger Stelle "passend" zerlegt werden).
+#
+# Lösung: Trenninformation NICHT nur aus dem Zielstring, sondern SYMMETRISCH
+# auch aus der QUELLE selbst nutzen — die Quelle hat an der relevanten Stelle
+# ("C-HR"/"C HR") bereits EIN EIGENES, EXPLIZITES Trennzeichen gesetzt, das
+# `_norm()`/`_tokens()` ohnehin schon in zwei separate Tokens auflöst ("c","hr").
+# `_quelle_konkatenationen()` fügt NUR bereits GETRENNTE, UNMITTELBAR
+# BENACHBARTE Quell-Token-PAARE (Fenster 2 — bewusst NICHT 3, siehe unten)
+# wieder zusammen — es wird NIEMALS ein zusammengeschriebenes Quell-Token
+# selbst aufgespalten, und es wird NIE geraten: eine Konkatenation entsteht
+# nur, wenn die Quelle an exakt dieser Stelle bereits ein Leerzeichen/
+# Bindestrich/Punkt gesetzt hatte. Ein Treffer nur für EINZELNE Modell-
+# Signaturen (`len(sig) == 1`), da ein Mengenvergleich mit >1 Element hier
+# keinen Sinn ergibt (die normale Mengen-Inklusion deckt den mehrteiligen
+# Fall bereits ab). Fenster bewusst auf 2 begrenzt: JEDER im Auftrag
+# geforderte Fall (RC-F, C-HR, E-Pace, F-Type) ist genau zweiteilig — ein
+# Fenster von 3 brächte keinen zusätzlichen Nutzen, nur zusätzliche
+# Kollisionsfläche (z.B. drei kurze, unverwandte Nachbarwörter, die
+# zufällig zu einem anderen Modellnamen zusammenlaufen). Strukturell
+# kollisionssicher bleibt es trotzdem auch bei Fenster 3+: die Konkatenation
+# von >= 2 nichtleeren Tokens ist IMMER länger als jedes ihrer Teile, und ein
+# Treffer verlangt exakte Gleichheit der GESAMTEN Zeichenkette, kein
+# Teilstring/Präfix-Test — die Fenstergrenze ist hier zusätzliche Vorsicht,
+# keine Notwendigkeit für Korrektheit.
+def _quelle_konkatenationen(text: str | None) -> set[str]:
+    tokens = _norm(text).split()
+    return {tokens[i] + tokens[i + 1] for i in range(len(tokens) - 1)}
+
+
+def _modell_ausgerichtet(ziel_tokens: set[str], modell: str | None, *,
+                         quelle_konkat: set[str] | None = None) -> bool:
+    """Ob EINE der Modell-Signaturen als GANZE Menge in `ziel_tokens` steht.
+    Mengen-Inklusion, kein Teilstring-Test — "cx5" matcht dadurch NICHT in
+    einem Zieltext, der nur "cx50" enthält (unterschiedliche Tokens).
+    `quelle_konkat` (optional): zusätzliche, aus der QUELLE SELBST abgeleitete
+    Konkatenations-Signaturen (siehe `_quelle_konkatenationen()`) — deckt rein
+    alphabetische, zusammengeschriebene Ziel-Modelle ab, wenn die Quelle sie
+    getrennt schreibt."""
+    sigs = _modell_signaturen(modell)
+    if not sigs:
+        return False
+    if any(sig <= ziel_tokens for sig in sigs):
+        return True
+    if quelle_konkat:
+        return any(len(sig) == 1 and next(iter(sig)) in quelle_konkat for sig in sigs)
+    return False
+
+
 def _tier(url: str) -> int:
     s = score_domain(url)
     if s >= TIER1_MIN_SCORE:
@@ -156,24 +259,34 @@ def _tier(url: str) -> int:
     return 3
 
 
-# Lexus-RC-F-Forensik (Root Cause 1, CONFIRMED): `_ist_herstellerseite()`
-# (app/web_search.py) prüft gegen eine GESCHLOSSENE Markenliste
-# (`_HERSTELLER_MARKEN`) — fehlt eine Marke dort (z.B. Lexus, Infiniti,
-# Genesis, …), erhält deren EIGENE offizielle Domain score_domain()==0 und
-# zählt für `_identitaet_belegt()` nicht als Stützquelle. Keine neue
-# Markenliste (ausdrücklich verworfen) — stattdessen eine GENERISCHE,
-# anfragegebundene Erkennung: die registrierbare Domain muss dem
-# NORMALISIERTEN Zielmarkennamen aus der Anfrage EXAKT entsprechen.
-# "lexus.de" passt zu Marke "Lexus"; "lexus-forum.de"/"lexus-ersatzteile24.de"
-# NICHT (zusätzlicher Wortbestandteil nach dem Bindestrich-Entfernen bleibt
-# ein anderer String). Bewusst NUR additiv zur Identitätsstufe hier
-# (`_tier_identitaet`) — ändert NICHT `score_domain()` selbst und wirkt damit
-# NICHT auf Markt-/Rückruf-/Schwachstellen-/Wartungs-Faktenbewertung (bewusst
-# unangetastet, siehe Modul-Scope).
-def _marke_eigene_domain(domain: str, marke: str | None) -> bool:
-    if not domain or not marke:
+# Lexus-RC-F-Forensik (Root Cause 1, CONFIRMED) + Identity-Hardening
+# (Folgeauftrag, PSL-Generalisierung): `_ist_herstellerseite()` (app/web_search.py)
+# prüft gegen eine GESCHLOSSENE Markenliste (`_HERSTELLER_MARKEN`) — fehlt eine
+# Marke dort (z.B. Lexus, Infiniti, Genesis, …), erhält deren EIGENE offizielle
+# Domain score_domain()==0 und zählt für `_identitaet_belegt()` nicht als
+# Stützquelle. Keine neue Markenliste (ausdrücklich verworfen) — stattdessen
+# eine GENERISCHE, anfragegebundene Erkennung über die Public-Suffix-bewusste
+# REGISTRIERBARE Domain (app/web_search.py:`_psl_teile`): deren Kern-Label muss
+# dem NORMALISIERTEN Zielmarkennamen aus der Anfrage EXAKT entsprechen — die
+# Subdomain davor ist FREI (Media-/Press-/Newsroom-/Länder-Subdomains der
+# echten Herstellerdomain zählen automatisch mit, ohne Sonderfall je Marke):
+#   "lexus.de"            -> Label "lexus"      == "lexus"    -> True
+#   "media.lexus.com"     -> Label "lexus"      == "lexus"    -> True (Subdomain frei)
+#   "www.lexus.co.uk"     -> Label "lexus"      == "lexus"    -> True (PSL: ".co.uk" korrekt als Suffix erkannt)
+#   "lexus-forum.de"      -> Label "lexus-forum" != "lexus"   -> False (Zusatzwort IM Markenlabel selbst)
+#   "lexus.fanblog.de"    -> Label "fanblog"     != "lexus"   -> False ("lexus" ist nur Subdomain eines FREMDEN Hosts)
+# Naiver `split(".")[0]` hätte bei Mehrteil-TLDs (`.co.uk`, `.com.au`) und bei
+# Subdomains beliebig danebenliegen können — deshalb PSL statt Heuristik.
+# Bewusst NUR additiv zur Identitätsstufe hier (`_tier_identitaet`) — ändert
+# NICHT `score_domain()` selbst und wirkt damit NICHT auf Markt-/Rückruf-/
+# Schwachstellen-/Wartungs-Faktenbewertung (bewusst unangetastet, Modul-Scope).
+def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
+    if not url_oder_domain or not marke:
         return False
-    kern = domain.split(".")[0].replace("-", "")
+    teile = _psl_teile(url_oder_domain)
+    if not teile.domain:
+        return False
+    kern = teile.domain.replace("-", "")
     marke_norm = _norm(marke).replace(" ", "")
     return bool(marke_norm) and kern == marke_norm
 
@@ -197,6 +310,16 @@ def _tier_identitaet(url: str, marke: str | None = None) -> int:
     if any(dom == d or dom.endswith("." + d) for d in _IDENTITAET_TIER2):
         return min(_tier(url), 2)
     return _tier(url)
+
+
+def _ist_regionsfremd(url: str) -> bool:
+    """Identity-Hardening, Abschnitt 5: dieselbe, bestehende Liste wie
+    `US_QUELLEN_AUSSCHLUSS` (keine neue Liste) — markiert eine Quelle als
+    regional nicht übertragbar für DETAIL-Claims (siehe `_identitaets_claims()`).
+    Betrifft NICHT, ob die Quelle für die reine Marke/Modell-Existenz zählen
+    darf (`_identitaet_belegt()`/`_tier_identitaet()` bleiben unverändert)."""
+    dom = _domain_von(url) or ""
+    return any(d in dom for d in US_QUELLEN_AUSSCHLUSS)
 
 
 # ── Provider-Schnittstelle ───────────────────────────────────────────────────
@@ -327,33 +450,40 @@ def parse_core_model(modell: str | None) -> tuple[str | None, str | None]:
 
 # ── Entity-Alignment ─────────────────────────────────────────────────────────
 
-def _modell_im_titel(titel_tokens: set[str], modell_tokens: set[str]) -> bool:
-    return bool(modell_tokens) and modell_tokens <= titel_tokens
+def _modell_im_titel(titel_tokens: set[str], modell: str | None, titel_text: str | None = None) -> bool:
+    konkat = _quelle_konkatenationen(titel_text) if titel_text else None
+    return _modell_ausgerichtet(titel_tokens, modell, quelle_konkat=konkat)
 
 
 def ausgerichtet(r: dict, marke: str | None, modell: str | None) -> tuple[bool, str | None]:
     """Ob ein Treffer das Zielfahrzeug BETRIFFT (Invariante 8).
 
     Regeln:
-      * Marke und Modell müssen als ganze Tokens im Treffer stehen.
+      * Marke und Modell müssen als ganze Tokens im Treffer stehen (Modell über
+        die kontrollierten Signaturen aus `_modell_ausgerichtet()` — deckt
+        Schreibvarianten wie "RC F"/"RC-F"/"RCF" ab, OHNE Teilstring-Matching;
+        zusätzlich `_quelle_konkatenationen()` für rein alphabetische Fälle
+        ohne Ziffer-Anker wie "C-HR"/"CHR").
       * Nennt der TITEL eine andere Marke (und nicht die eigene) oder die eigene
         Marke ohne das Modell, ist die Seite primär über ein anderes Fahrzeug —
         ein passender Einzelsatz im Text ändert daran nichts (Befund: Ford-
         Mustang-Artikel als MX-5-Schwachstelle).
     """
     from app.vehicle_identity import MARKEN
-    modell_tokens = _tokens(modell)
     marke_tokens = _tokens(marke)
-    titel_tokens = _tokens(r.get("title"))
-    text_tokens = titel_tokens | _tokens(r.get("content"))
-    if not modell_tokens or not modell_tokens <= text_tokens:
+    titel_text = r.get("title")
+    content_text = r.get("content")
+    titel_tokens = _tokens(titel_text)
+    text_tokens = titel_tokens | _tokens(content_text)
+    quelle_konkat = _quelle_konkatenationen(titel_text) | _quelle_konkatenationen(content_text)
+    if not _modell_ausgerichtet(text_tokens, modell, quelle_konkat=quelle_konkat):
         return False, "modell_fehlt"
     if marke_tokens and not (marke_tokens & text_tokens):
         return False, "marke_fehlt"
     fremde = (titel_tokens & MARKEN) - marke_tokens
     if fremde and not (marke_tokens & titel_tokens):
         return False, f"titel_fremde_marke:{','.join(sorted(fremde))}"
-    if titel_tokens and not _modell_im_titel(titel_tokens, modell_tokens):
+    if titel_tokens and not _modell_im_titel(titel_tokens, modell, titel_text):
         # Die Seite nennt das Modell nur im Text (Sammelmeldung, Markenübersicht):
         # SCHWACH ausgerichtet. Daraus zählen nur Sätze, die das Modell selbst
         # nennen, und nur mit der niedrigsten Quellenstufe.
@@ -362,33 +492,104 @@ def ausgerichtet(r: dict, marke: str | None, modell: str | None) -> tuple[bool, 
 
 
 def _satz_nennt_modell(satz: str, modell: str | None) -> bool:
-    return bool(_tokens(modell)) and _tokens(modell) <= _tokens(satz)
+    return _modell_ausgerichtet(_tokens(satz), modell, quelle_konkat=_quelle_konkatenationen(satz))
+
+
+# Identity-Hardening (Folgeauftrag, Abschnitt 1 "Primary-Source-Pfad muss
+# wirklich streng sein", CORRECTED): die ursprüngliche Fassung prüfte
+# `score_domain(url) >= TIER1_MIN_SCORE` — das lässt zwar KEIN Fachmedium/
+# Marktplatz/Technik-DB durch (deren Basiswerte 40/38/32 liegen alle unter der
+# Schwelle 48, ohne Kategorie-Boost, den dieser Aufruf nie übergibt), hat aber
+# eine andere, echte Lücke: `score_domain()` erkennt "Hersteller" über
+# `_ist_herstellerseite()` — eine GESCHLOSSENE Liste BEKANNTER Marken, OHNE
+# Bezug zur angefragten `marke`. Eine Quelle wie "bmw.de" hätte damit auch für
+# ein völlig anderes Zielfahrzeug (z.B. Lexus) als "zweifelsfrei Tier-1"
+# gezählt — nur durch `ausgerichtet()` (Marke+Modell müssen im Text stehen)
+# indirekt abgefangen, kein Veto in der Primärquellen-Logik selbst.
+# `_marke_eigene_domain()` deckt den Hersteller-Fall bereits VOLLSTÄNDIG und
+# MARKE-SPEZIFISCH ab (auch "bmw.de" für Marke "BMW", PSL-basiert, jede
+# TLD/Subdomain) — der Score-Pfad bringt dafür nichts zusätzliches, nur die
+# Lücke. Jetzt stattdessen EXPLIZIT nur zwei, von Natur aus marke-spezifisch
+# bzw. markenunabhängig-amtliche Fälle: `ist_amtliche_quelle()` (dieselbe,
+# bestehende `_AMTLICH_DOMAINS`-Liste, KBA/TÜV/DEKRA — amtlich ist amtlich,
+# unabhängig von der angefragten Marke) ODER `_marke_eigene_domain()`.
+def _primaerquelle(url: str, marke: str | None) -> bool:
+    return ist_amtliche_quelle(url) or _marke_eigene_domain(url, marke)
+
+
+def _primaerquelle_widerspruch(treffer: list[dict], marke: str | None, primaer: dict) -> bool:
+    """Veto für den Einzelquellenpfad (Abschnitt 2D): gibt es im SELBEN
+    Treffer-Satz eine ANDERE, ebenfalls Tier-1-starke Quelle, deren Titel eine
+    FREMDE Marke trägt (derselbe `titel_fremde_marke`-Signal wie in
+    `ausgerichtet()`, hier nur erneut ausgewertet) — dann gilt die
+    Primärquelle als durch widersprechende Evidence entwertet. Reine
+    Wiederverwendung des bestehenden Fremdmarken-Signals, keine neue Logik.
+
+    Bewusst ANDERE (brand-AGNOSTISCHE) Tier-1-Schwelle als `_primaerquelle()`:
+    dort geht es darum, ob EINE Quelle UNSER Zielfahrzeug (Marke+Modell)
+    zweifelsfrei bestätigt — deshalb marke-spezifisch. Hier geht es darum, ob
+    eine ANDERE Quelle ein ebenso autoritativer, aber WIDERSPRECHENDER Claim
+    über ein FREMDES Fahrzeug ist — dafür zählt `score_domain()`s bestehende,
+    brand-unabhängige Hersteller-/Amtlich-Erkennung (plus `_marke_eigene_domain`
+    für Marken außerhalb der geschlossenen Liste) weiterhin korrekt: ein
+    Veto soll bei JEDER erkennbar autoritativen Fremdmarken-Quelle greifen,
+    nicht nur bei einer, die zufällig zur eigenen Zielmarke gehört."""
+    from app.vehicle_identity import MARKEN
+    marke_tokens = _tokens(marke)
+    for r in treffer:
+        if r is primaer:
+            continue
+        url = r.get("url") or ""
+        if score_domain(url) < TIER1_MIN_SCORE and not _marke_eigene_domain(url, marke):
+            continue
+        titel_tokens = _tokens(r.get("title"))
+        fremde = (titel_tokens & MARKEN) - marke_tokens
+        if fremde and not (marke_tokens & titel_tokens):
+            return True
+    return False
 
 
 def _identitaet_belegt(modell: str | None, marke: str | None,
-                       treffer: list[dict]) -> tuple[bool, list[dict], int]:
-    """Marke UND Modell als ganze Tokens auf >= MIN_DOMAINS_IDENTITAET
-    unabhängigen, hinreichend vertrauenswürdigen Domains — nur aus Treffern, die
-    das Zielfahrzeug betreffen. Token-exakt: "ix7" ist nicht "x7".
+                       treffer: list[dict]) -> tuple[bool, list[dict], int, str | None]:
+    """Marke UND Modell als ganze Tokens (über die Modell-Signaturen) auf
+    >= MIN_DOMAINS_IDENTITAET unabhängigen, hinreichend vertrauenswürdigen
+    Domains — ODER (Identity-Hardening, Abschnitt 2/3) über GENAU EINE
+    zweifelsfreie Primärquelle (Hersteller/amtlich), STARK ausgerichtet
+    (Modell im Titel-Kontext, nicht nur "schwach" im Fließtext), ohne
+    widersprechende Tier-1-Evidence im selben Treffer-Satz. Der bestehende
+    Zwei-Domain-Pfad bleibt UNVERÄNDERT der primäre, breitere Weg — der
+    Primärquellenpfad ist ein zusätzlicher, engerer Weg NUR für Marke+Modell
+    (siehe `werte_identitaet_aus()` für die Begrenzung auf diese zwei Felder).
 
-    Rückgabe: (belegt, stuetzende_treffer, anzahl_unabhaengiger_domains)"""
+    Rückgabe: (belegt, stuetzende_treffer, anzahl_unabhaengiger_domains, pfad)
+    `pfad` ist "zwei_domain" | "primaerquelle" | None (nicht belegt)."""
     if not _tokens(modell):
-        return False, [], 0
+        return False, [], 0, None
     stuetzend: list[dict] = []
     domains: set[str] = set()
+    primaer_kandidat: dict | None = None
     for r in treffer:
         url = r.get("url") or ""
         if (score_domain(url, KATEGORIE_TECHNISCHE_DATEN) < MIN_SCORE_IDENTITAET
                 and _tier_identitaet(url, marke) > 2):
             continue
-        ok, _ = ausgerichtet(r, marke, modell)
+        ok, grund = ausgerichtet(r, marke, modell)
         if not ok:
             continue
         stuetzend.append(r)
         d = _domain_von(url)
         if d:
             domains.add(d)
-    return len(domains) >= MIN_DOMAINS_IDENTITAET, stuetzend, len(domains)
+        if primaer_kandidat is None and grund is None and _primaerquelle(url, marke):
+            primaer_kandidat = r
+    zwei_domain = len(domains) >= MIN_DOMAINS_IDENTITAET
+    primaerquelle = (primaer_kandidat is not None
+                     and not _primaerquelle_widerspruch(treffer, marke, primaer_kandidat))
+    if zwei_domain:
+        return True, stuetzend, len(domains), "zwei_domain"
+    if primaerquelle:
+        return True, stuetzend, len(domains), "primaerquelle"
+    return False, stuetzend, len(domains), None
 
 
 def _confidence_aus_domains(anzahl_domains: int, bester_score: int) -> str:
@@ -557,6 +758,18 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
     url = r.get("url") or ""
     dom, tier = _domain_von(url), _tier_identitaet(url, ziel.get("marke"))
+    if _ist_regionsfremd(url):
+        # Identity-Hardening, Abschnitt 5: die IdentitätsPHASE darf internationale
+        # Quellen für Marke/Modell/Generation-EXISTENZ nutzen (siehe `recherchiere()`,
+        # wo `US_QUELLEN_AUSSCHLUSS` NUR noch für Phase 2/3 gilt) — aber eine solche
+        # Quelle darf hier, wo Claims für DETAIL-Felder (Generation/PS/Hubraum/
+        # Kraftstoff/Antrieb/Getriebe/Motorcode) entstehen, NIE als "stark" (Tier<=2)
+        # zählen: sonst würde z.B. eine US-Herstellerseite allein schon genügen, um
+        # eine deutsche Detail-Spezifikation zu bestätigen (`konsens()`/`_GEWICHT`
+        # lassen bereits EINE Tier-1/2-Quelle für ein Feld genügen). Die Deckelung
+        # wirkt NUR hier (Claim-Gewichtung), NICHT auf `_identitaet_belegt()` — die
+        # Existenzfrage selbst bleibt für internationale Quellen offen.
+        tier = max(tier, 3)
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe.
@@ -731,7 +944,7 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
-    belegt, stuetzend, domains = _identitaet_belegt(modell, marke, treffer)
+    belegt, stuetzend, domains, pfad = _identitaet_belegt(modell, marke, treffer)
     abgelehnt: list[dict] = []
     for r in treffer:
         ok, grund = ausgerichtet(r, marke, modell)
@@ -839,6 +1052,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         confidence=conf, belegende_domains=domains, quellen=_quellen_aus(stuetzend),
         feldwerte=feldwerte, identitaet_konfidenz=identitaet_konf,
         akzeptierte_claims=akzeptiert, abgelehnte_claims=abgelehnt,
+        identitaets_pfad=pfad,
     ), abgelehnt
 
 
@@ -2827,10 +3041,63 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
 
 
 def _identitaet_reicht(identitaet: WebVehicleIdentity) -> bool:
-    """Schwelle für Phase 2/3: Marke+Modell auf >= 2 unabhängigen, ausgerichteten
-    Domains belegt. Die Genauigkeit der Fakten folgt danach der belegten
-    Generation (Geltungsbereich)."""
+    """Schwelle für Phase 2/3: Marke+Modell belegt — über den Zwei-Domain-Pfad
+    ODER (Identity-Hardening) über den engeren Primärquellenpfad (siehe
+    `identitaet.identitaets_pfad`). Die Genauigkeit der Fakten folgt danach
+    der belegten Generation (Geltungsbereich) — unverändert."""
     return bool(identitaet and identitaet.belegt)
+
+
+# Identity-Hardening, Abschnitt 8 "Observability": Standard-INFO-Zeile pro
+# Identitätsphase (IMMER, kein Flag) + optionale Pro-Treffer-Tabelle NUR hinter
+# `AUTO_KI_IDENTITY_DEBUG` (app/config.py). Keine Secrets/Env/Request-Payloads —
+# nur registrierbare Domain (nie volle URL/Query-String), Tier, Score,
+# Alignment-Code, accepted/rejected.
+def _log_identitaet_phase(treffer: list[dict], marke: str | None, modell: str | None,
+                          identitaet: WebVehicleIdentity) -> None:
+    gesamt = len(treffer)
+    aligned = 0
+    reject_histogramm: dict[str, int] = {}
+    for r in treffer:
+        ok, grund = ausgerichtet(r, marke, modell)
+        if ok:
+            aligned += 1
+        else:
+            kategorie = (grund or "unbekannt").split(":", 1)[0]
+            reject_histogramm[kategorie] = reject_histogramm.get(kategorie, 0) + 1
+    log.info(
+        "Identitätsphase: %d Treffer, %d ausgerichtet, %d verworfen (%s) — "
+        "belegt=%s pfad=%s domains=%d",
+        gesamt, aligned, gesamt - aligned,
+        ", ".join(f"{k}={n}" for k, n in sorted(reject_histogramm.items())) or "-",
+        identitaet.belegt, identitaet.identitaets_pfad or "-", identitaet.belegende_domains,
+    )
+    if not IDENTITY_DEBUG:
+        return
+    for r in treffer:
+        url = r.get("url") or ""
+        ok, grund = ausgerichtet(r, marke, modell)
+        log.info(
+            "Identity-Debug: domain=%s tier=%d score=%d alignment=%s accepted=%s grund=%s",
+            registrable_domain(url), _tier_identitaet(url, marke),
+            score_domain(url, KATEGORIE_TECHNISCHE_DATEN), "ok" if grund is None else grund,
+            ok, grund or "-",
+        )
+
+
+# Identity-Hardening, Abschnitt 5 "International Sources": der US-/Regionen-
+# Ausschluss gilt WEITERHIN unverändert für Rückruf-/Technik-Phasen (Detail-/
+# Faktenkategorien) — NICHT mehr für die Identitätsphase selbst, deren Frage
+# "existiert Marke/Modell/Generation" ist, nicht "welche regionsspezifische
+# Ausstattung gilt". Der Schutz vor regionsfremden DETAIL-Claims bleibt
+# bestehen — er wirkt jetzt in `_identitaets_claims()` (`_ist_regionsfremd()`-
+# Tier-Deckel), nicht mehr über den Ausschluss aus dem Ergebnis-Set selbst.
+# Eigene, direkt testbare Funktion statt Inline-Ausdruck in der `suche()`-
+# Closure (Abschnitt 9 "Tests").
+def _exclude_domains_fuer(phase: str, include_domains) -> list[str] | None:
+    if include_domains or phase == "identitaet":
+        return None
+    return US_QUELLEN_AUSSCHLUSS
 
 
 # ── Tavily-Implementierung ───────────────────────────────────────────────────
@@ -2864,9 +3131,10 @@ class TavilyTechnicalResearchProvider:
             nonlocal anfragen, fehler
             anfragen += 1
             anf_gesamt[phase] += 1
+            exclude = _exclude_domains_fuer(phase, kw.get("include_domains"))
             try:
                 return await tavily_search(query, count=self._count,
-                                           exclude_domains=None if kw.get("include_domains") else US_QUELLEN_AUSSCHLUSS,
+                                           exclude_domains=exclude,
                                            include_domains=kw.get("include_domains"))
             except Exception as exc:                    # pragma: no cover — Schutznetz
                 log.warning("Technische Teilrecherche fehlgeschlagen (%s)", type(exc).__name__)
@@ -2884,6 +3152,7 @@ class TavilyTechnicalResearchProvider:
                          for r in liste]
         identitaet, abgelehnt_i = phase_identitaet(ident_treffer, z)
         abgelehnt += abgelehnt_i
+        _log_identitaet_phase(ident_treffer, marke, z["modell"], identitaet)
         status_identitaet = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["identitaet"],
                                           anfragen_fehlgeschlagen=anf_fehler["identitaet"])
         if not _identitaet_reicht(identitaet):

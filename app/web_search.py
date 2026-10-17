@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import tldextract
 
 from app.config import (
     ALLOWED_MARKET_SOURCES, TAVILY_API_KEY,
@@ -83,6 +84,19 @@ _AMTLICH_DOMAINS = frozenset({
     "kba.de", "kba-online.de", "tuev-sued.de", "tuvsud.com", "tuev-nord.de", "tuv.com",
     "tuev-rheinland.de", "dekra.de", "dekra-akademie.de",
 })
+
+
+def ist_amtliche_quelle(url: str) -> bool:
+    """Zweifelsfrei amtlich/behördlich (KBA/TÜV/DEKRA) — dieselbe, bestehende
+    Liste wie in `score_domain()`, hier als eigener, direkt prüfbarer
+    Baustein (Identity-Hardening: Single-Primary-Source-Pfad in
+    app/technical_research.py darf NUR amtliche ODER sicher erkannte
+    Herstellerquellen zulassen, kein genereller Score-Schwellenwert, der
+    auch ein starkes Fachmedium/Testportal durchließe)."""
+    domain = _domain_von(url)
+    return bool(domain) and _enthaelt_domain(domain, _AMTLICH_DOMAINS)
+
+
 _FACHMEDIEN_DOMAINS = frozenset({
     "adac.de", "auto-motor-und-sport.de", "ams-testcenter.de", "autobild.de",
 })
@@ -161,6 +175,37 @@ def _domain_von(url: str) -> str:
     except Exception:
         return ""
     return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+# Identity-Hardening (Lexus-RC-F-Forensik, Folgeauftrag): Public-Suffix-bewusste
+# Domain-Zerlegung statt naivem `split(".")[0]`. Ein naiver Split behandelt
+# "lexus.co.uk" fälschlich als Kern "lexus"+Rest "co" (zufällig richtig) aber
+# "fanblog.co.uk" als Kern "fanblog" (richtig) UND könnte bei anderen Mehrteil-
+# TLDs (`.com.au` u.ä.) beliebig danebenliegen — die Grenze zwischen "Label" und
+# "TLD" ist nicht an der ersten Punktstelle, sondern an der Public-Suffix-Liste
+# erkennbar. `suffix_list_urls=()` + `cache_dir=None`: GARANTIERT kein Netzwerk-
+# zugriff zur Laufzeit — nutzt ausschließlich den in `tldextract` gebündelten
+# PSL-Snapshot (`fallback_to_snapshot=True`, hier explizit statt nur per Default).
+_PSL = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, fallback_to_snapshot=True)
+
+
+def _psl_teile(url_oder_domain: str):
+    """(subdomain, registrable_label, suffix) — Public-Suffix-bewusst, offline.
+    Leere Strings bei nicht auflösbarer/ungültiger Eingabe (kein Crash)."""
+    try:
+        return _PSL(url_oder_domain or "")
+    except Exception:
+        return _PSL("")
+
+
+def registrable_domain(url: str) -> str:
+    """Die registrierbare Domain (Label + Suffix, OHNE Subdomain) — z.B.
+    "media.lexus.co.uk" -> "lexus.co.uk". Fällt auf `_domain_von()` zurück,
+    wenn die PSL-Zerlegung kein Label/Suffix liefert (z.B. reine IP-Adresse)."""
+    teile = _psl_teile(url)
+    if teile.domain and teile.suffix:
+        return f"{teile.domain}.{teile.suffix}"
+    return _domain_von(url)
 
 
 def ist_info_domain(url: str) -> bool:

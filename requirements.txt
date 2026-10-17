@@ -35,3 +35,18 @@ stripe==15.2.1
 
 # Umgebungsvariablen aus .env laden
 python-dotenv==1.0.1
+
+# Public-Suffix-bewusste Domain-Zerlegung (Identity-Hardening, Web-Fahrzeug-
+# identität). Läuft OFFLINE: app/web_search.py konstruiert den Extractor mit
+# `suffix_list_urls=()` + `cache_dir=None` — garantiert kein Netzwerkzugriff zur
+# Laufzeit, nutzt ausschließlich den in tldextract gebündelten PSL-Snapshot.
+# Zieht `requests`/`requests-file`/`idna`/`certifi`/`urllib3`/`filelock` als
+# Abhängigkeiten (für die hier ungenutzte Online-Update-Funktion von tldextract).
+tldextract==5.4.0
+requests==2.34.2
+requests-file==3.0.1
+idna==3.20
+certifi==2026.7.22
+urllib3==2.8.0
+filelock==4.2.0
+charset-normalizer==3.5.2
