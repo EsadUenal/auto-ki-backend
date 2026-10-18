@@ -19,6 +19,7 @@ from app.bekannte_fakten import aus_request, tuning_status
 from app.fin_hinweis import recall_handlung
 from app.risikothemen import RISIKO_KATEGORIEN
 from app.vergleichstabelle import als_markdown, baue_zeilen
+from app.web_search import registrable_domain
 
 REPORT_RISK_CATEGORIES = (*RISIKO_KATEGORIEN, "rueckruf", "web_rueckruf")
 
@@ -155,6 +156,65 @@ def forschungsluecken_hinweis(web_recherche, entscheidung=None) -> list[str]:
             "separat nachgeholt werden sollte.", ""]
 
 
+# Package D3 (Forensik-Folgeauftrag): BEFUND — eine Technik-Recherche, die
+# erfolgreich LIEF (`phasen_status['technik']` in SUCCESS/PARTIAL, nicht
+# FAILED) aber 0 Fakten einer Kategorie lieferte, sah bisher STILL aus wie
+# "nichts recherchiert": `forschungsluecken_hinweis()` eskaliert nur bei
+# FAILED, nicht bei "gelaufen, aber leer geblieben" (Production-Fund Lexus
+# RC F: `technik=partial`, 0 Schwachstellen- UND 0 Wartungs-Fakten, kein
+# Hinweis im Bericht). UNKNOWN/keine-belastbare-Evidence ist KEINE Aussage
+# über das Fahrzeug selbst (nie "es gibt keine Schwachstellen") — nur über
+# die Beleglage DIESER Recherche. Rein additiv, ändert nie Empfehlung/Floor/
+# Insight-Menge, nur diesen einen Hinweis. Bewusst nur für den Web-Fallback-
+# Fall (kein DB-Match, `baureihe` ist dort None) — der DB-Pfad hat eigene,
+# unveränderte Schwachstellen-/Wartungs-Quellen und ist nicht betroffen.
+_KEIN_WEB_FAKT_HINWEIS = {
+    "schwachstelle": ("Für dieses Fahrzeug konnten aus den geprüften Webquellen keine "
+                      "ausreichend belastbaren modellbezogenen Schwachstellen bestätigt werden."),
+    "wartung": ("Für dieses Fahrzeug konnten aus den geprüften Webquellen keine ausreichend "
+               "belastbaren modellbezogenen Wartungsintervalle bestätigt werden."),
+}
+
+
+def technik_ohne_fakten_hinweise(web_recherche, *, baureihe=None) -> list[str]:
+    """Additive Zeile(n) je Kategorie (schwachstelle/wartung), wenn die
+    Technik-Recherche lief, aber 0 Fakten dieser Kategorie lieferte — siehe
+    Modulkommentar oben. Nur im Web-Fallback-Fall (`baureihe` ist None)."""
+    if web_recherche is None or baureihe is not None:
+        return []
+    from app.technical_research import PHASE_PARTIAL, PHASE_SUCCESS
+    status = getattr(web_recherche, "phasen_status", None) or {}
+    if status.get("technik") not in (PHASE_SUCCESS, PHASE_PARTIAL):
+        return []
+    fakten = getattr(web_recherche, "fakten", None) or []
+    hinweise = [text for kategorie, text in _KEIN_WEB_FAKT_HINWEIS.items()
+               if not any(f.kategorie == kategorie for f in fakten)]
+    return [*hinweise, ""] if hinweise else []
+
+
+def _quellen_zeile(quellen) -> str:
+    """Package E (Forensik-Folgeauftrag): `quellen` (EvidenceQuelle-Liste eines
+    Insights) existiert strukturiert im API-Modell, bereits auf user-sichtbare,
+    freigegebene Claims beschränkt — keine Candidate-/verworfenen Quellen, s.
+    `_quellen_aus()` in app/technical_research.py — fehlte aber bisher im
+    GENERIERTEN Markdown-Bericht (Rendering-Gap, kein Backend-Datenverlust).
+    Nur registrierbare Domain + Qualitätslabel, nie die volle URL mit Query-/
+    Trackingparametern; je Domain genau einmal (Quellen sind bereits
+    dedupliziert, keine Source-Family als mehrere unabhängige Quellen
+    vorgetäuscht); kompakt, keine Quellenwand (max. 3, wie `_quellen_aus()`
+    selbst begrenzt). Leerer String ohne Quellen."""
+    domains: list[str] = []
+    gesehen: set[str] = set()
+    for q in quellen or []:
+        if not q.url:
+            continue
+        dom = registrable_domain(q.url)
+        if dom and dom not in gesehen:
+            gesehen.add(dom)
+            domains.append(f"{dom} ({q.qualitaet})" if q.qualitaet else dom)
+    return "Quellen: " + ", ".join(domains) + "." if domains else ""
+
+
 def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommendation,
             price_assessment, market_available, mileage, hu, sources, fahrzeugkontext=None,
             *, entscheidung=None, web_recherche=None) -> str:
@@ -175,10 +235,19 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
         lines += [f"**{titel}**", ""]
     lines += ["Datenbasis: " + "; ".join(sources) + ".", ""]
     lines += forschungsluecken_hinweis(web_recherche, entscheidung)
+    lines += technik_ohne_fakten_hinweise(web_recherche, baureihe=baureihe)
+    # Package D7 (Forensik-Folgeauftrag): "Antriebsart" (powertrain,
+    # Elektrifizierungsgrad ICE/MHEV/PHEV/BEV) und "Antrieb" (drivetrain,
+    # Radantrieb Front/Heck/Allrad) sind INTERN bereits zwei saubere, getrennte
+    # Felder (bestätigt — keine Vermischung) — für Laien klingen die
+    # deutschen Begriffe nur zu ähnlich. Reine Label-Klarstellung, keine
+    # Feldnamen-/API-Änderung; dieselbe Benennung wie in der Vergleichstabelle
+    # (app/vergleichstabelle.py), damit beide Berichtsabschnitte konsistent
+    # bleiben.
     labels = {"make": "Marke", "model": "Modell", "generation": "Generation", "year": "Baujahr",
               "engine_name": "Motor", "engine_code": "Motorcode / Motorfamilie", "fuel": "Kraftstoff",
-              "powertrain": "Antriebsart", "transmission": "Getriebe", "drivetrain": "Antrieb",
-              "horsepower": "Leistung"}
+              "powertrain": "Antriebsart (Elektrifizierung)", "transmission": "Getriebe",
+              "drivetrain": "Antrieb (Rad)", "horsepower": "Leistung"}
     # Provenienz (Cluster A): Wert, Herkunft und Bestätigung kommen aus EINEM
     # Formatter (app/anzeige.py). Eine vom Nutzer eingegebene und von ENFAL
     # bestätigte Angabe heißt "laut Inserat/Nutzereingabe; bestätigt durch
@@ -208,12 +277,22 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     if not risks:
         lines.append("Keine freigegebenen technischen Risikothemen im aktuellen Kontext. Das schließt Defekte nicht aus.")
     for i in risks:
+        # Package D8 (Forensik-Folgeauftrag): "Datenqualität" kann bei einem
+        # Rückruf wie "Betroffenheit sicher bestätigt" statt "dieser
+        # Datensatz ist gut belegt" gelesen werden. Intern bleibt
+        # `confidence` strikt getrennt von `applicability`/`recall_status`
+        # (app/recall_filter.py) — reine Label-Klarstellung, keine
+        # Logikänderung.
         lines += [f"### {i.titel}", "", i.beschreibung,
-                  f"Datenqualität: {i.confidence}. Schweregrad: {i.schweregrad or 'nicht erfasst'}."]
+                  f"Quellen-/Datensatzqualität: {i.confidence}. "
+                  f"Schweregrad: {i.schweregrad or 'nicht erfasst'}."]
         if i.recall_status:
             lines.append(recall_handlung(i.recall_status))
         elif i.einfluss:
             lines.append(i.einfluss)
+        quellen_zeile = _quellen_zeile(i.quellen)
+        if quellen_zeile:
+            lines.append(quellen_zeile)
         lines.append("")
     lines += ["## Inserat im Vergleich", "", als_markdown(baue_zeilen(
         req, baureihe, motor, hu=hu, laufleistungskontext=mileage,

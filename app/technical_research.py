@@ -674,9 +674,18 @@ _RE_GEN_NUMMER = re.compile(r"\b(?:(\d{1,2})\.|(erste|zweite|dritte|vierte|f(?:�
                             re.IGNORECASE)
 _RE_PS = re.compile(r"\b(\d{2,4})\s*PS\b", re.IGNORECASE)
 _RE_KW = re.compile(r"\b(\d{2,3})\s*kW\b")
-_RE_HUBRAUM = re.compile(r"\b(\d[.,]\d)\s*(?:-?\s*(?:l\b|liter)|\s+(?=[A-Za-z]))", re.IGNORECASE)
+# Package C (Forensik-Folgeauftrag): generische Schreibvarianten ergänzt, die
+# der reale Lexus-RC-F-Fall zeigte ("5.0 V8"/"Benzin"/"Automatik" blieben
+# user_only, obwohl "477 PS"/"Heck" aus denselben Quellen bestätigt wurden —
+# Abnahmepunkt 7, als Vokabular-/Extraktionslücke diagnostiziert, KEIN Claim-
+# Binding-/Konsens-Bug). Bewusst NUR zusätzliches, generisches Vokabular —
+# keine neue Dimension, keine Einheiten-Umrechnung (ein reiner "cc"/"ccm"-Wert
+# wie "4998 cc" bräuchte eine Liter-Umrechnung und bleibt deshalb bewusst
+# außen vor, siehe Abschlussbericht).
+_RE_HUBRAUM = re.compile(r"\b(\d[.,]\d)\s*(?:-?\s*(?:l\b|liter|litre)|\s+(?=[A-Za-z]))", re.IGNORECASE)
 _KRAFTSTOFF_CLAIM = (("diesel", re.compile(r"\bdiesel\w*|\btdi\b|\bcdi\b|\bdci\b|skyactiv-?d", re.I)),
-                     ("benzin", re.compile(r"\bbenzin\w*|ottomotor|\btfsi\b|\btsi\b|skyactiv-?g|petrol", re.I)),
+                     ("benzin", re.compile(r"\bbenzin\w*|ottomotor|\btfsi\b|\btsi\b|skyactiv-?g|petrol|gasoline",
+                                           re.I)),
                      ("elektro", re.compile(r"\belektroauto|\bbatterieelektrisch|\belectric vehicle", re.I)))
 _ANTRIEB_CLAIM = (("Heck", re.compile(r"hinterradantrieb|heckantrieb|hinterr(?:ä|ae)der|rear[- ]wheel", re.I)),
                   ("Front", re.compile(r"frontantrieb|vorderradantrieb|front[- ]wheel", re.I)),
@@ -684,8 +693,16 @@ _ANTRIEB_CLAIM = (("Heck", re.compile(r"hinterradantrieb|heckantrieb|hinterr(?:�
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
                                   r"|\b(sechs|f(?:ü|ue)nf)gang[- ]?(?:schaltgetriebe|handschaltung)"
                                   r"|\b(\d)-speed manual", re.I)
+# "X-speed" ALLEIN (ohne "automatic") wird bewusst NICHT geclaimt (Package-C-
+# Auftrag: "nicht jede Zahl/jedes 'speed'-Wort automatisch als Getriebe") —
+# nur die direkte Kombination "X-speed automatic" sowie die bereits
+# bestehenden deutschen Muster plus "automatische X-Gang"/bare "automatic
+# transmission" als zusätzliche, generische Schreibvarianten.
 _RE_GETRIEBE_AUTO = re.compile(r"\b(\d{1,2})\s*-?\s*(?:stufen|gang)[- ]?(?:automatik\w*|wandlerautomatik)"
-                               r"|\bautomatikgetriebe\b|\b(\d{1,2})-speed automatic", re.I)
+                               r"|\bautomatikgetriebe\b"
+                               r"|\bautomatische[rn]?\s+(\d{1,2})[- ]?gang\w*"
+                               r"|\b(\d{1,2})-speed\s+automatic(?:\s+transmission)?\b"
+                               r"|\bautomatic\s+transmission\b", re.I)
 _RE_MOTORCODE_CLAIM = re.compile(r"(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*[:(]?\s*"
                                  r"([A-Z0-9]{2,}[A-Z0-9-]*)", re.I)
 _ZAHLWORT = {"sechs": 6, "fünf": 5, "fuenf": 5}
@@ -777,7 +794,43 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         text = " ".join(s for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
                         if _satz_nennt_modell(s, ziel.get("modell")))
     else:
-        text = f"{r.get('title') or ''}. {r.get('content') or ''}"
+        # Claim-Level Vehicle Binding (Forensik-Folgeauftrag, Package A,
+        # CONFIRMED Root Cause): ein Treffer, dessen TITEL das Zielmodell
+        # nennt ("stark" ausgerichtet), ließ hier bisher den GESAMTEN
+        # Dokumenttext (Titel + Content) in jede folgende Claim-Regex
+        # (PS/Hubraum/Kraftstoff/Antrieb/Antriebsart/Getriebe/Motorcode)
+        # einfließen. Dokument-Alignment beantwortet nur "handelt diese
+        # Seite vom Zielmodell" — es bindet NICHT jeden einzelnen Satz an
+        # das Zielmodell. Eine Seite über "Lexus RC F" kann im selben
+        # Fließtext eine Sibling-Variante derselben Baureihe (z.B. den
+        # Hybrid RC 300h) beschreiben; ein dortiger "Hybrid"-Claim wurde
+        # bisher unverändert dem Zielmodell zugerechnet (Lexus-RC-F-
+        # Forensik, Abnahmepunkt 1/2). Betrifft generisch JEDES Modell mit
+        # einer namensnahen Sibling-Variante (ICE/Hybrid-Geschwister wie
+        # 330i/330e, Golf/Golf GTE, nicht nur Lexus).
+        #
+        # Fix: dieselbe, bereits produktiv genutzte und getestete Segment-/
+        # Widerspruchs-Bindung wie in `_extrahiere_fakten()`
+        # (rueckruf/schwachstelle/wartung) wiederverwenden, statt eine
+        # zweite, parallele Architektur zu bauen. `titel_stark=True` erlaubt
+        # weiterhin Kontext-Vererbung innerhalb eines unwidersprochenen
+        # Segments (ein starker Titel darf einem neutralen Folgesatz ohne
+        # erneute Modellnennung Kontext leihen) — ein Satz, der EXPLIZIT ein
+        # anderes Fahrzeug/eine andere Variante nennt, beendet das Segment
+        # sofort (`_claim_widerspricht_fahrzeug_lokal`) und wird NICHT mehr
+        # als Zielmodell-Claim gewertet, unabhängig vom starken Titel.
+        #
+        # Der Zwei-Domain-/Primärquellen-Pfad für die reine Marke+Modell-
+        # EXISTENZ (`_identitaet_belegt()`) bleibt davon unberührt — diese
+        # Funktion liefert ausschließlich die Detail-Claims (PS/Hubraum/
+        # Kraftstoff/Antrieb/Antriebsart/Getriebe/Motorcode/Generation), nie
+        # die Existenzfrage selbst.
+        satz_mit_grenze = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        lokale_saetze = _segment_kontext_saetze(
+            [s for s, _ in satz_mit_grenze], marke=ziel.get("marke"), modell=ziel.get("modell"),
+            titel_stark=True, segment_marker=[g for _, g in satz_mit_grenze],
+            url=url, kategorie="identitaet")
+        text = " ".join(lokale_saetze)
     baujahr = ziel.get("baujahr")
     claims: list[dict] = []
 
@@ -831,7 +884,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         gaenge = m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3)
         add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None)
     for m in _RE_GETRIEBE_AUTO.finditer(text):
-        stufen = m.group(1) or m.group(2)
+        stufen = m.group(1) or m.group(2) or m.group(3)
         add("transmission", "automatik", detail=f"{stufen}-Stufen" if stufen else None)
     for m in _RE_MOTORCODE_CLAIM.finditer(text):
         add("engine_code", m.group(1).upper())
@@ -1658,8 +1711,31 @@ def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
     if fremde_marke:
         return f"fremde_marke_lokal:{fremde_marke}"
     unsicher = _unsichere_satzanfangs_nominalphrase(satz, modell)
+    # Claim-Level Vehicle Binding (Forensik-Folgeauftrag, Package A): zwei
+    # generische False-Positives von `_unsichere_satzanfangs_nominalphrase()`
+    # (ihre eigene, bereits getestete 2-Parameter-Signatur bleibt UNVERÄNDERT,
+    # siehe test_technical_research_context_alignment.py) blockierten hier
+    # Sätze, die tatsächlich das Zielfahrzeug beschreiben:
+    #   1) "Die <Marke> <Modell> ist ..." -- `unsicher` ist die EIGENE Marke,
+    #      nicht der Modellname; die Funktion prüft nur gegen `modell`.
+    #   2) "Der <Modell-mit-Bindestrich> ..." (z.B. "Der MX-5 wird ...") --
+    #      `unsicher` ist der normalisierte, LEERZEICHEN-getrennte Modellname
+    #      ("mx 5"), aber `modell_tokens` ist eine Menge EINZELNER Wörter
+    #      ({"mx","5"}) -- "mx 5" als GANZER String steht nie darin, selbst
+    #      wenn es exakt das Zielmodell ist.
+    # Beide Fälle sind kein Widerspruch: `unsicher`s eigene Tokens werden hier
+    # robust (dieselbe Signatur-Logik wie überall sonst im Modul,
+    # `_modell_ausgerichtet`) gegen Marke UND Modell geprüft. Eine FREMDE
+    # Marke/ein fremdes Modell bleibt weiterhin über `_fremde_marke_satz()`
+    # (oben) bzw. `_anderes_fahrzeug_lokal()` (unten) erkannt und schlägt
+    # immer zu -- diese Prüfung hier lockert NUR den False-Positive für die
+    # EIGENE Marke/das EIGENE Modell.
     if unsicher:
-        return f"unsichere_nominalphrase_lokal:{unsicher}"
+        eigene_tokens = _tokens(unsicher)
+        ist_eigene_marke_oder_modell = (bool(eigene_tokens & _tokens(marke))
+                                        or _modell_ausgerichtet(eigene_tokens, modell))
+        if not ist_eigene_marke_oder_modell:
+            return f"unsichere_nominalphrase_lokal:{unsicher}"
     anderes = _anderes_fahrzeug_lokal(satz, modell)
     if anderes:
         return f"anderes_fahrzeug_lokal:{anderes}"
@@ -2963,6 +3039,103 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
     return fakten, abgelehnt
 
 
+# ── Schwachstellen-Evidence-Schicht (Package B, Forensik-Folgeauftrag) ─────
+#
+# Production-Befund (Lexus RC F): 6 von 8 kuratierten "schwachstelle"-Treffern
+# scheiterten an `score_domain(...) < MIN_SCORE_FAKT` -- VOR jeder Claim-
+# Bewertung (Faktenphase-Log: "source_trust: 2 bestanden/6 verworfen"). Analog
+# zur bereits bestehenden Wartungs-Evidence-Schicht oben (nicht neu erfunden,
+# bewusst klein): ein niedriger Domain-Score vernichtet einen potenziell
+# relevanten Treffer nicht mehr automatisch, BEVOR sein Claim ueberhaupt
+# gelesen wurde. Treffer mit Score >= MIN_SCORE_FAKT werden hier NICHT
+# nochmal verarbeitet -- die laufen unveraendert durch `_extrahiere_fakten()`.
+#
+# DIESELBE Sicherheitsregel wie bei Wartung, bewusst NICHT aufgeweicht: ein
+# Low-Trust-Candidate (Forenbeitrag, unbekannte Quelle) kann NIEMALS allein --
+# auch nicht durch mehrere uebereinstimmende Low-Trust-Quellen -- eine NEUE,
+# unabhaengig sichtbare "typische Schwachstelle" erzeugen. Er kann
+# AUSSCHLIESSLICH einen bereits im Hauptpfad (Score >= MIN_SCORE_FAKT)
+# entstandenen, user-sichtbaren WebFakt DESSELBEN Bauteils um zusaetzliche,
+# unabhaengig bestaetigende Quellen anreichern (reine Beleg-/Transparenz-
+# Staerkung) -- derselbe Objekt-Mutations-Mechanismus wie bei Wartung
+# (`ziel_fakt.quellen.append(...)`), nie ein zweiter, inhaltsgleicher
+# WebFakt. Ohne einen solchen Hauptpfad-Anker bleibt ein Candidate IMMER nur
+# Observability (`abgelehnt`), nie ein eigenstaendiger Fakt.
+def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, modell: str | None,
+                                    generation: str | None,
+                                    haupt_fakten: list[WebFakt] | None = None,
+                                    ) -> tuple[list[WebFakt], list[dict]]:
+    """Candidate-Evidence-Pfad NUR für Treffer UNTERHALB von MIN_SCORE_FAKT
+    (siehe Modulkommentar oben). Liefert IMMER eine leere `fakten`-Liste — ein
+    Candidate kann nur ein bestehendes `haupt_fakten`-Objekt per Mutation
+    anreichern, nie selbst einen neuen WebFakt erzeugen (Bedingung identisch
+    zur Wartungs-Evidence-Schicht)."""
+    haupt_fakten = haupt_fakten or []
+    abgelehnt: list[dict] = []
+    kandidaten: list[dict] = []
+    vokabular = _bauteil_vokabular()
+
+    for r in treffer:
+        url = r.get("url") or ""
+        if score_domain(url, KATEGORIE_SCHWACHSTELLEN) >= MIN_SCORE_FAKT:
+            continue   # bestehender Pfad greift bereits -- hier nicht doppelt verarbeiten
+        ok, grund = ausgerichtet(r, marke, modell)
+        if not ok:
+            abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": grund})
+            continue
+        if _fremde_generation(r, modell, generation):
+            abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": "andere_generation"})
+            continue
+        family = _source_family(url)
+        satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
+        lokale = _segment_kontext_saetze(
+            satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
+            abgelehnt=abgelehnt, url=url, kategorie="schwachstelle")
+        for satz in lokale:
+            for claim in _segmentiere_claims(satz):
+                n = _norm(claim)
+                if _ist_benign_relativiert(claim):
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "benign_relativiert", "satz": claim[:120]})
+                    continue
+                if not any(w in n for w in _PROBLEM_WORTE) and not _hat_strukturelles_defektsignal(n, claim):
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "no_problem_signal", "satz": claim[:120]})
+                    continue
+                treffer_voc = [(m, s) for m, s in vokabular.items() if m in n][:1]
+                if not treffer_voc:
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "no_component", "satz": claim[:120]})
+                    continue
+                muster, schluessel = treffer_voc[0]
+                kandidaten.append({"bauteil_key": schluessel, "bauteil": _anzeige_bauteil(claim, muster),
+                                   "family": family, "url": url, "claim": claim, "treffer": r})
+
+    gruppen: dict[str, list[dict]] = {}
+    for k in kandidaten:
+        gruppen.setdefault(k["bauteil_key"], []).append(k)
+
+    for gruppe in gruppen.values():
+        bauteil_text = gruppe[0]["bauteil"]
+        ziel_fakt = next((f for f in haupt_fakten
+                          if f.kategorie == "schwachstelle" and f.bauteil == bauteil_text), None)
+        if ziel_fakt is None:
+            # Kein Hauptpfad-Anker -- bleibt ausschliesslich Observability,
+            # wird NIE zu einem eigenstaendigen, user-sichtbaren Fakt (s.o.).
+            for k in gruppe:
+                abgelehnt.append({"url": k["url"], "kategorie": "schwachstelle",
+                                  "grund": "schwachstelle_candidate_ohne_hauptpfad_anker",
+                                  "satz": k["claim"][:120]})
+            continue
+        neue_quellen = _quellen_aus([k["treffer"] for k in gruppe])
+        vorhandene_urls = {q.url for q in ziel_fakt.quellen}
+        for q in neue_quellen:
+            if q.url not in vorhandene_urls:
+                ziel_fakt.quellen.append(q)
+                vorhandene_urls.add(q.url)
+    return [], abgelehnt
+
+
 # ── Gemeinsame, phasenweise Auswertung ───────────────────────────────────────
 
 def _ziel(marke, modell, baujahr, motor, ziel: dict | None) -> dict:
@@ -3046,6 +3219,16 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
             bisherige_wartung = sum(1 for f in fakten if f.kategorie == "wartung")
             fakten += cand_fakten[:max(0, MAX_FAKTEN_JE_KATEGORIE - bisherige_wartung)]
             abgelehnt += cand_abgelehnt
+        elif kategorie == "schwachstelle":
+            # Package B (Forensik-Folgeauftrag), analog zur Wartungs-Evidence-
+            # Schicht oben: rein additiv, verarbeitet ausschliesslich Treffer,
+            # die `_extrahiere_fakten()` bereits (unveraendert) verworfen hat.
+            cand_fakten, cand_abgelehnt = _schwachstelle_candidate_fakten(
+                treffer, marke=ziel.get("marke"), modell=ziel.get("modell"),
+                generation=identitaet.generation or ziel.get("generation"),
+                haupt_fakten=[f for f in fakten if f.kategorie == "schwachstelle"])
+            fakten += cand_fakten  # immer leer, siehe Docstring dort
+            abgelehnt += cand_abgelehnt
     return fakten
 
 
@@ -3106,12 +3289,24 @@ def _log_identitaet_phase(treffer: list[dict], marke: str | None, modell: str | 
 # vorhandenen Werten (`stats` aus `phase_fakten()`, dem bereits bestehenden,
 # je-Treffer mit `kategorie`+`grund` gefüllten `abgelehnt`-Mechanismus, und
 # der finalen `fakten`-Liste) — keine neue Zählstruktur in der eigentlichen
-# Extraktion. "aligned" wird aus den vorhandenen Reject-Gründen REKONSTRUIERT
-# (alles, was nicht "source_quality"/Alignment-Grund ist, hat beide Stufen
-# überlebt); eine Differenz zwischen "weiterverarbeitet" und "finale Fakten"
-# OHNE passenden Grund in der Liste macht einen STILLEN Verlust (z.B. eine
-# Vokabular-Nichtübereinstimmung ohne eigenen Log-Eintrag im Haupt-Pfad von
-# `_extrahiere_fakten`) sichtbar, statt ihn zu verschleiern.
+# Extraktion.
+#
+# FIX (Forensik-Folgeauftrag, Package F, CONFIRMED Bug): die ursprüngliche
+# Fassung behandelte JEDEN `abgelehnt`-Eintrag als genau EINEN disjunkten
+# Treffer-Reject und zog ihn von `curated` ab. Tatsächlich entstehen
+# `abgelehnt`-Einträge auf ZWEI unterschiedlichen, nicht austauschbaren
+# Ebenen: (1) Treffer-Ebene — `source_quality`/Alignment-Gründe, GENAU EIN
+# Eintrag je Treffer, direkt in `_extrahiere_fakten()`s Haupt-Loop VOR jeder
+# Satz-Verarbeitung — und (2) Claim-/Satz-Ebene — alles danach
+# (`no_component`, `no_recall_signal`, `schwach_ausgerichtet_ohne_
+# modellnennung`, wartung_*/schwachstelle_candidate_*, …), potenziell
+# MEHRFACH pro Treffer UND (nur "wartung"/"schwachstelle") zusätzlich aus dem
+# separaten Candidate-Evidence-Pfad für DENSELBEN, bereits source_quality-
+# verworfenen Treffer. Die alte Subtraktion ergab dadurch reale negative
+# Zwischenwerte (Production-Fund "wartung": weiterverarbeitet=-5). FIX: beide
+# Treffer-Ebenen-Zähler werden über EINDEUTIGE URLs gebildet (ein Treffer
+# zählt nie doppelt, nie negativ), Claim-/Satz-Ebene bleibt eine STRIKT
+# GETRENNTE, eigene Einheit — nie gegen die Treffer-Zähler verrechnet.
 _ALIGNMENT_GRUENDE = ("modell_fehlt", "marke_fehlt", "titel_fremde_marke", "andere_generation")
 
 
@@ -3120,26 +3315,52 @@ def _log_fakten_phase(kategorie: str, anfragen: int, stats: dict, abgelehnt_delt
     eigene_rejects = [a for a in abgelehnt_delta if a.get("kategorie") == kategorie]
     roh = (stats.get(kategorie) or {}).get("roh", 0)
     curated = (stats.get(kategorie) or {}).get("curated", 0)
-    source_trust_verworfen = sum(1 for a in eigene_rejects if a.get("grund") == "source_quality")
-    alignment_verworfen = sum(1 for a in eigene_rejects
-                              if str(a.get("grund") or "").split(":", 1)[0] in _ALIGNMENT_GRUENDE)
-    weiterverarbeitet = curated - source_trust_verworfen - alignment_verworfen
+
+    # Treffer-Ebene, über eindeutige URLs gebildet: eine URL zählt in GENAU
+    # einem Bucket (source_trust_reject ODER alignment_reject ODER bestanden),
+    # nie in mehreren — das verhindert die Doppelzählung, die vorher zu
+    # negativen Werten führte.
+    source_trust_reject_urls = {a.get("url") for a in eigene_rejects if a.get("grund") == "source_quality"}
+    alignment_reject_urls = {a.get("url") for a in eigene_rejects
+                             if str(a.get("grund") or "").split(":", 1)[0] in _ALIGNMENT_GRUENDE
+                             and a.get("url") not in source_trust_reject_urls}
+    source_trust_reject = len(source_trust_reject_urls)
+    alignment_reject = len(alignment_reject_urls)
+    source_trust_pass = max(0, curated - source_trust_reject)
+    alignment_pass = max(0, source_trust_pass - alignment_reject)
+
+    # Claim-/Satz-Ebene: eigene Einheit, kann mehrfach pro Treffer entstehen —
+    # bewusst NIE von einem Treffer-Zähler oben abgezogen.
+    claim_rejects = [a for a in eigene_rejects
+                     if a.get("grund") != "source_quality"
+                     and str(a.get("grund") or "").split(":", 1)[0] not in _ALIGNMENT_GRUENDE]
     finale = sum(1 for f in fakten if f.kategorie == kategorie)
-    sonstige_rejects = len(eigene_rejects) - source_trust_verworfen - alignment_verworfen
-    stiller_verlust = max(0, weiterverarbeitet - finale - sonstige_rejects)
+
+    # `stiller_verlust` bleibt erhalten, aber NUR in der Treffer-Ebene (gleiche
+    # Einheit wie `alignment_pass`, siehe Package-F-Auftrag "nur berechnen,
+    # wenn Zähler dieselbe Einheit besitzen"): wie viele Treffer haben BEIDE
+    # Treffer-Gates bestanden, aber weder einen Claim-Reject NOCH eine finale
+    # Quelle hinterlassen -- ein Treffer, der spurlos verschwindet (z.B. ein
+    # Vokabular-Nichttreffer ohne eigenen Log-Eintrag im Haupt-Pfad). Über
+    # eindeutige URLs gebildet, nie negativ.
+    claim_reject_urls = {a.get("url") for a in claim_rejects}
+    finale_urls = {q.url for f in fakten if f.kategorie == kategorie
+                  for q in (getattr(f, "quellen", None) or [])}
+    stiller_verlust = max(0, alignment_pass - len(claim_reject_urls | finale_urls))
+
     reject_histogramm: dict[str, int] = {}
     for a in eigene_rejects:
         g = str(a.get("grund") or "unbekannt").split(":", 1)[0]
         reject_histogramm[g] = reject_histogramm.get(g, 0) + 1
     log.info(
-        "Faktenphase[%s]: %d Anfragen, %d Rohtreffer, %d kuratiert, "
-        "source_trust: %d bestanden/%d verworfen, alignment: %d bestanden/%d verworfen, "
-        "weiterverarbeitet=%d, sonstige_rejects=%d, stiller_verlust=%d, finale_fakten=%d — "
-        "rejects(%s)",
+        "Faktenphase[%s]: %d Anfragen, %d Rohtreffer, %d kuratiert -- "
+        "Treffer-Ebene: source_trust %d bestanden/%d verworfen, "
+        "alignment %d bestanden/%d verworfen, stiller_verlust=%d -- "
+        "Claim-Ebene (eigene Einheit, keine Treffer-Verrechnung): %d Claim-Rejects, "
+        "finale_fakten=%d — rejects(%s)",
         kategorie, anfragen, roh, curated,
-        curated - source_trust_verworfen, source_trust_verworfen,
-        weiterverarbeitet, alignment_verworfen,
-        weiterverarbeitet, sonstige_rejects, stiller_verlust, finale,
+        source_trust_pass, source_trust_reject, alignment_pass, alignment_reject, stiller_verlust,
+        len(claim_rejects), finale,
         ", ".join(f"{k}={n}" for k, n in sorted(reject_histogramm.items())) or "-",
     )
 

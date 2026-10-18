@@ -305,6 +305,22 @@ def no_market_prompt_block() -> str:
     Modell muss das ausdrücklich wissen, sonst wirkt der Widerspruch
     ("hier stehen Preise, aber es gibt keine Marktdaten") wie ein Fehler im
     Kontext und wird "hilfsbereit" überschrieben.
+
+    Package D4 (Forensik-Folgeauftrag, CONFIRMED Root Cause): der letzte Absatz
+    sagte bisher "Die TECHNISCHE Kaufberatung führst du davon unberührt
+    VOLLSTÄNDIG durch: ... Schwachstellen, Motorprobleme, Rückrufe, ...". Das
+    war als "Marktpreis-Unabhängigkeit" gemeint (KEINE Preisaussage blockiert
+    den Rest), wurde vom Modell im realen Lexus-RC-F-Production-Lauf aber zum
+    user-facing Satz "Der technische KaufCheck und die Prüflisten sind davon
+    unabhängig vollständig" verdichtet — obwohl die Web-Recherche für
+    Schwachstellen UND Wartung in genau diesem Lauf 0 Fakten lieferte
+    (Faktenphase-Log: 0 finale_fakten je Kategorie). "VOLLSTÄNDIG" + die
+    Aufzählung der Kategorien erzeugte eine Vollständigkeits-BEHAUPTUNG für
+    Inhalte, die die eigentliche Recherche gar nicht belegt hatte. Jetzt:
+    "UNBERÜHRT" (die wahre Aussage — Preisfehlen blockiert den Rest nicht)
+    OHNE Vollständigkeitszusage, plus eine explizite Anweisung, Kategorien
+    ohne Beleg in den oben gelieferten Kontextblöcken nicht als recherchiert
+    zu behaupten (UNKNOWN bleibt UNKNOWN, nie "keine Schwachstellen").
     """
     return "\n".join([
         "=== KEINE BELASTBARE MARKTDATENBASIS (Backend-geprüft, VERBINDLICH) ===",
@@ -332,12 +348,18 @@ def no_market_prompt_block() -> str:
         "  Spalte DB-/Markterwartung 'nicht verfügbar'; bewerte die Plausibilität dort",
         "  NICHT anhand des Preises.",
         "",
-        "Die TECHNISCHE Kaufberatung führst du davon unberührt VOLLSTÄNDIG durch:",
-        "Fahrzeugidentität, Schwachstellen, Motorprobleme, Rückrufe, Risiken,",
-        "Besichtigungs-Checkliste und Kaufempfehlung. Die Kaufempfehlung stützt sich",
-        "in diesem Fall AUSSCHLIESSLICH auf technische Kriterien und die Plausibilität",
-        "des Inserats: nicht auf den Preis. Die Stufe \"preis_nachverhandeln\" ist",
-        "hier NICHT zulässig, da sie eine Preisbewertung voraussetzt.",
+        "Die TECHNISCHE Kaufberatung führst du davon UNBERÜHRT durch: Fahrzeugidentität,",
+        "Schwachstellen, Motorprobleme, Rückrufe, Risiken, Besichtigungs-Checkliste und",
+        "Kaufempfehlung beruhen WEITERHIN ausschließlich auf den oben tatsächlich",
+        "gelieferten DB-/Web-Kontextblöcken — der fehlende Marktpreis ändert daran",
+        "nichts, ist aber auch KEIN Grund, \"vollständig recherchiert\" zu behaupten.",
+        "Lieferte ein Kontextblock keine Treffer zu Schwachstellen/Wartung/Rückrufen,",
+        "bleibt das eine fehlende Beleglage (UNKNOWN) — KEINE Aussage \"es gibt keine",
+        "Schwachstellen\" und KEIN Anlass, Vollständigkeit zu behaupten. Die",
+        "Kaufempfehlung stützt sich in diesem Fall AUSSCHLIESSLICH auf technische",
+        "Kriterien und die Plausibilität des Inserats: nicht auf den Preis. Die Stufe",
+        "\"preis_nachverhandeln\" ist hier NICHT zulässig, da sie eine Preisbewertung",
+        "voraussetzt.",
     ])
 
 

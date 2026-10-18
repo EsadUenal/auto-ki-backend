@@ -803,8 +803,11 @@ check("R3 Web-Rückruf mit bekanntem Leistungs-Widerspruch entfällt ebenfalls",
 print("\n=== S) Identitäts-Hinweis bei Web-Identität nutzt dieselbe Auflösung wie "
       "die Empfehlung (Release-Hardening, Cluster J) ===")
 finding_s0 = _identitaets_finding("Platzhalter-Text", web_belegt=True, identity=None)
-check("S0 Ohne 'identity' bleibt das bisherige Verhalten erhalten (Rückwärtskompatibilität)",
-      finding_s0.aktion == "Für eine gezielte Analyse bitte Platzhalter-Text nachtragen.")
+check("S0 Ohne 'identity' bleibt das bisherige Verhalten erhalten (Rückwärtskompatibilität; "
+      "Package D6, Forensik-Folgeauftrag: 'klären' statt 'nachtragen' -- kein eigenes "
+      "Formularfeld dafür)",
+      finding_s0.aktion == "Für eine gezielte Analyse bitte Platzhalter-Text klären "
+                           "(z.B. über Fahrzeugschein oder FIN -- im Formular nicht nachtragbar).")
 
 i_s1 = ident(None, None, req(motor="2.0 Q", kraftstoff="Benzin", leistung_ps=184, getriebe="manuell",
                              antrieb="Heck"))

@@ -526,7 +526,9 @@ def _fehlende_angabe_none(marke: str | None, modell: str | None, baujahr: int | 
             return fehlt[0]
         return ", ".join(fehlt[:-1]) + " und " + fehlt[-1]
     # Final-Stabilization (Cluster K): der Rückgabewert wird in "Für eine
-    # gezielte Analyse bitte {…} nachtragen." eingesetzt — er muss deshalb eine
+    # gezielte Analyse bitte {…} klären (...)." eingesetzt (Package D6,
+    # Forensik-Folgeauftrag: "klären" statt "nachtragen" — kein eigenes
+    # Formularfeld dafür) — er muss deshalb eine
     # NOMINALPHRASE sein. Der vorherige Satz ("… konnten nicht sicher
     # verifiziert werden …") ergab dort einen grammatisch kaputten Satz.
     return ("die Generation bzw. den Baureihencode und den Motorcode aus dem "

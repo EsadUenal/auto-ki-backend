@@ -1,8 +1,14 @@
 """
 Test: POST /api/v1/kaufcheck — BMW 3er G20 320d Beispiel-Inserat.
 
-Verwendung:
-    python test_kaufcheck.py
+LIVE-INTEGRATIONSTEST — ruft echte externe Provider (Gemini, optional Tavily)
+auf. KEIN Teil der normalen lokalen Regression (Forensik-Folgeauftrag,
+Test-Sicherung: ein vorhandener API-Key in `.env` darf NICHT ausreichen, um
+einen normalen Testlauf echte Calls starten zu lassen — siehe auch
+test_verkaufscheck.py, derselbe Mechanismus).
+
+Verwendung (bewusstes Opt-in, sonst SKIP):
+    RUN_LIVE_TESTS=1 python test_kaufcheck.py
 
 Benötigt: GEMINI_API_KEY (+ optional TAVILY_API_KEY für Marktpreise).
 """
@@ -11,6 +17,11 @@ import io
 import os
 import asyncio
 import json
+
+if os.environ.get("RUN_LIVE_TESTS") != "1":
+    print("SKIP: Live-Integrationstest (echter Gemini-/Tavily-Call). "
+          "Nur mit explizitem Opt-in RUN_LIVE_TESTS=1 ausführen.")
+    raise SystemExit(0)
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")

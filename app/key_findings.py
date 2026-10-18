@@ -352,7 +352,16 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
         # ist danach nichts mehr offen, entfällt die Nachtrag-Aufforderung; ist
         # etwas offen, wird GENAU das genannt — nie mehr und nie weniger als das,
         # was die Empfehlung ebenfalls als offen behandelt.
-        aktion = f"Für eine gezielte Analyse bitte {fehlt} nachtragen."
+        # Package D6 (Forensik-Folgeauftrag): das ENFAL-Formular hat KEIN
+        # eigenes Generation-/Baureihencode-Feld — "bitte X nachtragen"
+        # forderte eine Eingabe, die der Nutzer im realen Formular gar nicht
+        # machen kann. "bitte X klären" (statt "nachtragen") hält exakt
+        # dieselbe Grammatik (X bleibt Akkusativobjekt, keine Wortlisten-
+        # Änderung nötig), verweist aber auf die tatsächlich verfügbaren
+        # Klärungswege (Fahrzeugschein/FIN) statt ein nicht existierendes
+        # Formularfeld zu suggerieren.
+        aktion = (f"Für eine gezielte Analyse bitte {fehlt} klären (z.B. über "
+                 f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar).")
         if identity is not None:
             from app.empfehlungs_policy import identitaet_aufloesen
             aufl = identitaet_aufloesen(identity)
@@ -361,7 +370,8 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
                           "ausreichend plausibilisiert; ein Nachtrag ist nicht nötig.")
             else:
                 noch_offen = " und ".join(_WEB_FEHLT_PHRASE.get(f, f.lower()) for f in aufl.fehlend)
-                aktion = f"Für eine vollständig gesicherte Analyse bitte {noch_offen} nachtragen."
+                aktion = (f"Für eine vollständig gesicherte Analyse bitte {noch_offen} klären "
+                         f"(z.B. über Fahrzeugschein oder FIN -- im Formular nicht nachtragbar).")
         # Final-Stabilization (Cluster M): bei belegter Web-Identität stammen
         # fahrzeugspezifische Hinweise aus Webquellen — die Aussage "es werden
         # keine fahrzeugspezifischen … ausgegeben" wäre dann falsch.
@@ -380,7 +390,8 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
                      "Es werden deshalb keine fahrzeugspezifischen Schwachstellen, "
                      "Motorprobleme oder Rückrufe ausgegeben: die allgemeinen "
                      "Prüflisten gelten unverändert.",
-        aktion=f"Für eine gezielte Analyse bitte {fehlt} nachtragen.",
+        aktion=(f"Für eine gezielte Analyse bitte {fehlt} klären (z.B. über "
+               f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar)."),
         prioritaet=_P_IDENTITAET)
 
 
@@ -766,7 +777,8 @@ def _identitaets_finding_verkauf(fehlende_angabe: str | None) -> KeyFinding:
                      "sicher bestimmt werden. Fahrzeugspezifische Hinweise wurden deshalb "
                      "bewusst eingeschränkt. Inseratsanalyse, Verkaufstipps und die "
                      "Bewertung deiner Angaben gelten unverändert.",
-        aktion=f"Für eine gezieltere Analyse bitte {fehlt} nachtragen.",
+        aktion=(f"Für eine gezieltere Analyse bitte {fehlt} klären (z.B. über "
+               f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar)."),
         prioritaet=_P_IDENTITAET)
 
 

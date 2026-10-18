@@ -191,8 +191,21 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, ref, HERKUNFT_DB,
                                           einordnung))
         elif _web_bestaetigt(identity, "horsepower"):
-            zeilen.append(Vergleichszeile("Motor/Leistung", angabe,
-                                          f"{identity.horsepower} PS", HERKUNFT_WEB, PASST))
+            # Reporting-Hardening (Forensik-Folgeauftrag, Package D2,
+            # CONFIRMED Bug): `angabe` enthält die GESAMTE Inserat-
+            # Motorbeschreibung (z.B. "5.0 V8, Heckantrieb, 477 PS"),
+            # `einordnung` wurde aber bisher AUSSCHLIESSLICH aus der PS-
+            # Teilkomponente abgeleitet ("✓ passt" neben dem kompletten,
+            # teilweise unbestätigten Text). Ein zusammengesetztes Feld darf
+            # nie stärker bestätigt werden als sein schwächstes Teilfeld
+            # (Abnahmepunkt 9) — die Referenz nennt deshalb explizit NUR die
+            # bestätigte Teilangabe (PS); enthält die Inserat-Angabe mehr als
+            # das, wird das nicht als pauschales Häkchen dargestellt.
+            nur_ps_bestaetigt = bool(motor_text) and motor_text.strip() != f"{ps} PS"
+            zeilen.append(Vergleichszeile(
+                "Motor/Leistung", angabe, f"{identity.horsepower} PS", HERKUNFT_WEB,
+                "✓ Leistung bestätigt; übrige Angaben nicht unabhängig geprüft"
+                if nur_ps_bestaetigt else PASST))
         else:
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))
@@ -238,15 +251,30 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
 
     # Antriebsart / Elektrifizierung — eigene Dimension, nie mit dem
     # Kraftstoff verglichen.
+    #
+    # Reporting-Hardening (Forensik-Folgeauftrag, Package D1, CONFIRMED
+    # Provenance-Bug): diese Zeile vergab bisher PAUSCHAL HERKUNFT_DB, sobald
+    # die Quelle nicht "user" war — auch wenn `powertrain` aus einer
+    # WebVehicleIdentity (DB-Miss) stammte. Derselbe Fakt zeigte dadurch im
+    # Identity-Block (app/anzeige.py::herkunft, korrekt "über Webquellen
+    # plausibilisiert") und in dieser Tabelle ("ENFAL-Fahrzeugdaten") zwei
+    # widersprüchliche Herkünfte. Jetzt dasselbe Muster wie Kraftstoff/
+    # Getriebe/Motor-Leistung oben: `_web_bestaetigt()` entscheidet, nie ein
+    # pauschaler Default.
     pt_fe = fe.get("powertrain") or {}
     if identity is not None and pt_fe.get("verification_state") not in (None, "unknown"):
         pt_anzeige = anzeige_wert("powertrain", getattr(identity, "powertrain", None), pt_fe)
         vom_nutzer = pt_fe.get("primary_source") == "user"
-        referenz = None if vom_nutzer else pt_anzeige
-        zeilen.append(Vergleichszeile(
-            "Antriebsart", pt_anzeige if vom_nutzer else "keine Angabe im Inserat",
-            referenz, HERKUNFT_DB if referenz else HERKUNFT_KEINE,
-            PASST if pt_fe.get("verification_state") == "user_confirmed" else NICHT_BEWERTBAR))
+        if vom_nutzer:
+            zeilen.append(Vergleichszeile(
+                "Antriebsart (Elektrifizierung)", pt_anzeige, None, HERKUNFT_KEINE,
+                PASST if pt_fe.get("verification_state") == "user_confirmed" else NICHT_BEWERTBAR))
+        elif _web_bestaetigt(identity, "powertrain"):
+            zeilen.append(Vergleichszeile(
+                "Antriebsart (Elektrifizierung)", "keine Angabe im Inserat", pt_anzeige, HERKUNFT_WEB, PASST))
+        else:
+            zeilen.append(Vergleichszeile(
+                "Antriebsart (Elektrifizierung)", "keine Angabe im Inserat", pt_anzeige, HERKUNFT_DB, NICHT_BEWERTBAR))
 
     # Getriebe gegen die Getriebeoptionen der Variante.
     getriebe = getattr(req, "getriebe", None)

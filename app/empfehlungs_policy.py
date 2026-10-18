@@ -183,7 +183,15 @@ def entscheide(kandidat: str | None, identity, *, web_recherche=None) -> Empfehl
     state = STATE_LIMITED if aufl.stufe == PARTIAL else STATE_INSUFFICIENT
     anzeige_basis = ANZEIGE_LIMITED if aufl.stufe == PARTIAL else ANZEIGE_INSUFFICIENT
     offen = ", ".join(aufl.fehlend)
-    hinweis = (f"Nicht sicher belegt: {offen}. Fahrzeugspezifische Aussagen sind "
+    # Package D5 (Forensik-Folgeauftrag): "Nicht sicher belegt: Generation."
+    # kann wie "alles andere ist sicher" gelesen werden, obwohl weitere
+    # Felder (Baujahr/Kraftstoff/Getriebe) separat in der Feldliste/
+    # Vergleichstabelle als user_only/unbekannt ausgewiesen werden können.
+    # Der hier benannte Scope (Marke/Modell/Generation/Motorisierung) bleibt
+    # bewusst UNVERÄNDERT — nur die Formulierung macht deutlicher, dass dies
+    # die BLOCKIERENDE Lücke für die Empfehlungsstufe ist, keine vollständige
+    # Unsicherheitsliste.
+    hinweis = (f"Blockierende Identitätslücke: {offen}. Fahrzeugspezifische Aussagen sind "
                f"deshalb eingeschränkt; eine Kaufempfehlung ist erst nach Klärung "
                f"(Fahrzeugschein, FIN) möglich.")
     if kandidat in _MILDE or kandidat == "unbekannt":

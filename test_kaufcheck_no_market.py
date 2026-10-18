@@ -328,8 +328,13 @@ check("N3: PFAD B enthaelt KEIN kanonisches Preisurteil",
       "KANONISCHES PREISURTEIL" not in prompt_b)
 check("N4: PFAD B verbietet Preiseinstufung ausdruecklich",
       "Stufe den Angebotspreis NICHT ein" in prompt_b)
-check("N5: PFAD B fordert die technische Analyse weiterhin ein",
-      "VOLLSTAENDIG durch" in prompt_b or "VOLLSTÄNDIG durch" in prompt_b)
+check("N5: PFAD B fordert die technische Analyse weiterhin ein (Package D4: "
+      "'UNBERUEHRT', nicht mehr 'VOLLSTAENDIG' -- Marktpreis-Unabhaengigkeit "
+      "darf keine Recherche-Vollstaendigkeit behaupten)",
+      "UNBERUEHRT durch" in prompt_b or "UNBERÜHRT durch" in prompt_b)
+check("N5b: PFAD B verbietet explizit, fehlende Kategorien als recherchiert "
+      "zu behaupten (UNKNOWN bleibt UNKNOWN)",
+      "KEINE Aussage" in prompt_b and "es gibt keine" in prompt_b)
 check("N6: PFAD B enthaelt weiterhin den kanonischen Fahrzeug-/Risikokontext",
       "KANONISCHER FAHRZEUG- UND RISIKOKONTEXT" in prompt_b
       and '"canonical_risks"' in prompt_b)
