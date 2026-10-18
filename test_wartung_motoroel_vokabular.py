@@ -85,7 +85,7 @@ print("C) LOW-SCORE SECONDARY: 'Motoroel alle 15.000 km wechseln' -> Candidate, 
 print("=" * 78)
 low_score = treffer("https://www.repareo.de/lexus-rc-f-motoroel", "Lexus RC F Motoroel",
                     "Das Motoroel wird beim RC F alle 15.000 km gewechselt.")
-fakten_c, abgelehnt_c = _wartung_candidate_fakten(
+fakten_c, abgelehnt_c, _ = _wartung_candidate_fakten(
     [low_score], marke="Lexus", modell="RC F", generation=None, motor=None)
 check("C) einzelne Low-Score-Quelle erzeugt KEINEN harten Fakt (bestehende Policy)",
       len(fakten_c) == 0)
@@ -100,7 +100,7 @@ sec_a = treffer("https://www.repareo.de/a", "Lexus RC F Wartung A",
                 "Das Motoroel wird beim RC F alle 15.000 km gewechselt.")
 sec_b = treffer("https://www.autoteile-xyz.de/b", "Lexus RC F Wartung B",
                 "Der Oelwechsel erfolgt beim RC F alle 15.000 km.")
-fakten_d, abgelehnt_d = _wartung_candidate_fakten(
+fakten_d, abgelehnt_d, _ = _wartung_candidate_fakten(
     [sec_a, sec_b], marke="Lexus", modell="RC F", generation=None, motor=None)
 check("D) zwei Secondary-Families, gleicher Wert -> KEIN harter Fakt",
       len(fakten_d) == 0)
@@ -112,7 +112,7 @@ print("E) 2 Secondary-Families, UNTERSCHIEDLICHE Werte -> CONFLICT")
 print("=" * 78)
 sec_konflikt = treffer("https://www.autoteile-xyz.de/c", "Lexus RC F Wartung C",
                        "Das Motoroel wird beim RC F alle 10.000 km gewechselt.")
-fakten_e, abgelehnt_e = _wartung_candidate_fakten(
+fakten_e, abgelehnt_e, _ = _wartung_candidate_fakten(
     [sec_a, sec_konflikt], marke="Lexus", modell="RC F", generation=None, motor=None)
 check("E) widersprechende Werte (15.000 vs. 10.000 km) -> KEIN harter Fakt",
       len(fakten_e) == 0)
@@ -127,7 +127,7 @@ pruefen = treffer("https://www.repareo.de/d", "Lexus RC F Wartung D",
                   "Das Motoroel wird beim RC F alle 15.000 km geprueft.")
 wechseln = treffer("https://www.autoteile-xyz.de/e", "Lexus RC F Wartung E",
                    "Das Motoroel wird beim RC F alle 15.000 km gewechselt.")
-fakten_f, abgelehnt_f = _wartung_candidate_fakten(
+fakten_f, abgelehnt_f, _ = _wartung_candidate_fakten(
     [pruefen, wechseln], marke="Lexus", modell="RC F", generation=None, motor=None)
 check("F) 'pruefen' und 'wechseln' bilden GETRENNTE Signatur-Gruppen -- keine "
       "fälschliche CORROBORATED-Übereinstimmung zwischen verschiedenen Aktionen",
@@ -152,7 +152,7 @@ print("H) Intervall vorhanden, aber KEIN Bauteil erkennbar -> expliziter Reject 
 print("=" * 78)
 ohne_bauteil = treffer("https://www.repareo.de/f", "Lexus RC F Service",
                        "Beim RC F wird etwas alle 15.000 km gemacht.")
-fakten_h, abgelehnt_h = _wartung_candidate_fakten(
+fakten_h, abgelehnt_h, _ = _wartung_candidate_fakten(
     [ohne_bauteil], marke="Lexus", modell="RC F", generation=None, motor=None)
 check("H) kein Fakt ohne erkennbares Bauteil", len(fakten_h) == 0)
 check("H) explizit als 'no_component' geloggt (vorher: STILLES Verschwinden, kein Eintrag)",

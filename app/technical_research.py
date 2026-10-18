@@ -2505,6 +2505,18 @@ WARTUNG_STATUS_UNVERIFIED = "unverified"
 WARTUNG_STATUS_CORROBORATED = "corroborated"
 WARTUNG_STATUS_CONFLICT = "conflict"
 WARTUNG_STATUS_VERIFIED = "verified"
+# Adaptive-Evidence-Research (Folgeauftrag, §6 Auftrag): eigener Status,
+# NICHT dasselbe wie WARTUNG_STATUS_CORROBORATED oben (das bleibt bewusst
+# NIE user-visible -- 2 Families ohne Herstellerbeleg, siehe Docstring
+# `_wartung_verification_status`). MULTI_SOURCE verlangt STRENGER >=3
+# unabhängige, nicht-COMMUNITY Families mit gleichem Wert UND wird erst
+# user-sichtbar, wenn der Aufrufer zusätzlich bestätigt, dass eine gezielte
+# Source-Upgrade-Nachrecherche (§5 Auftrag) keinen Herstellerbeleg gefunden
+# hat (`erlaube_multi_source=True` -- siehe `_wartung_candidate_fakten`).
+# Erzeugt NIE "verified", sondern einen eigenen, schwächeren, als solchen
+# gekennzeichneten Fakt (`WebFakt.beleglage="mehrfach_unabhaengig"`).
+WARTUNG_STATUS_MULTI_SOURCE = "multi_source"
+MIN_FAMILIES_MULTI_SOURCE = 3
 
 # Mapping auf die BESTEHENDEN, bereits produktiv genutzten Labels aus
 # `_qualitaets_label()` (app/web_search.py) -- keine neue Domainliste, keine
@@ -2849,12 +2861,20 @@ def _wartung_verification_status(gruppe: list[dict], *, motor_ziel: str | None,
     Inkonsistenz, provenance_claimed, ziel_fakt -- NUR bei VERIFIED gesetzt,
     s.u.).
 
-    status in (UNVERIFIED, CONFLICT, CORROBORATED, VERIFIED):
+    status in (UNVERIFIED, CONFLICT, CORROBORATED, MULTI_SOURCE, VERIFIED):
       UNVERIFIED     0-1 zählende Family.
       CONFLICT       >=2 Families, UNTERSCHIEDLICHE Werte.
-      CORROBORATED   >=2 Families, GLEICHER Wert, aber KEINE Zusatzbedingung
+      CORROBORATED   2 Families, GLEICHER Wert, aber KEINE Zusatzbedingung
                      erfüllt -- bleibt NICHT user-visible (app/evidence.py
                      zeigt jeden Eintrag aus `fakten` ungefiltert).
+      MULTI_SOURCE   >=3 unabhängige, NICHT-COMMUNITY Families, GLEICHER Wert,
+                     kein Herstellerbeleg (Adaptive-Evidence-Research, §6
+                     Auftrag) -- wird NUR user-visible, wenn der Aufrufer
+                     `erlaube_multi_source=True` setzt (erst nach einer
+                     gezielten, ergebnislosen Source-Upgrade-Nachrecherche,
+                     §5 Auftrag). Erzeugt dann einen EIGENEN, klar als solchen
+                     gekennzeichneten Fakt (`beleglage="mehrfach_unabhaengig"`,
+                     confidence="mittel") -- NIE "verified".
       VERIFIED       >=2 Families, gleicher Wert, UND dieselbe STRUKTURIERTE
                      `_wartung_signature` ist bereits über den bestehenden
                      PRIMARY/STRONG_SECONDARY-Pfad belegt (Bedingung A) --
@@ -2901,6 +2921,12 @@ def _wartung_verification_status(gruppe: list[dict], *, motor_ziel: str | None,
     # nur deaktiviert (§1 Auftrag) -- eine reine Selbstauskunft ("laut
     # Hersteller") hebt CORROBORATED nicht mehr auf VERIFIED. `provenance_claimed`
     # bleibt nur ein Logging-Signal (siehe `_provenienz_behauptet()`-Docstring).
+    # Adaptive-Evidence-Research (§6 Auftrag): >=3 unabhängige, nicht-COMMUNITY
+    # Families mit identischem Wert sind eine STRENGERE Stufe als das einfache
+    # 2-Family-CORROBORATED oben -- der Aufrufer entscheidet (via
+    # `erlaube_multi_source`), ob daraus bereits ein sichtbarer Fakt wird.
+    if len(stimmen) >= MIN_FAMILIES_MULTI_SOURCE:
+        return WARTUNG_STATUS_MULTI_SOURCE, stimmen, inkonsistent, provenance_claimed, None
     return WARTUNG_STATUS_CORROBORATED, stimmen, inkonsistent, provenance_claimed, None
 
 
@@ -2908,7 +2934,8 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                               generation: str | None, motor: str | None,
                               getriebe: str | None = None,
                               haupt_fakten: list[WebFakt] | None = None,
-                              ) -> tuple[list[WebFakt], list[dict]]:
+                              erlaube_multi_source: bool = False,
+                              ) -> tuple[list[WebFakt], list[dict], bool]:
     """Candidate-Evidence-Pfad NUR für Treffer UNTERHALB von MIN_SCORE_FAKT
     (siehe Moduldocstring oben). Treffer darüber werden hier NICHT nochmal
     verarbeitet -- die laufen unverändert durch `_extrahiere_fakten()`.
@@ -2917,14 +2944,21 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
     VERIFIED) direkt per Objekt-Mutation um Candidate-Quellen angereichert
     (siehe unten), nie ersetzt.
 
-    Der zurückgegebene `fakten`-Teil bleibt nach heutigem Stand IMMER leer:
-    Bedingung B (Provenienz) wurde entfernt, und Bedingung A (einziger
-    verbleibender VERIFIED-Pfad) setzt per Definition einen bereits in
-    `haupt_fakten` vorhandenen Treffer voraus, der dann angereichert statt
-    neu erzeugt wird. Der Rückgabewert bleibt trotzdem `list[WebFakt]` (statt
-    ersatzlos entfernt), damit eine künftige, unabhängig von einem
-    Hauptpfad-Treffer gültige Verification-Bedingung (z.B. ein echter
-    `provenance_verified`-Mechanismus) ohne Signatur-Änderung andockt."""
+    Bedingung A (Cross-Tier, VERIFIED) bleibt unverändert: setzt einen
+    bereits in `haupt_fakten` vorhandenen Treffer voraus, der dann
+    angereichert statt neu erzeugt wird. NEU (Adaptive-Evidence-Research,
+    §6 Auftrag): `erlaube_multi_source=True` erlaubt zusätzlich einen
+    EIGENSTÄNDIGEN, aber klar schwächer gekennzeichneten Fakt für Gruppen mit
+    >=3 unabhängigen Families (WARTUNG_STATUS_MULTI_SOURCE) OHNE Hersteller-
+    beleg -- der Aufrufer (`recherchiere()`) setzt dieses Flag erst, NACHDEM
+    eine gezielte Source-Upgrade-Nachrecherche (§5 Auftrag) ergebnislos blieb.
+    Mit `erlaube_multi_source=False` (Default, erste Suchrunde) bleibt das
+    Verhalten exakt wie bisher: nur Anreicherung, nie ein neuer Fakt.
+
+    Dritter Rückgabewert `eskalierbar`: True, wenn mindestens eine Gruppe
+    MULTI_SOURCE- oder CORROBORATED-Stufe erreicht hat, aber (noch) keinen
+    sichtbaren Fakt erzeugt hat -- das Signal für den Aufrufer, eine gezielte
+    Nachrecherche für GENAU diese Kategorie zu erwägen."""
     haupt_fakten = haupt_fakten or []
     abgelehnt: list[dict] = []
     kandidaten: list[dict] = []
@@ -2985,6 +3019,7 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                 })
 
     fakten: list[WebFakt] = []
+    eskalierbar = False
     for gruppe in _gruppiere_wartung_kandidaten(kandidaten).values():
         status, stimmen, inkonsistent, provenance_claimed, ziel_fakt = _wartung_verification_status(
             gruppe, motor_ziel=motor, getriebe_ziel=getriebe, haupt_fakten=haupt_fakten,
@@ -3015,15 +3050,33 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                 if q.url not in vorhandene_urls:
                     ziel_fakt.quellen.append(q)
                     vorhandene_urls.add(q.url)
-        elif status == WARTUNG_STATUS_CORROBORATED:
-            # §3/§4 Auftrag: CORROBORATED bleibt bewusst NICHT user-visible
-            # (kein Eintrag in `fakten`) -- nur Observability. `provenance_claimed`
-            # wird mitgeloggt (§7 Auftrag), beeinflusst aber NICHT den Status.
+        elif status == WARTUNG_STATUS_MULTI_SOURCE and erlaube_multi_source:
+            # Adaptive-Evidence-Research (§6 Auftrag): EIGENSTÄNDIGER, aber
+            # klar schwächer gekennzeichneter Fakt -- NIE "verified", NIE
+            # vermischt mit dem Hauptpfad-Fakt-Mechanismus oben (kein
+            # `ziel_fakt`, da keiner existiert -- genau das ist die
+            # Voraussetzung für diesen Zweig).
+            beitraege = [k for k in gruppe if k["family"] in stimmen]
+            fakten.append(WebFakt(
+                kategorie="wartung", bauteil=beitraege[0]["bauteil"],
+                aussage=beitraege[0]["claim"], confidence="mittel",
+                beleglage="mehrfach_unabhaengig",
+                quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+        elif status in (WARTUNG_STATUS_MULTI_SOURCE, WARTUNG_STATUS_CORROBORATED):
+            # §3/§4 Auftrag: CORROBORATED (2 Families) bleibt NIE user-visible.
+            # MULTI_SOURCE (>=3 Families) bleibt NUR dann (noch) nicht
+            # sichtbar, wenn der Aufrufer die Source-Upgrade-Nachrecherche
+            # noch nicht versucht/erlaubt hat -- `eskalierbar=True` signalisiert
+            # genau diesen Fall an den Aufrufer (§1/§6 Auftrag).
+            eskalierbar = True
+            grund = ("wartung_multi_source_pending_upgrade" if status == WARTUNG_STATUS_MULTI_SOURCE
+                    else "wartung_corroborated_not_verified")
             for k in gruppe:
                 if k["family"] in stimmen:
                     abgelehnt.append({"url": k["url"], "kategorie": "wartung",
-                                      "grund": "wartung_corroborated_not_verified",
-                                      "satz": k["claim"][:120], "source_type": k["source_type"],
+                                      "grund": grund, "satz": k["claim"][:120],
+                                      "source_type": k["source_type"], "bauteil": k["bauteil"],
+                                      "merkmal": k["merkmal"],
                                       "provenance_claimed": provenance_claimed})
         else:
             for k in gruppe:
@@ -3036,7 +3089,64 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
              len({(k["bauteil_key"], k["regime"], k["aktion"]) for k in kandidaten}),
              {t: sum(1 for k in kandidaten if k["source_type"] == t)
               for t in (WARTUNG_SOURCE_SECONDARY, WARTUNG_SOURCE_UNKNOWN, WARTUNG_SOURCE_COMMUNITY)})
-    return fakten, abgelehnt
+    return fakten, abgelehnt, eskalierbar
+
+
+# ── Weakness-Claim-Signatur (Adaptive-Evidence-Research, Folgeauftrag §B) ──
+#
+# Befund (Auftrag): "gleicher Claim" war bisher ausschließlich über die
+# Bauteil-Gruppierung (`bauteil_key`) approximiert -- "Getriebe ruckelt kalt",
+# "Getriebe verliert Öl" und "Getriebelager verschleißt" landen alle unter
+# demselben Bauteil ("Getriebe"), sind aber KEINE dieselbe Schwachstelle. Eine
+# generische, kleine Fehler-/Symptomtyp-Klassifikation -- analog zu
+# `_wartung_aktion()` oben (derselbe Musterregex-Ansatz, kein LLM-Call) --
+# ergänzt `bauteil_key` um eine zweite Achse. Bewusst klein, bewusst NICHT
+# erschöpfend: wenn der Fehlertyp eines Claims nicht sicher bestimmbar ist,
+# gibt die Funktion `None` zurück -- der Aufrufer darf einen solchen Claim
+# dann mit KEINEM anderen zusammenführen (eigene, isolierte Gruppe), statt
+# ihn blind dem Bauteil zuzuordnen (§ Auftrag: "Wenn Claim-Gleichheit nicht
+# zuverlässig bestimmbar ist: NICHT zusammenführen. UNKNOWN/separate
+# Candidates ist besser.").
+_SCHWACHSTELLE_FAILURE_UNDICHT = re.compile(
+    r"undicht|leck\w*|verliert\s+(?:\w+\s+){0,2}(?:oel|öl|wasser|fluessigkeit|flüssigkeit|kuehlmittel|kühlmittel)|"
+    r"(?:oel|öl)verlust|austritt", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_VERSCHLEISS = re.compile(
+    r"verschlei(?:ss|ß)\w*|abnutzung|ausgeschlagen|vorzeitig\w*\s+verschlei", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_GERAEUSCH = re.compile(
+    r"ger(?:a|ä)usch\w*|klapper\w*|rassel\w*|knarz\w*|pfeif\w*|brumm\w*|quietsch\w*", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_AUSFALL = re.compile(
+    r"ausfall|totalausfall|funktioniert\s+nicht|kaputt|bricht\b|bruch\b|versagt\w*", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_VIBRATION = re.compile(
+    r"ruckel\w*|vibrat\w*|rupf\w*|zuckt|stottert|rucken\b", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_ELEKTRISCH = re.compile(
+    r"fehlercode\w*|steuerger(?:a|ä)t\w*\s*(?:defekt|ausfall|problem)|sensor\w*\s*(?:defekt|ausfall)|"
+    r"elektrisch\w*\s*(?:defekt|ausfall|problem)", re.IGNORECASE)
+_SCHWACHSTELLE_FAILURE_KORROSION = re.compile(r"korrosion|rost\w*|durchrostung", re.IGNORECASE)
+# Reihenfolge relevant: spezifischere Muster vor generischen (z.B. Korrosion
+# vor einem generischen "Ausfall"-Treffer im selben Satz).
+_SCHWACHSTELLE_FAILURE_MODES: tuple[tuple[str, re.Pattern], ...] = (
+    ("korrosion", _SCHWACHSTELLE_FAILURE_KORROSION),
+    ("undicht", _SCHWACHSTELLE_FAILURE_UNDICHT),
+    ("geraeusch", _SCHWACHSTELLE_FAILURE_GERAEUSCH),
+    ("vibration", _SCHWACHSTELLE_FAILURE_VIBRATION),
+    ("elektrisch", _SCHWACHSTELLE_FAILURE_ELEKTRISCH),
+    ("verschleiss", _SCHWACHSTELLE_FAILURE_VERSCHLEISS),
+    ("ausfall", _SCHWACHSTELLE_FAILURE_AUSFALL),
+)
+
+
+def _schwachstelle_failure_mode(claim: str) -> str | None:
+    """Grobe, generische Fehler-/Symptomtyp-Klassifikation EINES Claim-Satzes.
+    `None`, wenn kein bekanntes Muster sicher zutrifft -- das ist ein
+    legitimes, HÄUFIGES Ergebnis (kein Fallback auf "irgendein Typ"), und der
+    Aufrufer behandelt `None` als "nicht zusammenführbar" (s. Docstring
+    oben), nie als Wildcard, die zu allem passt."""
+    if not claim:
+        return None
+    for name, pattern in _SCHWACHSTELLE_FAILURE_MODES:
+        if pattern.search(claim):
+            return name
+    return None
 
 
 # ── Schwachstellen-Evidence-Schicht (Package B, Forensik-Folgeauftrag) ─────
@@ -3064,12 +3174,28 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
 def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, modell: str | None,
                                     generation: str | None,
                                     haupt_fakten: list[WebFakt] | None = None,
-                                    ) -> tuple[list[WebFakt], list[dict]]:
+                                    erlaube_multi_source: bool = False,
+                                    ) -> tuple[list[WebFakt], list[dict], bool]:
     """Candidate-Evidence-Pfad NUR für Treffer UNTERHALB von MIN_SCORE_FAKT
-    (siehe Modulkommentar oben). Liefert IMMER eine leere `fakten`-Liste — ein
-    Candidate kann nur ein bestehendes `haupt_fakten`-Objekt per Mutation
-    anreichern, nie selbst einen neuen WebFakt erzeugen (Bedingung identisch
-    zur Wartungs-Evidence-Schicht)."""
+    (siehe Modulkommentar oben). Mit `erlaube_multi_source=False` (Default,
+    erste Suchrunde) unverändert: ein Candidate kann nur ein bestehendes
+    `haupt_fakten`-Objekt per Mutation anreichern, nie selbst einen neuen
+    WebFakt erzeugen.
+
+    NEU (Adaptive-Evidence-Research, §6 Auftrag): mit `erlaube_multi_source=True`
+    (erst nach ergebnisloser Source-Upgrade-Nachrecherche, §5 Auftrag) darf
+    eine Gruppe OHNE Hauptpfad-Anker trotzdem einen EIGENSTÄNDIGEN, klar
+    schwächeren Fakt erzeugen, wenn >=3 unabhängige, nicht-COMMUNITY Families
+    (`MIN_FAMILIES_MULTI_SOURCE`) denselben Bauteil-Claim unabhängig
+    berichten (`beleglage="mehrfach_unabhaengig"`, confidence="mittel", NIE
+    "verified" -- dieselbe Vorsicht, nur eine Stufe schwächer als Bedingung A
+    bei Wartung). Eine einzelne COMMUNITY-Quelle (Forenbeitrag) zählt dabei
+    NIE als eigene Family und kann diese Schwelle folglich nie allein
+    erreichen (§6 Auftrag: "keine Einzelanekdote dominiert").
+
+    Dritter Rückgabewert `eskalierbar`: True, wenn mindestens eine Gruppe
+    >=2 unabhängige Families erreicht, aber (noch) keinen sichtbaren Fakt
+    erzeugt hat -- Signal für den Aufrufer, gezielt nachzurecherchieren."""
     haupt_fakten = haupt_fakten or []
     abgelehnt: list[dict] = []
     kandidaten: list[dict] = []
@@ -3109,31 +3235,85 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                     continue
                 muster, schluessel = treffer_voc[0]
                 kandidaten.append({"bauteil_key": schluessel, "bauteil": _anzeige_bauteil(claim, muster),
-                                   "family": family, "url": url, "claim": claim, "treffer": r})
+                                   "failure_mode": _schwachstelle_failure_mode(claim),
+                                   "family": family, "source_type": _wartung_source_type(r),
+                                   "url": url, "claim": claim, "treffer": r})
 
-    gruppen: dict[str, list[dict]] = {}
-    for k in kandidaten:
-        gruppen.setdefault(k["bauteil_key"], []).append(k)
+    # Weakness-Claim-Signatur (Folgeauftrag §B): Gruppierung über
+    # (bauteil_key, failure_mode) statt nur bauteil_key -- "Getriebe ruckelt
+    # kalt"/"Getriebe verliert Öl"/"Getriebelager verschleißt" bilden damit
+    # DREI getrennte Gruppen, nie eine. Ein Claim OHNE sicher bestimmbaren
+    # Fehlertyp (`failure_mode is None`) bekommt eine EINDEUTIGE, nie
+    # kollidierende Gruppe für sich allein (per-Kandidat, nicht per-Bauteil)
+    # -- er wird dadurch NIE mit einem anderen Claim zusammengeführt, auch
+    # nicht mit einem anderen ebenfalls unbestimmten (§ Auftrag: "Wenn
+    # Claim-Gleichheit nicht zuverlässig bestimmbar ist: NICHT
+    # zusammenführen").
+    gruppen: dict[tuple, list[dict]] = {}
+    for idx, k in enumerate(kandidaten):
+        key = (k["bauteil_key"], k["failure_mode"]) if k["failure_mode"] else (k["bauteil_key"], f"_unbestimmt_{idx}")
+        gruppen.setdefault(key, []).append(k)
 
+    fakten: list[WebFakt] = []
+    eskalierbar = False
     for gruppe in gruppen.values():
         bauteil_text = gruppe[0]["bauteil"]
+        failure_mode = gruppe[0]["failure_mode"]
+        # Hauptpfad-Anker (Bedingung A für Schwachstellen): bauteilgleich
+        # ALLEIN reicht nicht mehr (§ Auftrag, dieselbe Sicherheitslücke wie
+        # bei der Multi-Source-Gruppierung) -- wenn der Hauptpfad-Fakt selbst
+        # einen sicher bestimmbaren Fehlertyp trägt UND der Candidate seinen
+        # eigenen ebenfalls sicher bestimmt hat, müssen beide übereinstimmen.
+        # Ist der Fehlertyp auf EINER Seite nicht bestimmbar, bleibt das
+        # bisherige, bauteilbasierte Verhalten erhalten (kein Rückschritt für
+        # den unveränderten Bestandsfall).
         ziel_fakt = next((f for f in haupt_fakten
-                          if f.kategorie == "schwachstelle" and f.bauteil == bauteil_text), None)
-        if ziel_fakt is None:
-            # Kein Hauptpfad-Anker -- bleibt ausschliesslich Observability,
-            # wird NIE zu einem eigenstaendigen, user-sichtbaren Fakt (s.o.).
+                          if f.kategorie == "schwachstelle" and f.bauteil == bauteil_text
+                          and not (failure_mode and _schwachstelle_failure_mode(f.aussage)
+                                   and _schwachstelle_failure_mode(f.aussage) != failure_mode)),
+                         None)
+        if ziel_fakt is not None:
+            neue_quellen = _quellen_aus([k["treffer"] for k in gruppe])
+            vorhandene_urls = {q.url for q in ziel_fakt.quellen}
+            for q in neue_quellen:
+                if q.url not in vorhandene_urls:
+                    ziel_fakt.quellen.append(q)
+                    vorhandene_urls.add(q.url)
+            continue
+        # Kein Hauptpfad-Anker. Adaptive-Evidence-Research (§6 Auftrag):
+        # erst prüfen, ob >=3 unabhängige, nicht-COMMUNITY Families denselben
+        # Bauteil-Claim unabhängig berichten -- eine einzelne COMMUNITY-Quelle
+        # zählt NIE als eigene Family (s. Docstring). Dieselbe, bei Wartung
+        # bereits etablierte Kategorie-Mindestqualität (§6 Auftrag "Kategorie-
+        # spezifische Mindestqualität"): UNKNOWN (nicht klassifizierbare
+        # Quelle) zählt ebenfalls nicht als eigenständige Family.
+        nicht_community = [k for k in gruppe
+                          if k["source_type"] not in (WARTUNG_SOURCE_COMMUNITY, WARTUNG_SOURCE_UNKNOWN)]
+        families = {k["family"] for k in nicht_community}
+        if len(families) >= MIN_FAMILIES_MULTI_SOURCE and erlaube_multi_source:
+            beitraege = [k for k in nicht_community if k["family"] in families]
+            fakten.append(WebFakt(
+                kategorie="schwachstelle", bauteil=bauteil_text, aussage=beitraege[0]["claim"],
+                confidence="mittel", beleglage="mehrfach_unabhaengig",
+                quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+            continue
+        if len(families) >= 2:
+            # Nahe an/über der Schwelle, aber (noch) nicht erlaubt bzw. nicht
+            # genug Families -- Observability-Signal fuer eine gezielte
+            # Source-Upgrade-Nachrecherche (§1/§5/§6 Auftrag), bleibt aber
+            # (noch) nicht sichtbar.
+            eskalierbar = True
             for k in gruppe:
                 abgelehnt.append({"url": k["url"], "kategorie": "schwachstelle",
-                                  "grund": "schwachstelle_candidate_ohne_hauptpfad_anker",
-                                  "satz": k["claim"][:120]})
+                                  "grund": "schwachstelle_multi_source_pending_upgrade",
+                                  "satz": k["claim"][:120], "source_type": k["source_type"],
+                                  "bauteil": bauteil_text, "failure_mode": failure_mode})
             continue
-        neue_quellen = _quellen_aus([k["treffer"] for k in gruppe])
-        vorhandene_urls = {q.url for q in ziel_fakt.quellen}
-        for q in neue_quellen:
-            if q.url not in vorhandene_urls:
-                ziel_fakt.quellen.append(q)
-                vorhandene_urls.add(q.url)
-    return [], abgelehnt
+        for k in gruppe:
+            abgelehnt.append({"url": k["url"], "kategorie": "schwachstelle",
+                              "grund": "schwachstelle_candidate_ohne_hauptpfad_anker",
+                              "satz": k["claim"][:120], "source_type": k["source_type"]})
+    return fakten, abgelehnt, eskalierbar
 
 
 # ── Gemeinsame, phasenweise Auswertung ───────────────────────────────────────
@@ -3189,13 +3369,22 @@ def phase_identitaet(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentit
 
 def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleIdentity,
                  kategorien: tuple[str, ...], abgelehnt: list[dict],
-                 *, stats: dict[str, dict] | None = None) -> list[WebFakt]:
+                 *, stats: dict[str, dict] | None = None,
+                 erlaube_multi_source: frozenset[str] = frozenset()) -> list[WebFakt]:
     """`stats` (optional, Fact-Phase-Observability, Folgeauftrag): wenn
     übergeben, trägt diese Funktion je Kategorie `{"roh": N, "curated": M}`
     ein — rein additiv, ändert nichts an Auswahl/Extraktion selbst. Rückwärts-
     kompatibel: bestehende Aufrufer (u.a. Tests, `FixtureTechnicalResearchProvider`)
-    lassen `stats` weg und verhalten sich byte-identisch wie vorher."""
+    lassen `stats` weg und verhalten sich byte-identisch wie vorher.
+
+    `erlaube_multi_source` (Adaptive-Evidence-Research, §6 Auftrag): Menge
+    der Kategorien ("schwachstelle"/"wartung"), für die eine vorherige,
+    gezielte Source-Upgrade-Nachrecherche (§5 Auftrag) bereits ergebnislos
+    lief -- NUR für diese Kategorien dürfen die Candidate-Evidence-Schichten
+    einen eigenständigen MULTI_SOURCE-Fakt erzeugen (s. dort). Leer (Default)
+    == bisheriges Verhalten, byte-identisch."""
     fakten: list[WebFakt] = []
+    eskalierbar: dict[str, bool] = {}
     for kategorie in kategorien:
         roh_kategorie = roh.get(kategorie) or []
         treffer = curate_results(roh_kategorie,
@@ -3211,24 +3400,30 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
             # Source-Trust-Fix (Scope: NUR wartung) -- siehe Moduldocstring
             # oben. Rein additiv: verarbeitet ausschliesslich Treffer, die
             # `_extrahiere_fakten()` bereits (unveraendert) verworfen hat.
-            cand_fakten, cand_abgelehnt = _wartung_candidate_fakten(
+            cand_fakten, cand_abgelehnt, cand_eskalierbar = _wartung_candidate_fakten(
                 treffer, marke=ziel.get("marke"), modell=ziel.get("modell"),
                 generation=identitaet.generation or ziel.get("generation"),
                 motor=ziel.get("motor"), getriebe=ziel.get("getriebe"),
-                haupt_fakten=[f for f in fakten if f.kategorie == "wartung"])
+                haupt_fakten=[f for f in fakten if f.kategorie == "wartung"],
+                erlaube_multi_source="wartung" in erlaube_multi_source)
             bisherige_wartung = sum(1 for f in fakten if f.kategorie == "wartung")
             fakten += cand_fakten[:max(0, MAX_FAKTEN_JE_KATEGORIE - bisherige_wartung)]
             abgelehnt += cand_abgelehnt
+            eskalierbar["wartung"] = cand_eskalierbar
         elif kategorie == "schwachstelle":
             # Package B (Forensik-Folgeauftrag), analog zur Wartungs-Evidence-
             # Schicht oben: rein additiv, verarbeitet ausschliesslich Treffer,
             # die `_extrahiere_fakten()` bereits (unveraendert) verworfen hat.
-            cand_fakten, cand_abgelehnt = _schwachstelle_candidate_fakten(
+            cand_fakten, cand_abgelehnt, cand_eskalierbar = _schwachstelle_candidate_fakten(
                 treffer, marke=ziel.get("marke"), modell=ziel.get("modell"),
                 generation=identitaet.generation or ziel.get("generation"),
-                haupt_fakten=[f for f in fakten if f.kategorie == "schwachstelle"])
-            fakten += cand_fakten  # immer leer, siehe Docstring dort
+                haupt_fakten=[f for f in fakten if f.kategorie == "schwachstelle"],
+                erlaube_multi_source="schwachstelle" in erlaube_multi_source)
+            fakten += cand_fakten
             abgelehnt += cand_abgelehnt
+            eskalierbar["schwachstelle"] = cand_eskalierbar
+        if stats is not None and kategorie in eskalierbar:
+            stats[kategorie]["eskalierbar"] = eskalierbar[kategorie]
     return fakten
 
 
@@ -3380,6 +3575,245 @@ def _exclude_domains_fuer(phase: str, include_domains) -> list[str] | None:
     return US_QUELLEN_AUSSCHLUSS
 
 
+# ── Adaptive-Evidence-Research: Mehrrunden-State-Machine (§A Folgeauftrag) ──
+#
+# Zielarchitektur (PHASE 1-6 des ursprünglichen Auftrags), jetzt als kleine,
+# generische State-Machine statt genau einer festen Zusatzrunde:
+#   Runde 1  Standardqueries (unverändert, oben in `recherchiere()`).
+#   Runde 2  Source-Upgrade: andere Sprache/anderer Source-Type (Hersteller-/
+#            Handbuch-/TSB-nah, §5 Auftrag) -- NUR für Kategorien mit Gap
+#            (`eskalierbar`).
+#   Runde 3  Claim-/komponentenspezifische Bestätigung -- NUR, wenn Runde 2
+#            für GENAU DIESE Kategorie einen echten Informationsgewinn
+#            gebracht hat (`_hat_fortschritt()`, s. unten). Keine Runde 4.
+# Kein unbegrenztes Suchen: maximal 2 Zusatzrunden, hart in der Schleife in
+# `TavilyTechnicalResearchProvider.recherchiere()` verdrahtet
+# (`_MAX_ADAPTIVE_RUNDEN`), nicht konfigurierbar wachsend.
+_MAX_ADAPTIVE_RUNDEN = 3   # Runde 1 (Standard) + maximal 2 adaptive Zusatzrunden
+
+
+def _eskalations_queries(kategorie: str, *, breit: str, jahr: str | None, basis: str,
+                         bauteil_hint: str | None = None, merkmal_hint: str | None = None,
+                         runde: int = 2) -> list[tuple[str, str]]:
+    """Queries für Runde 2 (Source-Upgrade) oder Runde 3 (Claim-Bestätigung).
+
+    Runde 2, zwei Achsen pro Kategorie, bewusst ORTHOGONAL zu den
+    Runde-1-Queries (§9 Auftrag: keine Synonym-Variante derselben Suche):
+      source_upgrade_official  -- Hersteller-/Handbuch-/TSB-nahe Formulierung
+                                  (§5 Auftrag), auf Deutsch wie Runde 1.
+      source_upgrade_en        -- englischsprachig, oft die Sprache
+                                  offizieller Manuals/TSBs/internationaler
+                                  Fachforen.
+    Runde 3: NOCH enger -- der konkrete, aus Runde 1/2 bekannte Claim
+    (Bauteil + Merkmal/Fehlertyp) wird explizit zur Bestätigung gesucht,
+    statt erneut breit nach dem Bauteil allein zu suchen (sonst wäre Runde 3
+    nur eine Synonym-Variante von Runde 2). Komponentenorientiert (§3
+    Auftrag), wenn ein konkretes Bauteil/Merkmal aus den bisherigen Runden
+    bekannt ist (`bauteil_hint`/`merkmal_hint`) -- sonst generisch
+    markenweit. Keine Fahrzeughardcodes."""
+    teil = " ".join(filter(None, [bauteil_hint, merkmal_hint]))
+    if runde >= 3:
+        return [
+            ("claim_bestaetigung_official",
+             " ".join(filter(None, [basis, teil, "bestätigt Herstellerangabe"]))),
+            ("claim_bestaetigung_en",
+             " ".join(filter(None, [breit, teil, "confirmed specification"]))),
+        ]
+    if kategorie == "schwachstelle":
+        # "Rückrufaktion" bewusst NICHT im Wortfeld: ein Rückruf ist ein
+        # anderes, eigenes Konzept (Pflichtmaßnahme vs. bekannte
+        # Schwachstelle) -- diese Query bleibt klar auf Werkstatt-/
+        # Herstellerwissen zur Schwachstelle selbst fokussiert, keine
+        # versehentliche Vermischung mit der Rückruf-Phase.
+        return [
+            ("source_upgrade_official",
+             " ".join(filter(None, [basis, jahr, "Werkstattinformation technischer Hinweis Herstellerangabe",
+                                    bauteil_hint]))),
+            ("source_upgrade_en",
+             " ".join(filter(None, [breit, "technical service bulletin OR manufacturer statement",
+                                    bauteil_hint]))),
+        ]
+    if kategorie == "wartung":
+        return [
+            ("source_upgrade_official",
+             " ".join(filter(None, [basis, "Betriebsanleitung Serviceheft Wartungsplan", bauteil_hint]))),
+            ("source_upgrade_en",
+             " ".join(filter(None, [breit, "owner's manual service schedule", bauteil_hint]))),
+        ]
+    return []
+
+
+_ESKALATIONS_GRUENDE = ("_multi_source_pending_upgrade", "_corroborated_not_verified")
+
+
+def _bauteil_hint_aus_abgelehnt(abgelehnt: list[dict], kategorie: str) -> str | None:
+    """Häufigstes `bauteil` unter den eskalationsrelevanten Einträgen EINER
+    Kategorie -- rein additive Observability-Auswertung (kein neues
+    Datenmodell), macht die Eskalationsquery komponentenspezifisch, wenn ein
+    klarer Schwerpunkt erkennbar ist."""
+    bauteile = [a.get("bauteil") for a in abgelehnt
+               if a.get("kategorie") == kategorie
+               and (a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE)
+               and a.get("bauteil")]
+    if not bauteile:
+        return None
+    return max(set(bauteile), key=bauteile.count)
+
+
+def _merkmal_hint_aus_abgelehnt(abgelehnt: list[dict], kategorie: str) -> str | None:
+    """Analog zu `_bauteil_hint_aus_abgelehnt()`, aber für das konkrete
+    Merkmal/den Fehlertyp (`merkmal` bei Wartung, `failure_mode` bei
+    Schwachstelle) -- macht Runde-3-Queries claim-spezifisch statt nur
+    komponentenspezifisch."""
+    feld = "merkmal" if kategorie == "wartung" else "failure_mode"
+    werte = [a.get(feld) for a in abgelehnt
+            if a.get("kategorie") == kategorie
+            and (a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE)
+            and a.get(feld)]
+    if not werte:
+        return None
+    return max(set(werte), key=werte.count)
+
+
+def _zustand_kategorie(abgelehnt: list[dict], kategorie: str) -> dict:
+    """Generische Zusammenfassung des aktuellen Beleg-Standes EINER Kategorie
+    -- für den Fortschritts-Vergleich zwischen zwei adaptiven Runden
+    (`_hat_fortschritt()`). Baut AUSSCHLIESSLICH auf bereits vorhandenen
+    `abgelehnt`-Einträgen auf (kein neues Datenmodell, keine zweite
+    Buchhaltung): `families` = unabhängige, eskalationsrelevante Source
+    Families; `n_kandidaten` = Anzahl unabhängiger, eskalationsrelevanter
+    Candidate-URLs (bewusst NACH URL dedupliziert, nicht die rohe
+    Eintragsanzahl -- `abgelehnt` wächst über Runden kumulativ, und jede
+    Runde wertet den GESAMTEN, bisher gesammelten Treffer-Pool erneut aus;
+    ohne diese Deduplizierung würde das bloße Wiederauftauchen bereits
+    bekannter Kandidaten in einer Folgerunde fälschlich als "neuer
+    Candidate Claim" gezählt); `bester_score` = höchster `score_domain()`-
+    Wert unter den dazugehörigen URLs (ein verbesserter Source-Tier, auch
+    unterhalb von MIN_SCORE_FAKT, zählt als Fortschritt)."""
+    relevant = [a for a in abgelehnt if a.get("kategorie") == kategorie
+               and (a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE) and a.get("url")]
+    urls = {a["url"] for a in relevant}
+    families = {_source_family(u) for u in urls}
+    bester_score = max((score_domain(u, _WEB_KATEGORIE.get(kategorie)) for u in urls), default=-1)
+    return {"families": len(families), "n_kandidaten": len(urls), "bester_score": bester_score}
+
+
+def _hat_fortschritt(vorher: dict, nachher: dict) -> bool:
+    """Stop-Bedingung C (§A Auftrag): eine komplette Runde ohne neue Source
+    Family UND ohne neuen Candidate Claim UND ohne besseren Source-Type
+    bringt KEINEN Fortschritt -- dann keine weitere Runde für diese
+    Kategorie."""
+    return (nachher["families"] > vorher["families"]
+            or nachher["n_kandidaten"] > vorher["n_kandidaten"]
+            or nachher["bester_score"] > vorher["bester_score"])
+
+
+# ── Identity-Spec-Gap-Recherche (§C Folgeauftrag) ──────────────────────────
+#
+# Befund (RC-F-Test): Marke/Modell/Leistung/Antrieb ließen sich bestätigen,
+# andere grundlegende Specs teilweise nicht. Statt den KOMPLETTEN
+# Identity-Prozess zu wiederholen ("Marke/Modell bereits stark bestätigt ->
+# keine unnötige Zusatzsuche", § Auftrag), zielt diese Runde NUR auf die
+# nach Runde 1 konkret OFFENEN, web-prinzipiell-belegbaren Felder -- und
+# bündelt sie in GENAU EINEM DE- und EINEM EN-Query-Paar, egal wie viele
+# Felder offen sind (§ Auftrag: "Queries sinnvoll bündeln, nicht 1 Call pro
+# Feld"). GENAU EINE Zusatzrunde, kein Mehrrunden-Loop wie bei Weakness/
+# Wartung -- Identity ist die Vorbedingung für alles Weitere, nicht selbst
+# ein Kandidat für mehrfaches Nachbohren.
+#
+_IDENTITY_SPEC_FELDER: tuple[tuple[str, str], ...] = (
+    ("generation", "generation"), ("fuel", "kraftstoff"), ("drivetrain", "antrieb"),
+    ("transmission", "getriebe"), ("powertrain", "powertrain"))
+_IDENTITY_SPEC_WORTE_DE = {
+    "generation": "Generation Modellcode", "fuel": "Kraftstoff Antriebsart",
+    "drivetrain": "Radantrieb", "transmission": "Getriebe", "powertrain": "Hybrid Elektrifizierung"}
+_IDENTITY_SPEC_WORTE_EN = {
+    "generation": "generation model code", "fuel": "fuel type", "drivetrain": "drivetrain",
+    "transmission": "transmission", "powertrain": "hybrid powertrain"}
+
+
+def _identity_spec_gaps(identitaet: WebVehicleIdentity) -> list[str]:
+    """Web-prinzipiell-belegbare Identitätsfelder, die nach Runde 1 offen
+    sind (s. Moduldocstring oben für die bewusst ausgeschlossenen Felder)."""
+    return [feld for feld, attr in _IDENTITY_SPEC_FELDER if getattr(identitaet, attr) is None]
+
+
+# ── Confirm-only-Felder (§2 Folgeauftrag) ──────────────────────────────────
+#
+# Befund (Auftrag, Präzisierung des vorherigen Ausschlusses): `engine_name`/
+# `displacement`/`horsepower` sind NICHT grundsätzlich von adaptiver
+# Nachrecherche ausgeschlossen -- NUR das "Web erfindet selbst einen
+# konkreten Motor" ist ausgeschlossen. Hat der NUTZER bereits einen Wert
+# angegeben (`ziel.get("motor"/"hubraum"/"leistung_ps")`) und ist er nach
+# Runde 1 noch nicht unabhängig web-bestätigt, ist das ein legitimer
+# BESTÄTIGUNGS-Gap: dieselbe Query-Bündelung wie oben darf GENAU DIESEN
+# Claim gezielt zur Bestätigung durchsuchen. Ohne Nutzerwert entsteht HIER
+# KEIN Gap -- die Suche erfindet nie selbst eine konkrete Motor-/Leistungs-/
+# Hubraumangabe (unverändert gegenüber der vorherigen Runde).
+#
+# Semantik bleibt bewusst unverändert (kein Reporting-Eingriff, § Auftrag
+# "Nicht anfassen: Reporting"): ein hierüber bestätigter Wert durchläuft
+# GENAU denselben bestehenden Confirm-Pfad (`werte_identitaet_aus()` ->
+# `identitaet.motor`/`leistung_ps`/`feldwerte["displacement"]`) wie ein in
+# Runde 1 bestätigter Wert -- "diese Modell-/Variantenkonfiguration mit
+# diesem Claim ist belegt", NIE "dieses konkrete Fahrzeug besitzt garantiert
+# diese Konfiguration". Der bestehende Hinweis ("am Fahrzeug nicht geprüft")
+# in app/kaufcheck_bericht.py/app/anzeige.py bleibt unverändert -- diese
+# Runde liefert nur zusätzliche ROHE Suchtreffer in denselben, unveränderten
+# Bewertungspfad, keine neue Darstellung.
+_IDENTITY_CONFIRM_FELDER = ("engine_name", "displacement", "horsepower")
+
+
+def _identity_confirm_gaps(ziel: dict, identitaet: WebVehicleIdentity) -> list[str]:
+    """Confirm-only-Felder mit einem vorhandenen, aber nach Runde 1 noch
+    nicht web-bestätigten Nutzerwert. OHNE Nutzerwert (`ziel.get(...)` leer)
+    entsteht HIER KEIN Gap -- s. Moduldocstring oben."""
+    gaps = []
+    if ziel.get("motor") and not identitaet.motor:
+        gaps.append("engine_name")
+    if ziel.get("hubraum") and "displacement" not in identitaet.feldwerte:
+        gaps.append("displacement")
+    if ziel.get("leistung_ps") and not identitaet.leistung_ps:
+        gaps.append("horsepower")
+    return gaps
+
+
+def _identity_confirm_claim_text(feld: str, ziel: dict) -> str | None:
+    if feld == "engine_name":
+        return ziel.get("motor")
+    if feld == "displacement":
+        return f"{ziel['hubraum']} Liter" if ziel.get("hubraum") else None
+    if feld == "horsepower":
+        return f"{ziel['leistung_ps']} PS" if ziel.get("leistung_ps") else None
+    return None
+
+
+def _identity_spec_gap_queries(breit: str, jahr: str | None, offene_felder: list[str],
+                               *, ziel: dict | None = None,
+                               confirm_felder: list[str] | None = None) -> list[tuple[str, str]]:
+    """Baut GENAU EIN DE/EN-Query-Paar für ALLE offenen Identitätsfelder --
+    sowohl die web-eigenständig auffindbaren (`offene_felder`, s.
+    `_identity_spec_gaps`) als auch die Confirm-only-Felder mit vorhandenem
+    Nutzerwert (`confirm_felder`, s. `_identity_confirm_gaps`) -- NIE ein Call
+    pro Feld, egal wie viele Felder insgesamt offen sind (§ Auftrag:
+    "Queries sinnvoll bündeln")."""
+    confirm_felder = confirm_felder or []
+    if not offene_felder and not confirm_felder:
+        return []
+    confirm_claims = [c for f in confirm_felder
+                      if (c := _identity_confirm_claim_text(f, ziel or {}))]
+    # Eigene Wortwahl ("Spezifikation(en)"), bewusst NICHT "technische Daten"
+    # -- das ist die Runde-1-Formulierung (`q_ident` oben); ein Test/Log, der
+    # Runde-1-Identitätsqueries an dieser Phrase erkennt, darf diese
+    # gebündelte Zusatzquery nicht fälschlich mitzählen.
+    de = " ".join(filter(None, [breit, jahr] + [_IDENTITY_SPEC_WORTE_DE[f] for f in offene_felder]
+                         + confirm_claims + ["Spezifikation"]))
+    en = " ".join(filter(None, [breit] + [_IDENTITY_SPEC_WORTE_EN[f] for f in offene_felder]
+                         + confirm_claims + ["engine specifications" if confirm_claims
+                                             else "specifications"]))
+    return [("identity_spec_gap_de", de), ("identity_spec_gap_en", en)]
+
+
 # ── Tavily-Implementierung ───────────────────────────────────────────────────
 
 class TavilyTechnicalResearchProvider:
@@ -3445,6 +3879,39 @@ class TavilyTechnicalResearchProvider:
                                        phasen_status={"identitaet": status_identitaet,
                                                      "rueckruf": PHASE_NOT_RUN,
                                                      "technik": PHASE_NOT_RUN})
+
+        # Identity-Spec-Gap-Recherche (§C Folgeauftrag, s. Moduldocstring bei
+        # `_identity_spec_gaps`/`_identity_confirm_gaps`): Marke/Modell sind
+        # belegt (sonst wären wir oben schon zurückgekehrt) -- jetzt NUR die
+        # konkret offenen, web-belegbaren Felder PLUS die offenen Confirm-
+        # only-Felder mit vorhandenem Nutzerwert (§2 Folgeauftrag) gezielt
+        # nachfragen, GENAU EINE gebündelte Zusatzrunde (2 Queries,
+        # unabhängig von der Gesamtzahl offener Felder).
+        offene_spec_felder = _identity_spec_gaps(identitaet)
+        offene_confirm_felder = _identity_confirm_gaps(z, identitaet)
+        if offene_spec_felder or offene_confirm_felder:
+            spec_intents = _identity_spec_gap_queries(
+                breit, jahr, offene_spec_felder, ziel=z, confirm_felder=offene_confirm_felder)
+            spec_treffer_je_intent = await asyncio.gather(
+                *[suche(q, phase="identitaet") for _, q in spec_intents])
+            neue_spec_treffer = [r for t in spec_treffer_je_intent for r in t]
+            if neue_spec_treffer:
+                ident_treffer = ident_treffer + neue_spec_treffer
+                identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
+                abgelehnt += abgelehnt_i2
+                geloest = [f for f, attr in _IDENTITY_SPEC_FELDER
+                          if f in offene_spec_felder and getattr(identitaet, attr) is not None]
+                geloest += [f for f in offene_confirm_felder
+                           if f not in _identity_confirm_gaps(z, identitaet)]
+                status_identitaet = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["identitaet"],
+                                                  anfragen_fehlgeschlagen=anf_fehler["identitaet"])
+            else:
+                geloest = []
+            log.info("research_phase=identity_specs round=2 gap=%s query_count=%d "
+                     "new_raw_results=%d fields_resolved=%s stop_reason=%s",
+                     ",".join(offene_spec_felder + offene_confirm_felder), len(spec_intents),
+                     len(neue_spec_treffer), ",".join(geloest) or "none",
+                     "resolved" if geloest else "no_new_evidence")
 
         # Query-Anreicherung (Abschnitt 4 Auftrag): bestätigte Generation hat
         # Vorrang; ohne sie darf der rein formbasierte Auxiliary-Kandidat die
@@ -3532,6 +3999,80 @@ class TavilyTechnicalResearchProvider:
         for kat, anz_anfragen in (("rueckruf", 2), ("schwachstelle", len(sw_intents)),
                                   ("wartung", len(wa_intents))):
             _log_fakten_phase(kat, anz_anfragen, fakten_stats, abgelehnt_delta, fakten)
+
+        # PHASE 2+ (Adaptive-Evidence-Research, §A Folgeauftrag): echte
+        # Mehrrunden-State-Machine statt genau einer festen Zusatzrunde --
+        # s. Moduldocstring bei `_MAX_ADAPTIVE_RUNDEN` oben. Identity/Rückruf
+        # eskalieren hier NICHT: Identity ist die Voraussetzung für alles
+        # Weitere (s. oben, früher Return) und Rückruf darf laut Trust-System
+        # (app/fakt_verifikation.py, AGENTS.md) ohnehin nie allein über
+        # Multi-Source-Corroboration "verifiziert" werden -- nur amtliche/
+        # Herstellerquellen zählen dort.
+        #
+        # `zustand_vorher[kat]`: Schnappschuss VOR der jeweils nächsten Runde
+        # -- Grundlage für `_hat_fortschritt()` (Stop-Bedingung C). Wird nach
+        # jeder Runde für die jeweilige Kategorie aktualisiert.
+        zustand_vorher: dict[str, dict] = {
+            kat: _zustand_kategorie(abgelehnt, kat) for kat in ("schwachstelle", "wartung")}
+        # Kategorien, die in Runde 2 tatsächlich Fortschritt gebracht haben --
+        # NUR diese dürfen in Runde 3 weitersuchen (§A Auftrag: Runde 3 nur,
+        # "wenn Round 2 tatsächlich neue Evidence geliefert hat").
+        fortschritt_runde2: set[str] = set()
+        for runde_nr in range(2, _MAX_ADAPTIVE_RUNDEN + 1):
+            aktive_kategorien = frozenset(
+                kat for kat in ("schwachstelle", "wartung")
+                if fakten_stats.get(kat, {}).get("eskalierbar")
+                and (runde_nr == 2 or kat in fortschritt_runde2))
+            if not aktive_kategorien:
+                break
+            for kat in aktive_kategorien:
+                fakt_state_vorher = "resolved" if any(f.kategorie == kat for f in fakten) else "open"
+                bauteil_hint = _bauteil_hint_aus_abgelehnt(abgelehnt, kat)
+                merkmal_hint = _merkmal_hint_aus_abgelehnt(abgelehnt, kat)
+                esk_intents = _eskalations_queries(kat, breit=breit, jahr=jahr, basis=basis,
+                                                   bauteil_hint=bauteil_hint,
+                                                   merkmal_hint=merkmal_hint, runde=runde_nr)
+                esk_treffer_je_intent = await asyncio.gather(
+                    *[suche(q, phase="technik") for _, q in esk_intents])
+                neue_treffer = [r for treffer in esk_treffer_je_intent for r in treffer]
+                roh[kat] = roh[kat] + neue_treffer
+                fakten = [f for f in fakten if f.kategorie != kat]
+                runde_fakten = phase_fakten({kat: roh[kat]}, z, identitaet, (kat,), abgelehnt,
+                                            stats=fakten_stats, erlaube_multi_source=frozenset({kat}))
+                fakten += runde_fakten
+                zustand_nachher = _zustand_kategorie(abgelehnt, kat)
+                fortschritt = _hat_fortschritt(zustand_vorher[kat], zustand_nachher)
+                # Stop-Bedingung D (§A Auftrag): ein in dieser Runde
+                # entstandener Konflikt setzt `eskalierbar` für die
+                # betroffene Gruppe zurück (s. Candidate-Evidence-Schichten,
+                # CONFLICT setzt `eskalierbar` nie) -- bleibt die Kategorie
+                # danach nicht mehr eskalierbar, OBWOHL diese Runde neue
+                # Evidence brachte (`fortschritt=True`), ist das ein
+                # aufgelöster Konflikt/Abschluss, keine Fortsetzung.
+                noch_offen = bool(fakten_stats.get(kat, {}).get("eskalierbar"))
+                if runde_fakten:
+                    stop_reason = "resolved"
+                elif not noch_offen:
+                    stop_reason = "conflict_or_closed"
+                elif not fortschritt:
+                    stop_reason = "no_new_evidence"
+                elif runde_nr >= _MAX_ADAPTIVE_RUNDEN:
+                    stop_reason = "max_round_reached"
+                else:
+                    stop_reason = "continue"
+                if stop_reason == "continue":
+                    fortschritt_runde2.add(kat)
+                log.info("research_phase=%s round=%d gap=True query_count=%d "
+                         "new_source_families=%d new_candidates=%d source_tier_improved=%s "
+                         "fact_state_before=%s fact_state_after=%s %s=%s",
+                         kat, runde_nr, len(esk_intents),
+                         zustand_nachher["families"] - zustand_vorher[kat]["families"],
+                         zustand_nachher["n_kandidaten"] - zustand_vorher[kat]["n_kandidaten"],
+                         zustand_nachher["bester_score"] > zustand_vorher[kat]["bester_score"],
+                         fakt_state_vorher, "resolved" if runde_fakten else "open",
+                         "continue_reason" if stop_reason == "continue" else "stop_reason", stop_reason)
+                zustand_vorher[kat] = zustand_nachher
+
         # Inhalts-Schwäche der Technik-Phase (Root Cause 6, Test 3): Anfragen
         # können sauber durchgekommen sein und trotzdem nur duenne, einstufige
         # Belege liefern. Dieselbe Tier-Pruefung wie ueberall sonst im Modul

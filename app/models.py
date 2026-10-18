@@ -693,6 +693,17 @@ class WebFakt(BaseModel):
     # Anzeige-Satz; ein Kraftstoff-/Leistungs-/Motorcode-Scope im NACHBARSATZ
     # desselben Artikels blieb fuer sie unsichtbar.
     scope_text: str | None = None
+    # Adaptive-Evidence-Research (Folgeauftrag): optionale, zusätzliche
+    # Beleglage-Kennzeichnung NEBEN `confidence` -- `confidence` bleibt die
+    # bestehende dreistufige Quellenlage-Achse (hoch/mittel/niedrig), dieses
+    # Feld markiert NUR den einen Spezialfall "mehrere unabhängige Quellen,
+    # aber kein Herstellerbeleg" (>=3 Source Families, s.
+    # app/technical_research.py `_wartung_candidate_fakten`/
+    # `_schwachstelle_candidate_fakten`), damit der Bericht die exakte,
+    # vom Produkt vorgegebene Formulierung zeigen kann ("mehrfach aus
+    # unabhängigen Quellen berichtet"/"...genannt") -- NIE "verifiziert".
+    # None = normaler Pfad (Haupt-Fakt oder Candidate-Anreicherung).
+    beleglage: str | None = None
 
 
 class TechnischeRecherche(BaseModel):

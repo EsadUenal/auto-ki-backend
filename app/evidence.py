@@ -742,7 +742,10 @@ def build_insights(
                 # eine verifizierte Herstellerangabe. Floor-fähig ist sie NICHT,
                 # siehe Begründung in app/empfehlungs_floor.py.
                 trust=TRUST_WEB,
-                einfluss=_WEB_EINFLUSS[fakt.kategorie],
+                einfluss=(_WEB_EINFLUSS_MULTI_SOURCE[fakt.kategorie]
+                         if getattr(fakt, "beleglage", None) == "mehrfach_unabhaengig"
+                         and fakt.kategorie in _WEB_EINFLUSS_MULTI_SOURCE
+                         else _WEB_EINFLUSS[fakt.kategorie]),
                 bauteil=((fakt.bauteil or "").replace("_", " ") or None),
             ))
 
@@ -839,6 +842,18 @@ _WEB_EINFLUSS = {
                 "FIN beim Hersteller oder einer Vertragswerkstatt der Marke klären.",
     "wartung": "Aus Webquellen belegte Intervallangabe. Nachweis der Durchführung "
                "verlangen.",
+}
+
+# Adaptive-Evidence-Research (Folgeauftrag, §6 Auftrag): eigener,
+# ausdrücklich SCHWÄCHERER Satz für `WebFakt.beleglage == "mehrfach_unabhaengig"`
+# (>=3 unabhängige Source Families, kein Herstellerbeleg trotz gezielter
+# Source-Upgrade-Nachrecherche) -- NIE "verifiziert", exakte, vom Auftrag
+# vorgegebene Formulierung je Kategorie.
+_WEB_EINFLUSS_MULTI_SOURCE = {
+    "schwachstelle": "Mehrfach aus unabhängigen Quellen berichtet; kein Herstellerbeleg "
+                     "gefunden. Vor dem Kauf gezielt prüfen.",
+    "wartung": "Mehrere unabhängige Quellen nennen dieses Intervall; ein Herstellerbeleg "
+              "wurde nicht gefunden.",
 }
 
 

@@ -268,11 +268,19 @@ async def test_klm_andere_phasen_unveraendert():
     ident_calls = [c for c in calls if "technische Daten" in c or "Generation Baureihe Bauzeitraum" in c]
     rueckruf_calls = [c for c in calls if "Rückruf" in c]
     sw_calls = [c for c in calls if "Schwachstellen" in c or "Gebrauchtwagen" in c]
-    check("L) Identität weiterhin exakt 2 Queries", len(ident_calls) == 2, str(ident_calls))
+    check("L) Identität Runde 1 weiterhin exakt 2 Queries", len(ident_calls) == 2, str(ident_calls))
     check("M) Rückruf weiterhin exakt 2 Queries", len(rueckruf_calls) == 2, str(rueckruf_calls))
     check("K) Schwachstelle weiterhin exakt 2 Queries", len(sw_calls) == 2, str(sw_calls))
-    check("§7 Call-Modell: 2 (Identität) + 2 (Rückruf) + 2 (Schwachstelle) + 2 (Wartung) = 8",
-          len(calls) == 8, str(calls))
+    # Adaptive-Evidence-Research (Folgeauftrag §C): die IDENTITAET_TREFFER-
+    # Fixture dieser Datei belegt Kraftstoff/Antrieb ("Diesel"/"Frontantrieb"),
+    # aber WEDER Generation NOCH Getriebe/Powertrain -- das löst GENAU EINE
+    # zusätzliche, gebündelte Identity-Spec-Gap-Runde aus (2 weitere Queries,
+    # unabhängig von der Anzahl offener Felder). §7 Call-Modell gilt
+    # inhaltlich unverändert (2+2+2+2=8 für Identität-Runde-1/Rückruf/
+    # Schwachstelle/Wartung), PLUS diese neue, bewusste Zusatzrunde = 10.
+    check("§7+§C Call-Modell: 8 (Identität-Runde-1 + Rückruf + Schwachstelle + "
+          "Wartung) + 2 (Identity-Spec-Gap-Runde: Generation/Getriebe/Powertrain "
+          "offen) = 10", len(calls) == 10, str(calls))
     check("phasen_status.identitaet bleibt SUCCESS", recherche.phasen_status.get("identitaet") == "success")
 
 

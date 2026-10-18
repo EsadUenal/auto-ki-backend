@@ -45,7 +45,7 @@ niedrige_quelle = [
             "Bei meiner Testmarke Modellz hatte ich Probleme mit der Wasserpumpe, die "
             "undicht wurde."),
 ]
-fakten1, abgelehnt1 = _schwachstelle_candidate_fakten(
+fakten1, abgelehnt1, _esk1 = _schwachstelle_candidate_fakten(
     niedrige_quelle, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
     haupt_fakten=[])
 check("1a keine neuen Fakten ohne Hauptpfad-Anker", fakten1 == [])
@@ -59,7 +59,7 @@ anker = WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe",
                 confidence="mittel",
                 quellen=[EvidenceQuelle(typ="web_technik", url="https://www.fachmedium.de/a",
                                         titel="Fachmedium", qualitaet="Fachmedien")])
-fakten2, abgelehnt2 = _schwachstelle_candidate_fakten(
+fakten2, abgelehnt2, _esk2 = _schwachstelle_candidate_fakten(
     niedrige_quelle, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
     haupt_fakten=[anker])
 check("2a weiterhin KEIN neuer, eigenstaendiger WebFakt", fakten2 == [])
@@ -77,7 +77,7 @@ zwei_foren = [
     treffer("https://forum2.beispiel.de/t2", "Testmarke Modellz Forum",
             "Bei der Testmarke Modellz ist die Wasserpumpe eine bekannte Schwachstelle."),
 ]
-fakten3, abgelehnt3 = _schwachstelle_candidate_fakten(
+fakten3, abgelehnt3, _esk3 = _schwachstelle_candidate_fakten(
     zwei_foren, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
     haupt_fakten=[])
 check("3a kein eigenstaendiger Fakt trotz zwei uebereinstimmender Low-Trust-Quellen",
@@ -89,7 +89,7 @@ hohe_quelle = [
     treffer("https://www.adac.de/testmarke-modellz", "Testmarke Modellz",
             "Die Testmarke Modellz hat Probleme mit der Wasserpumpe."),
 ]
-fakten4, abgelehnt4 = _schwachstelle_candidate_fakten(
+fakten4, abgelehnt4, _esk4 = _schwachstelle_candidate_fakten(
     hohe_quelle, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
     haupt_fakten=[])
 check("4a High-Trust-Treffer wird von dieser Schicht komplett ignoriert "

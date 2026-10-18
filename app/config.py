@@ -255,8 +255,18 @@ PROVIDER_FEATURE_LIMITS: dict[str, dict[str, int]] = {
              "tavily": int(os.environ.get("AUTO_KI_PROVIDER_CHAT_TAVILY_MAX", "9"))},
     "autofinder": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_AUTOFINDER_GEMINI_MAX", "6")),
                     "tavily": int(os.environ.get("AUTO_KI_PROVIDER_AUTOFINDER_TAVILY_MAX", "6"))},
+    # Adaptive-Evidence-Research (Folgeauftrag): 16 -> 22 angehoben. Grundlage
+    # ist die konkrete Worst-Case-Modellierung des adaptiven Mehrrunden-Pfads
+    # (app/technical_research.py: Identity-Runde-1 2 + Identity-Spec-Gap 2 +
+    # Rueckruf 2 + Technik-Runde-1 4 + Technik-Runde-2 bis 4 + Technik-Runde-3
+    # bis 4 = 18 technische Calls) PLUS Marktpreis (bis 3, kaskadierend,
+    # app/kaufcheck.py) = 21 modellierter Worst Case + 1 kleiner
+    # Sicherheitspuffer = 22. Bewusst NICHT unbegrenzt/groß gewaehlt -- ein
+    # Ceiling-Treffer bleibt weiterhin sauber abgefangen (ProviderCallLimit-
+    # Exceeded, von `suche()` in `recherchiere()` per bestehendem generischem
+    # Exception-Handler aufgefangen, kein Aussenfehler).
     "kaufcheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_GEMINI_MAX", "4")),
-                   "tavily": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_TAVILY_MAX", "16"))},
+                   "tavily": int(os.environ.get("AUTO_KI_PROVIDER_KAUFCHECK_TAVILY_MAX", "22"))},
     "verkaufscheck": {"gemini": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_GEMINI_MAX", "4")),
                        "tavily": int(os.environ.get("AUTO_KI_PROVIDER_VERKAUFSCHECK_TAVILY_MAX", "16")),
                        # Genau Valuation + Time-to-Sell, keine Retries (app/carapi_provider.py).
