@@ -114,6 +114,23 @@ check(f"3b Scope wird VARIANT_POSSIBLE -- jetzt auf Basis ECHTER, nicht "
       f"fehlgebundener Evidence (begruendung={begruendung_eindeutig!r})",
       scope_eindeutig == RECALL_VARIANT_POSSIBLE)
 
+print("\n=== 5) Widersprüchliche Powertrain-Claims -> KEIN falscher Konsens, "
+      "Recall-Scope bleibt UNKNOWN (§D PASS-GATE-Folgeauftrag) ===")
+treffer_widerspruch = [
+    treffer("https://www.fachmedium1.de/testmarke-modellz-g", "Testmarke Modellz G im Test",
+            "Die Testmarke Modellz G wird ausschließlich mit Hybridantrieb angeboten."),
+    treffer("https://www.fachmedium2.de/testmarke-modellz-g", "Testmarke Modellz G Daten",
+            "Die Testmarke Modellz G ist ein reiner Verbrenner, kein Hybridantrieb."),
+]
+ziel_widerspruch = dict(marke="Testmarke", modell="Modellz G", baujahr=2021, motor=None)
+identity_widerspruch = identity_aus_web(treffer_widerspruch, ziel_widerspruch)
+check("5a widersprechende, vergleichbar starke Quellen -> identity.powertrain "
+      "bleibt None (kein 'erstbestes Signal gewinnt')", identity_widerspruch.powertrain is None)
+scope_widerspruch, begruendung_widerspruch = rueckruf_scope(_R_HOCHVOLT, identity_widerspruch)
+check(f"5b Recall-Scope bleibt UNKNOWN trotz vorhandener (aber widersprüchlicher) "
+      f"Evidence (begruendung={begruendung_widerspruch!r})",
+      scope_widerspruch == RECALL_UNKNOWN)
+
 print("\n=== 4) Scope / Confidence / Completion bleiben getrennte Konzepte ===")
 check("4a rueckruf_scope() liefert niemals 'confirmed_by_vin' (das ist eine "
       "andere, hier nie erzeugte Stufe)",

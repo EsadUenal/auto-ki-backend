@@ -253,8 +253,14 @@ queries_i = _identity_spec_gap_queries("Testmarke Modellz", "2018", gaps_i)
 check("I) weiterhin genau 2 Queries -- GEBUENDELT, nicht 5 Felder x 2 = 10 Calls",
       len(queries_i) == 2, str(queries_i))
 check("I) DE-Query nennt alle 5 offenen Felder in EINEM String",
-      all(w in queries_i[0][1] for w in ("Generation", "Kraftstoff", "Radantrieb", "Getriebe", "Hybrid")),
+      all(w in queries_i[0][1] for w in ("Generation", "Kraftstoff", "Radantrieb", "Getriebe",
+                                         "Antriebstechnologie")),
       str(queries_i))
+check("I-neutral) Powertrain-Gap-Wortwahl ist NEUTRAL -- kein 'Hybrid'/'Elektrifizierung' "
+      "als Suchbegriff, der das Ergebnis selbst vorentscheiden wuerde (§A Auftrag Punkt 1/2, "
+      "PASS-GATE-Fund)",
+      "Hybrid" not in queries_i[0][1] and "hybrid" not in queries_i[1][1]
+      and "Elektrifizierung" not in queries_i[0][1], str(queries_i))
 
 print("--- kein Gap -> keine unnoetige Zusatzsuche (Identity bereits stark "
       "bestaetigt) ---")
@@ -514,6 +520,60 @@ async def test_f_hard_ceiling_erzeugt_sauberen_stop():
           and not any(f.kategorie == "schwachstelle" for f in recherche.fakten))
 
 
+# ── Null-Kandidaten-Gap (PASS-GATE-Folgeauftrag §B) ────────────────────────
+# Zwei Rohtreffer, die KEINE von beiden das Zielmodell nennen ("Testmarke"
+# ja, "Modellz" nein) -- Runde 1 hat kuratierte Treffer (curated>0), aber
+# NULL Kandidaten (modell_fehlt dominiert), genau das Produktions-Muster.
+SW_UNAUSGERICHTET_1 = treffer(
+    "https://www.kfzforum-a.de/testmarke-uebersicht", "Testmarke Modelluebersicht 2018",
+    "Die Testmarke bietet 2018 verschiedene Coupe-Varianten mit V8-Motoren an.")
+SW_UNAUSGERICHTET_2 = treffer(
+    "https://www.kfzforum-b.de/testmarke-sportwagen", "Testmarke Sportwagen im Ueberblick",
+    "Testmarke-Sportwagen sind bekannt fuer ihre kraftvollen Motoren.")
+# Recovery-Treffer (Runde 2, ausgeloest durch Null-Kandidaten statt durch
+# `eskalierbar`): ZWEI unabhaengige, korrekt ausgerichtete Quellen -- genug
+# fuer CORROBORATED (2 Families), das wiederum `eskalierbar=True` setzt und
+# echten Fortschritt (0 -> 2 Kandidaten) bedeutet, der Runde 3 rechtfertigt.
+SW_RECOVERY_1 = treffer(
+    "https://www.kfzwissen-x.de/testmarke-modellz-werkstatt", "Testmarke Modellz Werkstattbericht X",
+    "Die Wasserpumpe der Testmarke Modellz wird haeufig undicht.")
+SW_RECOVERY_2 = treffer(
+    "https://www.kfzwissen-y.de/testmarke-modellz-reparatur", "Testmarke Modellz: Reparatur-Erfahrungen Y",
+    "Bei der Testmarke Modellz tritt an der Wasserpumpe haeufig ein Leck auf.")
+
+
+async def test_b_null_kandidaten_loest_recovery_aus():
+    recherche, calls = await _recherchiere({
+        "bekannte Probleme Schwachstellen": [SW_UNAUSGERICHTET_1, SW_UNAUSGERICHTET_2],
+        "Werkstattinformation": [SW_RECOVERY_1, SW_RECOVERY_2],
+    })
+    runde2_calls = _esk_calls(calls, "Werkstattinformation", "technical service bulletin")
+    runde3_calls = _esk_calls(calls, "bestätigt Herstellerangabe", "confirmed specification")
+    check("B1) Runde 1 hatte 0 Kandidaten (modell_fehlt dominiert) -> Recovery "
+          "in Runde 2 WURDE trotzdem ausgeloest (kein 'eskalierbar' noetig)",
+          len(runde2_calls) == 2, str(calls))
+    check("B2) Runde 2 fand echten Fortschritt (0 -> 2 Kandidaten) -> Runde 3 "
+          "wurde fuer die weitere Bestaetigung ausgeloest", len(runde3_calls) == 2, str(calls))
+    check("B3) weiterhin kein sichtbarer Fakt (nur 2 Families, unter der "
+          "MULTI_SOURCE-Schwelle von 3) -- kein verfruehtes 'verified'",
+          not any(f.kategorie == "schwachstelle" for f in recherche.fakten))
+
+
+async def test_b2_null_kandidaten_ohne_recovery_stoppt_sauber():
+    # Dieselben unausgerichteten Rohtreffer, aber die Recovery-Query findet
+    # NICHTS Neues -> Runde 2 loest aus, aber Runde 3 NICHT (kein Fortschritt,
+    # Stop-Bedingung "no_recovery"/"no_new_evidence" statt endlosem Suchen).
+    recherche, calls = await _recherchiere({
+        "bekannte Probleme Schwachstellen": [SW_UNAUSGERICHTET_1, SW_UNAUSGERICHTET_2],
+    })
+    runde2_calls = _esk_calls(calls, "Werkstattinformation", "technical service bulletin")
+    runde3_calls = _esk_calls(calls, "bestätigt Herstellerangabe", "confirmed specification")
+    check("B4) Runde 2 (Recovery) wurde ausgeloest", len(runde2_calls) == 2, str(calls))
+    check("B5) Runde 2 fand NICHTS -> KEINE Runde 3 (kein automatisches volles "
+          "Budget bei weiterhin 0 Kandidaten)", len(runde3_calls) == 0, str(calls))
+    check("B6) kein sichtbarer Fakt", not any(f.kategorie == "schwachstelle" for f in recherche.fakten))
+
+
 async def _run_all():
     await test_h_keine_eskalation_bei_sofortigem_high_trust()
     await test_i_eskalation_nur_fuer_schwachstelle()
@@ -522,6 +582,8 @@ async def _run_all():
     await test_k_wartung_und_schwachstelle_eskalieren_unabhaengig()
     await test_c_und_e_runde3_bei_fortschritt_dann_endgueltiger_stop()
     await test_f_hard_ceiling_erzeugt_sauberen_stop()
+    await test_b_null_kandidaten_loest_recovery_aus()
+    await test_b2_null_kandidaten_ohne_recovery_stoppt_sauber()
 
 
 asyncio.run(_run_all())

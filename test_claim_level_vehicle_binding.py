@@ -115,6 +115,35 @@ identitaet_f, _ = werte_identitaet_aus(treffer_f, ZIEL)
 check("F1 powertrain bleibt UNKNOWN (kein Consensus aus zwei falsch zugeordneten "
       "Sibling-Claims)", identitaet_f.powertrain is None)
 
+print("\n=== G) PASS-GATE-Folgeauftrag §A/§H.2-3: Sibling-Variante IM SELBEN "
+      "Satz wie das Zielmodell (kontrastive Konstruktion) ===")
+treffer_g_sibling = [
+    treffer("https://www.fachmedium1.de/testmarke-modellz-f", "Testmarke Modellz F im Test",
+            "Anders als die Testmarke Modellz Hybrid bietet die Testmarke Modellz F "
+            "einen reinen V8-Verbrenner mit 480 PS."),
+    treffer("https://www.fachmedium2.de/testmarke-modellz-f", "Testmarke Modellz F Daten",
+            "Im Gegensatz zur Testmarke Modellz Hybrid hat die Testmarke Modellz F "
+            "keinen Elektromotor, nur einen V8."),
+]
+claims_g = [c for r in treffer_g_sibling for c in _identitaets_claims(r, ZIEL)]
+check("G1 KEIN powertrain-Claim aus dem Sibling-Satz trotz Nennung IM SELBEN Satz "
+      "wie das Zielmodell (§A Auftrag Punkt 5/6, PASS-GATE-Fund)",
+      "HEV" not in claims_fuer("powertrain", claims_g))
+identitaet_g, _ = werte_identitaet_aus(treffer_g_sibling, ZIEL)
+check("G2 identity.powertrain bleibt entsprechend None (kein Consensus aus "
+      "Sibling-Satz-Kontamination)", identitaet_g.powertrain is None)
+
+print("\n=== H) Hybrid-Erwaehnung neben passender Modellnennung OHNE eindeutige "
+      "Variantenbindung -> bleibt UNKNOWN, kein Raten ===")
+treffer_h_ambiguous = [
+    treffer("https://www.fachmedium1.de/testmarke-modellz-f", "Testmarke Modellz F Uebersicht",
+            "Die Baureihe Testmarke Modellz bietet verschiedene Antriebe. Manche "
+            "Haendler bieten Hybridversionen an."),
+]
+claims_h = [c for r in treffer_h_ambiguous for c in _identitaets_claims(r, ZIEL)]
+check("H1 keine eindeutige powertrain-Zuordnung bei vager, nicht variantengebundener "
+      "Hybrid-Erwaehnung", "HEV" not in claims_fuer("powertrain", claims_h))
+
 print()
 if _FEHLER:
     print(f"{len(_FEHLER)} FEHLER:")

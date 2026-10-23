@@ -365,6 +365,14 @@ class VehicleIdentity:
                     evidence=f"{eintrag.get('domains') or quellen_anzahl} Webquelle(n)")
                 if eintrag.get("detail"):
                     neu["detail"] = eintrag["detail"]
+                # §F PASS-GATE-Folgeauftrag: registrierbare Domainnamen (NIE
+                # volle URLs) je Feld mitführen, wenn `WebVehicleIdentity.
+                # feldwerte` sie liefert (s. `konsens()`/`uebernehme()` in
+                # app/technical_research.py) -- macht "(2 Webquelle(n))" für
+                # dieses Feld konkret nachvollziehbar, ohne etwas zu erfinden,
+                # wenn keine Domainnamen vorliegen.
+                if eintrag.get("domain_namen"):
+                    neu["domain_namen"] = sorted(eintrag["domain_namen"])
                 self.field_evidence[feld] = neu
                 continue
             vorhanden = getattr(self, feld, None)
@@ -378,6 +386,8 @@ class VehicleIdentity:
                     fe["provenance"].append("web")
                 if eintrag.get("detail") and not fe.get("detail"):
                     fe["detail"] = eintrag["detail"]
+                if eintrag.get("domain_namen") and not fe.get("domain_namen"):
+                    fe["domain_namen"] = sorted(eintrag["domain_namen"])
                 if fe.get("verification_state") == "user_only":
                     # Nutzerangabe bleibt Primärquelle, ist jetzt aber unabhängig
                     # (durch Webquellen) bestätigt.

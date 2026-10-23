@@ -928,7 +928,8 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
         for gewicht, stark, key, e in bewertet:
             if key == str(bevorzugt).lower() and stark and gewicht >= MIN_KONSENS_GEWICHT:
                 return e["wert"], {"domains": len(e["domains"]), "gewicht": gewicht,
-                                   "detail": _haeufigstes(e["details"])}
+                                   "detail": _haeufigstes(e["details"]),
+                                   "domain_namen": set(e["domains"])}
         return None
     gewicht, stark, key, e = bewertet[0]
     if not stark or gewicht < MIN_KONSENS_GEWICHT:
@@ -937,7 +938,7 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
         if stark2 and g2 * 2 >= gewicht:
             return None       # Konflikt vergleichbar starker Quellen -> UNKNOWN
     return e["wert"], {"domains": len(e["domains"]), "gewicht": gewicht,
-                       "detail": _haeufigstes(e["details"])}
+                       "detail": _haeufigstes(e["details"]), "domain_namen": set(e["domains"])}
 
 
 def _haeufigstes(werte: list[str]) -> str | None:
@@ -1028,8 +1029,14 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
             return None
         w, info = ergebnis
         w = wert if wert is not None else w
+        # §F PASS-GATE-Folgeauftrag: registrierbare Domainnamen (NIE volle
+        # URLs) je bestätigtem Feld mitführen -- bisher trug `feldwerte` nur
+        # die ANZAHL ("2 Webquelle(n)"), nie WELCHE Domains. Reine
+        # Durchreichung von `konsens()`s bereits berechnetem `domain_namen`
+        # (s. dort) -- keine neue Datenerhebung.
         feldwerte[zielfeld or feld] = {"value": w, "confidence": _conf(info),
-                                       "domains": info["domains"], "detail": info.get("detail")}
+                                       "domains": info["domains"], "detail": info.get("detail"),
+                                       "domain_namen": info.get("domain_namen") or set()}
         akzeptiert.append({"feld": zielfeld or feld, "wert": w, "domains": info["domains"],
                            "gewicht": info["gewicht"]})
         return w
@@ -1069,25 +1076,45 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     motor_bestaetigt = None
     if motor and _tokens(motor):
         # Kern der Motorangabe: Bezeichnungen mit Buchstaben UND Ziffern ("316d",
-        # "QX12"); sonst markante Wörter (>= 4 Buchstaben, z.B. "skyactiv"). Eine
-        # Hubraumangabe muss zusätzlich im selben Text stehen.
+        # "QX12"); sonst markante Wörter (>= 4 Buchstaben, z.B. "skyactiv").
         toks = _tokens(motor)
         gemischt = {x for x in toks if re.search(r"\d", x) and re.search(r"[a-z]", x)}
         woerter = {x for x in toks if x.isalpha() and len(x) >= 4
                    and x not in ("turbo", "benzin", "diesel", "motor", "biturbo")}
         kern = gemischt or woerter
+        # Hubraumangabe (§C Folgeauftrag, PASS-GATE-Fund): eine Hubraumangabe
+        # muss zusätzlich im selben Text stehen -- bisher über zwei EINZELNE,
+        # im Quelltext als SEPARATE Tokens erwartete Ziffern ("5","0" aus
+        # "5.0"). Schreibweisen ohne Trennzeichen vor der Einheit ("5.0L",
+        # "5.0-Liter") verschmelzen die zweite Ziffer mit der Einheit zu
+        # EINEM Token ("0l") -- der Tokenvergleich scheiterte dann, OBWOHL
+        # die Quelle den Hubraum korrekt nennt (Produktions-Befund: "5.0-liter
+        # V8" wurde dadurch nicht erkannt). Jetzt: dieselbe, bereits an
+        # anderer Stelle produktiv genutzte `_RE_HUBRAUM`-Erkennung
+        # (Claim-Extraktion weiter oben) -- Wertvergleich statt Tokenvergleich,
+        # robust gegen Schreibvarianten. Kein Rückschritt: ohne Hubraumangabe
+        # im Nutzerwert bleibt das Verhalten exakt wie bisher (kein
+        # Zusatzkriterium).
         hub = re.search(r"\b(\d)[.,](\d)\b", motor)
-        if hub:
-            kern = kern | {hub.group(1), hub.group(2)}
+        hub_norm = f"{hub.group(1)}.{hub.group(2)}" if hub else None
+
+        def _hat_hubraum_beleg(text: str) -> bool:
+            if not hub_norm:
+                return True
+            return any(m.group(1).replace(",", ".") == hub_norm for m in _RE_HUBRAUM.finditer(text or ""))
+
+        def _motor_quelle_passt(r: dict) -> bool:
+            text = f"{r.get('title') or ''} {r.get('content') or ''}"
+            return kern <= _tokens(text) and _hat_hubraum_beleg(text)
+
         doms = {_domain_von(r.get("url") or "") for r in claim_quellen
-                if kern <= _tokens(f"{r.get('title') or ''} {r.get('content') or ''}")
-                and _tier_identitaet(r.get("url") or "", marke) <= 2}
-        if kern and (len(doms) >= 2 or any(_tier_identitaet(r.get("url") or "", marke) == 1
-                                           for r in claim_quellen
-                                           if kern <= _tokens(f"{r.get('title')} {r.get('content')}"))):
+                if _motor_quelle_passt(r) and _tier_identitaet(r.get("url") or "", marke) <= 2}
+        if (kern or hub_norm) and (len(doms) >= 2 or any(
+                _tier_identitaet(r.get("url") or "", marke) == 1
+                for r in claim_quellen if _motor_quelle_passt(r))):
             motor_bestaetigt = motor
             feldwerte["engine_name"] = {"value": motor, "confidence": "mittel",
-                                        "domains": len(doms) or 1}
+                                        "domains": len(doms) or 1, "domain_namen": doms}
 
     bester = max((score_domain(r.get("url") or "") for r in stuetzend), default=0)
     conf = _confidence_aus_domains(domains, bester)
@@ -1634,8 +1661,34 @@ def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str 
 # er durch die TTL ohnehin schon ausgeschlossen (siehe Abschlussbericht).
 # Ein Bauteilname nach der Präposition ("Beim Turbolader...") zählt NICHT als
 # anderes Fahrzeug — reuse des bestehenden Bauteil-Vokabulars.
+#
+# Produktions-Forensik (Lexus-RC-F-PASS-GATE, §A Folgeauftrag Punkt 5/6,
+# generisch): ein Satz, der das Zielmodell UND eine Geschwister-Variante
+# derselben Baureihe in EINER kontrastiven Konstruktion nennt ("Anders als
+# der/die/das X ...", "Im Gegensatz zum X ...", "Unlike the X ...", "Compared
+# to the X ...") wurde bisher NICHT als Fremdfahrzeug-Signal erkannt, weil
+# weder "beim/für den X" noch die satzanfangs-Nominalphrase zutrafen -- ein
+# positiver Claim (z.B. Hybrid/Elektrifizierung), der inhaltlich zu X gehört,
+# aber im selben, durch die eigene Modellnennung akzeptierten Satz steht,
+# wurde dadurch fälschlich dem Zielmodell zugerechnet. GENERISCH für JEDE
+# Baureihe mit ICE/Hybrid- oder sonstigen Geschwistervarianten, kein
+# Marken-/Modell-Hardcode -- nur das sprachliche Kontrastmuster selbst.
 _RE_ANDERES_SUBJEKT = re.compile(
-    r"\b(?:[Bb]ei(?:m|\s+dem)|[Ff]ür\s+(?:den|die|das))\s+([A-ZÄÖÜ][\wÄÖÜäöüß-]*)")
+    # "zur"/"zum" (verschmolzene Form von "zu der"/"zu dem") NEBEN der
+    # getrennten Form -- sonst würde "im Gegensatz ZUR X" (grammatisch die
+    # häufigere Form) nicht erkannt.
+    r"\b(?:[Bb]ei(?:m|\s+dem)|[Ff]ür\s+(?:den|die|das)|"
+    r"[Aa]nders\s+als|[Ii]m\s+[Gg]egensatz\s+zu(?:r|m)?|[Ii]m\s+[Uu]nterschied\s+zu(?:r|m)?|"
+    r"[Vv]erglichen\s+mit|[Uu]nlike|[Cc]ompared\s+to|[Ii]n\s+contrast\s+to)"
+    r"\s+(?:der|den|die|das|dem|the)?\s*"
+    # Nameplate-Geschwister sind oft >1 Token ("RC 300h", "3er Touring") --
+    # bis zu 2 weitere, direkt folgende Code-Tokens mitfangen (GROSSBUCHSTABE
+    # oder Ziffer am Wortanfang -- ein normales Fließtext-Wort wie "bietet"
+    # darf NICHT mitgefangen werden), sonst würde nur "RC" erfasst, das als
+    # Präfix-Token des Zielmodells ("RC F") fälschlich als "eigenes Modell"
+    # durchgewunken würde (§6 Auftrag: Geschwistervarianten derselben
+    # Baureihe dürfen sich nicht gegenseitig kontaminieren).
+    r"([A-ZÄÖÜ][\wÄÖÜäöüß-]*(?:\s+[A-ZÄÖÜ0-9][\wÄÖÜäöüß0-9-]*){0,2})")
 # Häufige, idiomatische Füllwörter nach "beim"/"für den" X, die KEIN
 # Fahrzeug-Subjekt sind (Aktivitäten/Nominalisierungen/Akteure, kein
 # Modellkatalog).
@@ -1653,14 +1706,23 @@ _RC_W4_MAX_KONTEXT_DISTANZ = 1
 
 def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
     """Enge Erkennung eines ANDEREN, explizit genannten Fahrzeug-Subjekts in
-    der "beim/für den X"-Konstruktion — None, wenn keine solche Konstruktion
-    vorliegt oder X das Zielmodell/ein Bauteil/ein bekanntes Füllwort ist."""
+    der "beim/für den X"-Konstruktion (oder einer kontrastiven Konstruktion,
+    s. `_RE_ANDERES_SUBJEKT`) — None, wenn keine solche Konstruktion vorliegt
+    oder X das Zielmodell/ein Bauteil/ein bekanntes Füllwort ist. Die
+    Zielmodell-Prüfung nutzt dieselbe robuste Signatur wie überall sonst im
+    Modul (`_modell_ausgerichtet`), NICHT nur einfache Token-Mengen-
+    Zugehörigkeit -- sonst würde "Anders als der RC F ..." (X = das
+    Zielmodell SELBST, mehrwortig genannt) fälschlich als anderes Fahrzeug
+    gelten, weil der GANZE normalisierte Ausdruck kein einzelnes Element der
+    `_tokens(modell)`-Menge ist."""
     m = _RE_ANDERES_SUBJEKT.search(satz)
     if not m:
         return None
     wort = _norm(m.group(1))
+    wort_tokens = _tokens(m.group(1))
     modell_tokens = _tokens(modell)
-    if not wort or wort in modell_tokens or wort in _KEIN_FAHRZEUG_SUBJEKT_LOKAL:
+    if (not wort or wort in modell_tokens or wort in _KEIN_FAHRZEUG_SUBJEKT_LOKAL
+            or _modell_ausgerichtet(wort_tokens, modell, quelle_konkat=_quelle_konkatenationen(m.group(1)))):
         return None
     vokabular = _bauteil_vokabular()
     if any(wort in muster or wort == schluessel for muster, schluessel in vokabular.items()):
@@ -3708,6 +3770,36 @@ def _hat_fortschritt(vorher: dict, nachher: dict) -> bool:
             or nachher["bester_score"] > vorher["bester_score"])
 
 
+# ── Null-Kandidaten-Gap (PASS-GATE-Folgeauftrag §B) ────────────────────────
+#
+# Befund (Lexus-RC-F-Production-Test): `eskalierbar` (oben) setzt voraus,
+# dass Runde 1 bereits >=2 Candidate-Claims zu EINER Gruppe gesammelt hat.
+# Scheitern dagegen schon die Treffer SELBST an Alignment/Source-Trust (im
+# Produktionsfall: 7/8 bzw. 5/8 an `modell_fehlt` -- die Rohtreffer nannten
+# das Zielmodell nicht hinreichend explizit), entstehen NULL Kandidaten --
+# `eskalierbar` bleibt False, und die bisherige Logik eskaliert NIE, obwohl
+# noch Suchraum/Budget übrig ist. Dieses neue Signal ist UNABHÄNGIG von
+# `eskalierbar`: "es gab Rohtreffer (die Suche lief ins Leere, nicht weil
+# nichts gefunden wurde, sondern weil nichts davon verwertbar war), aber
+# NICHTS davon erreichte auch nur die Candidate-Gruppierung". Es rechtfertigt
+# GENAU DIESELBE, bereits vorhandene Source-Upgrade-Query (§5/§6 Auftrag,
+# vorige Runde) -- keine neue Suchlogik, nur ein zusätzlicher Auslöser für
+# dieselbe Runde-2-Maschinerie. Kein Freibrief fürs volle Budget: Runde 3
+# bleibt weiterhin an echten Fortschritt gebunden (`_hat_fortschritt`).
+def _ist_null_kandidaten_gap(fakten: list[WebFakt], fakten_stats: dict[str, dict],
+                             abgelehnt: list[dict], kategorie: str) -> bool:
+    """True, wenn Runde 1 für `kategorie` kuratierte Rohtreffer hatte (eine
+    neue Suchrichtung ist also prinzipiell sinnvoll -- bei 0 Rohtreffern gäbe
+    es nichts, dessen Scheitern eine Zusatzrunde rechtfertigt), aber WEDER
+    ein sichtbarer Fakt NOCH auch nur ein einziger Candidate-Claim entstanden
+    ist."""
+    if any(f.kategorie == kategorie for f in fakten):
+        return False
+    if fakten_stats.get(kategorie, {}).get("curated", 0) <= 0:
+        return False
+    return _zustand_kategorie(abgelehnt, kategorie)["n_kandidaten"] == 0
+
+
 # ── Identity-Spec-Gap-Recherche (§C Folgeauftrag) ──────────────────────────
 #
 # Befund (RC-F-Test): Marke/Modell/Leistung/Antrieb ließen sich bestätigen,
@@ -3724,12 +3816,22 @@ def _hat_fortschritt(vorher: dict, nachher: dict) -> bool:
 _IDENTITY_SPEC_FELDER: tuple[tuple[str, str], ...] = (
     ("generation", "generation"), ("fuel", "kraftstoff"), ("drivetrain", "antrieb"),
     ("transmission", "getriebe"), ("powertrain", "powertrain"))
+# Produktions-Forensik (Lexus-RC-F-PASS-GATE, §A Folgeauftrag, CONFIRMED Root
+# Cause): "Hybrid Elektrifizierung"/"hybrid powertrain" als Suchbegriff für das
+# OFFENE `powertrain`-Feld hat die Query selbst Richtung Hybrid-Inhalt
+# vorentschieden -- bei einer Marke mit breitem Hybrid-Portfolio (hier: Lexus)
+# fand genau diese Formulierung bevorzugt Hybrid-Seiten, unabhängig von der
+# tatsächlichen Antriebsart des Zielmodells. GENERISCH für JEDE Marke mit
+# ICE/Hybrid-Geschwistermodellen, nicht nur Lexus. Jetzt neutral: fragt nach
+# "Antriebstechnologie"/"Motorisierung", nicht nach einer bestimmten Technologie
+# -- die Suche soll ERGEBNISOFFEN sein, nicht ergebnisgerichtet.
 _IDENTITY_SPEC_WORTE_DE = {
     "generation": "Generation Modellcode", "fuel": "Kraftstoff Antriebsart",
-    "drivetrain": "Radantrieb", "transmission": "Getriebe", "powertrain": "Hybrid Elektrifizierung"}
+    "drivetrain": "Radantrieb", "transmission": "Getriebe",
+    "powertrain": "Antriebstechnologie Motorisierung"}
 _IDENTITY_SPEC_WORTE_EN = {
     "generation": "generation model code", "fuel": "fuel type", "drivetrain": "drivetrain",
-    "transmission": "transmission", "powertrain": "hybrid powertrain"}
+    "transmission": "transmission", "powertrain": "drivetrain technology"}
 
 
 def _identity_spec_gaps(identitaet: WebVehicleIdentity) -> list[str]:
@@ -3899,6 +4001,14 @@ class TavilyTechnicalResearchProvider:
                 ident_treffer = ident_treffer + neue_spec_treffer
                 identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
                 abgelehnt += abgelehnt_i2
+                # §A Auftrag Punkt 7: dieselbe Claim-/Source-Diagnostik wie
+                # Runde 1 (Alignment-Histogramm, Pfad, Domainzahl + im
+                # IDENTITY_DEBUG-Fall die Pro-Domain-Zeilen) -- bisher endete
+                # die Beobachtbarkeit nach Runde 1, Runde 2 war eine
+                # Diagnostik-Blackbox (Forensik-Fund, konkret dafür
+                # verantwortlich, dass der HEV-Fehlbefund nicht auf Domain-
+                # Ebene nachvollziehbar war).
+                _log_identitaet_phase(ident_treffer, marke, z["modell"], identitaet)
                 geloest = [f for f, attr in _IDENTITY_SPEC_FELDER
                           if f in offene_spec_felder and getattr(identitaet, attr) is not None]
                 geloest += [f for f in offene_confirm_felder
@@ -4019,13 +4129,17 @@ class TavilyTechnicalResearchProvider:
         # "wenn Round 2 tatsächlich neue Evidence geliefert hat").
         fortschritt_runde2: set[str] = set()
         for runde_nr in range(2, _MAX_ADAPTIVE_RUNDEN + 1):
+            null_kandidaten_kategorien = frozenset(
+                kat for kat in ("schwachstelle", "wartung")
+                if runde_nr == 2 and _ist_null_kandidaten_gap(fakten, fakten_stats, abgelehnt, kat))
             aktive_kategorien = frozenset(
                 kat for kat in ("schwachstelle", "wartung")
-                if fakten_stats.get(kat, {}).get("eskalierbar")
+                if (fakten_stats.get(kat, {}).get("eskalierbar") or kat in null_kandidaten_kategorien)
                 and (runde_nr == 2 or kat in fortschritt_runde2))
             if not aktive_kategorien:
                 break
             for kat in aktive_kategorien:
+                gap_grund = "null_kandidaten" if kat in null_kandidaten_kategorien else "pending_upgrade"
                 fakt_state_vorher = "resolved" if any(f.kategorie == kat for f in fakten) else "open"
                 bauteil_hint = _bauteil_hint_aus_abgelehnt(abgelehnt, kat)
                 merkmal_hint = _merkmal_hint_aus_abgelehnt(abgelehnt, kat)
@@ -4052,6 +4166,12 @@ class TavilyTechnicalResearchProvider:
                 noch_offen = bool(fakten_stats.get(kat, {}).get("eskalierbar"))
                 if runde_fakten:
                     stop_reason = "resolved"
+                elif not noch_offen and zustand_nachher["n_kandidaten"] == 0:
+                    # Null-Kandidaten-Pfad (§B Auftrag): auch die Recovery-
+                    # Suche fand nichts Verwertbares -- kein Konflikt, nur
+                    # weiterhin keine brauchbare Quelle. Eigenes Label, damit
+                    # es nicht wie ein aufgelöster Konflikt aussieht.
+                    stop_reason = "no_recovery"
                 elif not noch_offen:
                     stop_reason = "conflict_or_closed"
                 elif not fortschritt:
@@ -4062,10 +4182,10 @@ class TavilyTechnicalResearchProvider:
                     stop_reason = "continue"
                 if stop_reason == "continue":
                     fortschritt_runde2.add(kat)
-                log.info("research_phase=%s round=%d gap=True query_count=%d "
+                log.info("research_phase=%s round=%d gap=%s query_count=%d "
                          "new_source_families=%d new_candidates=%d source_tier_improved=%s "
                          "fact_state_before=%s fact_state_after=%s %s=%s",
-                         kat, runde_nr, len(esk_intents),
+                         kat, runde_nr, gap_grund, len(esk_intents),
                          zustand_nachher["families"] - zustand_vorher[kat]["families"],
                          zustand_nachher["n_kandidaten"] - zustand_vorher[kat]["n_kandidaten"],
                          zustand_nachher["bester_score"] > zustand_vorher[kat]["bester_score"],

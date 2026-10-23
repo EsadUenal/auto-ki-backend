@@ -13,6 +13,7 @@ Empfehlungsentscheidung (app/empfehlungs_policy.py) und die Datenbasis
 from __future__ import annotations
 
 import json
+import re
 
 from app.anzeige import fahrzeug_titel, feldzeile
 from app.bekannte_fakten import aus_request, tuning_status
@@ -176,6 +177,73 @@ _KEIN_WEB_FAKT_HINWEIS = {
 }
 
 
+# ── Deterministischer Vollständigkeits-Filter (PASS-GATE-Folgeauftrag §E) ──
+#
+# Befund (Lexus-RC-F-Production-Test): die Production-UI zeigte weiterhin
+# eine Vollständigkeitsbehauptung über den technischen KaufCheck, obwohl
+# Weakness/Wartung leer blieben. Eine Prompt-Anweisung an Gemini allein
+# ("behaupte keine Vollständigkeit") reicht NICHT, weil sie reine Textgenerierung
+# steuert, kein deterministisches Ergebnis erzwingt -- UND weil dieses Modul
+# ohnehin bewusst KEINE freie LLM-Prosa als Ausgabekanal verwendet (s.
+# Moduldocstring oben). Dieser Filter ist der generische, deterministische
+# zweite Schutzwall: JEDER hier gerenderte Text (Empfehlungsgründe, Entscheidungs-
+# Hinweis) läuft durch ein SATZMUSTER (Vollständigkeits-/Evidenzwort NAHE
+# einem Prüfverb), nicht durch einen einzelnen festen Satz -- und wird nur
+# entfernt, wenn der TATSÄCHLICHE Research-State (`web_recherche`) ihr
+# widerspricht. Keine Neugenerierung, kein zusätzlicher Gemini-Call.
+# Generisch zweiseitig: ein Vollständigkeitswort NAHE (a) einem Prüf-/Check-
+# Verb ("vollständig geprüft") ODER (b) einem Nomen für den Prüfvorgang
+# selbst ("KaufCheck"/"Analyse"/"Recherche"/"Prüfung"/"Prüfliste" IST/SIND
+# "vollständig") -- Variante (b) ist nötig, weil der Produktionsfund
+# ("... Prüflisten sind davon unabhängig vollständig") KEIN Prüfverb enthält,
+# nur eine Kopula + Vollständigkeits-Adjektiv über das NOMEN des Checks.
+_RE_PRUEFVORGANG_NOMEN = r"kaufcheck\w*|verkaufscheck\w*|analyse\w*|pr(?:ü|ue)f\w*|recherch\w*"
+_RE_VOLLSTAENDIGKEITS_BEHAUPTUNG = re.compile(
+    r"\b(?:vollst(?:ä|ae)ndig\w*|komplett\w*|umfassend\w*|l(?:ü|ue)ckenlos\w*)\b"
+    r"(?:(?!['\".!?]).){0,100}?"
+    r"\b(?:gepr(?:ü|ue)ft\w*|durchgef(?:ü|ue)hrt\w*|analysiert\w*|recherchiert\w*|"
+    rf"abgedeckt\w*|erfasst\w*|abgeschlossen\w*|{_RE_PRUEFVORGANG_NOMEN})\b"
+    r"|\b(?:gepr(?:ü|ue)ft\w*|durchgef(?:ü|ue)hrt\w*|analysiert\w*|recherchiert\w*|"
+    rf"abgedeckt\w*|erfasst\w*|abgeschlossen\w*|{_RE_PRUEFVORGANG_NOMEN})\b"
+    r"(?:(?!['\".!?]).){0,100}?"
+    r"\b(?:vollst(?:ä|ae)ndig\w*|komplett\w*|umfassend\w*|l(?:ü|ue)ckenlos\w*)\b",
+    re.IGNORECASE)
+
+
+def _forschung_tatsaechlich_unvollstaendig(web_recherche) -> bool:
+    """Generischer, deterministischer IST-Zustand: True, wenn der tatsächliche
+    Research-State eine Vollständigkeitsbehauptung NICHT trägt -- eine Phase
+    ist FAILED, oder die Technik-Phase lief, aber Schwachstelle/Wartung
+    blieben beide ohne jeden Fakt. Dieselbe Grundlage wie
+    `technik_ohne_fakten_hinweise()` oben, nur als Bool statt als Hinweistext."""
+    if web_recherche is None:
+        return False
+    from app.technical_research import PHASE_FAILED
+    status = getattr(web_recherche, "phasen_status", None) or {}
+    if any(s == PHASE_FAILED for s in status.values()):
+        return True
+    if not status.get("technik"):
+        return False
+    fakten = getattr(web_recherche, "fakten", None) or []
+    kategorien_mit_fakten = {f.kategorie for f in fakten}
+    return not ({"schwachstelle", "wartung"} & kategorien_mit_fakten)
+
+
+def _ohne_unbelegte_vollstaendigkeitsbehauptung(text: str | None, *, unvollstaendig: bool
+                                                ) -> str | None:
+    """Entfernt SATZWEISE jede Vollständigkeits-/Evidenz-Behauptung aus
+    `text`, wenn `unvollstaendig=True` -- sonst unverändert. Kein Treffer:
+    unverändert zurückgegeben (kein Eingriff ohne Grund)."""
+    if not text or not unvollstaendig:
+        return text
+    saetze = re.split(r"(?<=[.!?])\s+", text)
+    bereinigt = [s for s in saetze if not _RE_VOLLSTAENDIGKEITS_BEHAUPTUNG.search(s)]
+    if len(bereinigt) == len(saetze):
+        return text
+    ergebnis = " ".join(s for s in bereinigt if s.strip())
+    return ergebnis or None
+
+
 def technik_ohne_fakten_hinweise(web_recherche, *, baureihe=None) -> list[str]:
     """Additive Zeile(n) je Kategorie (schwachstelle/wartung), wenn die
     Technik-Recherche lief, aber 0 Fakten dieser Kategorie lieferte — siehe
@@ -254,8 +322,15 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     # ENFAL-Fahrzeugdaten" — nie mehr nur "ENFAL-Referenz". Ein unbekannter
     # Status fällt auf "nicht sicher bekannt" statt auf einen KeyError.
     for name, label in labels.items():
-        lines.append(feldzeile(label, name, getattr(identity, name),
-                               identity.field_evidence.get(name)))
+        fe = identity.field_evidence.get(name)
+        lines.append(feldzeile(label, name, getattr(identity, name), fe))
+        # §F PASS-GATE-Folgeauftrag: konkrete Domains je Identitätsfeld, wenn
+        # vorhanden (s. `konsens()`/`apply_web_evidence()`) -- NIE eine URL
+        # erfinden, wenn keine Domainnamen hinterlegt sind (dann bleibt nur
+        # die bestehende Zähler-Darstellung in `feldzeile()` stehen).
+        domain_namen = (fe or {}).get("domain_namen")
+        if domain_namen:
+            lines.append("  Quellen: " + ", ".join(domain_namen) + ".")
     if req.ausstattung:
         lines += ["", "Ausstattung laut Inserat: " + ", ".join(req.ausstattung) + ". Vor Ort prüfen."]
     else:
@@ -269,9 +344,20 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
         lines += ["", "Generationsmerkmale aus der Datenbank (keine Ausstattungsaussage über dieses Fahrzeug): "
                   + fahrzeugkontext.facelift_merkmale]
     lines += ["", "## Kaufempfehlung", "", "**" + entscheidung.anzeige.upper() + "**", ""]
-    if entscheidung.hinweis:
-        lines += [entscheidung.hinweis, ""]
-    lines += ["- " + reason for reason in reasons]
+    # §E PASS-GATE-Folgeauftrag: deterministischer Post-Generation-Filter --
+    # entfernt eine Vollständigkeits-/Evidenzbehauptung, wenn der tatsächliche
+    # Research-State ihr widerspricht (s. Funktionsdocstrings oben).
+    forschung_unvollstaendig = _forschung_tatsaechlich_unvollstaendig(web_recherche)
+    hinweis = _ohne_unbelegte_vollstaendigkeitsbehauptung(
+        entscheidung.hinweis, unvollstaendig=forschung_unvollstaendig)
+    if hinweis:
+        lines += [hinweis, ""]
+    reasons_bereinigt = [
+        bereinigt for bereinigt in (
+            _ohne_unbelegte_vollstaendigkeitsbehauptung(reason, unvollstaendig=forschung_unvollstaendig)
+            for reason in reasons)
+        if bereinigt]
+    lines += ["- " + reason for reason in reasons_bereinigt]
     lines += ["", "## Relevante Risiken und Hinweise", ""]
     risks = [i for i in insights if i.kategorie in REPORT_RISK_CATEGORIES]
     if not risks:
