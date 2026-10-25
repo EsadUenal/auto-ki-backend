@@ -726,7 +726,7 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
     # amtlich belegte Bedingung ausgewertet wird, keine freie Interpretation.
     eingr_amtlich = str(r.get("eingrenzung_amtlich") or "")
     if eingr_amtlich:
-        from app.kraftstoff_powertrain import powertrain_aus_freitext
+        from app.kraftstoff_powertrain import hybridbezug_erwaehnt, powertrain_aus_freitext
         from app.kraftstoff_powertrain import scope_passt as _antrieb_scope_passt
         pt_wort = powertrain_aus_freitext(eingr_amtlich)
         pt_scope = {"MHEV": "mild", "PHEV": "phev", "HEV": "phev", "BEV": "elektro"}.get(pt_wort)
@@ -741,6 +741,17 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
                 offen.append("Antriebsart")
             else:
                 passt_explizit.append("Antriebsart")
+        elif hybridbezug_erwaehnt(eingr_amtlich):
+            # Backend-Folgeauftrag: die amtliche Eingrenzung nennt eine
+            # Antriebsart-Bedingung (Hybridbezug), aber `powertrain_aus_freitext`
+            # kann sie seit der Präzisionskorrektur bewusst NICHT mehr auf eine
+            # konkrete Klasse (MHEV/HEV/PHEV) eingrenzen ("Hybridantrieb" allein
+            # ist nicht spezifisch genug). Das ist eine OFFENE Scope-Dimension
+            # ("Scope da, Wert unbekannt" -> UNKNOWN laut Moduldocstring oben),
+            # KEIN fehlender Scope -- sonst würde die Dimension stillschweigend
+            # übersprungen und ein eigentlich ungeprüfter Rückruf könnte bis zu
+            # SERIES_RELEVANT durchrutschen, obwohl eine Bedingung besteht.
+            offen.append("Antriebsart")
 
     # Komponentenabhängigkeit (Getriebe, Antrieb, Antriebsart, Ausstattung) —
     # dieselbe zentrale Präsenzlogik wie für Schwachstellen. Amtliche

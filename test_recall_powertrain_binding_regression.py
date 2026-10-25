@@ -63,10 +63,20 @@ ZIEL = dict(marke="Testmarke", modell="Modellz F", baujahr=2021, motor=None)
 # Generischer, amtlich eingegrenzter Hochvolt-Rückruf (kein Fahrzeug-Hardcode,
 # keine reale Referenznummer) -- dieselbe Struktur wie
 # test_recall_scope_official.py verwendet.
+#
+# Backend-Folgeauftrag (Powertrain-Präzision): "Hybridantrieb" ist seit der
+# Präzisionskorrektur auch in der amtlichen Eingrenzung selbst nicht mehr auf
+# eine konkrete Klasse (MHEV/HEV/PHEV) auflösbar und macht die Dimension
+# dadurch zu Recht "offen" (siehe app/recall_filter.py::rueckruf_scope, Zweig
+# `hybridbezug_erwaehnt`) statt sie stillschweigend zu überspringen -- das
+# testet test_recall_scope_official.py bereits separat. DIESER Test will
+# END-ZU-ENDE zeigen, dass eine korrekt (ohne Sibling-Konfusion) aufgelöste
+# Antriebsart die Dimension auf "passt" heben darf -- dafür braucht die
+# amtliche Eingrenzung hier eine ebenso spezifische Formulierung.
 _R_HOCHVOLT = {
     "betroffene_baujahre": "2019-2023", "kba_referenz": None,
     "mangel": "Durch einen Fertigungsfehler kann es zu einem Kurzschluss kommen.",
-    "eingrenzung_amtlich": "Betroffen sind ausschließlich Fahrzeuge mit Hybridantrieb.",
+    "eingrenzung_amtlich": "Betroffen sind ausschließlich Fahrzeuge als Vollhybrid.",
 }
 
 print("=== 1) Falscher Sibling-Powertrain-Claim setzt identity.powertrain NICHT "
@@ -100,10 +110,18 @@ treffer_eindeutig = [
     # eine Tier<=2-Quelle, bevor ein Wert überhaupt "stark" sein kann;
     # fiktive Domains ohne Tier-Einstufung würden hier IMMER None bleiben.
     # Nur die Domain ist real, Marke/Modell/Inhalt bleiben erfunden.
+    #
+    # Backend-Folgeauftrag (Powertrain-Präzision): "Hybridantrieb" ist ein
+    # generischer Hybridbezug, der nach der Präzisionskorrektur in
+    # app/kraftstoff_powertrain.py bewusst NICHT mehr automatisch "HEV"
+    # ergibt (könnte genauso Mild- oder Plug-in-Hybrid sein). Diese Fixture
+    # prüft die SIBLING-/Konsens-Bindung, nicht die Klassenpräzision -- dafür
+    # jetzt eine tatsächlich spezifische Formulierung ("Vollhybrid"), damit
+    # der Test weiterhin einen aufgelösten, nicht-None Powertrain liefert.
     treffer("https://www.adac.de/testmarke-modellz-hybrid", "Testmarke Modellz Hybrid im Test",
-            "Die Testmarke Modellz Hybrid wird ausschließlich mit Hybridantrieb angeboten."),
+            "Die Testmarke Modellz Hybrid wird ausschließlich als Vollhybrid angeboten."),
     treffer("https://www.auto-motor-und-sport.de/testmarke-modellz-hybrid", "Testmarke Modellz Hybrid Daten",
-            "Testmarke Modellz Hybrid: Hybridantrieb, kombinierte Systemleistung."),
+            "Testmarke Modellz Hybrid: Vollhybrid, kombinierte Systemleistung."),
 ]
 ziel_hybrid = dict(marke="Testmarke", modell="Modellz Hybrid", baujahr=2021, motor=None)
 identity_eindeutig = identity_aus_web(treffer_eindeutig, ziel_hybrid)

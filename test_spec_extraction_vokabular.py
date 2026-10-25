@@ -8,6 +8,15 @@ Extraktionsluecke diagnostiziert (Abnahmepunkt 7), NICHT als Claim-Binding-
 oder Konsens-Bug. Dieser Test deckt NUR die generischen, in der Forensik
 explizit angeforderten Schreibvarianten ab -- keine Fahrzeug-/Marken-Hardcodes.
 
+Backend-Folgeauftrag (reproduziert + behoben): die "Automatik"-Vokabularluecke
+betraf konkret ausgeschriebene deutsche Zahlwoerter ("Achtstufen-Automatik")
+und ein zwischen Stufenangabe und "Automatik" eingeschobenes Markenwort
+("Achtstufen-SPORT-Automatik") -- belegt am echten Herstellertext
+toyota-media.de (01.12.2016) zu Lexus RC F/GS F. Kraftstoff/Antrieb waren bei
+genauerer Pruefung KEINE Vokabularluecke (siehe app/technical_research.py,
+_KRAFTSTOFF_CLAIM/_ANTRIEB_CLAIM) -- ein einzelner Treffer bestaetigt ein Feld
+nur bei ausreichendem Konsens-Gewicht, das ist Trust-System, keine Luecke.
+
     python test_spec_extraction_vokabular.py
 """
 from app.technical_research import (
@@ -46,6 +55,20 @@ for text in ("8-Stufen-Automatik", "Automatikgetriebe", "automatische 8-Gang",
 print("\n=== Getriebe: bare 'X-speed' OHNE 'automatic' wird NICHT geclaimt "
       "(Package-C-Vorgabe) ===")
 for text in ("8-speed", "6-speed manual gearbox"):
+    check(f"'{text}' loest KEINEN Automatik-Claim aus", not _RE_GETRIEBE_AUTO.search(text))
+
+print("\n=== Getriebe (Automatik): ausgeschriebene Zahlwoerter + eingeschobenes "
+      "Markenwort (Backend-Folgeauftrag, real belegt: toyota-media.de 01.12.2016, "
+      "'Achtstufen-Sport-Automatik' fuer Lexus RC F/GS F) ===")
+for text in ("Achtstufen-Automatik", "Achtstufen-Sport-Automatik",
+            "8-Stufen-Sport-Automatik", "Siebenstufen-Automatik",
+            "Siebengang-Automatik", "Neunstufen-Automatik", "Sechsgang-Automatik",
+            "Zehnstufen-Automatik", "Vierstufen-Automatik",
+            "an eine Achtstufen-Sport-Automatik gekoppelt"):
+    check(f"Automatik erkannt in {text!r}", bool(_RE_GETRIEBE_AUTO.search(text)))
+
+print("\n=== Getriebe: kein Fehlalarm durch die neuen Zahlwort-/Zusatzwort-Muster ===")
+for text in ("Achtstufen-Schaltgetriebe", "Achtzylinder", "Siebensitzer"):
     check(f"'{text}' loest KEINEN Automatik-Claim aus", not _RE_GETRIEBE_AUTO.search(text))
 
 print("\n=== Getriebe (Manuell) bleibt unveraendert funktionsfaehig ===")

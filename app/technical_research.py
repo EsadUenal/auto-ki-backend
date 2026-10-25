@@ -698,14 +698,31 @@ _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|han
 # nur die direkte Kombination "X-speed automatic" sowie die bereits
 # bestehenden deutschen Muster plus "automatische X-Gang"/bare "automatic
 # transmission" als zusätzliche, generische Schreibvarianten.
-_RE_GETRIEBE_AUTO = re.compile(r"\b(\d{1,2})\s*-?\s*(?:stufen|gang)[- ]?(?:automatik\w*|wandlerautomatik)"
-                               r"|\bautomatikgetriebe\b"
-                               r"|\bautomatische[rn]?\s+(\d{1,2})[- ]?gang\w*"
-                               r"|\b(\d{1,2})-speed\s+automatic(?:\s+transmission)?\b"
-                               r"|\bautomatic\s+transmission\b", re.I)
+#
+# Lexus-RC-F-Forensik, Backend-Folgeauftrag (Vokabularlücke, generisch, keine
+# Marken-/Modell-Sonderlogik): zwei reale, in deutschen Herstellertexten
+# gängige Schreibvarianten fielen bisher durch —
+#   1) ausgeschriebenes Zahlwort statt Ziffer ("Achtstufen-Automatik",
+#      "Siebengang-Automatik") — bisher nur bei `_RE_GETRIEBE_MANUELL` über
+#      `_ZAHLWORT` abgedeckt, hier fehlte die Entsprechung;
+#   2) ein zusätzliches Marketingwort zwischen Stufenangabe und "Automatik"
+#      ("Achtstufen-SPORT-Automatik") — betraf auch die bereits bestehende
+#      Ziffer-Schreibweise ("8-Stufen-Sport-Automatik" griff ebenfalls nicht).
+# Belegt am echten Herstellertext (toyota-media.de, 01.12.2016): "Achtstufen-
+# Sport-Automatik" für Lexus RC F/GS F — reiner Vokabular-/Formfehler, keine
+# Konsens- oder Trust-Änderung.
+_RE_GETRIEBE_AUTO = re.compile(
+    r"\b(\d{1,2})\s*-?\s*(?:stufen|gang)(?:[- ][a-zA-ZäöüÄÖÜß]{3,14})?[- ]?(?:automatik\w*|wandlerautomatik)"
+    r"|\b(vier|f(?:ü|ue)nf|sechs|sieben|acht|neun|zehn|elf|zw(?:ö|oe)lf)(?:stufen|gang)"
+    r"(?:[- ][a-zA-ZäöüÄÖÜß]{3,14})?[- ]?(?:automatik\w*|wandlerautomatik)"
+    r"|\bautomatikgetriebe\b"
+    r"|\bautomatische[rn]?\s+(\d{1,2})[- ]?gang\w*"
+    r"|\b(\d{1,2})-speed\s+automatic(?:\s+transmission)?\b"
+    r"|\bautomatic\s+transmission\b", re.I)
 _RE_MOTORCODE_CLAIM = re.compile(r"(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*[:(]?\s*"
                                  r"([A-Z0-9]{2,}[A-Z0-9-]*)", re.I)
-_ZAHLWORT = {"sechs": 6, "fünf": 5, "fuenf": 5}
+_ZAHLWORT = {"vier": 4, "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7, "acht": 8,
+             "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwoelf": 12}
 
 
 _ROEMISCH = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
@@ -769,6 +786,72 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
         out.append({"code": code, "zeitraum": zeitraum(umgebung), "kontext": kontext,
                     "nummer": nummer})
     return out
+
+
+# Negationssichere Identity-Claims (Backend-Folgeauftrag, reproduziert):
+# "Der RC F wird nicht mit einer Achtstufen-Automatik ausgeliefert, sondern
+# mit einem Sechsganggetriebe." erzeugte bisher trotzdem einen Automatik-
+# Claim; "Der RC F faehrt nicht mit Diesel, sondern mit Benzin." erzeugte
+# BEIDE Kraftstoff-Claims. Ursache: `_KRAFTSTOFF_CLAIM`/`_ANTRIEB_CLAIM`/
+# `_RE_GETRIEBE_MANUELL`/`_RE_GETRIEBE_AUTO`/`_RE_MOTORCODE_CLAIM` pruefen nur
+# `rx.search(text)`/`finditer(text)`, ohne jede Verneinungspruefung. Dieselbe
+# Klasse von Fehler wurde fuer die Powertrain-Achse bereits generisch geloest
+# (app/kraftstoff_powertrain.py::_positiv_erwaehnt) — hier dieselbe Idee auf
+# die uebrigen, regexbasierten Identity-Claims angewendet (eigene, kleine
+# Funktion statt Import, weil hier zusaetzlich die Matchposition fuer die
+# Wertbildung (Stufenzahl/Gangzahl/Motorcode) gebraucht wird, nicht nur ein
+# Bool).
+#
+# Scope bewusst klein, aber NICHT rein interpunktionsbasiert (Backend-
+# Folgeauftrag, Nachbesserung): die erste Fassung teilte den "eigenen
+# Teilsatz" an JEDEM Komma — das griff bei "nicht Diesel, sondern Benzin",
+# aber (a) nicht bei "nicht Diesel sondern Benzin" OHNE Komma (das Komma war
+# der einzige Grenzmarker, "sondern" selbst wurde nie erkannt) und (b) zu
+# AGGRESSIV bei einem eingeschobenen Nebensatz OHNE "sondern", z. B. "nicht
+# mit einer, auch optional angebotenen, Automatik" — das Komma vor "auch"
+# beendete den verneinten Teilsatz faelschlich VORZEITIG, obwohl "Automatik"
+# weiterhin im Skopus von "nicht" liegt. Jetzt: Teilsatzgrenzen sind
+# Satzzeichen (. ; : ! ?) UND das Wort "sondern" selbst — NICHT mehr jedes
+# Komma. Das loest beide Faelle gleichzeitig: "sondern" (mit oder ohne
+# Komma davor) startet immer einen neuen, unverneinten Teilsatz; ein
+# Komma OHNE "sondern" trennt dagegen nicht mehr und die Verneinung bleibt
+# ueber den ganzen (durch das Zeitfenster begrenzten) Rest des Satzes gueltig
+# — "lieber unbestaetigt als erfunden" bei unklarer Reichweite, wie gefordert.
+#
+# "nicht nur X" ist KEINE Verneinung von X (Ergaenzung, kein Ausschluss —
+# "nicht nur mit Allrad, auch mit Frontantrieb lieferbar" bejaht Allrad).
+# "nicht ohne X" hebt sich doppelt auf und zaehlt ebenfalls nicht als
+# Verneinung von X. Jede andere Verneinung im eigenen Teilsatz fuehrt zu
+# "nicht bestaetigt" (nie zu einer erfundenen Gegenbehauptung — ein verneinter
+# Hybrid-Claim macht aus einem Fahrzeug nie automatisch einen bestaetigten
+# Verbrenner; das entscheidet ausschliesslich `powertrain_aus_freitext()`
+# ueber eine eigene, ausdrueckliche Formulierung).
+_VERNEINUNGSWORT = re.compile(
+    r"\bnicht\s+nur\b"
+    r"|\bnicht\s+ohne\b"
+    r"|\b(?:nicht|kein\w*|ohne|statt|anstatt)\b", re.IGNORECASE)
+_VERNEINUNGS_AUSNAHME = re.compile(r"\A(?:nicht\s+nur|nicht\s+ohne)\Z", re.IGNORECASE)
+_TEILSATZGRENZE = re.compile(r"[.;:!?]|\bsondern\b", re.IGNORECASE)
+# Grosszuegig genug fuer einen eingeschobenen, durch Kommas abgetrennten
+# Nebensatz ("nicht mit einer, auch optional angebotenen, Automatik" — rund
+# 45 Zeichen von "nicht" bis zum Treffer); durch die Teilsatzgrenze oben
+# weiterhin auf den eigenen Teilsatz begrenzt, kein unbeschraenktes Scannen.
+_NEGATIONS_FENSTER = 70
+
+
+def _verneint_im_teilsatz(text: str, start: int) -> bool:
+    """Ob die Textstelle `start` (Beginn eines Claim-Treffers) im eigenen
+    Teilsatz verneint wird. Siehe Moduldocstring-Block oben fuer die Regeln
+    ("nicht nur"/"nicht ohne" zaehlen NICHT als Verneinung; Teilsatzgrenzen
+    sind Satzzeichen ODER das Wort "sondern", NICHT jedes Komma)."""
+    vorspann = text[max(0, start - _NEGATIONS_FENSTER):start]
+    grenzen = [m.end() for m in _TEILSATZGRENZE.finditer(vorspann)]
+    eigener_teilsatz = vorspann[grenzen[-1]:] if grenzen else vorspann
+    for v in _VERNEINUNGSWORT.finditer(eigener_teilsatz):
+        if _VERNEINUNGS_AUSNAHME.match(v.group()):
+            continue
+        return True
+    return False
 
 
 def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
@@ -865,10 +948,10 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     for m in _RE_HUBRAUM.finditer(text):
         add("displacement", m.group(1).replace(",", "."))
     for wert, rx in _KRAFTSTOFF_CLAIM:
-        if rx.search(text):
+        if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
             add("fuel", wert)
     for wert, rx in _ANTRIEB_CLAIM:
-        if rx.search(text):
+        if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
             add("drivetrain", wert)
     # Root Cause 5 (Stufe 2): Elektrifizierungsgrad NUR aus denselben
     # ausdrücklichen Wörtern, die app/kraftstoff_powertrain.py bereits für
@@ -881,12 +964,18 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     if pt:
         add("powertrain", pt)
     for m in _RE_GETRIEBE_MANUELL.finditer(text):
+        if _verneint_im_teilsatz(text, m.start()):
+            continue
         gaenge = m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3)
         add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None)
     for m in _RE_GETRIEBE_AUTO.finditer(text):
-        stufen = m.group(1) or m.group(2) or m.group(3)
+        if _verneint_im_teilsatz(text, m.start()):
+            continue
+        stufen = (m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3) or m.group(4))
         add("transmission", "automatik", detail=f"{stufen}-Stufen" if stufen else None)
     for m in _RE_MOTORCODE_CLAIM.finditer(text):
+        if _verneint_im_teilsatz(text, m.start()):
+            continue
         add("engine_code", m.group(1).upper())
     return claims
 

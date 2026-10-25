@@ -118,6 +118,42 @@ check("L2 'powertrain' erscheint NICHT in feldwerte (kein willkürlich akzeptier
       "powertrain" not in ident_widerspruch.feldwerte)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+print("\n=== M) 'nicht nur'/'nicht ohne' sind KEINE Verneinung der folgenden "
+      "Eigenschaft (Backend-Folgeauftrag) ===")
+check("M1 'nicht nur ... Vollhybrid ... auch ... Verbrenner' verliert die "
+      "Vollhybrid-Variante nicht an eine Verneinung",
+      powertrain_aus_freitext(
+          "Der RC F ist nicht nur als Vollhybrid, sondern auch als reiner "
+          "Verbrenner erhältlich.") == "HEV")
+check("M2 'nicht ohne Vollhybrid-Technik' (doppelte Verneinung) bejaht HEV "
+      "statt None",
+      powertrain_aus_freitext("Der RC F kommt nicht ohne Vollhybrid-Technik aus.") == "HEV")
+check("M3 Gegenprobe: reines 'ohne Hybridisierung' bleibt weiterhin None",
+      powertrain_aus_freitext("Der Antrieb erfolgt ohne Hybridisierung.") is None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+print("\n=== N) Präzision statt Prioritätsreihenfolge (Backend-Folgeauftrag): "
+      "ein generischer Hybridbezug alleine bestätigt KEINE spezifische "
+      "HEV-Klasse ===")
+check("N1 bloßes 'Hybrid' (ohne Unterklassen-Marker) bleibt None, nicht HEV",
+      powertrain_aus_freitext("Der RC F ist als Hybrid erhältlich.") is None)
+check("N2 bloßes 'Hybridantrieb' bleibt None, nicht HEV",
+      powertrain_aus_freitext("Der RC F hat einen Hybridantrieb.") is None)
+check("N3 bloßes 'elektrifiziert' bleibt None, nicht HEV",
+      powertrain_aus_freitext("Der Antrieb ist elektrifiziert.") is None)
+check("N4 Gegenprobe: 'Vollhybrid' ist spezifisch genug -> HEV",
+      powertrain_aus_freitext("Der RC F ist als Vollhybrid erhältlich.") == "HEV")
+check("N5 Gegenprobe: explizite Abkürzung 'HEV' bleibt erkannt",
+      powertrain_aus_freitext("Der RC F ist ein HEV.") == "HEV")
+check("N6 Gegenprobe: 'Mild-Hybrid' bleibt weiterhin spezifisch -> MHEV, "
+      "nicht vom generischen Hybrid-Wegfall betroffen",
+      powertrain_aus_freitext("Der RC F ist ein Mild-Hybrid.") == "MHEV")
+check("N7 Gegenprobe: 'Plug-in-Hybrid' bleibt weiterhin spezifisch -> PHEV",
+      powertrain_aus_freitext("Der RC F ist ein Plug-in-Hybrid.") == "PHEV")
+
+
 print("\n" + "=" * 60)
 if _FEHLER:
     print(f"{len(_FEHLER)} FEHLER:")

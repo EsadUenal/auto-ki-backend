@@ -162,12 +162,40 @@ SCOPE_FUEL = frozenset({FUEL_BENZIN, FUEL_DIESEL})
 # tut das. "ohne Hybridisierung" ohne eine solche Formulierung bleibt UNKNOWN
 # (None) statt erfunden — dieselbe Regel wie überall sonst in diesem Modul
 # ("lieber 'nicht sicher bekannt' als erfunden", s. Moduldocstring).
-_VERNEINUNG = re.compile(r"\b(?:kein|keine|keinen|keinem|keiner|ohne|nicht)\b", re.IGNORECASE)
+#
+# Backend-Folgeauftrag (dieselbe Haertung wie app/technical_research.py
+# ::_verneint_im_teilsatz, hier nachgezogen): "nicht nur Hybrid, sondern auch
+# Verbrenner erhaeltlich" behauptete bisher NUR "ICE" -- die Hybrid-Variante
+# ging stillschweigend verloren, weil "nicht nur" wie eine normale Verneinung
+# zaehlte. "nicht ohne Hybridisierung" (doppelte Verneinung, bejaht Hybrid)
+# lieferte bisher ebenfalls None statt die Bejahung stehen zu lassen. Beides
+# bewusst NICHT als Verneinung gewertet; jede andere Verneinung bleibt
+# unveraendert streng.
+_VERNEINUNG = re.compile(
+    r"\bnicht\s+nur\b"
+    r"|\bnicht\s+ohne\b"
+    r"|\b(?:kein|keine|keinen|keinem|keiner|ohne|nicht)\b", re.IGNORECASE)
+_VERNEINUNGS_AUSNAHME = re.compile(r"\A(?:nicht\s+nur|nicht\s+ohne)\Z", re.IGNORECASE)
 
 _PHEV_WORT = re.compile(r"plug[\s-]?in[\s-]?hybrid|\bphev\b", re.IGNORECASE)
 _MHEV_WORT = re.compile(r"mild[\s-]?hybrid|\bmhev\b|\b48\s?v\b", re.IGNORECASE)
 _BEV_WORT = re.compile(r"\bbev\b|elektro\w*|elektrisch\w*|electric", re.IGNORECASE)
-_HEV_WORT = re.compile(r"\bhev\b|hybridisier\w*|\bhybrid\w*|elektrifizier\w*", re.IGNORECASE)
+# Backend-Folgeauftrag (Praezision statt Prioritaetsreihenfolge): "HEV" ist im
+# Datenmodell (s. Moduldocstring: ICE|MHEV|PHEV|BEV) kein eigener, klar
+# abgegrenzter Wert, sondern der Sammelbegriff fuer den NICHT-Plug-in-,
+# NICHT-Mild-Vollhybrid. Ein generisches "Hybrid"/"hybridisiert"/
+# "elektrifiziert" im Text sagt NICHT, welche Unterklasse gemeint ist -- es
+# koennte genauso ein Mild- oder Plug-in-Hybrid sein, der nur nicht so genannt
+# wurde. Bisher griff `_HEV_WORT` auf genau diese generischen Woerter zu und
+# behauptete damit eine Praezision ("HEV"), die der Text gar nicht hergibt --
+# das war reine PRIORITAETSREIHENFOLGE (PHEV vor MHEV vor BEV vor HEV-generisch
+# vor ICE), keine fachliche Eindeutigkeit. Jetzt: `_HEV_WORT` verlangt eine
+# TATSAECHLICH spezifische Vollhybrid-Formulierung ("HEV", "Vollhybrid") --
+# ein bloss generischer Hybridbezug ohne Unterklassen-Marker faellt durch alle
+# Pruefungen und bleibt None (spezifische Klasse unbekannt), statt erfunden zu
+# werden. Explizite PHEV-/MHEV-/BEV-Formulierungen sind davon unberuehrt --
+# die bleiben weiterhin spezifisch und werden weiterhin erkannt.
+_HEV_WORT = re.compile(r"\bhev\b|voll[\s-]?hybrid\w*", re.IGNORECASE)
 _ICE_WORT = re.compile(r"\bice\b|verbrenn\w*", re.IGNORECASE)
 
 # Wie weit vor einem Treffer nach einem Verneinungswort gesucht wird — großzügig
@@ -185,7 +213,13 @@ def _positiv_erwaehnt(pattern: re.Pattern, text: str) -> bool:
         # Teilsatz ("Nicht bekannt. Hybrid?") darf diesen Treffer nicht
         # mitreißen.
         eigener_teilsatz = re.split(r"[.,;:!?]", vorspann)[-1]
-        if not _VERNEINUNG.search(eigener_teilsatz):
+        verneint = False
+        for v in _VERNEINUNG.finditer(eigener_teilsatz):
+            if _VERNEINUNGS_AUSNAHME.match(v.group()):
+                continue
+            verneint = True
+            break
+        if not verneint:
             return True
     return False
 
@@ -210,6 +244,32 @@ def powertrain_aus_freitext(*texte: str | None) -> str | None:
     if _positiv_erwaehnt(_ICE_WORT, roh):
         return POWERTRAIN_ICE
     return None
+
+
+# Backend-Folgeauftrag (Nebenwirkung der Powertrain-Präzisionskorrektur
+# oben): `powertrain_aus_freitext()` liefert jetzt korrekt `None` sowohl für
+# "kein Hybridbezug im Text" ALS AUCH für "Hybridbezug genannt, aber nicht
+# klassenspezifisch" ("Hybridantrieb" ohne Mild-/Plug-in-/Vollhybrid-Zusatz).
+# Ein Aufrufer, der zwischen beiden Fällen unterscheiden MUSS (z.B.
+# app/recall_filter.py::rueckruf_scope — ein amtlicher Rückruftext mit einer
+# NICHT auflösbaren Antriebsart-Bedingung ist eine OFFENE Scope-Dimension,
+# keine fehlende), bekommt dafür diese separate, generische Prüfung — reine
+# Wortmengen-Vereinigung aller bereits bestehenden Muster, keine neue Logik.
+_HYBRIDBEZUG_IRGENDEINER = re.compile(
+    _PHEV_WORT.pattern + "|" + _MHEV_WORT.pattern + "|" + _HEV_WORT.pattern
+    + r"|hybridisier\w*|\bhybrid\w*|elektrifizier\w*", re.IGNORECASE)
+
+
+def hybridbezug_erwaehnt(*texte: str | None) -> bool:
+    """True, wenn IRGENDEIN (auch generischer, nicht klassenspezifischer)
+    Hybrid-/Elektrifizierungsbezug unverneint im Text steht — unabhängig
+    davon, ob `powertrain_aus_freitext()` daraus eine konkrete Klasse ableiten
+    kann. Sagt NICHTS über eine bestimmte Klasse aus, nur "irgendeine
+    Antriebsart-Bedingung ist genannt"."""
+    roh = " ".join(_norm(t) for t in texte if t)
+    if not roh.strip():
+        return False
+    return _positiv_erwaehnt(_HYBRIDBEZUG_IRGENDEINER, roh)
 
 
 def fahrzeug_achsen(*, identity=None, db_kraftstoff: str | None = None,
