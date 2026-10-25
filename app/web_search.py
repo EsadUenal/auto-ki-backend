@@ -156,6 +156,43 @@ _HERSTELLER_MARKEN = frozenset({
     "citroen", "citroën", "mini", "jaguar", "landrover", "land-rover", "jeep",
     "dacia", "smart", "cupra", "alfaromeo", "alfa-romeo", "suzuki", "mitsubishi",
 })
+# Bewusst NICHT ergänzt um jede fehlende Marke (z.B. "lexus") -- das wäre
+# genau der Ansatz, den `test_identity_manufacturer_source.py` (Package A,
+# "Generic Identity") explizit verwirft: eine geschlossene Liste lässt sich
+# nie vollständig halten. Für die IDENTITÄTS-Primärquelle löst
+# `_marke_eigene_domain()` (app/technical_research.py) das bereits generisch
+# über die angefragte Zielmarke, ohne Listenerweiterung. `score_domain()`
+# hier bleibt für die marke-AGNOSTISCHEN Kategorien (schwachstelle/wartung/
+# marktpreise) bewusst bei der geschlossenen Liste -- siehe
+# `_HERSTELLER_PRESSEDOMAINS` unten für den einzig zusätzlichen, explizit
+# belegten Fall (eigenständig benannte Presse-Domain, kein Listen-Fix).
+
+# F17 (RC-F-Ursachenanalyse, 2026-10-25): eigenständig benannte, vom Hersteller
+# selbst betriebene Presse-/Newsroom-Domains lassen sich NICHT über das
+# PSL-Label ableiten ("toyota-media.de" statt "toyota.de") -- PSL/Markenname-
+# Abgleich allein beweist bei solchen Domains nichts. Keine pauschale Regel
+# ("Markenname kommt im Domainnamen vor"), sondern eine explizite, einzeln zu
+# belegende Zuordnung -- dieselbe Sorgfaltspflicht wie bei `_AMTLICH_DOMAINS`
+# oben (ein Eintrag braucht einen nachvollziehbaren, konkreten Beleg, keine
+# Vermutung). Wird sowohl von `_ist_herstellerseite()` hier als auch von
+# `app.technical_research._marke_eigene_domain()` genutzt -- EINE Quelle für
+# diese Zuordnung, keine zweite, abweichende Liste.
+_HERSTELLER_PRESSEDOMAINS: dict[str, frozenset[str]] = {
+    # Offizielles deutsches Presseportal von Toyota Deutschland GmbH (fuehrt
+    # auch Lexus-Pressemitteilungen) -- belegt am real abrufbaren Pressetext
+    # vom 01.12.2016 ("Lexus RC F, 5,0-Liter-V8, 477 PS, Achtstufen-Sport-
+    # Automatik").
+    "toyota-media.de": frozenset({"toyota", "lexus"}),
+}
+
+
+def _pressedomain_gehoert_marke(domain_oder_url: str, marke_norm: str) -> bool:
+    """Prüft `_HERSTELLER_PRESSEDOMAINS` für eine BESTIMMTE, normalisierte
+    Marke -- genutzt von `app.technical_research._marke_eigene_domain()`
+    (Identitäts-Primärquellenpfad), damit beide Stellen dieselbe, einzige
+    Zuordnung lesen statt einer zweiten, abweichenden Liste."""
+    marken = _HERSTELLER_PRESSEDOMAINS.get(registrable_domain(domain_oder_url), frozenset())
+    return marke_norm in marken
 
 
 # §9: Informations-/Ratgeber-/Nachschlage-Seiten sind KEINE konkreten Vergleichs-
@@ -561,10 +598,34 @@ def ist_kategorieseite(url: str, title: str | None = None) -> bool:
 
 
 def _ist_herstellerseite(domain: str) -> bool:
-    """Prüft ob eine Domain zu einer bekannten Automarke gehört (z.B. bmw.de)."""
-    kern = domain.split(".")[0] if domain else ""
-    kern = kern.replace("-", "")
-    return any(kern == marke.replace("-", "") for marke in _HERSTELLER_MARKEN)
+    """Prüft ob eine Domain zu einer bekannten Automarke gehört (z.B. bmw.de,
+    media.bmw.com, newsroom.lexus.eu).
+
+    F17-Fix (RC-F-Ursachenanalyse, 2026-10-25): der frühere naive
+    `domain.split(".")[0]`-Vergleich hatte zwei reale Fehlrichtungen:
+      * er erkannte eine echte Hersteller-SUBDOMAIN nicht ("newsroom.lexus.eu"
+        -> Kern "newsroom", nicht "lexus"), weil er immer das ERSTE Label
+        nimmt, unabhängig davon, wo die eigentliche Marken-/Suffixgrenze
+        liegt;
+      * er hätte umgekehrt eine TÄUSCHENDE Subdomain unter einer FREMDEN
+        registrierbaren Domain fälschlich als Hersteller gewertet
+        ("toyota.fake-seite.com" -> Kern "toyota"), weil er nie prüfte, ob
+        "toyota" wirklich das registrierbare Label ist oder nur eine
+        beliebige Subdomain.
+    Beides löst dieselbe PSL-basierte Zerlegung (`_psl_teile`, bereits an
+    anderer Stelle in diesem Modul produktiv genutzt): nur das ECHTE,
+    registrierbare Label zählt, nie eine Subdomain und nie der erste
+    Punkt-Teil. Ein Markenname im URL-PFAD (nicht in der Domain) war nie
+    Teil dieser Prüfung und bleibt es.
+    """
+    teile = _psl_teile(domain)
+    kern = (teile.domain or "").replace("-", "")
+    if any(kern == marke.replace("-", "") for marke in _HERSTELLER_MARKEN):
+        return True
+    # Eigenständig benannte, einzeln belegte Presse-Domain (siehe
+    # `_HERSTELLER_PRESSEDOMAINS` oben) -- kein Markenname-im-Domainnamen-
+    # Pauschalabgleich, sondern eine explizite, kuratierte Zuordnung.
+    return registrable_domain(domain) in _HERSTELLER_PRESSEDOMAINS
 
 
 def _enthaelt_domain(domain: str, gruppe: frozenset[str]) -> bool:

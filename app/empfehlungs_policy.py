@@ -99,15 +99,36 @@ def identitaet_aufloesen(identity) -> IdentitaetsAufloesung:
             and identity.make and identity.model):
         return IdentitaetsAufloesung(INSUFFICIENT, ("Marke/Modell",), tuple(quellen))
     fehlend: list[str] = []
+    # Generation, Facelift, Modelljahr und Motorcode sind UNTERSCHIEDLICHE
+    # Dinge (RC-F-Folgeauftrag, 2026-10-25) -- dieser Block bleibt bewusst
+    # unverändert: Generation wird NUR durch eine eigene, bestätigte
+    # Generationsangabe belegt, NIE durch PS oder Motorcode (keine Lockerung
+    # des bestehenden Gates).
     if not (identity.generation and _bestaetigt(fe.get("generation"))):
         fehlend.append("Generation")
-    motor_belegt = (
-        (identity.engine_name and fe.get("engine_name", {}).get("verification_state")
-         in ("user_refined", "reference_only", "user_confirmed", "web_only")
-         and "enfal" in ((fe.get("engine_name") or {}).get("provenance") or []))
-        or (identity.horsepower and _bestaetigt(fe.get("horsepower"))
-            and fe.get("horsepower", {}).get("verification_state") != "user_only")
-    )
+
+    # Generation/Motorisierung-Asymmetrie (RC-F-Folgeauftrag, 2026-10-25,
+    # Ursachenanalyse-Bericht vom selben Datum): bestätigte LEISTUNG (PS)
+    # beantwortet nicht "welcher Motor" -- mehrere, unterschiedliche Motoren
+    # können dieselbe PS-Zahl haben. `motor_belegt` darf deshalb NICHT mehr
+    # allein über `horsepower` wahr werden (bisherige Formulierung tat genau
+    # das) -- das erklärte am realen Lexus-RC-F-Lauf, warum nur "Generation"
+    # als Blocker genannt wurde, obwohl Motor/Kraftstoff/Getriebe/Antrieb
+    # ebenfalls unbestätigt blieben. "Motorisierung" braucht jetzt eine
+    # ECHTE Motor-Identität: Motorbezeichnung ODER Motorcode, jeweils
+    # tatsächlich bestätigt (nicht nur user_only/reine Nutzer-/Modell-
+    # referenz) -- ENFAL- und Web-Provenienz zählen GLEICH (die bisherige
+    # "enfal in provenance"-Bedingung schloss einen rein web-bestätigten
+    # Motor aus, ohne fachlichen Grund). Getriebe/Antriebsart bleiben davon
+    # UNBERÜHRT -- sie sind eigene, separat im Bericht ausgewiesene
+    # Applicability-Achsen (app/vergleichstabelle.py), kein zusätzliches
+    # Pflichtkriterium für DIESE Gate-Stufe.
+    def _motor_merkmal_belegt(feld: str) -> bool:
+        wert = getattr(identity, feld, None)
+        eintrag = fe.get(feld) or {}
+        return bool(wert) and _bestaetigt(eintrag) and eintrag.get("verification_state") != "user_only"
+
+    motor_belegt = _motor_merkmal_belegt("engine_name") or _motor_merkmal_belegt("engine_code")
     if not motor_belegt:
         fehlend.append("Motorisierung")
     return IdentitaetsAufloesung(VERIFIED if not fehlend else PARTIAL, tuple(fehlend),

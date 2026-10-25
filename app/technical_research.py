@@ -68,8 +68,8 @@ from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleI
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
-    _domain_von, _psl_teile, _qualitaets_label, curate_results, ist_amtliche_quelle,
-    registrable_domain, score_domain, tavily_search,
+    _domain_von, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
+    curate_results, ist_amtliche_quelle, registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -283,12 +283,43 @@ def _tier(url: str) -> int:
 def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
     if not url_oder_domain or not marke:
         return False
-    teile = _psl_teile(url_oder_domain)
-    if not teile.domain:
-        return False
-    kern = teile.domain.replace("-", "")
     marke_norm = _norm(marke).replace(" ", "")
-    return bool(marke_norm) and kern == marke_norm
+    if not marke_norm:
+        return False
+    teile = _psl_teile(url_oder_domain)
+    if teile.domain and teile.domain.replace("-", "") == marke_norm:
+        return True
+    # F17-Fix (RC-F-Ursachenanalyse, 2026-10-25): eigenständig benannte,
+    # einzeln belegte Presse-Domain (siehe `app.web_search._HERSTELLER_
+    # PRESSEDOMAINS`) -- dieselbe, einzige Zuordnung wie in `score_domain()`/
+    # `_ist_herstellerseite()`, keine zweite, abweichende Liste.
+    return _pressedomain_gehoert_marke(url_oder_domain, marke_norm)
+
+
+# F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
+# dem PSL-/Pressedomain-Fix in `score_domain()` bleibt für "schwachstelle"/
+# "wartung" eine Scoring-Asymmetrie bestehen -- `score_domain()` kennt den
+# Zielkontext (die angefragte Marke) nicht und kann deshalb NIE jede reale
+# Herstellerdomain erkennen (`_HERSTELLER_MARKEN` ist und bleibt eine
+# geschlossene, bewusst NICHT vervollständigte Liste, siehe
+# `test_identity_manufacturer_source.py`). Der Identitäts-Primärquellenpfad
+# löst exakt dasselbe Problem bereits generisch über `_marke_eigene_domain()`
+# (PSL + die im Request angefragte Marke, keine Liste). Diese Funktion wendet
+# DIESELBE, bereits bestehende und getestete Zuordnung zusätzlich auf die
+# Schwellenwert-Entscheidung für "schwachstelle"/"wartung" an -- bewusst NICHT
+# für "rueckruf" (Recall/KBA bleibt unangetastet, §15 Auftrag) und bewusst
+# KEINE neue Markenliste, KEINE Modell-Sonderlogik: eine Domain wird nur dann
+# höher bewertet, wenn `_marke_eigene_domain()` sie der TATSÄCHLICH
+# angefragten Marke zuordnet. Ändert NICHTS an Alignment/Varianten-/
+# Problemwort-Gates -- Herstellervertrauen ist weiterhin nicht dasselbe wie
+# Claim-Applicability, die läuft unverändert eigenständig weiter.
+def _score_domain_fuer_marke(url: str, kategorie: str, marke: str | None) -> int:
+    score = score_domain(url, kategorie)
+    if kategorie == KATEGORIE_RUECKRUFE:
+        return score
+    if score < TIER1_MIN_SCORE and _marke_eigene_domain(url, marke):
+        return TIER1_MIN_SCORE
+    return score
 
 
 # Identitätsquellen der Stufe 2, die die allgemeine Domainliste
@@ -678,11 +709,31 @@ _RE_KW = re.compile(r"\b(\d{2,3})\s*kW\b")
 # der reale Lexus-RC-F-Fall zeigte ("5.0 V8"/"Benzin"/"Automatik" blieben
 # user_only, obwohl "477 PS"/"Heck" aus denselben Quellen bestätigt wurden —
 # Abnahmepunkt 7, als Vokabular-/Extraktionslücke diagnostiziert, KEIN Claim-
-# Binding-/Konsens-Bug). Bewusst NUR zusätzliches, generisches Vokabular —
-# keine neue Dimension, keine Einheiten-Umrechnung (ein reiner "cc"/"ccm"-Wert
-# wie "4998 cc" bräuchte eine Liter-Umrechnung und bleibt deshalb bewusst
-# außen vor, siehe Abschlussbericht).
+# Binding-/Konsens-Bug). Bewusst NUR zusätzliches, generisches Vokabular.
 _RE_HUBRAUM = re.compile(r"\b(\d[.,]\d)\s*(?:-?\s*(?:l\b|liter|litre)|\s+(?=[A-Za-z]))", re.IGNORECASE)
+
+# F12 (RC-F-Folgeauftrag, Ursachenanalyse-Bericht 2026-10-25): ein reiner
+# "cm3"/"cm³"/"ccm"-Wert ("4969 cm³") blieb bisher komplett unerkannt, obwohl
+# genau diese Schreibweise auf technischen Datenblättern (z.B. carwiki.de)
+# haeufiger ist als die Literangabe. `ziel.get("hubraum")`/der bestehende
+# Konsens-/Vergleichspfad arbeiten ausschliesslich mit der Liter-Dezimalstelle
+# (siehe `_RE_HUBRAUM` oben) -- ein ccm-Treffer wird deshalb auf dieselbe
+# Darstellung NORMALISIERT (kaufmaennische Rundung auf eine Nachkommastelle,
+# `4969` -> "5.0", `1998` -> "2.0"), statt eine zweite, exakte ccm-Dimension
+# einzufuehren. Das deckt die in der Praxis uebliche Rundungs-Konvention
+# zwischen Katalog-ccm und marketingueblicher Literangabe ab, ohne neue
+# Toleranz-/Bereichsvergleiche zu erfinden: zwei Quellen, die unterschiedlich
+# runden (z.B. "4.9 Liter" vs. "5.0 Liter" fuer denselben 4969-ccm-Motor),
+# bleiben ein echter, vom bestehenden `konsens()` zu entscheidender
+# Widerspruch -- kein beliebiges Zahlen-Matching.
+_RE_HUBRAUM_CCM = re.compile(r"\b(\d{3,5})\s*(?:cm\s*3|cm\s*³|ccm)\b", re.IGNORECASE)
+
+
+def _ccm_als_liter(ccm_text: str) -> str:
+    liter = round(int(ccm_text) / 1000, 1)
+    return f"{liter:.1f}"
+
+
 _KRAFTSTOFF_CLAIM = (("diesel", re.compile(r"\bdiesel\w*|\btdi\b|\bcdi\b|\bdci\b|skyactiv-?d", re.I)),
                      ("benzin", re.compile(r"\bbenzin\w*|ottomotor|\btfsi\b|\btsi\b|skyactiv-?g|petrol|gasoline",
                                            re.I)),
@@ -719,8 +770,111 @@ _RE_GETRIEBE_AUTO = re.compile(
     r"|\bautomatische[rn]?\s+(\d{1,2})[- ]?gang\w*"
     r"|\b(\d{1,2})-speed\s+automatic(?:\s+transmission)?\b"
     r"|\bautomatic\s+transmission\b", re.I)
-_RE_MOTORCODE_CLAIM = re.compile(r"(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*[:(]?\s*"
-                                 r"([A-Z0-9]{2,}[A-Z0-9-]*)", re.I)
+
+# F13 (RC-F-Folgeauftrag): ALLEINSTEHENDES "Automatik" (ohne Stufen-/Gang-
+# angabe, z.B. "Benzin, 477 PS, Automatik" in Inserats-/Kurzprofiltext) wurde
+# bisher NICHT erfasst -- `_RE_GETRIEBE_AUTO` oben verlangt immer eine
+# Stufen-/Gangangabe oder das Kompositum "Automatikgetriebe". Eine
+# Gangzahl ALLEIN beweist weiterhin keine Getriebeart (unveraendert: es gibt
+# dafuer keine eigene Regel, nur `_RE_GETRIEBE_MANUELL`/`_RE_GETRIEBE_AUTO`
+# oben). Generisch, markenunabhaengig ausgenommen sind die gaengigen
+# deutschen "-Automatik"-Komposita, die NICHTS mit dem Getriebe zu tun haben
+# (Klimaautomatik, Start-Stopp-Automatik, Scheibenwisch(er)automatik,
+# Sitzheizungsautomatik, Lichtautomatik) -- sowohl unmittelbar verschmolzen
+# ("Klimaautomatik") als auch mit Bindestrich ("Start-Stopp-Automatik").
+_RE_AUTOMATIK_ALLEIN = re.compile(r"\bautomatik\b", re.IGNORECASE)
+_AUTOMATIK_FREMDKONTEXT = re.compile(
+    r"(?:klima|licht|start[- ]?stopp|scheibenwisch(?:er)?|sitzheizungs?)[- ]?$", re.IGNORECASE)
+
+# F14 (RC-F-Folgeauftrag): Motorcode-Label und -Wert stehen auf echten
+# Datenblaettern haeufig als Tabellenzeile ("Motorcode | 2UR-GSE") statt als
+# Fliesstext mit Doppelpunkt -- der bisherige Separator `[:(]?` erlaubte kein
+# "|" zwischen Label und Wert, eine solche Zeile wurde deshalb NIE erkannt,
+# obwohl Label und Wert hier unzweideutig einander zugeordnet sind (genau
+# EIN Label, genau EIN Wert, durch das Tabellen-Trennzeichen selbst
+# verbunden). Eine vom Provider in GETRENNTE Bloecke zerlegte Tabelle (erst
+# alle Spaltenkoepfe, dann alle Werte) bleibt davon bewusst UNBERUEHRT --
+# dafuer gibt es hier keine Positions-/Reihenfolge-Heuristik: ohne einen
+# erkennbaren, direkten Separator zwischen Label und Wert wird weiterhin
+# NICHTS geclaimt (keine erfundene Verbindung).
+#
+# Haertung (im selben Auftrag gefunden, waehrend des Tests gegen eine reale
+# Tabellenkopf-Zeile): der neue "|"-Separator macht eine HEADER-NEBEN-HEADER-
+# Zeile ("| Motorcode | Hubraum | Leistung |", ohne Werte in der Naehe)
+# erreichbar -- ohne weitere Bedingung wuerde "Hubraum" selbst als Motorcode
+# geclaimt (ein reines, beliebiges Wort, genau das vom Auftrag ausgeschlossene
+# "beliebige alphanumerische Codes uebernehmen").
+#
+# Korrektur Runde 1 (Abschlussauftrag 2026-10-25): eine Ziffernpflicht war
+# KEINE tragfaehige allgemeine Regel -- reale Motorcodes sind teils rein
+# alphabetisch (klassische VW/Audi-Codes wie "AHU", "ALH", "AFN", ganz ohne
+# Ziffer).
+#
+# Korrektur Runde 2 (dieselbe Nacharbeit): Grossschreibung ALLEIN war
+# ebenfalls kein verlaesslicher Unterschied -- eine in GROSSBUCHSTABEN
+# gerenderte/geschriebene Kopfzeile ("MOTORCODE | HUBRAUM | LEISTUNG") waere
+# davon nicht zu unterscheiden gewesen. Das tatsaechlich generische,
+# STRUKTURELLE Unterscheidungsmerkmal ist die TABELLENPOSITION, nicht die
+# Schreibweise: eine echte Kopfzeile besteht aus MEHREREN aufeinander-
+# folgenden, rein alphabetischen Pipe-Segmenten OHNE jeden Werte-Charakter
+# (keine Ziffer) -- "Motorcode | Hubraum | Leistung" UND "MOTORCODE |
+# GETRIEBE | KRAFTSTOFF" tragen BEIDE dieses Muster, unabhaengig von der
+# Schreibweise. Ein echter, rein alphabetischer Code (z.B. "AHU") ist
+# zusaetzlich IMMER kurz (klassische VAG-Codes: genau 3 Buchstaben) --
+# "Hubraum"/"Getriebe"/"Kraftstoff" sind das nie. Beide Signale sind
+# unabhaengig von Gross-/Kleinschreibung (`re.IGNORECASE` auf die GANZE
+# Regex, nicht mehr nur auf das Label). Ein Wert MIT Ziffer (2UR-GSE, N55,
+# OM651, B47D20) bleibt von der Laengenpruefung unberuehrt -- echte Codes
+# dieser Form sind laenger und das ist normal. Keine Fahrzeug-/Motorcode-
+# Allowlist: beide Prüfungen sind rein strukturell/lexikalisch, kein Katalog
+# gueltiger Codes.
+_RE_MOTORCODE_CLAIM = re.compile(
+    r"(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*[:|(]?\s*"
+    r"([A-Z0-9][A-Z0-9-]{1,9})\b", re.IGNORECASE)
+
+# Erkennt, ob der erfasste Wert selbst der ERSTE von mindestens ZWEI
+# aufeinanderfolgenden, rein alphabetischen Pipe-Segmenten ist (angewendet
+# auf den Text AB der Fundstelle des Werts) -- das generische Signal fuer
+# "das ist eine Mehrfach-Kopfzeile, keine einzelne Werte-Zuordnung". Ein
+# Wert mit Ziffer/Bindestrich-Zahlenteil ("2UR-GSE") kann dieses Muster
+# nie erfuellen (die Zeichenklasse hier ist rein alphabetisch), ein
+# Zahlenwert/eine Einheit ("4969", "477PS") ebenfalls nicht.
+_RE_MOTORCODE_FOLGE_HEADERZEILE = re.compile(
+    r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß-]{1,15}\s*\|\s*[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß-]{1,15}\b")
+
+# Generische Ausschlussliste: eigenstaendige, fehlende/unbestimmte Werte UND
+# kurze Einheiten-/Feldbezeichnungen, die sonst -- weil sie wie ein kurzer
+# alphabetischer Code AUSSEHEN -- faelschlich durchrutschen koennten. Keine
+# Motorcode-Allowlist (die waere das Gegenteil: eine Liste GUELTIGER Codes).
+_MOTORCODE_AUSSCHLUSS = frozenset({
+    "UNBEKANNT", "UNKNOWN", "KEINE", "NA", "TBD", "OFFEN", "KA", "NONE",
+    "PS", "KW", "NM", "KM", "MM", "CM", "KG", "TYP", "TYPE",
+})
+
+
+def _ist_motorcode_wert(code: str, folgetext: str = "") -> bool:
+    """Schliesst drei generische Fehlerquellen aus -- keine davon braucht
+    einen Fahrzeug-/Markenbezug oder eine Codeliste:
+      * ein fehlender/unbestimmter Wert oder eine kurze Einheit/Feld-
+        bezeichnung (`_MOTORCODE_AUSSCHLUSS`);
+      * ein rein alphabetischer "Code" ohne jede Ziffer, der LAENGER als
+        ein klassischer 3-stelliger VAG-Code ist (`len > 4`) -- ein
+        deutsches Tabellenkopf-/Feldwort wie "Hubraum"/"Getriebe" faellt
+        darunter, "AHU"/"ALH" nicht;
+      * der Wert ist selbst der Anfang einer Mehrfach-Kopfzeile (siehe
+        `_RE_MOTORCODE_FOLGE_HEADERZEILE`) -- bei einer mehrdeutigen
+        Kopfzeile wird KEINE Bestaetigung erzeugt, unabhaengig von der
+        Schreibweise."""
+    code_norm = code.upper()
+    if code_norm in _MOTORCODE_AUSSCHLUSS:
+        return False
+    if not any(ch.isdigit() for ch in code) and len(code) > 4:
+        return False
+    if _RE_MOTORCODE_FOLGE_HEADERZEILE.match(folgetext):
+        return False
+    return True
+
+
 _ZAHLWORT = {"vier": 4, "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7, "acht": 8,
              "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwoelf": 12}
 
@@ -854,6 +1008,21 @@ def _verneint_im_teilsatz(text: str, start: int) -> bool:
     return False
 
 
+def _verneint_nach_position(text: str, start: int) -> bool:
+    """Spiegelbild zu `_verneint_im_teilsatz()`: ob eine Verneinung NACH
+    `start` im selben Teilsatz steht ("Das gilt NICHT für den RC F" --
+    anders als beim Problemwort-Fall steht die Verneinung hier typischerweise
+    HINTER dem Rückbezugswort, nicht davor)."""
+    rest = text[start:start + _NEGATIONS_FENSTER]
+    grenze = _TEILSATZGRENZE.search(rest)
+    eigener_teilsatz = rest[:grenze.start()] if grenze else rest
+    for v in _VERNEINUNGSWORT.finditer(eigener_teilsatz):
+        if _VERNEINUNGS_AUSNAHME.match(v.group()):
+            continue
+        return True
+    return False
+
+
 def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
     url = r.get("url") or ""
@@ -947,6 +1116,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         add("horsepower", int(m.group(1)))
     for m in _RE_HUBRAUM.finditer(text):
         add("displacement", m.group(1).replace(",", "."))
+    for m in _RE_HUBRAUM_CCM.finditer(text):
+        add("displacement", _ccm_als_liter(m.group(1)))
     for wert, rx in _KRAFTSTOFF_CLAIM:
         if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
             add("fuel", wert)
@@ -968,12 +1139,28 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         gaenge = m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3)
         add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None)
+    _automatik_stufen_spans: list[tuple[int, int]] = []
     for m in _RE_GETRIEBE_AUTO.finditer(text):
+        _automatik_stufen_spans.append(m.span())
         if _verneint_im_teilsatz(text, m.start()):
             continue
         stufen = (m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3) or m.group(4))
         add("transmission", "automatik", detail=f"{stufen}-Stufen" if stufen else None)
+    for m in _RE_AUTOMATIK_ALLEIN.finditer(text):
+        # Bereits über die staerkere Stufenangabe erfasst (z.B. "Achtstufen-
+        # Automatik") -- nicht als zweiten, inhaltsgleichen Claim derselben
+        # Textstelle zaehlen.
+        if any(a <= m.start() < b for a, b in _automatik_stufen_spans):
+            continue
+        if _verneint_im_teilsatz(text, m.start()):
+            continue
+        vor = text[max(0, m.start() - 30):m.start()]
+        if _AUTOMATIK_FREMDKONTEXT.search(vor):
+            continue
+        add("transmission", "automatik")
     for m in _RE_MOTORCODE_CLAIM.finditer(text):
+        if not _ist_motorcode_wert(m.group(1), text[m.start(1):]):
+            continue
         if _verneint_im_teilsatz(text, m.start()):
             continue
         add("engine_code", m.group(1).upper())
@@ -1792,6 +1979,118 @@ _KEIN_FAHRZEUG_SUBJEKT_LOKAL = frozenset({
 })
 _RC_W4_MAX_KONTEXT_DISTANZ = 1
 
+# ── F18-Fix (RC-F-Ursachenanalyse, 2026-10-25): bedingte Rückwärts-Vererbung ──
+#
+# Befund (real an carwiki.de/lexus-rc-oelwechsel geprüft, siehe Analyse-Bericht
+# vom selben Datum): der bisherige Kontext wird AUSSCHLIESSLICH vorwärts
+# vererbt (`abstand_seit_nennung`/`kontext_aktiv` werden erst nach einer
+# Modellnennung wahr). Eine reale Mehrvarianten-Seite mit allgemeiner
+# Übersicht VOR der Tabelle ("Normal: Wechseln 15000 km / 12 Monate ...")
+# verliert dadurch Werte, die VOR der ersten Modellnennung stehen — auch dann,
+# wenn Wert UND Modellnennung im selben, durchgehenden Abschnitt stehen.
+#
+# KEINE pauschale symmetrische Rückwärtsvererbung (§ Auftrag): ein Wert vor
+# der Modellnennung wird NUR übernommen, wenn der UNMITTELBAR FOLGENDE Satz
+# GENAU das Zielmodell nennt — NICHT, wenn dieser Satz mehrere Varianten/
+# Motorisierungen AUFZÄHLT (§ Auftrag: "Aufzählungen mehrerer Motorisierungen
+# dürfen keine einzelne Variante vermeintlich bestätigen"). Das ist exakt der
+# reale carwiki.de-Fall: der auf die Intervallbox folgende Satz nennt "RC
+# 200t, RC 300 (ASC10), RC 300h (AVC10), RC 350 UND RC F (USC10)" in einem
+# Zug — eine Aufzählung, keine Einzelzuordnung. Dieser Fall bleibt nach dem
+# Fix bewusst UNGEKLÄRT (kein Kandidat), weil die tatsächlich verfügbare
+# Struktur (Fließtext ohne erhaltene Tabellen-Spaltenzuordnung) keine sichere
+# Zuordnung zu GENAU "RC F" trägt — der frühere Abnahmepunkt "carwiki muss
+# mindestens einen RC-F-Kandidaten liefern" gilt deshalb NICHT mehr
+# bedingungslos (siehe Umsetzungsbericht).
+#
+# Reichweite bewusst auf GENAU EINEN Satz begrenzt (symmetrisch zum
+# bestehenden Vorwärtsfenster `_RC_W4_MAX_KONTEXT_DISTANZ`), bewusst KEIN
+# rekursives Weiterreichen: ein rückwärts-erbender Satz gibt den Kontext
+# NICHT an einen dritten, noch früheren Satz weiter. Ein echter Segment-
+# bruch (`segment_marker`, wo verfügbar) zwischen den beiden Sätzen
+# unterbindet die Vererbung ebenso wie ein fremdes Modell/ein Widerspruch im
+# Zwischensatz selbst (beides bereits an der Einsatzstelle geprüft, siehe
+# `_wartung_kandidat_saetze`/`_segment_kontext_saetze`).
+
+
+def _core_modell_praefix(modell: str | None) -> str | None:
+    """Der wiederkehrende Familien-/Baureihenname vor einer konkreten
+    Variantenbezeichnung ("RC" bei "RC F", "Golf" bei "Golf GTI") — bewusst
+    NICHT über `parse_core_model()` (das verlangt für das NACHGESTELLTE
+    Token mindestens eine Ziffer, siehe `_ist_modell_code_kandidat` — "F"
+    in "RC F" erfüllt das NIE, der real relevante Fall würde sonst
+    unentdeckt bleiben). Hier reicht das einfache ERSTE Wort eines mehr-
+    teiligen Modellnamens als Familienpräfix. `None` bei einteiligen
+    Modellnamen ("320i") — dort greift `_ist_varianten_aufzaehlung()` unten
+    NICHT (dokumentierte Grenze: ohne zerlegbaren Präfix gibt es kein
+    generisches Signal für eine Aufzählung mehrerer Varianten desselben
+    Namens)."""
+    teile = (modell or "").strip().split()
+    return teile[0] if len(teile) >= 2 else None
+
+
+def _ist_varianten_aufzaehlung(satz: str, modell: str | None) -> bool:
+    """True, wenn der Satz den Familien-/Baureihennamen des Zielmodells MEHR
+    ALS EINMAL als eigenes Wort nennt — ein generisches, markenunabhängiges
+    Indiz dafür, dass hier mehrere Varianten/Motorisierungen derselben
+    Baureihe aufgezählt werden (nicht EINE davon gemeint ist)."""
+    praefix = _core_modell_praefix(modell)
+    if not praefix:
+        return False
+    return len(re.findall(rf"\b{re.escape(praefix)}\b", satz, re.IGNORECASE)) > 1
+
+
+# Korrektur (Abschlussauftrag 2026-10-25): "der folgende Satz nennt das
+# Zielmodell" allein beweist KEINE Zuordnung der vorherigen Aussage -- das
+# wäre dieselbe reine Satznachbarschafts-Annahme nur in die andere Richtung
+# (ein Satz, der das Zielmodell nur als NEUES Thema einführt, z.B. "Der
+# Lexus RC F ist ein Hochleistungscoupe.", bindet die vorherige, allgemeine
+# Aussage NICHT an sich). Rückwärts-Vererbung verlangt deshalb ZUSÄTZLICH
+# einen generischen, erkennbaren RÜCKBEZUG auf eine vorherige Aussage ("gilt
+# (auch) für", "das/dies gilt/betrifft", "ebenso/genauso für") -- fehlt
+# dieser Rückbezug im tatsächlich verfügbaren Text, bleibt der Fall
+# UNGEKLÄRT (kein Claim), statt eine Zuordnung zu erfinden.
+_RUECKREFERENZ = re.compile(
+    r"\bgilt\s+(?:auch\s+|gleicherma(?:ß|ss)en\s+|ebenfalls\s+)?(?:f(?:ü|ue)r|bei(?:m)?)\b"
+    r"|\bgleiches\s+gilt\b"
+    r"|\b(?:das|dies(?:e[rs]?)?)\s+(?:gilt|betrifft|trifft\s+zu)\b"
+    r"|\bebenso\s+(?:f(?:ü|ue)r|beim|gilt)\b"
+    r"|\bgenauso\s+(?:f(?:ü|ue)r|beim)\b", re.IGNORECASE)
+
+
+def _ist_echte_rueckreferenz(folge: str, modell: str | None) -> bool:
+    """True NUR, wenn der folgende Satz GENAU das Zielmodell nennt (keine
+    Aufzählung mehrerer Varianten, siehe `_ist_varianten_aufzaehlung`) UND
+    einen generischen Rückbezug auf eine vorherige Aussage trägt UND dieser
+    Rückbezug selbst nicht verneint ist ("gilt NICHT für" schließt das
+    Zielmodell explizit AUS, statt eine Zuordnung zu bestätigen)."""
+    if not _satz_nennt_modell(folge, modell):
+        return False
+    if _ist_varianten_aufzaehlung(folge, modell):
+        return False
+    m = _RUECKREFERENZ.search(folge)
+    if not m:
+        return False
+    return not (_verneint_im_teilsatz(folge, m.start())
+               or _verneint_nach_position(folge, m.start()))
+
+
+def _rueckwaerts_erbfaehige_indizes(satz_liste: list[str], *, modell: str | None,
+                                    segment_marker: list[bool] | None = None) -> set[int]:
+    """Indizes von Sätzen OHNE eigene Modellnennung, die dem unmittelbar
+    FOLGENDEN Satz vertrauen dürfen — nur wenn dieser folgende Satz eine
+    ECHTE Rückreferenz trägt (siehe `_ist_echte_rueckreferenz()`), nicht nur
+    irgendeine Modellnennung, und kein echter Segmentbruch dazwischenliegt."""
+    erbfaehig: set[int] = set()
+    for idx in range(len(satz_liste) - 1):
+        if segment_marker and segment_marker[idx + 1]:
+            continue
+        if _satz_nennt_modell(satz_liste[idx], modell):
+            continue
+        if _ist_echte_rueckreferenz(satz_liste[idx + 1], modell):
+            erbfaehig.add(idx)
+    return erbfaehig
+
 
 def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
     """Enge Erkennung eines ANDEREN, explizit genannten Fahrzeug-Subjekts in
@@ -1885,7 +2184,21 @@ def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
         eigene_tokens = _tokens(unsicher)
         ist_eigene_marke_oder_modell = (bool(eigene_tokens & _tokens(marke))
                                         or _modell_ausgerichtet(eigene_tokens, modell))
-        if not ist_eigene_marke_oder_modell:
+        # Abschlussauftrag (2026-10-25), real reproduzierter Fall: ein Satz
+        # wie "Der Ölwechsel erfolgt alle 60.000 Kilometer beim Lexus RC F."
+        # nennt das Zielmodell EXPLIZIT -- die Satzanfangs-Nominalphrase
+        # ("Ölwechsel") ist dabei nur deshalb "unsicher", weil sie weder im
+        # (schwachstelle-geteilten) Bauteil-Vokabular noch in der kleinen
+        # Nicht-Fahrzeug-Akteur-Liste steht, NICHT weil der Satz tatsächlich
+        # von einem anderen Fahrzeug handelt. Eine explizite, direkte
+        # Nennung des Zielmodells IRGENDWO im Satz ist eine stärkere,
+        # positive Bestätigung als diese rein lexikalische, konservative
+        # Vermutung sie widerlegen kann -- `_fremde_marke_satz()` (oben) UND
+        # `_anderes_fahrzeug_lokal()` (unten) bleiben UNVERÄNDERT und
+        # erkennen ein tatsächlich anderes Fahrzeug weiterhin unabhängig
+        # davon (Fremdmodellschutz bleibt erhalten): diese Lockerung gilt
+        # NUR für die "unsichere Nominalphrase"-Vermutung selbst.
+        if not ist_eigene_marke_oder_modell and not _satz_nennt_modell(satz, modell):
             return f"unsichere_nominalphrase_lokal:{unsicher}"
     anderes = _anderes_fahrzeug_lokal(satz, modell)
     if anderes:
@@ -2010,6 +2323,10 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
     kontext_aktiv = titel_stark
     pruefe_widerspruch = (not titel_stark) or pruefe_widerspruch_bei_titel_stark
     grund_blockiert = "fremdfahrzeug_segment" if titel_stark else "schwach_ausgerichtet_ohne_modellnennung"
+    # F18-Fix (RC-F-Ursachenanalyse, 2026-10-25): bedingte, NICHT pauschale
+    # Rückwärts-Vererbung -- siehe Docstring bei `_rueckwaerts_erbfaehige_indizes()`.
+    erbfaehig = _rueckwaerts_erbfaehige_indizes(satz_liste, modell=modell,
+                                                segment_marker=segment_marker)
     ergebnis: list[str] = []
     for idx in range(len(satz_liste)):
         if segment_marker and segment_marker[idx]:
@@ -2041,6 +2358,11 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
         if kontext_aktiv:
             log.debug("RC-W4(v2): Claim akzeptiert via Segment-Kontext "
                      "(titel_stark=%s): %r", titel_stark, satz[:120])
+            ergebnis.append(satz)
+            continue
+        if idx in erbfaehig:
+            log.debug("F18-Fix: Claim akzeptiert via Rueckwaerts-Kontext "
+                     "(naechster Satz nennt GENAU das Zielmodell): %r", satz[:120])
             ergebnis.append(satz)
             continue
         if abgelehnt is not None:
@@ -2372,7 +2694,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
 
     for r in treffer:
         url = r.get("url") or ""
-        score = score_domain(url, _WEB_KATEGORIE[kategorie])
+        score = _score_domain_fuer_marke(url, _WEB_KATEGORIE[kategorie], marke)
         if score < min_score:
             # RC-W3 (Observability, kein Verhaltenswechsel): bisher stille
             # Verwerfung ganzer Treffer unterhalb der Quellenschwelle.
@@ -2973,7 +3295,14 @@ def _wartung_kandidat_saetze(r: dict, marke: str | None, modell: str | None,
         abgelehnt.append({"url": url, "kategorie": "wartung", "grund": grund,
                           "source_type": _wartung_source_type(r)})
         return []
-    satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
+    satz_mit_grenze = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+    satz_liste = [s for s, _ in satz_mit_grenze]
+    segment_marker = [g for _, g in satz_mit_grenze]
+    # F18-Fix (RC-F-Ursachenanalyse, 2026-10-25): bedingte, NICHT pauschale
+    # Rückwärts-Vererbung -- siehe Docstring bei `_rueckwaerts_erbfaehige_indizes()`.
+    # Ein echter Segmentbruch (Absatz/Überschrift) unterbindet die Vererbung
+    # genauso wie im Schwachstelle-Pfad (`_segment_kontext_saetze`).
+    erbfaehig = _rueckwaerts_erbfaehige_indizes(satz_liste, modell=modell, segment_marker=segment_marker)
     ergebnis: list[str] = []
     abstand_seit_nennung: int | None = None
     for idx in range(len(satz_liste)):
@@ -2986,6 +3315,8 @@ def _wartung_kandidat_saetze(r: dict, marke: str | None, modell: str | None,
                 continue
             if _satz_nennt_modell(satz, modell):
                 abstand_seit_nennung = 0
+            elif idx in erbfaehig:
+                pass
             else:
                 abstand = None if abstand_seit_nennung is None else abstand_seit_nennung + 1
                 if abstand is None or abstand > _RC_W4_MAX_KONTEXT_DISTANZ:
@@ -3119,7 +3450,7 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
 
     for r in treffer:
         url = r.get("url") or ""
-        if score_domain(url, KATEGORIE_WARTUNG) >= MIN_SCORE_FAKT:
+        if _score_domain_fuer_marke(url, KATEGORIE_WARTUNG, marke) >= MIN_SCORE_FAKT:
             continue   # bestehender Pfad greift bereits -- hier nicht doppelt verarbeiten
         if _fremde_generation(r, modell, generation):
             abgelehnt.append({"url": url, "kategorie": "wartung", "grund": "andere_generation",
@@ -3354,7 +3685,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
 
     for r in treffer:
         url = r.get("url") or ""
-        if score_domain(url, KATEGORIE_SCHWACHSTELLEN) >= MIN_SCORE_FAKT:
+        if _score_domain_fuer_marke(url, KATEGORIE_SCHWACHSTELLEN, marke) >= MIN_SCORE_FAKT:
             continue   # bestehender Pfad greift bereits -- hier nicht doppelt verarbeiten
         ok, grund = ausgerichtet(r, marke, modell)
         if not ok:
