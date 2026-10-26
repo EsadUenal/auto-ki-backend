@@ -1278,7 +1278,28 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
     Nutzereingabe übereinstimmt. Ein ANDERER, abweichender Code bleibt
     unverändert an dieselbe Schwelle gebunden — ein expliziter Widerspruch
     (ein zweiter, kontext-/jahrbelegter Code) wird weiterhin von `konsens()`
-    als Konflikt erkannt, nie blind übernommen."""
+    als Konflikt erkannt, nie blind übernommen.
+
+    Fortsetzungsauftrag (falsche Generationsbestätigung, konkret abgeschlossen):
+    reproduziert UNABHÄNGIG von `bekannter_code`/der Modellfeld-Abtrennung
+    (empirisch geprüft: tritt identisch auf, wenn der Nutzer den Zusatz gar
+    nicht erst eingibt) — ein rein ZIFFERNLOSER Code ("RS", "ST", "FR" —
+    Leistungs-/Ausstattungsvarianten, KEINE Chassisgeneration) wurde allein
+    durch `kontext` (ein Generationswort IRGENDWO in der Nähe, z.B. "…, diese
+    Generation, …") bestätigt, ohne dass dieses Wort inhaltlich überhaupt zum
+    gefundenen Code gehören muss — ein rein syntaktischer Zusatz plus ein
+    bloß benachbarter Generationsbegriff sind kein semantischer Generations-
+    beleg. Echte, digit-tragende Chassiscodes ("USC10", "F82", "W205", "B9")
+    sind durch die Ziffer bereits so spezifisch, dass ein zufälliges
+    Zusammentreffen mit einem Kontextwort praktisch ausschließt, dass es sich
+    um ein normales Wort handelt (s. `_ist_modell_code_kandidat`-Docstring) —
+    DAFÜR bleibt `kontext` allein weiterhin ausreichend, unverändert. Für
+    ZIFFERNLOSE Codes ist dasselbe Argument nicht tragfähig (zu viele reale
+    Trimnamen sind reine Buchstabenfolgen) — dort braucht es zusätzlich ein
+    belegtes Jahresfenster. Betrifft NUR das Verwerfen/Bestätigen der
+    Generation selbst: `auxiliary_code`/Modell-/Variantendaten bleiben
+    vollständig erhalten (reichern Queries weiter an), ein so verworfener
+    Code wird UNKNOWN (`"ohne_generationskontext"`), nicht gelöscht."""
     gen = [c for c in claims if c["feld"] == "generation"]
     aus = {c["wert"] for c in gen if c.get("verworfen") == "baujahr_ausserhalb"}
     ein = {c["wert"] for c in gen if c.get("jahr_belegt")}
@@ -1290,7 +1311,8 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
             c["passend_zum_kandidat"] = True
         if c["wert"] in aus - ein:
             c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
-        elif not (c.get("jahr_belegt") or c.get("kontext")):
+        elif not (c.get("jahr_belegt")
+                 or (c.get("kontext") and any(ch.isdigit() for ch in str(c["wert"])))):
             c["verworfen"] = "ohne_generationskontext"
 
 

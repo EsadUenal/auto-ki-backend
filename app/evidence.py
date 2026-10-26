@@ -827,6 +827,23 @@ def _web_beschreibung(fakt, baujahr) -> str:
     text = fakt.aussage
     geltung = getattr(fakt, "geltung_fuer_fahrzeug", None)
     bereich = getattr(fakt, "geltungsbereich", None)
+    # Produktentscheidung (Fortsetzungsauftrag, "Aussage und Evidenzstatus
+    # müssen sprachlich zusammenpassen"): `fakt.aussage` ist der UNVERÄNDERTE
+    # Quellensatz. Bei "uebereinstimmend_unbestaetigt" (CORROBORATED, jetzt
+    # sichtbar gemacht) würde derselbe, oft imperativisch klingende Satz
+    # ("muss ... erfolgen") wie eine eigene, verbindliche Berichtsaussage
+    # wirken, obwohl er nur EINE von mehreren übereinstimmenden Quellen
+    # zitiert und für DIESES Fahrzeug nicht bestätigt ist. Generische
+    # Attribution, unabhängig von der konkreten Quellenformulierung (keine
+    # Wort-für-Wort-Ersetzung im einzelnen Text): der Quellensatz bleibt
+    # WÖRTLICH erhalten (samt allen Bedingungen/Ausnahmen), wird aber explizit
+    # als Zitat der ausgewerteten Quellen eingeleitet und um den
+    # unveränderten Bestätigungsstatus ergänzt. Nachgelagerte Geltungsbereich-
+    # Logik (unten) bleibt dadurch unverändert anwendbar, falls eine künftige
+    # Candidate-Pfad-Erweiterung auch hierfür einmal `geltungsbereich` setzt.
+    if getattr(fakt, "beleglage", None) == "uebereinstimmend_unbestaetigt":
+        text = (f"Die ausgewerteten Quellen nennen übereinstimmend: „{text}“ Für dieses "
+                "Fahrzeug ist diese Angabe nicht ausreichend bestätigt.")
     if fakt.kategorie == "rueckruf" and fakt.applicability == "vehicle_possible":
         text += (f" Das Baujahr {baujahr or ''} liegt im genannten Produktionszeitraum: das "
                  "Fahrzeug ist möglicherweise betroffen. Nur die FIN-Prüfung klärt das.").replace("  ", " ")

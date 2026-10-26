@@ -142,6 +142,17 @@ if _web_wartung:
           "Herstellerbeleg" in i.titel, i.titel)
     check("D4: Beschreibung nennt den Wartungsgegenstand und die konkrete Angabe (20.000)",
           "20.000" in i.beschreibung, i.beschreibung)
+    check("D4b: Aussage und Evidenzstatus passen sprachlich zusammen -- der Quellensatz "
+          "wird NEUTRAL attribuiert ('Die ausgewerteten Quellen nennen ...'), NICHT als "
+          "eigene, verbindliche Berichtsaussage wiedergegeben (kein nacktes 'muss ... "
+          "erfolgen' ohne Zuschreibung)",
+          i.beschreibung.startswith("Die ausgewerteten Quellen nennen übereinstimmend: „")
+          and "Für dieses Fahrzeug ist diese Angabe nicht ausreichend bestätigt." in i.beschreibung,
+          i.beschreibung)
+    check("D4c: der ursprüngliche Quellensatz bleibt WÖRTLICH erhalten (samt Bedingung "
+          "'oder spätestens nach 12 Monaten') -- keine Kürzung, keine Wort-Ersetzung",
+          "muss der Ölwechsel immer nach 20.000 Kilometern oder spätestens nach 12 Monaten "
+          "erfolgen" in i.beschreibung, i.beschreibung)
     check("D5: Einfluss erklärt verständlich Übereinstimmung + fehlende Primärbestätigung",
           "übereinstimmend" in i.einfluss and "nicht ausreichend bestätigt" in i.einfluss, i.einfluss)
     check("D6: Einfluss nennt die konkrete Gegenprüfung (Wartungsplan/Serviceheft/Hersteller)",
