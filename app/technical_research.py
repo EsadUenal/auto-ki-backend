@@ -422,7 +422,8 @@ def fallback_trigger(req, baureihe_roh: dict | None, identitaet: dict,
 # Maschinerie, siehe dort), zerstört aber nie mehr die Mindest-Identität nur
 # weil er selbst unbestätigt bleibt.
 _MODELL_CODE_AUSSCHLUSS = frozenset({"ps", "kw", "tdi", "tsi", "tfsi", "fsi", "tce", "dci",
-                                     "crdi", "hdi", "cdti", "vti", "thp", "bluehdi", "multijet"})
+                                     "crdi", "hdi", "cdti", "vti", "thp", "bluehdi", "multijet",
+                                     "gt"})
 
 
 def _ist_modell_code_kandidat(token: str) -> bool:
@@ -448,13 +449,35 @@ def _ist_modell_code_kandidat(token: str) -> bool:
     solcher Kandidat kann NIE zu einer bestätigten Generation werden, weil
     `_generationscodes()` für jeden Code mindestens einen Buchstaben verlangt
     (s. dort). Vier Ziffern bleiben bewusst ausgeschlossen, weil das meist
-    eine inline genannte Jahreszahl ist, kein Chassiscode."""
+    eine inline genannte Jahreszahl ist, kein Chassiscode.
+
+    Fortsetzungsauftrag (MX-5-NC-Alignment, Core-Model/Auxiliary-Code-
+    Inkonsistenz): die bisherige Ziffernpflicht erfasste NUR Codes wie
+    "USC10"/"F82"/"991" — ein rein ALPHABETISCHER Generationscode ohne Ziffer
+    ("NC", "ND", "NA", "NB") wurde NIE abgetrennt, obwohl `_generationscodes()`
+    (oben, Root Cause 3) genau SOLCHE Codes bereits als Generation akzeptiert
+    (dort bewusst `[A-Z]{1,2}` für den ziffernlosen Fall). Eine Quelle, die
+    das Zielmodell nur als Prosa ("dritte Generation") statt als Code nennt,
+    verlor dadurch ihre sonst eindeutige Core-Model-Übereinstimmung komplett
+    (`modell_fehlt`) -- obwohl ein fehlender Zusatzcode laut `_ziel()`-Docstring
+    (Auxiliary Candidate) eine passende Core-Model-Quelle NIE ausschließen
+    darf. Fix: DIESELBE, bereits bestehende und getestete Grenze wie bei
+    `_generationscodes()` -- ein ziffernloser Code bleibt auf 1-2 Buchstaben
+    begrenzt (ein echtes Wort/eine Ausstattungsbezeichnung hat praktisch immer
+    mehr), inklusive derselben kleinen Ausschlussliste (u.a. "GT", bereits dort
+    als Trimname statt Generationscode ausgeschlossen). Generisch -- keine
+    Marken-/Modell-Sonderliste; betrifft jeden zweiteiligen `modell`-String
+    gleichermaßen."""
     t = (token or "").strip()
     if not (2 <= len(t) <= 8) or not re.fullmatch(r"[A-Za-z0-9]+", t):
         return False
     if re.fullmatch(r"\d{2,3}", t):
         return True   # z.B. "992"/"991" -- reine Alignment-Entlastung, s. Docstring
-    if not (re.search(r"\d", t) and re.search(r"[A-Za-z]", t)):
+    hat_ziffer = bool(re.search(r"\d", t))
+    if not hat_ziffer:
+        if len(t) > 2:
+            return False   # echtes Wort/Ausstattungsbezeichnung ("Sport", "Touring"), kein Code
+    elif not re.search(r"[A-Za-z]", t):
         return False
     t_norm = _norm(t)
     if t_norm in _MODELL_CODE_AUSSCHLUSS or any(t_norm.endswith(suf) for suf in _MODELL_CODE_AUSSCHLUSS):
@@ -2151,6 +2174,31 @@ def _unsichere_satzanfangs_nominalphrase(satz: str, modell: str | None) -> str |
     return wort
 
 
+def _fremdfahrzeug_explizit_lokal(satz: str, marke: str | None,
+                                  modell: str | None) -> str | None:
+    """Die beiden ZUVERLÄSSIGEN, NIEDRIG-False-Positive-Signale aus
+    `_claim_widerspricht_fahrzeug_lokal()` -- explizite fremde Marke
+    (`_fremde_marke_satz`) und die enge "beim/für den <anderes Fahrzeug>"-
+    Konstruktion (`_anderes_fahrzeug_lokal`). BEWUSST OHNE die weichere
+    `_unsichere_satzanfangs_nominalphrase`-Heuristik (dritter Zweig dort):
+    die ist auf den "schwach"-Kontext kalibriert (siehe Docstring dort) und
+    erzeugt bei normalen, satzanfangstehenden Bauteilnamen echter Ziel-
+    fahrzeug-Sätze False Positives (z.B. "Die Zündkerzen werden beim 2.0
+    SKYACTIV-G ... gewechselt." -- kein anderes Fahrzeug, nur ein der
+    Funktion unbekanntes Bauteilwort am Satzanfang). Für Seiten mit STARKER
+    Artikel-Ausrichtung (Titel nennt Marke+Modell bereits) bleibt deshalb nur
+    dieser engere, generische Fremdfahrzeug-Check aktiv (Fortsetzungsauftrag,
+    F18-Konkretisierung) -- die volle, striktere Prüfung inkl. Nominalphrase
+    bleibt dem bestehenden "schwach"-Pfad vorbehalten."""
+    fremde_marke = _fremde_marke_satz(satz, marke, modell)
+    if fremde_marke:
+        return f"fremde_marke_lokal:{fremde_marke}"
+    anderes = _anderes_fahrzeug_lokal(satz, modell)
+    if anderes:
+        return f"anderes_fahrzeug_lokal:{anderes}"
+    return None
+
+
 def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
                                        modell: str | None) -> str | None:
     """Expliziter Widerspruch auf Satzebene (schlägt geerbten Kontext IMMER):
@@ -2435,6 +2483,109 @@ def _distanz1_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell
 # restliche Code dieser Datei unveraendert bleibt.
 from app.recall_event_matching import gleiches_rueckruf_ereignis as _gleiches_rueckruf_ereignis
 from app.recall_event_matching import inhaltstokens as _inhaltstokens
+from app.recall_event_matching import MIN_GLEICHHEIT_TOKENS as _MIN_GLEICHHEIT_TOKENS
+
+
+# Fortsetzungsauftrag (Rückruf-Doppelzählung, z.B. "Kraftstoffpumpe" UND
+# "Pulsationsdämpfer" aus DERSELBEN Quell-URL/Defektkette/Aktion): bisher
+# dedupte `_extrahiere_fakten()` Rückrufe AUSSCHLIESSLICH über den
+# Bauteil-Vokabularschlüssel (`schluessel`, s.u.) — zwei verschiedene
+# Bauteilbegriffe in EINEM Artikel über EINE Rückrufaktion erzeugten zwei
+# eigenständige Kandidaten und damit zwei WebFakt/Insight-Objekte.
+#
+# Fix: dieselbe, bereits bestehende und für den Cross-Source-Vergleich
+# genutzte Ereignisgleichheit (`gleiches_rueckruf_ereignis`, konservative
+# Mindest-Token-Überlappung) entscheidet jetzt AUCH innerhalb einer Quelle,
+# ob ein neuer Bauteil-Treffer in einen bereits bestehenden Kandidaten
+# DERSELBEN URL gebündelt wird. Weder "gleiche URL" noch "gleiches Bauteil"
+# allein genügt (beide bleiben wie zuvor kein hinreichendes Kriterium) —
+# zwei eigenständige Aktionen auf derselben Seite (kein Tokenüberlapp)
+# bleiben zwei Kandidaten. Bei Unklarheit (keine Überlappung) wird NICHT
+# gebündelt — derselbe konservative Grundsatz wie bei `ausgeschlossene_themen`
+# oben. Keine Fahrzeug-/Bauteil-/Kampagnen-Hardcodes.
+# Gegenprüfung (Fortsetzungsauftrag, "Rückruf-Bündelung — gezielte Abschluss-
+# prüfung"): `gleiches_rueckruf_ereignis` (Token-Überlappung) allein beweist
+# KEINE sichere Kampagnenidentität — zwei Meldungen mit stark ähnlichem,
+# weitgehend formelhaftem Text, aber EXPLIZIT unterschiedlichen Kampagnen-/
+# Referenznummern, kollidierten sonst sowohl über den normalen Bauteil-
+# Vokabularschlüssel (derselbe Bauteilbegriff in beiden Sätzen) als auch über
+# die neue Ereignisgleichheits-Bündelung (hohe Textüberlappung abzüglich der
+# Zahl selbst). Reproduziert: zwei Sätze mit "Referenznummer 12345" bzw.
+# "Referenznummer 67890", sonst identischer Formulierung, derselben URL und
+# demselben Bauteil ("Kraftstoffpumpe") ergaben fälschlich EINEN Fakt.
+# Generische, kleine Regex für die üblichen deutschen Bezeichnungen einer
+# Rückruf-/Kampagnenkennung — keine Fahrzeug-/Marken-/Bauteil-Sonderliste.
+_RE_RUECKRUF_REFERENZ = re.compile(
+    r"(?:referenznummer|r(?:ü|ue)ckrufcode|r(?:ü|ue)ckrufnummer|aktenzeichen|"
+    r"kampagnennummer|kampagnen-?nr\.?|vorgangsnummer|ref\.?-?nr\.?)\s*:?\s*"
+    r"([A-Za-z0-9][A-Za-z0-9\-/]{1,19})", re.IGNORECASE)
+
+
+def _rueckruf_referenz(claim: str) -> str | None:
+    """Explizit genannte Kampagnen-/Referenznummer eines Rückruf-Claims, falls
+    vorhanden — rein lexikalisch, keine Prüfung gegen eine echte Datenbank
+    (das bleibt `app/kba_reconciliation.py`/`app/recall_filter.py` vorbehalten,
+    hier geht es nur darum, zwei TEXTLICH unterschiedlich referenzierte
+    Meldungen nicht stillschweigend zu verschmelzen)."""
+    m = _RE_RUECKRUF_REFERENZ.search(claim or "")
+    return m.group(1).upper() if m else None
+
+
+def _rueckruf_kandidat_schluessel(kandidaten: dict, schluessel: str, url: str,
+                                  kandidat_tokens: set[str],
+                                  referenz: str | None) -> object:
+    """Schlüssel für einen Rückruf-Kandidaten DERSELBEN Quell-URL.
+
+    Zwei generische Sperren, BEIDE unabhängig von Fahrzeug-/Bauteil-/
+    Kampagnen-Sonderlisten:
+
+      1. Expliziter Referenz-/Kampagnennummer-Konflikt (`_rueckruf_referenz`):
+         trägt ein bestehender Kandidat derselben URL eine ANDERE explizite
+         Nummer, gilt er NIE als Ziel — auch nicht bei gleichem Bauteil-
+         Schlüssel oder hoher Textüberlappung (sonst kollidieren zwei Meldungen
+         mit nur einer unterschiedlichen Nummer sonst identischen,
+         formelhaften Textes).
+      2. Ereignisgleichheit (`gleiches_rueckruf_ereignis`) gilt jetzt AUCH für
+         den schlichten Bauteil-Vokabularschlüssel selbst, nicht nur für
+         Bündelung über unterschiedliche Bauteilbegriffe: zwei Sätze, die
+         ZUFÄLLIG denselben Bauteilbegriff treffen ("Kraftstoffpumpe wird
+         undicht" / "Kraftstoffpumpe hat Kabelbruch"), aber inhaltlich zu
+         wenig teilen, gelten NICHT automatisch als dieselbe Meldung mehr
+         (reproduzierter Befund: stille Kollision, zweiter Claim ohne jeden
+         Ablehnungs-Eintrag verschluckt).
+
+    Ohne gültiges Ziel entsteht bei blockiertem `schluessel` ein eigener,
+    disambiguierter Schlüssel (Tupel) statt der bisherigen stillen Kollision —
+    NIE eine spekulative Zusammenführung bei unklarer Aktionsidentität.
+
+    Die Ereignisgleichheits-Sperre auf dem schlichten `schluessel` greift NUR,
+    wenn der bestehende Kandidat bereits SUBSTANZIELLEN Inhalt trägt (mind.
+    `MIN_GLEICHHEIT_TOKENS` eigene Tokens in mindestens einem Beitrag) — eine
+    knappe Kopf-/Titelzeile ohne jeden inhaltlichen Überschuss (z.B. "Rückruf
+    Lexus RC F: Kraftstoffpumpe") hat nichts, dem ein folgender, ausführlicher
+    Satz zum selben Bauteil widersprechen könnte, und bündelt wie bisher."""
+    basis_blockiert = False
+    for key, e in kandidaten.items():
+        if not any((t.get("url") or "") == url for t in e.get("treffer") or ()):
+            continue
+        vorhandene_referenzen = [r for r in (e.get("referenzen") or []) if r]
+        konflikt = bool(referenz and vorhandene_referenzen and referenz not in vorhandene_referenzen)
+        if konflikt:
+            if key == schluessel:
+                basis_blockiert = True
+            continue
+        bestehende_tokens = e.get("ereignis_tokens") or []
+        if _gleiches_rueckruf_ereignis(kandidat_tokens, bestehende_tokens):
+            return key
+        if key == schluessel:
+            hat_substanz = any(len(ts) >= _MIN_GLEICHHEIT_TOKENS for ts in bestehende_tokens)
+            if hat_substanz:
+                basis_blockiert = True
+            else:
+                return key
+    if basis_blockiert:
+        return (schluessel, referenz) if referenz else (schluessel, frozenset(kandidat_tokens))
+    return schluessel
 
 
 # RC-W3 (Release-Review, Risiko 3 + Dedupe-Semantik-Nachprüfung): `kandidaten.
@@ -2850,10 +3001,30 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                                          marke, modell, bauteil_claim,
                                                          kategorie=kategorie)
                         if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN else schluessel)
+                    ereignis_tokens, referenz = None, None
+                    if kategorie == "rueckruf":
+                        # Rückruf-Doppelzählung (Fortsetzungsauftrag): ein zweiter
+                        # Bauteilbegriff derselben Quell-URL wird nur dann in einen
+                        # bestehenden Kandidaten gebündelt, wenn er NACHWEISLICH
+                        # dieselbe Aktion beschreibt (siehe
+                        # `_rueckruf_kandidat_schluessel` oben) — nicht schon durch
+                        # gleiche URL oder gleiches Bauteil, UND NIE bei einer
+                        # explizit anderen Kampagnen-/Referenznummer (Gegenprüfung).
+                        ereignis_tokens = _inhaltstokens(claim, marke, modell, bauteil_claim)
+                        referenz = _rueckruf_referenz(claim)
+                        kandidat_key = _rueckruf_kandidat_schluessel(
+                            kandidaten, schluessel, url, ereignis_tokens, referenz)
                     eintrag = kandidaten.setdefault(
                         kandidat_key, {"aussage": claim, "bauteil": bauteil_claim,
-                                      "treffer": [],
+                                      "treffer": [], "ereignis_tokens": [], "referenzen": [],
+                                      "bauteile": [bauteil_claim] if bauteil_claim else [],
                                       "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None})
+                    if kategorie == "rueckruf":
+                        eintrag["ereignis_tokens"].append(ereignis_tokens)
+                        if referenz:
+                            eintrag["referenzen"].append(referenz)
+                        if bauteil_claim and bauteil_claim not in eintrag["bauteile"]:
+                            eintrag["bauteile"].append(bauteil_claim)
                     if r not in eintrag["treffer"]:
                         eintrag["treffer"].append(r)
                     if passt is True and eintrag["passt"] is not True:
@@ -2910,8 +3081,17 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             applicability = "vehicle_possible" if e["passt"] is True else "series_only"
         else:
             applicability = None
+        # Rückruf-Doppelzählung (Fortsetzungsauftrag): wurden mehrere Bauteil-
+        # begriffe derselben Aktion gebündelt (`_rueckruf_kandidat_schluessel`),
+        # zeigt EIN WebFakt/Insight beide Begriffe an, statt den zweiten
+        # stillschweigend zu verlieren. `e["bauteil"]` (die ERSTE Mention)
+        # bleibt unverändert die
+        # Grundlage für die interne Substanzprüfung oben.
+        bauteil_anzeige = e["bauteil"]
+        if kategorie == "rueckruf" and len(e.get("bauteile") or []) > 1:
+            bauteil_anzeige = " / ".join(e["bauteile"])
         fakten.append(WebFakt(
-            kategorie=kategorie, bauteil=e["bauteil"], aussage=e["aussage"],
+            kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
         ))
@@ -3309,6 +3489,24 @@ def _wartung_kandidat_saetze(r: dict, marke: str | None, modell: str | None,
         satz = _kontext_aufloesen(satz_liste, idx)
         if satz is None:
             continue
+        # Fortsetzungsauftrag (F18-Konkretisierung): der explizite Fremd-
+        # fahrzeug-/Fremdvarianten-Widerspruch (NUR die beiden harten Signale,
+        # siehe `_fremdfahrzeug_explizit_lokal`) galt bisher NUR bei
+        # "schwacher" Artikel-Ausrichtung. Eine über den Titel STARK
+        # ausgerichtete Seite (grund=None) kann im Fließtext trotzdem eine
+        # andere Variante nennen ("Beim Lexus RC 300h gilt ... alle 10.000
+        # km", im selben Artikel wie die korrekte RC-F-Aussage) -- ohne diese
+        # Prüfung zählt dieser Satz allein wegen des Artikeltitels, vergiftet
+        # die Quelle als intern inkonsistent und wirft dadurch auch ihre
+        # eigene, korrekte RC-F-Aussage weg (reproduzierter Befund). Bewusst
+        # NUR der enge Fremdfahrzeug-Check, NICHT die volle
+        # `_claim_widerspricht_fahrzeug_lokal` (deren dritter, weicherer
+        # Nominalphrasen-Zweig bleibt auf den "schwach"-Pfad beschränkt --
+        # siehe dortigen Docstring; sonst False Positives bei gewöhnlichen,
+        # der Funktion unbekannten Bauteilwörtern am Satzanfang).
+        if _fremdfahrzeug_explizit_lokal(satz, marke, modell):
+            abstand_seit_nennung = None
+            continue
         if grund == "schwach":
             if _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
                 abstand_seit_nennung = None
@@ -3544,19 +3742,45 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                 aussage=beitraege[0]["claim"], confidence="mittel",
                 beleglage="mehrfach_unabhaengig",
                 quellen=_quellen_aus([k["treffer"] for k in beitraege])))
-        elif status in (WARTUNG_STATUS_MULTI_SOURCE, WARTUNG_STATUS_CORROBORATED):
-            # §3/§4 Auftrag: CORROBORATED (2 Families) bleibt NIE user-visible.
-            # MULTI_SOURCE (>=3 Families) bleibt NUR dann (noch) nicht
-            # sichtbar, wenn der Aufrufer die Source-Upgrade-Nachrecherche
-            # noch nicht versucht/erlaubt hat -- `eskalierbar=True` signalisiert
-            # genau diesen Fall an den Aufrufer (§1/§6 Auftrag).
+        elif status == WARTUNG_STATUS_CORROBORATED:
+            # Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungs-
+            # hinweise sichtbar machen"): CORROBORATED wird jetzt IMMER sicht-
+            # bar gemacht, NICHT mehr nur intern geloggt -- der Evidenzstatus
+            # selbst bleibt dabei unverändert CORROBORATED (eigener
+            # `beleglage`-Wert, NIE "verified", NIE vermischt mit dem
+            # Hauptpfad-Fakt-Mechanismus oben). Ausnahme bleibt bestehen: eine
+            # Gruppe, die NUR über den UNKNOWN-Tier-Fallback in
+            # `_wartung_verification_status` (§6 Auftrag Runde 2: "UNKNOWN wird
+            # NIE VERIFIED") auf CORROBORATED kam, bleibt UNSICHTBAR -- dieser
+            # Schutz galt bereits vor dieser Produktentscheidung und wird hier
+            # nicht gelockert (keine Quellenaufwertung einer nicht
+            # klassifizierbaren Domain).
+            beitraege = [k for k in gruppe if k["family"] in stimmen]
+            tiers = {k["source_type"] for k in beitraege}
+            if WARTUNG_SOURCE_UNKNOWN in tiers:
+                for k in beitraege:
+                    abgelehnt.append({"url": k["url"], "kategorie": "wartung",
+                                      "grund": "wartung_corroborated_unknown_tier",
+                                      "satz": k["claim"][:120], "source_type": k["source_type"],
+                                      "bauteil": k["bauteil"], "merkmal": k["merkmal"],
+                                      "provenance_claimed": provenance_claimed})
+            else:
+                fakten.append(WebFakt(
+                    kategorie="wartung", bauteil=beitraege[0]["bauteil"],
+                    aussage=beitraege[0]["claim"], confidence="niedrig",
+                    beleglage="uebereinstimmend_unbestaetigt",
+                    quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+        elif status == WARTUNG_STATUS_MULTI_SOURCE:
+            # MULTI_SOURCE (>=3 Families) bleibt NUR dann (noch) nicht sichtbar,
+            # wenn der Aufrufer die Source-Upgrade-Nachrecherche noch nicht
+            # versucht/erlaubt hat -- `eskalierbar=True` signalisiert genau
+            # diesen Fall an den Aufrufer (§1/§6 Auftrag). Unveraendert.
             eskalierbar = True
-            grund = ("wartung_multi_source_pending_upgrade" if status == WARTUNG_STATUS_MULTI_SOURCE
-                    else "wartung_corroborated_not_verified")
             for k in gruppe:
                 if k["family"] in stimmen:
                     abgelehnt.append({"url": k["url"], "kategorie": "wartung",
-                                      "grund": grund, "satz": k["claim"][:120],
+                                      "grund": "wartung_multi_source_pending_upgrade",
+                                      "satz": k["claim"][:120],
                                       "source_type": k["source_type"], "bauteil": k["bauteil"],
                                       "merkmal": k["merkmal"],
                                       "provenance_claimed": provenance_claimed})

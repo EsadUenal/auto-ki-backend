@@ -198,11 +198,18 @@ async def test_d_candidate_evidence_aus_beiden_queries():
         "Wartungsintervall Serviceintervall": [REPAREO_ZAHNRIEMEN_SCHWACH],
         "Inspektionsintervall": [AUTOTEILE_ZAHNRIEMEN_SCHWACH_GLEICH],
     })
-    check("D) zwei unabhängige Secondary-Families aus Q1+Q2 -> AGREEMENT (CORROBORATED, "
-          "weiterhin NICHT user-visible -- Evidence-Layer unverändert)",
-          "wartung_corroborated_not_verified" in _gruende(recherche))
-    check("D) kein künstlich erzeugter harter Wartungsfakt aus bloßem Secondary-Agreement",
-          not any(b == "Zahnriemen" for b, _ in _wa_fakten(recherche)))
+    # Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungshinweise
+    # sichtbar machen"): CORROBORATED wird jetzt sichtbar gemacht -- der
+    # Evidenzstatus selbst bleibt unverändert CORROBORATED (eigener
+    # beleglage-Wert, NIE "verified"). Siehe test_wartung_corroborated_
+    # sichtbar.py für die volle Herleitung/Schutzregeln.
+    zahnriemen_fakten = [f for f in recherche.fakten
+                        if f.kategorie == "wartung" and f.bauteil == "Zahnriemen"]
+    check("D) zwei unabhängige Secondary-Families aus Q1+Q2 -> AGREEMENT (CORROBORATED), "
+          "jetzt sichtbar, aber klar als CORROBORATED (nicht VERIFIED) markiert",
+          len(zahnriemen_fakten) == 1
+          and zahnriemen_fakten[0].beleglage == "uebereinstimmend_unbestaetigt"
+          and zahnriemen_fakten[0].confidence == "niedrig", str(zahnriemen_fakten))
 
 
 # ── F) unterschiedliche Service-Regime (fest vs. LongLife) -> kein Conflict ─

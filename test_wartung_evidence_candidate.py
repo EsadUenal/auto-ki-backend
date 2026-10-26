@@ -59,6 +59,25 @@ def _gruende(abgelehnt: list[dict]) -> set[str]:
     return {a.get("grund") for a in abgelehnt}
 
 
+# Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungshinweise
+# sichtbar machen"): CORROBORATED (>=2 unabhängige, nicht-UNKNOWN Secondary-
+# Familien, gleicher Wert, kein Primärbeleg) erzeugt jetzt einen EIGENEN,
+# sichtbaren WebFakt (beleglage="uebereinstimmend_unbestaetigt",
+# confidence="niedrig") statt intern verworfen zu werden
+# ("wartung_corroborated_not_verified" existiert als Ablehnungsgrund NICHT
+# mehr für diesen Fall). Der Evidenzstatus selbst bleibt unverändert
+# CORROBORATED -- NIE "verified", NIE vermischt mit einem echten Primärbeleg.
+# Siehe test_wartung_corroborated_sichtbar.py für die End-to-End-Sicht
+# (Bericht, Einfluss-Text, Schutzregeln). Dieser Helfer hält die hiesigen
+# Assertions auf das eigentlich Interessante fokussiert: IST es sichtbar,
+# UND bleibt es als CORROBORATED (nicht VERIFIED) gekennzeichnet.
+def _corroborated(fakten: list, bauteil_enthaelt: str | None = None):
+    kandidaten = [f for f in fakten if getattr(f, "beleglage", None) == "uebereinstimmend_unbestaetigt"]
+    if bauteil_enthaelt is not None:
+        kandidaten = [f for f in kandidaten if bauteil_enthaelt in (f.bauteil or "")]
+    return kandidaten
+
+
 print("=" * 78)
 print("A) PRIMARY + eindeutige Applicability -> VERIFIED (bestehender Pfad, unveraendert)")
 print("=" * 78)
@@ -89,10 +108,11 @@ autoteile_zahnriemen = _treffer("https://www.autoteile-xyz.de/golf-zahnriemen", 
                                 "Der Zahnriemen wird beim 2.0 TDI alle 210.000 km gewechselt.")
 fakten, abgelehnt = _lauf([repareo_zahnriemen, autoteile_zahnriemen],
                          marke="VW", modell="Golf", motor="2.0 TDI")
-check("Zwei Secondary-Quellen alleine erzeugen KEINEN user-sichtbaren Wartungsfakt",
-      len(fakten) == 0, f"fakten={fakten}")
-check("Agreement ist intern als 'wartung_corroborated_not_verified' sichtbar (kein VERIFIED)",
-      "wartung_corroborated_not_verified" in _gruende(abgelehnt))
+check("Zwei Secondary-Quellen alleine erzeugen jetzt einen sichtbaren, aber klar "
+      "als CORROBORATED (nicht VERIFIED) markierten Hinweis",
+      len(_corroborated(fakten)) == 1, f"fakten={fakten}")
+check("Confidence bleibt niedrig, Evidenzstatus bleibt CORROBORATED (kein VERIFIED)",
+      bool(_corroborated(fakten)) and _corroborated(fakten)[0].confidence == "niedrig")
 
 print("\n" + "=" * 78)
 print("D) zwei URLs gleiche Root-Domain -> zählen als 1 Quelle")
@@ -199,10 +219,9 @@ mx5_autoteile_zuendkerzen = _treffer("https://www.autoteile-xyz.de/mazda-mx5-zue
                                      "Die Zuendkerzen werden beim 2.0 SKYACTIV-G alle 120.000 km gewechselt.")
 fakten, abgelehnt = _lauf([mx5_repareo_zuendkerzen, mx5_autoteile_zuendkerzen],
                          marke="Mazda", modell="MX-5", motor="2.0 SKYACTIV-G", generation="ND")
-check("Zwei Secondary-Quellen (Mazda) alleine erzeugen KEINEN user-sichtbaren Fakt",
-      len(fakten) == 0, f"fakten={fakten}")
-check("Agreement ist intern als 'wartung_corroborated_not_verified' sichtbar",
-      "wartung_corroborated_not_verified" in _gruende(abgelehnt))
+check("Zwei Secondary-Quellen (Mazda) alleine erzeugen jetzt einen sichtbaren "
+      "CORROBORATED-Hinweis (nicht VERIFIED)",
+      len(_corroborated(fakten)) == 1, f"fakten={fakten}")
 
 print("\n" + "=" * 78)
 print("M) interne Inkonsistenz derselben Quelle -> Unreliable, NICHT zwei Stimmen")
@@ -230,13 +249,11 @@ n1 = _treffer("https://www.kfz-tipps-online.de/golf-steuerkette", "VW Golf Werks
 n2 = _treffer("https://www.motorwissen24.de/golf-steuerkette", "VW Golf Reparatur-Ratgeber",
              "Die Steuerkette wird beim 2.0 TDI alle 180.000 km geprueft.")
 fakten, abgelehnt = _lauf([n1, n2], marke="VW", modell="Golf", motor="2.0 TDI")
-check("N) zwei verschiedene Secondary-Domains alleine -> kein VERIFIED",
-      len(fakten) == 0, f"fakten={fakten}")
-check("N) Agreement sichtbar als 'wartung_corroborated_not_verified'",
-      "wartung_corroborated_not_verified" in _gruende(abgelehnt))
+check("N) zwei verschiedene Secondary-Domains alleine -> sichtbar, aber CORROBORATED, kein VERIFIED",
+      len(_corroborated(fakten)) == 1, f"fakten={fakten}")
 check("R) (alias N) verschiedene Root-Domains beweisen KEINE echte Unabhängigkeit "
-      "-> bleibt bei CORROBORATED, nicht VERIFIED",
-      len(fakten) == 0 and "wartung_corroborated_not_verified" in _gruende(abgelehnt))
+      "-> bleibt bei CORROBORATED (niedrige Confidence), nicht VERIFIED",
+      len(_corroborated(fakten)) == 1 and _corroborated(fakten)[0].confidence == "niedrig")
 
 print("\n--- O) Secondary + Secondary, zusätzlich durch bestehenden STRONG_SECONDARY-Pfad ---")
 print("    cross-tier bestätigt (Bedingung A) -> VERIFIED")
@@ -266,11 +283,12 @@ z1 = _treffer("https://www.kfz-tipps-online.de/golf-steuerkette-prov", "VW Golf 
 z2 = _treffer("https://www.motorwissen24.de/golf-steuerkette-prov", "VW Golf Reparatur-Ratgeber",
              "Die Steuerkette wird beim 2.0 TDI alle 180.000 km geprueft.")
 fakten, abgelehnt = _lauf([z1, z2], marke="VW", modell="Golf", motor="2.0 TDI")
-check("Z) reine Provenienz-Selbstauskunft genügt NICHT mehr für VERIFIED",
-      len(fakten) == 0, f"fakten={fakten}")
-check("Z) bleibt CORROBORATED, mit 'provenance_claimed': True geloggt",
-      any(a.get("grund") == "wartung_corroborated_not_verified" and a.get("provenance_claimed") is True
-         for a in abgelehnt))
+check("Z) reine Provenienz-Selbstauskunft genügt NICHT für VERIFIED -- sichtbar, aber "
+      "nur als CORROBORATED",
+      len(_corroborated(fakten)) == 1, f"fakten={fakten}")
+check("Z) bleibt bei niedriger Confidence (keine Aufwertung durch die unbelegte "
+      "Selbstauskunft 'laut Hersteller')",
+      bool(_corroborated(fakten)) and _corroborated(fakten)[0].confidence == "niedrig")
 
 print("\n--- AA) Secondary + PRIMARY (strukturell IDENTISCHE Signature) -> VERIFIED ---")
 aa_primary = _treffer("https://www.volkswagen.at/golf-steuerkette", "VW Golf Steuerkette",
@@ -295,12 +313,14 @@ ab_sek1 = _treffer("https://www.kfz-tipps-online.de/golf-getriebe-ab", "VW Golf 
 ab_sek2 = _treffer("https://www.motorwissen24.de/golf-getriebe-ab", "VW Golf Reparatur-Ratgeber",
                    "Das Getriebeoel wird beim 2.0 TDI alle 60.000 km gewechselt.")
 fakten, abgelehnt = _lauf([ab_primary, ab_sek1, ab_sek2], marke="VW", modell="Golf", motor="2.0 TDI")
-check("AB) 'prüfen' (PRIMARY) vs. 'wechseln' (Secondary) bei gleichem Intervall -> KEIN Cross-Tier-VERIFIED",
-      sum(1 for f in fakten if f.kategorie == "wartung" and f.bauteil and "etriebe" in f.bauteil) == 1,
-      f"fakten={fakten}")
-check("AB) die zwei Secondary-Quellen (gleiche Aktion, gleicher Wert) bleiben CORROBORATED, nicht VERIFIED",
-      any(a.get("grund") == "wartung_corroborated_not_verified" and a.get("url") == ab_sek1["url"]
-         for a in abgelehnt))
+ab_verified = [f for f in fakten if f.kategorie == "wartung" and getattr(f, "beleglage", None) != "uebereinstimmend_unbestaetigt"]
+check("AB) 'prüfen' (PRIMARY) bleibt sein EIGENER, VERIFIED-Fakt (kein Cross-Tier-Match "
+      "mit der 'wechseln'-Secondary-Gruppe -- andere Aktion, andere Signatur)",
+      sum(1 for f in ab_verified if f.bauteil and "etriebe" in f.bauteil) == 1, f"fakten={fakten}")
+check("AB) die zwei Secondary-Quellen (gleiche Aktion 'wechseln', gleicher Wert) sind jetzt "
+      "sichtbar, aber als EIGENER, CORROBORATED-Fakt -- NICHT mit dem PRIMARY-'prüfen'-Fakt "
+      "vermischt",
+      len(_corroborated(fakten, "etriebe")) == 1, f"fakten={fakten}")
 
 print("\n--- AC) gleiches Bauteil, aber fixed vs. LongLife -> KEIN VERIFIED ---")
 ac_primary = _treffer("https://www.volkswagen.at/golf-oel", "VW Golf Oelwechsel",
@@ -310,9 +330,10 @@ ac_sek1 = _treffer("https://www.kfz-tipps-online.de/golf-oel-ac", "VW Golf Werks
 ac_sek2 = _treffer("https://www.motorwissen24.de/golf-oel-ac", "VW Golf Reparatur-Ratgeber",
                    "Das Motoroel wird beim 2.0 TDI alle 15.000 km gewechselt.")
 fakten, abgelehnt = _lauf([ac_primary, ac_sek1, ac_sek2], marke="VW", modell="Golf", motor="2.0 TDI")
-check("AC) LongLife (PRIMARY) bestätigt NICHT das fixe Secondary-Intervall (andere Signatur)",
-      any(a.get("grund") == "wartung_corroborated_not_verified" and a.get("url") == ac_sek1["url"]
-         for a in abgelehnt))
+check("AC) LongLife (PRIMARY) bestätigt NICHT das fixe Secondary-Intervall (andere Signatur) "
+      "-- die zwei fixen Secondary-Quellen sind jetzt sichtbar, aber als EIGENER, "
+      "CORROBORATED-Fakt (nicht mit dem LongLife-PRIMARY-Fakt vermischt)",
+      len(_corroborated(fakten, "otoroel")) == 1, f"fakten={fakten}")
 
 print("\n--- AD) gleicher Wert, aber anderer Motor -> KEIN VERIFIED (bereits durch I/Y belegt) ---")
 check("AD) siehe Test I/Y oben -- expliziter Motor-Widerspruch verhindert jede Cross-Bestätigung", True)
@@ -331,9 +352,10 @@ ag_sek1 = _treffer("https://www.kfz-tipps-online.de/golf-zahnriemen-ag", "VW Gol
 ag_sek2 = _treffer("https://www.motorwissen24.de/golf-zahnriemen-ag", "VW Golf Reparatur-Ratgeber",
                    "Der Zahnriemen wird beim 2.0 TDI alle 180.000 km ersetzt.")
 fakten, abgelehnt = _lauf([ag_primary, ag_sek1, ag_sek2], marke="VW", modell="Golf", motor="2.0 TDI")
-check("AG) 'Steuerkette' (PRIMARY) bestätigt NICHT 'Zahnriemen' (anderer Bauteil-Schlüssel)",
-      any(a.get("grund") == "wartung_corroborated_not_verified" and a.get("url") == ag_sek1["url"]
-         for a in abgelehnt))
+check("AG) 'Steuerkette' (PRIMARY) bestätigt NICHT 'Zahnriemen' (anderer Bauteil-Schlüssel) "
+      "-- die zwei 'Zahnriemen'-Secondary-Quellen sind jetzt sichtbar, aber als EIGENER, "
+      "CORROBORATED-Fakt (nicht mit dem 'Steuerkette'-PRIMARY-Fakt vermischt)",
+      len(_corroborated(fakten, "ahnriemen")) == 1, f"fakten={fakten}")
 
 print("\n--- AH) echte strukturierte Übereinstimmung trotz unterschiedlicher Formulierung -> VERIFIED ---")
 ah_primary = _treffer("https://www.volkswagen.at/golf-steuerkette-ah", "VW Golf Steuerkette",
@@ -361,8 +383,10 @@ p2 = _treffer("https://www.carfan-netz.de/golf", "Fancommunity rund um den VW Go
 fakten, abgelehnt = _lauf([p1, p2], marke="VW", modell="Golf", motor="2.0 TDI")
 check("P) zwei UNKNOWN-Quellen werden NIE VERIFIED, auch bei exaktem Wertgleichklang",
       len(fakten) == 0, f"fakten={fakten}")
-check("P) bleibt als CORROBORATED (nicht UNVERIFIED, nicht VERIFIED) sichtbar",
-      "wartung_corroborated_not_verified" in _gruende(abgelehnt))
+check("P) UNKNOWN+UNKNOWN bleibt UNSICHTBAR -- die Produktentscheidung ('CORROBORATED "
+      "sichtbar machen') lockert diesen separaten, älteren Schutz vor Quellenaufwertung "
+      "NICHT (anders als bei echten, klassifizierbaren Secondary-Quellen oben)",
+      "wartung_corroborated_unknown_tier" in _gruende(abgelehnt))
 
 print("\n--- S) Ziel-Getriebe DSG, Quelle 'nur Schaltgetriebe' -> reject ---")
 s1 = _treffer("https://www.kfz-tipps-online.de/golf-getriebe", "VW Golf Werkstatt-Tipp",
@@ -387,10 +411,11 @@ v1 = _treffer("https://www.kfz-tipps-online.de/golf-steuerkette-norm", "VW Golf 
 v2 = _treffer("https://www.motorwissen24.de/golf-steuerkette-norm", "VW Golf Reparatur-Ratgeber",
              "Die Steuerkette wird beim 2.0 TDI nach 120000 Kilometer geprueft.")
 fakten, abgelehnt = _lauf([v1, v2], marke="VW", modell="Golf", motor="2.0 TDI")
+v_corrob = _corroborated(fakten)
 check("V) unterschiedlich geschriebene, aber gleiche km-Werte werden als EIN Thema erkannt "
-      "(beide tauchen als 'wartung_corroborated_not_verified' auf, nicht als zwei Singles)",
-      sum(1 for a in abgelehnt if a.get("grund") == "wartung_corroborated_not_verified"
-         and a.get("url") in (v1["url"], v2["url"])) == 2)
+      "-- EIN sichtbarer CORROBORATED-Fakt mit BEIDEN Quellen, nicht zwei getrennte Singles",
+      len(v_corrob) == 1 and {q.url for q in v_corrob[0].quellen} == {v1["url"], v2["url"]},
+      f"fakten={fakten}")
 
 print("\n--- W) 'prüfen bei 120k' vs. 'ersetzen bei 120k' -> KEIN Match ---")
 w1 = _treffer("https://www.kfz-tipps-online.de/golf-steuerkette-aktion", "VW Golf Werkstatt-Tipp",

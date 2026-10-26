@@ -102,10 +102,14 @@ sec_b = treffer("https://www.autoteile-xyz.de/b", "Lexus RC F Wartung B",
                 "Der Oelwechsel erfolgt beim RC F alle 15.000 km.")
 fakten_d, abgelehnt_d, _ = _wartung_candidate_fakten(
     [sec_a, sec_b], marke="Lexus", modell="RC F", generation=None, motor=None)
-check("D) zwei Secondary-Families, gleicher Wert -> KEIN harter Fakt",
-      len(fakten_d) == 0)
-check("D) Agreement sichtbar als 'wartung_corroborated_not_verified'",
-      "wartung_corroborated_not_verified" in _gruende(abgelehnt_d), str(abgelehnt_d))
+# Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungshinweise
+# sichtbar machen"): CORROBORATED wird jetzt sichtbar gemacht -- der
+# Evidenzstatus selbst bleibt unverändert CORROBORATED (eigener beleglage-
+# Wert, NIE "verified"). Siehe test_wartung_corroborated_sichtbar.py.
+check("D) zwei Secondary-Families, gleicher Wert -> sichtbar, aber klar als "
+      "CORROBORATED (nicht VERIFIED) markiert",
+      len(fakten_d) == 1 and fakten_d[0].beleglage == "uebereinstimmend_unbestaetigt"
+      and fakten_d[0].confidence == "niedrig", str(fakten_d))
 
 print("\n" + "=" * 78)
 print("E) 2 Secondary-Families, UNTERSCHIEDLICHE Werte -> CONFLICT")

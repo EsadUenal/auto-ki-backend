@@ -715,6 +715,7 @@ def build_insights(
                     log.info("Web-Rückruf '%s' entfällt: Variantenbedingung widerspricht "
                              "der kanonischen Identität.", fakt.bauteil)
                     continue
+            beleglage = getattr(fakt, "beleglage", None)
             insights.append(Insight(
                 id=_id(f"web-{fakt.kategorie}"),
                 kategorie=f"web_{fakt.kategorie}",
@@ -723,7 +724,13 @@ def build_insights(
                 titel=_WEB_TITEL[fakt.kategorie].format(
                     bauteil=(fakt.bauteil or "Fahrzeug").replace("_", " "))
                 + (" (Geltung für dieses Baujahr nicht belegt)"
-                   if getattr(fakt, "geltung_fuer_fahrzeug", None) == "unresolved" else ""),
+                   if getattr(fakt, "geltung_fuer_fahrzeug", None) == "unresolved" else "")
+                # Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungs-
+                # hinweise sichtbar machen"): der Titel selbst benennt bereits,
+                # was offen ist -- auch wer nur Titel überfliegt, verwechselt
+                # das nicht mit einer bestätigten Wartungsangabe.
+                + (" (mehrere Quellen übereinstimmend, kein Herstellerbeleg)"
+                   if beleglage == "uebereinstimmend_unbestaetigt" else ""),
                 beschreibung=_web_beschreibung(fakt, baujahr),
                 quellen_typen=_typen(fakt.quellen),
                 quellen=list(fakt.quellen),
@@ -742,10 +749,7 @@ def build_insights(
                 # eine verifizierte Herstellerangabe. Floor-fähig ist sie NICHT,
                 # siehe Begründung in app/empfehlungs_floor.py.
                 trust=TRUST_WEB,
-                einfluss=(_WEB_EINFLUSS_MULTI_SOURCE[fakt.kategorie]
-                         if getattr(fakt, "beleglage", None) == "mehrfach_unabhaengig"
-                         and fakt.kategorie in _WEB_EINFLUSS_MULTI_SOURCE
-                         else _WEB_EINFLUSS[fakt.kategorie]),
+                einfluss=_web_einfluss(fakt, beleglage),
                 bauteil=((fakt.bauteil or "").replace("_", " ") or None),
             ))
 
@@ -855,6 +859,32 @@ _WEB_EINFLUSS_MULTI_SOURCE = {
     "wartung": "Mehrere unabhängige Quellen nennen dieses Intervall; ein Herstellerbeleg "
               "wurde nicht gefunden.",
 }
+
+# Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungshinweise sichtbar
+# machen"): eigener, NOCH schwächer markierter Satz für `WebFakt.beleglage ==
+# "uebereinstimmend_unbestaetigt"` (genau ZWEI unabhängige, nicht-UNKNOWN
+# Secondary-Families, gleicher Wert, aber KEINE Primär-/Herstellerquelle mit
+# derselben Signatur — Evidenzstatus bleibt CORROBORATED, NIE "verified").
+# Benennt explizit, was offen ist (keine Primärbestätigung FÜR DIESES
+# Fahrzeug), ohne das als Motor-/Identitätsunsicherheit misszuverstehen --
+# diese Phase läuft ohnehin erst NACH belegter Identität (siehe
+# `_identitaet_reicht()`), die Motorzuordnung ist an dieser Stelle bereits
+# geklärt. Nennt die konkrete Gegenprüfung (Wartungsplan/Serviceheft/
+# Hersteller) statt einer vagen Warnung.
+_WEB_EINFLUSS_CORROBORATED = {
+    "wartung": "Mehrere unabhängige Quellen nennen übereinstimmend dieses Intervall, aber "
+              "keine davon ist eine Hersteller- oder amtliche Quelle: für dieses Fahrzeug "
+              "nicht ausreichend bestätigt. Vor dem Kauf anhand des Wartungsplans, des "
+              "Serviceheftes oder direkt beim Hersteller prüfen.",
+}
+
+
+def _web_einfluss(fakt, beleglage: str | None) -> str:
+    if beleglage == "mehrfach_unabhaengig" and fakt.kategorie in _WEB_EINFLUSS_MULTI_SOURCE:
+        return _WEB_EINFLUSS_MULTI_SOURCE[fakt.kategorie]
+    if beleglage == "uebereinstimmend_unbestaetigt" and fakt.kategorie in _WEB_EINFLUSS_CORROBORATED:
+        return _WEB_EINFLUSS_CORROBORATED[fakt.kategorie]
+    return _WEB_EINFLUSS[fakt.kategorie]
 
 
 def _verwendete_quellen(web_quellen, marktanalyse):
