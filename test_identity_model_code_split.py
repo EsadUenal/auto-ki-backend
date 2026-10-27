@@ -175,6 +175,76 @@ async def test_c2_code_mit_kontext_bestaetigt():
           ident.generation == "USC10", str(ident.generation))
 
 
+# C3) Dieselbe Rolle, aber mit "Modellcode" statt "Chassiscode" (Fortsetzungs-
+# auftrag: belegter Zusatz zu `_ROLLE_BEZEICHNUNG`). Real dokumentierte Quellen
+# zu USC10 (Teiledatenbanken, Lexus/Toyota-Fahrzeugtyp-Angaben) nennen die
+# Rolle nie mit "Chassiscode"/"Baureihe" wörtlich, sondern (wenn ueberhaupt
+# explizit) als "Model Code"/"Typ-Code" -- "Modellcode" ist die deutsche
+# Entsprechung und oeffentlich (VIN-Aufbau-Erklaerungen) als Synonym fuer
+# "interne Bezeichnung"/"Baureihe" belegt, ausdruecklich abgegrenzt von
+# Aufbauvariante/Motortyp. Ohne diese Ergaenzung bliebe USC10 trotz echter
+# Rollenzuweisung unbestaetigt -- derselbe generische Verlust wie C vor C2.
+async def test_c3_modellcode_als_rollenbeleg():
+    quelle = [
+        treffer("https://www.lexus.de/rc-f", "Lexus RC F USC10",
+                "Der Lexus RC F USC10 traegt laut Teiledatenbank den Modellcode USC10."),
+        treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F USC10 im Test",
+                "Der Lexus RC F USC10, Modellcode USC10, hat 477 PS."),
+    ]
+    ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
+    check("C3) Identitaet belegt", ident.belegt is True)
+    check("C3) 'USC10' MIT 'Modellcode' als Rollenbeleg bestaetigt",
+          ident.generation == "USC10", str(ident.generation))
+
+
+# C4) Gegenfall zu C3 (Auftrag: "Modell-/Typcode einer Variante" darf nicht
+# faelschlich den ZIELCODE bestaetigen): "Modellcode" wird im Text einem
+# ANDEREN, eigenstaendigen Code in einem eigenen Teilsatz zugewiesen -- der
+# eigentliche Zielcode (USC10) steht in einem GETRENNTEN Teilsatz OHNE jeden
+# Rollenbeleg. Analog zum bestehenden GT3/991-Gegenfall, jetzt fuer das neue
+# Wort: die Teilsatzgrenze muss "Modellcode" weiterhin an seinen EIGENEN Code
+# binden, nicht blind an jeden Code im Dokument.
+async def test_c4_modellcode_bindet_nur_eigenen_code():
+    quelle = [
+        treffer("https://www.lexus.de/rc-f", "Lexus RC F Modelle",
+                "Die Sonderedition RC F Carbon trägt den Modellcode ABC123; "
+                "der reguläre Lexus RC F USC10 hat damit nichts zu tun."),
+        treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F USC10 im Test",
+                "Die Sonderedition RC F Carbon trägt den Modellcode ABC123; "
+                "der reguläre Lexus RC F USC10 hat 477 PS und damit nichts zu tun."),
+    ]
+    ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
+    check("C4) Identitaet belegt (Core-Modell reicht)", ident.belegt is True)
+    check("C4) 'USC10' bleibt unbestaetigt -- 'Modellcode' gehoert im Text zu "
+          "ABC123, einem fremden Code in einem GETRENNTEN Teilsatz",
+          ident.generation is None, str(ident.generation))
+
+
+# C5) Gegenfall (Auftrag: "Motorcode neben 'interne Bezeichnung'" darf nicht
+# faelschlich leaken): ein Motorcode steht als eigener, unbeteiligter Code im
+# Text, "interne Bezeichnung" bezieht sich im eigenen Teilsatz auf einen
+# ANDEREN Code als USC10 -- USC10 selbst bleibt ohne jeden Rollenbeleg in
+# seinem eigenen Teilsatz und darf nicht ueber die Dokumentgrenze hinweg von
+# der Bezeichnung eines fremden Codes "mitbestaetigt" werden.
+async def test_c5_motorcode_neben_interne_bezeichnung_kein_leak():
+    quelle = [
+        treffer("https://www.lexus.de/rc-f", "Lexus RC F Technik",
+                "Der Motorcode des 5.0-Liter-V8 lautet 2UR-GSE; die interne "
+                "Bezeichnung ist XYZ99, nicht USC10. Der Lexus RC F USC10 "
+                "ist die reine Marketingbezeichnung."),
+        treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F USC10 im Test",
+                "Der Motorcode des 5.0-Liter-V8 lautet 2UR-GSE; die interne "
+                "Bezeichnung ist XYZ99, nicht USC10. Der Lexus RC F USC10 "
+                "hat 477 PS und ist die reine Marketingbezeichnung."),
+    ]
+    ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
+    check("C5) Identitaet belegt (Core-Modell reicht)", ident.belegt is True)
+    check("C5) 'USC10' bleibt unbestaetigt -- 'interne Bezeichnung' ist im "
+          "eigenen Teilsatz ausdruecklich XYZ99 zugewiesen und fuer USC10 "
+          "sogar verneint ('nicht USC10')",
+          ident.generation is None, str(ident.generation))
+
+
 # D) Target "M4 F82", Quelle "BMW M4" (ohne Code) -> Core akzeptiert, F82 unbestaetigt.
 async def test_d_core_akzeptiert_code_offen():
     quelle = [
@@ -368,6 +438,9 @@ async def _run_all():
     await test_b_core_match_ohne_code()
     await test_c_code_ohne_kontext_bleibt_unbestaetigt()
     await test_c2_code_mit_kontext_bestaetigt()
+    await test_c3_modellcode_als_rollenbeleg()
+    await test_c4_modellcode_bindet_nur_eigenen_code()
+    await test_c5_motorcode_neben_interne_bezeichnung_kein_leak()
     await test_d_core_akzeptiert_code_offen()
     await test_d2_code_ohne_kontext_bmw()
     await test_e_code_bestaetigt_bmw()

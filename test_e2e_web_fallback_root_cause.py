@@ -113,8 +113,18 @@ async def run_all():
           and res_b["recommendation_state"] == "LIMITED_ANALYSIS")
     check("B7 vehicle_identity.fuel wurde aus Web ergaenzt (benzin)",
           (res_b["vehicle_identity"].get("fuel") or "").lower() == "benzin")
+    # B8-Fix (Fortsetzungsauftrag, real nachgeprueft): das Produktlabel heisst
+    # seit Commit f639caf nicht mehr "Datenqualität" (Pruefung oben lief
+    # NUR als Substring, die alte Assertion traf zufaellig eine ANDERE,
+    # unveraendert "Datenqualität" heissende Zeile anderswo im Bericht --
+    # s. app/car_lookup.py:863 bzw. die Markt-Zeile in app/marktvergleich.py:
+    # 2131, NICHT die hier gemeinte Schwachstellen-Vertrauensangabe). Die
+    # tatsaechliche, hier relevante Zeile heisst laut app/kaufcheck_bericht.py
+    # Zeile 373 ausdruecklich "Quellen-/Datensatzqualität" -- das ist die
+    # richtige Aussage, auf die diese Assertion jetzt umgestellt wird.
     check("B8 Bericht nennt den Verdeckmechanismus NICHT als sicheren Fakt ohne Beleg-Hinweis "
-          "(Datenqualitaet-Zeile vorhanden)", "Datenqualität" in res_b["bericht"])
+          "(Quellen-/Datensatzqualitaet-Zeile vorhanden)",
+          "Quellen-/Datensatzqualität" in res_b["bericht"])
 
     # B9-B11: dieselbe Pipeline, aber die Identitätsphase belegt Generation und
     # Motorisierung aus Quellentexten -> normale Empfehlung ist wieder erlaubt.

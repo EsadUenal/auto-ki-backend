@@ -931,8 +931,23 @@ _GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|w
 # lich ein Jahresfenster genannt wird. Diese Woerter sind eine STRENGE Teil-
 # menge von `_GEN_KONTEXT` (ohne "generation"/"typ"/"modellreihe"/"gen." --
 # genau die vagen Woerter, die den obigen Fehlalarm ausloesten).
+#
+# "Modellcode" (Fortsetzungsauftrag, belegter Zusatz): echte Quellen fuer
+# USC10 (Lexus RC F) nennen die Rolle nie mit einem der obigen Woerter,
+# sondern (wenn ueberhaupt explizit) als "Model Code"/"Typ-Code" -- ein
+# generischer Verlust fuer genau diese Formulierung, nicht nur fuer USC10.
+# Oeffentlich dokumentiert (VIN-Aufbau, z.B. carVertical-Erklaerung zu Audi/
+# Mercedes-FIN): "Modellcode" bezeichnet dort ausdruecklich die Stellen, die
+# das MODELL/die BAUREIHE identifizieren, UND wird dort explizit von
+# "Aufbauvariante"/"Motortyp" (eigene Stellen) abgegrenzt -- also dieselbe
+# semantische Kategorie wie "Baureihe"/"Chassiscode"/"interne Bezeichnung",
+# nicht die eines Varianten-/Motor-/Ausstattungscodes. Deshalb hier ergaenzt,
+# NICHT aber "Typcode"/"Motorcode"/"Variantencode" (unbelegt, dass diese
+# dieselbe Generations-Rolle statt einer Varianten-/Ausstattungsrolle
+# behaupten) -- keine Erweiterung auf Verdacht, nur die belegte.
 _ROLLE_BEZEICHNUNG = re.compile(
-    r"baureihe|chassis-?code|werkscode|codename|interne?[nr]?\s+bezeichnung", re.IGNORECASE)
+    r"baureihe|chassis-?code|werkscode|codename|modellcode"
+    r"|interne?[nr]?\s+bezeichnung", re.IGNORECASE)
 
 # Teilsatzgrenze für `_rollenbeleg_eigener_teilsatz()`: wie `_TEILSATZGRENZE`
 # unten, aber ein Punkt direkt NACH einer Ziffer ("4.") zählt nicht als

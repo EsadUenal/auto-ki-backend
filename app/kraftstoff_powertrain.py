@@ -179,7 +179,35 @@ _VERNEINUNGS_AUSNAHME = re.compile(r"\A(?:nicht\s+nur|nicht\s+ohne)\Z", re.IGNOR
 
 _PHEV_WORT = re.compile(r"plug[\s-]?in[\s-]?hybrid|\bphev\b", re.IGNORECASE)
 _MHEV_WORT = re.compile(r"mild[\s-]?hybrid|\bmhev\b|\b48\s?v\b", re.IGNORECASE)
-_BEV_WORT = re.compile(r"\bbev\b|elektro\w*|elektrisch\w*|electric", re.IGNORECASE)
+# F16-Folgefix (RC-F-Ursachenanalyse, real nachgeprueft an newsroom.lexus.eu,
+# "The RC F SPORT features an upgraded LDH system ... Electric Power
+# Steering"): das bisherige bare "elektrisch\w*|electric" erkannte jedes
+# gewoehnliche 12V-Bauteil als Hochvolt-/BEV-Antrieb ("elektrische
+# Servolenkung", "elektrische Kraftstoffpumpe", "Electric Power Steering",
+# "Electric Parking Brake") -- Serienausstattung in praktisch jedem
+# Verbrenner, keine Elektrifizierung. DIESELBE Erkenntnis fuehrte bereits zum
+# "elektrisch"-Ausschluss in `app/recall_filter.py::_HV_MUSTER` (dort als
+# Folge-Fix vor dem Insignia-012223-Merge dokumentiert: 29 betroffene
+# Rueckrufe, u.a. "elektrische Servolenkung"/"elektrische Kraftstoffpumpe"/
+# "elektrische Feststellbremse"). `powertrain_aus_freitext()` liest u.a.
+# `eingrenzung_amtlich` fuer dieselbe Antriebsart-Scope-Entscheidung
+# (app/recall_filter.py, `pt_wort = powertrain_aus_freitext(eingr_amtlich)`)
+# -- derselbe Fehlklassifikations-Risikopfad war hier unverändert offen.
+# Anders als bei `_HV_MUSTER` kann "elektrisch" hier nicht einfach entfallen:
+# "Das Fahrzeug faehrt vollelektrisch"/"Dieses Modell ist vollelektrisch"
+# muss weiterhin BEV ergeben (s. test_powertrain_negation.py, Fall I1).
+# Generische Abgrenzung statt Bauteil-Liste: "elektrisch" zaehlt nur, wenn es
+# den ANTRIEB selbst bezeichnet (Praefix "voll-"/"rein"/"ausschliesslich"/
+# "nur" direkt vor "elektrisch", oder "elektrisch angetrieben"/"elektrischer
+# Antrieb"/"elektrisches Fahrzeug") -- ein bloss NACHGESTELLTES Bauteilwort
+# ("elektrische Servolenkung") faellt NICHT mehr darunter, weil "elektrisch"
+# dort das Bauteil beschreibt, nicht den Antrieb.
+_BEV_WORT = re.compile(
+    r"\bbev\b|elektro\w*"
+    r"|(?:voll|rein|ausschlie(?:ß|ss)lich|nur)[\s-]?elektrisch\w*"
+    r"|elektrisch\w*\s+(?:angetrieben\w*|antrieb\w*|fahrzeug\w*)"
+    r"|electric\s+vehicle|all[\s-]?electric|fully[\s-]?electric",
+    re.IGNORECASE)
 # Backend-Folgeauftrag (Praezision statt Prioritaetsreihenfolge): "HEV" ist im
 # Datenmodell (s. Moduldocstring: ICE|MHEV|PHEV|BEV) kein eigener, klar
 # abgegrenzter Wert, sondern der Sammelbegriff fuer den NICHT-Plug-in-,

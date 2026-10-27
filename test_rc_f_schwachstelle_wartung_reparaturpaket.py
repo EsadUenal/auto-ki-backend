@@ -132,6 +132,54 @@ check("F17-Folgefix: Drittanbieter-Domain bleibt 0, auch mit der angefragten Mar
 check("F17-Folgefix: RUECKRUF bleibt bewusst unberuehrt (Recall/KBA nicht angefasst)",
       _score_domain_fuer_marke("https://www.lexus.de/x", KATEGORIE_RUECKRUFE, "Lexus") == 0)
 
+# ── B2) F16: Schwestermodell-/Geschwistertext-Kontamination unter heutiger
+# Herstellerbewertung (Fortsetzungsauftrag, real nachgeprueft) ──────────────
+#
+# Ursachenbericht (25.10.2026): newsroom.lexus.eu, Europapremiere 2014,
+# "The RC F SPORT features an upgraded LDH system" -> ausgerichtet(marke=
+# "Lexus", modell="RC F") ergab (True, "schwach"). Damals kein falscher
+# sichtbarer Fakt, u.a. WEIL newsroom.lexus.eu unter der Hauptschwelle lag.
+# Mit dem F17-Fix oben (PSL-generische `_marke_eigene_domain()`) gilt diese
+# Domain jetzt als Hersteller-Tier-1 (s. Zeile 112f.) -- die fruehere
+# Schutzbedingung "niedrige Quellenbewertung" entfaellt. Deshalb hier real
+# nachgeprueft (nicht nur angenommen): die oeffentliche Pressemeldung
+# (newsroom.lexus.eu, "European premiere of the new Lexus RC at the 2014
+# Geneva Motor Show") beschreibt im selben Fliesstext DREI verschiedene
+# Fahrzeuge -- RC 300h (Hybrid, 2.5L), RC 350 (3.5L V6, Achtstufen-SDS) UND
+# RC 350 F SPORT (Fahrwerks-/Lenkungspaket, "RC F SPORT" im Text abgekuerzt)
+# -- der eigentliche RC F (5.0 V8) kommt im Artikel gar nicht vor. Die
+# einzige Stelle, an der ueberhaupt die Tokenfolge "RC"+"F" vorkommt, ist der
+# LDH-Lenkungssatz zum F-SPORT-Fahrwerk, in einem eigenen Absatz OHNE jede
+# Motor-/Kraftstoff-/Getriebeangabe -- die Hybrid-/V6-Antriebsangaben stehen
+# in eigenen Saetzen, die "RC F" nicht nennen.
+_r_newsroom_lexus = {
+    "url": "https://newsroom.lexus.eu/2014-european-premiere-of-the-new-lexus-rc-at-the-2014-geneva-motor-show/",
+    "title": "European premiere of the new Lexus RC at the 2014 Geneva Motor Show",
+    "content": (
+        "The full hybrid variant, the RC 300h, combines a 2.5 litre petrol "
+        "engine with an electric motor for a full hybrid drivetrain. "
+        "The RC 350 is equipped with a 3.5 litre V6 engine mated to an "
+        "eight-speed Sport Direct Shift automatic transmission. "
+        "The RC F SPORT features an upgraded LDH system, which integrates "
+        "Dynamic Rear Steering, Variable Gear Ratio Steering and Electric "
+        "Power Steering for sharper turn-in and stability."
+    ),
+}
+check("F16: ausgerichtet() bleibt 'schwach' (Titel nennt nur 'RC', nicht 'RC F')",
+      ausgerichtet(_r_newsroom_lexus, "Lexus", "RC F") == (True, "schwach"))
+_claims_newsroom = _identitaets_claims(_r_newsroom_lexus, _ZIEL)
+check("F16: KEIN Hybrid-/Kraftstoff-Claim aus dem RC-300h-Satz (nennt 'RC F' nicht, "
+      "bleibt durch den 'schwach'-Satzfilter aussen vor)",
+      not any(c["feld"] in ("fuel", "powertrain") for c in _claims_newsroom), str(_claims_newsroom))
+check("F16: KEIN Getriebe-Claim aus dem RC-350-Satz (nennt 'RC F' nicht, "
+      "bleibt durch den 'schwach'-Satzfilter aussen vor)",
+      not any(c["feld"] == "transmission" for c in _claims_newsroom), str(_claims_newsroom))
+check("F16: der einzige 'RC F'-tragende Satz (LDH/Lenkung) erzeugt UEBERHAUPT "
+      "KEINEN Claim (keine Motor-/Kraftstoff-/Getriebe-/Motorcode-Vokabel darin) "
+      "-> auch unter heutiger Hersteller-Tier-1-Bewertung kein falscher "
+      "sichtbarer Fakt fuer 'RC F'", _claims_newsroom == [], str(_claims_newsroom))
+
+
 # ── C) F18: bedingte Rückwärts-Kontextzuordnung ─────────────────────────────
 
 _r_carwiki = {
