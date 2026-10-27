@@ -934,6 +934,12 @@ _GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|w
 _ROLLE_BEZEICHNUNG = re.compile(
     r"baureihe|chassis-?code|werkscode|codename|interne?[nr]?\s+bezeichnung", re.IGNORECASE)
 
+# Teilsatzgrenze für `_rollenbeleg_eigener_teilsatz()`: wie `_TEILSATZGRENZE`
+# unten, aber ein Punkt direkt NACH einer Ziffer ("4.") zählt nicht als
+# Grenze -- sonst würde die ordinale Zählung "4. Generation" an ihrem
+# eigenen Punkt zerschnitten (s. `_rollenbeleg_eigener_teilsatz()`-Docstring).
+_TEILSATZGRENZE_ROLLENBELEG = re.compile(r"[;:!?]|\bsondern\b|(?<!\d)\.", re.IGNORECASE)
+
 
 def _generationscodes(r: dict, modell: str | None) -> list[dict]:
     """Generationscodes, die UNMITTELBAR hinter dem Modellnamen stehen ("MX-5 ND",
@@ -990,23 +996,13 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
         umgebung = text[ende: ende + 70]
         fenster = text[max(0, m.start() - 60): m.start()] + " " + text[m.start(): ende + 30]
         kontext = bool(nummer) or bool(_GEN_KONTEXT.search(fenster))
-        # Eine ORDINALE Generationszaehlung ("die vierte Generation", "4.
-        # Generation") DIREKT NACH dem Code (derselbe Bereich wie die
-        # Jahresfenster-Suche oben, daher dieselbe `umgebung`) ist -- wie die
-        # Klammer-Roemisch-Zaehlung ("Modell IV (CODE)") -- eine explizite
-        # Generationszaehlung, kein vages Wort: eine Leistungsvariante wird
-        # nie als "die vierte Generation" bezeichnet (das bezeichnet immer
-        # eine Chassisgeneration). Realer Fall (ADAC): "Der Mazda MX-5 ND
-        # (seit 2015) ist die vierte Generation des Roadsters." -- OHNE diesen
-        # Pfad waere dieser reale, bereits produktiv genutzte Quellensatz
-        # (ohne das Wort "Baureihe"/"Chassiscode") nicht mehr hinreichend. Die
-        # Ordinalzahl steht je nach Quelle VOR ODER NACH dem Code ("Die vierte
-        # Generation des Mazda MX-5 (ND, seit 2015)" vs. "Der Mazda MX-5 ND
-        # (seit 2015) ist die vierte Generation") -- deshalb beide Richtungen
-        # prüfen (`fenster` rückwärts bis 60 Zeichen, `umgebung` vorwärts bis
-        # 70 Zeichen, dieselben Reichweiten wie die bestehenden Fenster oben).
-        rollenbeleg = bool(_ROLLE_BEZEICHNUNG.search(fenster)) or bool(_RE_GEN_NUMMER.search(fenster)) \
-            or bool(_RE_GEN_NUMMER.search(umgebung))
+        # Eindeutige Bezeichnung ODER ordinale Generationszaehlung ("die
+        # vierte Generation", "4. Generation" -- wie die Klammer-Roemisch-
+        # Zaehlung "Modell IV (CODE)" eine explizite Zaehlung, kein vages
+        # Wort), gebunden an den EIGENEN Teilsatz der Code-Nennung (nicht nur
+        # Zeichen-Reichweite -- s. `_rollenbeleg_eigener_teilsatz()`-
+        # Docstring) UND selbst nicht verneint.
+        rollenbeleg = _rollenbeleg_eigener_teilsatz(text, m.start(), ende)
         out.append({"code": code, "zeitraum": zeitraum(umgebung), "kontext": kontext,
                     "nummer": nummer, "rollenbeleg": rollenbeleg})
     return out
@@ -1090,6 +1086,49 @@ def _verneint_nach_position(text: str, start: int) -> bool:
         if _VERNEINUNGS_AUSNAHME.match(v.group()):
             continue
         return True
+    return False
+
+
+def _rollenbeleg_eigener_teilsatz(text: str, start: int, ende: int) -> bool:
+    """Ob im EIGENEN Teilsatz der Code-Nennung [start, ende) (dieselbe
+    Teilsatzgrenze wie bei der Verneinungspruefung, `_TEILSATZGRENZE`
+    oben: Satzzeichen ODER "sondern", NICHT jedes Komma) eine eindeutige
+    Bezeichnung (`_ROLLE_BEZEICHNUNG`) oder eine ordinale Generationszaehlung
+    (`_RE_GEN_NUMMER`) steht -- UND diese selbst nicht verneint ist.
+
+    Fortsetzungsauftrag (Abschlusspruefung, konkreter Gegenfall): eine reine
+    Zeichen-Reichweite (±60/70 Zeichen) ohne Teilsatzgrenze liess eine
+    Bezeichnung, die eine Quelle AUSDRUECKLICH einem ANDEREN Code zuordnet,
+    trotzdem an den naheliegenden Zielcode binden -- "Die interne Bezeichnung
+    der Baureihe ist 991, nicht GT3; der 911 GT3 ist nur die Topausstattung."
+    bestaetigte bisher faelschlich generation="GT3", weil "Baureihe" nur
+    ±60 Zeichen vor der "911 GT3"-Nennung lag, OBWOHL ein Satzzeichen (";")
+    dazwischen einen eigenen, abgeschlossenen Teilsatz beendet. Jetzt bindet
+    eine Bezeichnung NUR noch an einen Code im SELBEN Teilsatz -- dieselbe,
+    bereits bestehende und getestete Teilsatzgrenze wie bei jeder anderen
+    Verneinungspruefung in dieser Datei, keine neue Heuristik. Zusaetzlich
+    gilt eine im eigenen Teilsatz VERNEINTE Bezeichnung ("kein eigenstaendiger
+    Chassiscode") nicht als Beleg (`_verneint_im_teilsatz`/
+    `_verneint_nach_position`, ebenfalls bestehend).
+
+    Eigene Teilsatzgrenze (`_TEILSATZGRENZE_ROLLENBELEG`), NICHT die geteilte
+    `_TEILSATZGRENZE`: eine ordinale Zaehlung wie "4. Generation" enthaelt
+    selbst einen Punkt ("4.") -- die geteilte Grenze haette genau DIESEN
+    Punkt faelschlich als Satzende gelesen und "4." vom nachfolgenden
+    "Generation" abgeschnitten, wodurch `_RE_GEN_NUMMER` im verbleibenden
+    Teilsatz nie mehr traf (reproduziert: "Die 4. Generation des Mazda MX-5
+    (ND, seit 2015): ..." verlor dadurch ihren eigenen Rollenbeleg). Ein
+    Punkt direkt NACH einer Ziffer zaehlt deshalb hier nicht als Grenze."""
+    vor_grenzen = [m.end() for m in _TEILSATZGRENZE_ROLLENBELEG.finditer(text[:start])]
+    teilsatz_start = vor_grenzen[-1] if vor_grenzen else 0
+    nach_grenze = _TEILSATZGRENZE_ROLLENBELEG.search(text[ende:])
+    teilsatz_ende = ende + (nach_grenze.start() if nach_grenze else len(text) - ende)
+    teilsatz = text[teilsatz_start:teilsatz_ende]
+    for rx in (_ROLLE_BEZEICHNUNG, _RE_GEN_NUMMER):
+        for m in rx.finditer(teilsatz):
+            if not (_verneint_im_teilsatz(teilsatz, m.start())
+                    or _verneint_nach_position(teilsatz, m.start())):
+                return True
     return False
 
 

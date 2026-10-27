@@ -81,6 +81,18 @@ zuletzt gemeldete Befund).
   und Variante gemeinsam auf einer Seite (Generation bestätigt, Variante
   bleibt Variante).
 
+RUNDE 3.1 (Abschlussprüfung, konkreter Gegenfall, CONFIRMED): `rollenbeleg`
+band zunächst über eine reine Zeichen-Reichweite (±60/70 Zeichen), nicht über
+Teilsatzgrenzen -- eine Bezeichnung, die eine Quelle AUSDRÜCKLICH einem
+ANDEREN Code zuweist und den nahen Zielcode dabei explizit verneint ("Die
+interne Bezeichnung der Baureihe ist 991, nicht GT3; der 911 GT3 ist nur die
+Topausstattung."), band trotzdem fälschlich an den nahen Zielcode, weil kein
+Satzzeichen-Abbruch geprüft wurde. Jetzt bindet eine Bezeichnung nur noch im
+EIGENEN Teilsatz der Code-Nennung (`_rollenbeleg_eigener_teilsatz()`,
+dieselbe Teilsatzgrenze wie die bestehende Verneinungsprüfung in dieser
+Datei) UND nur, wenn sie dort selbst nicht verneint ist. Fall I unten zeigt
+diesen Gegenfall.
+
     python scripts/test_isolated.py test_generation_kontext_falschbestaetigung_fix.py
 """
 import asyncio
@@ -279,6 +291,28 @@ async def run():
           "code) und wird NICHT zur Generation, obwohl sie auf derselben "
           "Seite direkt neben der Baureihe steht",
           z_h.get("auxiliary_code") == "RS", f"aux={z_h.get('auxiliary_code')}")
+
+    # ── Fall I: eindeutige Bezeichnung ausdrücklich einem ANDEREN, ──────────
+    # verneinten Code zugeordnet -- bindet NICHT an den nahen Zielcode
+    # (Abschlusspruefung, konkreter Gegenfall, synthetische Fixture): eine
+    # reine Zeichen-Reichweite ohne Teilsatzgrenze liess "Baureihe"/"interne
+    # Bezeichnung" bisher auch dann an "GT3" binden, wenn der Satz sie
+    # ausdrücklich dem Code "991" zuweist UND "GT3" explizit verneint
+    # ("... ist 991, nicht GT3; ..."). Zwei getrennte Teilsätze (";") --
+    # "Baureihe"/"991" im ersten, "911 GT3" im zweiten -- dürfen sich nicht
+    # vermischen.
+    ident_i, _, _ = await _ident("Porsche", "911 GT3", 2021, [
+        treffer("https://www.porsche.de/911-gt3", "Porsche 911 GT3",
+                "Die interne Bezeichnung der Baureihe ist 991, nicht GT3; der 911 GT3 "
+                "ist nur die Topausstattung."),
+        treffer("https://www.auto-motor-und-sport.de/911-gt3", "911 GT3 im Test",
+                "Die interne Bezeichnung der Baureihe ist 991, nicht GT3; der 911 GT3 "
+                "ist nur die Topausstattung."),
+    ])
+    check("Fall I: eindeutige Bezeichnung, die ein ANDERER Teilsatz "
+          "ausdrücklich dem Code '991' zuweist und 'GT3' explizit verneint, "
+          "bestätigt NICHT den nahen Code 'GT3' -> bleibt UNKNOWN",
+          ident_i.generation is None, str(ident_i.generation))
 
 
 asyncio.run(run())

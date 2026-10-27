@@ -123,8 +123,18 @@ async def run_all():
         {"url": "https://www.adac.de/mazda-mx-5-nd", "title": "Mazda MX-5 ND (seit 2015)",
          "content": "Die 4. Generation des Mazda MX-5 (ND, seit 2015): 2.0 SKYACTIV-G mit 184 PS, "
                     "Benziner, Hinterradantrieb, 6-Gang-Schaltgetriebe."},
+        # Fortsetzungsauftrag (verbleibende semantische Generationslücke,
+        # Runde 3): "ND (seit 2015)" allein, OHNE jedes Rollenwort, ist seit
+        # der Schließung der Generationslücke kein eigenständiger Beleg mehr
+        # (ein bloßes Jahresfenster beweist die Rolle nicht, s.
+        # app/technical_research.py::_generationen_pruefen). Diese zweite,
+        # unabhängige Domain bekommt deshalb dieselbe eindeutige Bezeichnung
+        # wie die erste, damit zwei Domains die Generation weiterhin ECHT
+        # bestätigen (kein Informationsverlust gegenüber der alten, zu
+        # großzügigen Schwelle).
         {"url": "https://www.auto-motor-und-sport.de/mazda-mx-5-nd", "title": "Mazda MX-5 ND im Test",
-         "content": "Mazda MX-5 ND (seit 2015) mit 2.0 SKYACTIV-G und 184 PS, Heckantrieb."},
+         "content": "Mazda MX-5 ND (seit 2015), interne Bezeichnung der Baureihe, mit 2.0 "
+                    "SKYACTIV-G und 184 PS, Heckantrieb."},
     ]
     provider_b2 = FixtureTechnicalResearchProvider(fx_voll)
 
