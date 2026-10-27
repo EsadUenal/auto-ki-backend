@@ -1123,7 +1123,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"])
             continue
         add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
-            kontext=g["kontext"], bonus=varianten_bonus)
+            kontext=g["kontext"], generationsnummer_strukturell=bool(g["nummer"]),
+            bonus=varianten_bonus)
         if g["nummer"]:
             add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
                 jahr_belegt=passt is True)
@@ -1256,16 +1257,17 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
       * Ein Code, dessen Jahresfenster in irgendeiner Quelle das Baujahr
         ausschließt und in keiner Quelle einschließt, ist überall ausgeschlossen
         (eine Vergleichsseite "NA/ND" nennt beide, eine andere grenzt NA ein).
-      * Ein Code ohne Jahresfenster UND ohne Generationskontext zählt nicht: er
-        ist dann meist eine Ausstattungs-, Karosserie- oder Leistungsbezeichnung
-        ("… G 184", "… RF"). Vorher entstanden daraus Konflikte, die jede
-        Generation auf "unbekannt" setzten.
+      * Ein Code ohne Jahresfenster UND ohne strukturelle Generationszählung
+        (s.u.) zählt nicht: er ist dann oft eine Ausstattungs-, Karosserie-
+        oder Leistungsbezeichnung ("… G 184", "… RF", "… RS"). Vorher
+        entstanden daraus Konflikte, die jede Generation auf "unbekannt"
+        setzten.
 
     `bekannter_code` (Package-A-Hardening, RC-W6-B4-Nachfolge): ein aus dem
     `modell`-Feld rein FORMBASIERT abgetrennter Kandidat (`parse_core_model`/
     `_ziel`, dort als `auxiliary_code` geführt). Er ist ABSICHTLICH KEIN
     Freifahrschein mehr: ein bloßer String-Treffer gegen `bekannter_code`
-    befreit eine Quelle NICHT von der Jahr-/Kontext-Pflicht — sonst würde ein
+    befreit eine Quelle NICHT von der Jahr-/Struktur-Pflicht — sonst würde ein
     reiner Trimname/eine reine Variantenbezeichnung, die der Nutzer (ohne es
     zu wissen) ins Modellfeld geschrieben hat ("911 GT3", "Golf R32"), bei
     JEDER Quelle, die das Fahrzeug nur beim Namen nennt ("911 GT3 im Test"),
@@ -1273,33 +1275,55 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
     Leistungsvarianten sind, keine Chassis-/Baureihengenerationen. Der
     Parameter bleibt nur zur Kennzeichnung erhalten (`passend_zum_kandidat`),
     OHNE Wirkung auf das Verwerfen: ein Code braucht weiterhin ENTWEDER ein
-    passendes Jahresfenster ODER echten Generationskontext — exakt dieselbe
-    Schwelle wie jeder andere Code, unabhängig davon, ob er zufällig mit der
-    Nutzereingabe übereinstimmt. Ein ANDERER, abweichender Code bleibt
+    passendes Jahresfenster ODER eine strukturelle Generationszählung
+    (s.u.) — exakt dieselbe Schwelle wie jeder andere Code, unabhängig davon,
+    ob er zufällig mit der Nutzereingabe übereinstimmt UND unabhängig davon,
+    ob er eine Ziffer enthält. Ein ANDERER, abweichender Code bleibt
     unverändert an dieselbe Schwelle gebunden — ein expliziter Widerspruch
-    (ein zweiter, kontext-/jahrbelegter Code) wird weiterhin von `konsens()`
-    als Konflikt erkannt, nie blind übernommen.
+    (zwei vergleichbar stark belegte, aber unterschiedliche Codes) wird
+    weiterhin von `konsens()` als Konflikt erkannt, nie blind übernommen.
 
-    Fortsetzungsauftrag (falsche Generationsbestätigung, konkret abgeschlossen):
+    Fortsetzungsauftrag (falsche Generationsbestätigung, konkret abgeschlossen
+    -- Runde 2, gemeinsamer Pfad für alphabetische UND numerische Codes):
     reproduziert UNABHÄNGIG von `bekannter_code`/der Modellfeld-Abtrennung
     (empirisch geprüft: tritt identisch auf, wenn der Nutzer den Zusatz gar
-    nicht erst eingibt) — ein rein ZIFFERNLOSER Code ("RS", "ST", "FR" —
-    Leistungs-/Ausstattungsvarianten, KEINE Chassisgeneration) wurde allein
-    durch `kontext` (ein Generationswort IRGENDWO in der Nähe, z.B. "…, diese
-    Generation, …") bestätigt, ohne dass dieses Wort inhaltlich überhaupt zum
-    gefundenen Code gehören muss — ein rein syntaktischer Zusatz plus ein
-    bloß benachbarter Generationsbegriff sind kein semantischer Generations-
-    beleg. Echte, digit-tragende Chassiscodes ("USC10", "F82", "W205", "B9")
-    sind durch die Ziffer bereits so spezifisch, dass ein zufälliges
-    Zusammentreffen mit einem Kontextwort praktisch ausschließt, dass es sich
-    um ein normales Wort handelt (s. `_ist_modell_code_kandidat`-Docstring) —
-    DAFÜR bleibt `kontext` allein weiterhin ausreichend, unverändert. Für
-    ZIFFERNLOSE Codes ist dasselbe Argument nicht tragfähig (zu viele reale
-    Trimnamen sind reine Buchstabenfolgen) — dort braucht es zusätzlich ein
-    belegtes Jahresfenster. Betrifft NUR das Verwerfen/Bestätigen der
-    Generation selbst: `auxiliary_code`/Modell-/Variantendaten bleiben
-    vollständig erhalten (reichern Queries weiter an), ein so verworfener
-    Code wird UNKNOWN (`"ohne_generationskontext"`), nicht gelöscht."""
+    nicht erst eingibt) UND unabhängig davon, ob der Code eine Ziffer enthält
+    ("RS"/"ST"/"FR" ebenso wie der bereits vorbestehende "911 GT3"-Fall) —
+    `kontext` allein (ein Generationswort IRGENDWO im ±60/30-Zeichen-Fenster,
+    z.B. "…, diese Generation, …") bestätigte bisher JEDEN gefundenen Code,
+    ohne dass dieses Wort inhaltlich überhaupt zum Code gehören muss. Eine
+    erste Fassung dieses Fixes unterschied nach Ziffer-Vorhandensein — das war
+    FALSCH: eine Ziffer im Code ist kein semantischer Nachweis einer
+    Generation (ein Trimname kann ebenso eine Ziffer tragen wie ein echter
+    Chassiscode kein; s. Abschlussbericht). `kontext` (die bloße Wortsuche)
+    ist deshalb jetzt für KEINEN Code mehr allein ausreichend — unabhängig
+    von Ziffern, Marke oder Modell.
+
+    Verbleiben zwei GENERISCHE, tatsächlich eindeutige Evidenzpfade, beide
+    bereits bestehend und unverändert:
+      * `jahr_belegt`     ein passendes Produktionsfenster für DIESES Baujahr
+                          (reale Information über das Fahrzeug, nicht nur
+                          Text in der Nähe).
+      * `generationsnummer_strukturell` (`g["nummer"]`, `_generationscodes()`)
+                          die STRUKTURELLE "Modell IV (CODE)"-Schreibweise —
+                          eine römische Zahl UNMITTELBAR vor dem Code in
+                          Klammern ist eine explizite Generationszählung,
+                          kein bloß benachbartes Wort, und braucht deshalb
+                          KEIN zusätzliches Jahresfenster (keine pauschale
+                          Jahresfenster-Pflicht, wenn diese eindeutigere
+                          Evidenz vorliegt).
+    Beide Pfade bleiben unverändert gültig, auch für ziffernlose Codes ("NC"
+    MIT echtem Jahresfenster bleibt bestätigbar) — nur die reine
+    Wortnachbarschaft (`kontext` ohne eines der beiden) reicht ab jetzt für
+    NIEMANDEN mehr, auch nicht für digit-tragende Codes wie "F82"/"GT3".
+
+    Betrifft NUR das Verwerfen/Bestätigen der Generation selbst:
+    `auxiliary_code`/Modell-/Variantendaten bleiben vollständig erhalten
+    (reichern Queries weiter an), ein so verworfener Code wird UNKNOWN
+    (`"ohne_generationskontext"`), nicht gelöscht. Explizite Widersprüche
+    (zwei vergleichbar starke, aber unterschiedliche belegte Codes) bleiben
+    unverändert Sache von `konsens()` -- diese Funktion verwirft nur
+    UNBELEGTE Claims, nie einen Konflikt zwischen zwei belegten."""
     gen = [c for c in claims if c["feld"] == "generation"]
     aus = {c["wert"] for c in gen if c.get("verworfen") == "baujahr_ausserhalb"}
     ein = {c["wert"] for c in gen if c.get("jahr_belegt")}
@@ -1311,8 +1335,7 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
             c["passend_zum_kandidat"] = True
         if c["wert"] in aus - ein:
             c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
-        elif not (c.get("jahr_belegt")
-                 or (c.get("kontext") and any(ch.isdigit() for ch in str(c["wert"])))):
+        elif not (c.get("jahr_belegt") or c.get("generationsnummer_strukturell")):
             c["verworfen"] = "ohne_generationskontext"
 
 

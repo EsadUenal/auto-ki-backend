@@ -148,18 +148,25 @@ async def test_c_code_ohne_kontext_bleibt_unbestaetigt():
           ident.generation is None, str(ident.generation))
 
 
-# C2) Dieselbe Quelle, aber MIT explizitem Generationskontext direkt nach dem
-# Code -> jetzt DARF die Generation bestaetigt werden (Regel 2/8 Auftrag).
+# C2) Dieselbe Quelle, aber MIT explizitem Generationskontext UND belegtem
+# Produktionsfenster -> jetzt DARF die Generation bestaetigt werden (Regel
+# 2/8 Auftrag). Fortsetzungsauftrag (Runde 2, gemeinsamer Pfad): ein bloss
+# benachbarter Generationsbegriff OHNE Jahresfenster/strukturelle
+# Generationszaehlung reicht NICHT MEHR (s. test_generation_kontext_
+# falschbestaetigung_fix.py) -- auch fuer digit-tragende Codes nicht, siehe
+# den dort reproduzierten, jetzt geschlossenen "911 GT3"-Fall. Diese Fixture
+# bekommt deshalb zusaetzlich ein echtes, das Zielbaujahr einschliessendes
+# Produktionsfenster, um eine ECHTE Bestaetigung zu zeigen.
 async def test_c2_code_mit_kontext_bestaetigt():
     quelle = [
         treffer("https://www.lexus.de/rc-f", "Lexus RC F USC10",
-                "Der Lexus RC F USC10, diese Generation, ist das Performance-Coupe von Lexus."),
+                "Der Lexus RC F USC10, diese Generation, wird seit 2014 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F USC10 im Test",
-                "Der Lexus RC F USC10, diese Generation, hat 477 PS."),
+                "Der Lexus RC F USC10, diese Generation, wird seit 2014 gebaut und hat 477 PS."),
     ]
     ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
     check("C2) Identität belegt", ident.belegt is True)
-    check("C2) 'USC10' MIT explizitem Generationskontext bestaetigt",
+    check("C2) 'USC10' MIT Generationskontext UND belegtem Produktionsfenster bestaetigt",
           ident.generation == "USC10", str(ident.generation))
 
 
@@ -190,41 +197,47 @@ async def test_d2_code_ohne_kontext_bmw():
           ident.generation is None, str(ident.generation))
 
 
-# E) Target "M4 F82", Quelle "BMW M4 F82" MIT explizitem Generationskontext
-# -> bestaetigt.
+# E) Target "M4 F82", Quelle "BMW M4 F82" MIT Generationskontext UND
+# belegtem Produktionsfenster -> bestaetigt (s. C2-Kommentar: Kontext allein
+# reicht seit Runde 2 fuer keinen Code mehr, auch nicht fuer digit-tragende).
 async def test_e_code_bestaetigt_bmw():
     quelle = [
         treffer("https://www.bmw.de/m4", "BMW M4 F82",
-                "Der BMW M4 F82, diese Generation, ist das Performance-Coupe der 4er-Reihe."),
+                "Der BMW M4 F82, diese Generation, wird seit 2014 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/bmw-m4", "BMW M4 F82 im Test",
-                "Der BMW M4 F82, diese Generation, hat 510 PS."),
+                "Der BMW M4 F82, diese Generation, wird seit 2014 gebaut und hat 510 PS."),
     ]
     ident, abgelehnt, _ = await _ident("BMW", "M4 F82", 2017, "3.0 Biturbo", quelle)
-    check("E) 'F82' MIT Generationskontext bestaetigt", ident.generation == "F82", str(ident.generation))
+    check("E) 'F82' MIT Generationskontext UND Produktionsfenster bestaetigt",
+          ident.generation == "F82", str(ident.generation))
 
 
-# F) Mercedes C300 W205, MIT explizitem Generationskontext -> bestaetigt.
+# F) Mercedes C300 W205, MIT Generationskontext UND belegtem Produktions-
+# fenster -> bestaetigt.
 async def test_f_mercedes():
     quelle = [
         treffer("https://www.mercedes-benz.de/c300", "Mercedes C300 W205",
-                "Der Mercedes C300 W205, diese Generation, ist die aktuelle C-Klasse."),
+                "Der Mercedes C300 W205, diese Generation, wird seit 2014 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/mercedes-c300", "Mercedes C300 W205 im Test",
-                "Der Mercedes C300 W205, diese Generation, hat 258 PS."),
+                "Der Mercedes C300 W205, diese Generation, wird seit 2014 gebaut und hat 258 PS."),
     ]
     ident, abgelehnt, _ = await _ident("Mercedes-Benz", "C300 W205", 2017, "2.0 Turbo", quelle)
-    check("F) 'W205' MIT Generationskontext bestaetigt", ident.generation == "W205", str(ident.generation))
+    check("F) 'W205' MIT Generationskontext UND Produktionsfenster bestaetigt",
+          ident.generation == "W205", str(ident.generation))
 
 
-# G) Audi A4 B9, MIT explizitem Generationskontext -> bestaetigt.
+# G) Audi A4 B9, MIT Generationskontext UND belegtem Produktionsfenster
+# -> bestaetigt.
 async def test_g_audi():
     quelle = [
         treffer("https://www.audi.de/a4", "Audi A4 B9",
-                "Der Audi A4 B9, diese Generation, ist die aktuelle A4-Generation."),
+                "Der Audi A4 B9, diese Generation, wird seit 2015 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/audi-a4", "Audi A4 B9 im Test",
-                "Der Audi A4 B9, diese Generation, hat 190 PS."),
+                "Der Audi A4 B9, diese Generation, wird seit 2015 gebaut und hat 190 PS."),
     ]
     ident, abgelehnt, _ = await _ident("Audi", "A4 B9", 2017, "2.0 TDI", quelle)
-    check("G) 'B9' MIT Generationskontext bestaetigt", ident.generation == "B9", str(ident.generation))
+    check("G) 'B9' MIT Generationskontext UND Produktionsfenster bestaetigt",
+          ident.generation == "B9", str(ident.generation))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -330,15 +343,22 @@ async def test_t_mehrteiliges_modell_nicht_zerlegt():
 # UNTERSCHIEDLICHE Codes (einer davon der vom Nutzer erwartete) -> Konflikt,
 # NICHT einfach akzeptiert.
 async def test_j_expliziter_code_widerspruch():
+    # Fortsetzungsauftrag (Runde 2): BEIDE Codes bekommen jetzt ein eigenes,
+    # das Zielbaujahr einschliessendes Produktionsfenster -- sonst waeren
+    # inzwischen (seit kontext allein nicht mehr genuegt) BEIDE schon
+    # individuell unbestaetigt, und der Test belegte keinen echten Konflikt
+    # zwischen zwei tatsaechlich bestaetigten Werten mehr.
     quelle = [
         treffer("https://www.auto-motor-und-sport.de/lexus-rc-f-a", "Lexus RC F USC10",
-                "Der Lexus RC F USC10 ist das aktuelle Modell."),
+                "Der Lexus RC F USC10 wird seit 2014 gebaut."),
         treffer("https://www.adac.de/lexus-rc-f-b", "Lexus RC F",
-                "Der Lexus RC F (XYZ99), die aktuelle Generation, ersetzt das Vorgaengermodell."),
+                "Der Lexus RC F (XYZ99), die aktuelle Generation, wird seit 2014 gebaut und "
+                "ersetzt das Vorgaengermodell."),
     ]
     ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
-    check("J) widersprechende Codes (USC10 vs. XYZ99) -> KEIN einfach akzeptierter Wert",
-          ident.generation is None, f"generation={ident.generation!r}")
+    check("J) widersprechende, JEWEILS fuer sich belegte Codes (USC10 vs. XYZ99) "
+          "-> KEIN einfach akzeptierter Wert (echter Konflikt, nicht nur beide "
+          "unbestaetigt)", ident.generation is None, f"generation={ident.generation!r}")
 
 
 async def _run_all():

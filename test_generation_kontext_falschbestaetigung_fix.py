@@ -1,6 +1,7 @@
 """
 Falsche Generationsbestätigung durch bloße Kontext-Nachbarschaft — konkret
-abgeschlossen (Fortsetzungsauftrag).
+abgeschlossen (Fortsetzungsauftrag, Runde 2: gemeinsamer Pfad für
+alphabetische UND numerische Codes).
 
 VOLLE KETTE (Eingabe + Quelltext → geparste Felder/Evidenz → Generation/
 Alignment/Applicability → sichtbarer Bericht/Empfehlung), am bereits
@@ -14,35 +15,42 @@ gemeldeten Fall:
   Geparste Felder: `_generationscodes()` erkennt "RS" unmittelbar hinter dem
             Kernmodell "Clio", OHNE Jahresfenster, MIT `kontext=True` (das
             Wort "Generation" steht in der Nähe).
-  VORHER:  `_generationen_pruefen()` akzeptierte `kontext` allein als
-            hinreichenden Beleg -- IDENTISCH für jeden Code, ob mit oder
-            ohne Ziffer. "RS" (eine reine Leistungsvariante, KEINE
-            Chassisgeneration) wurde dadurch als "bestätigte Generation"
-            ausgewiesen.
-  NACHHER: ein ZIFFERNLOSER Code braucht zusätzlich ein belegtes Jahresfenster
-            -- `kontext` allein reicht nur noch für Codes MIT Ziffer
-            (USC10/F82/W205/B9 — durch die Ziffer bereits so spezifisch, dass
-            ein zufälliges Wort praktisch ausgeschlossen ist, siehe
-            `_ist_modell_code_kandidat`-Docstring).
+  VORHER (Runde 1): `_generationen_pruefen()` akzeptierte `kontext` allein als
+            hinreichenden Beleg -- für JEDEN Code. Eine erste Fassung dieses
+            Fixes unterschied nach Ziffer-Vorhandensein (digit-tragende Codes
+            blieben bei "kontext allein reicht"). Das war SELBST FALSCH: eine
+            Ziffer im Code ist kein semantischer Nachweis einer Generation --
+            der bereits auf `master` reproduzierbare "911 GT3"-Fall (Fall F
+            unten) bestätigte genau das, blieb aber in Runde 1 unangetastet.
+  NACHHER (Runde 2): `kontext` (reine Wortnachbarschaft) reicht für KEINEN
+            Code mehr aus, unabhängig von Ziffern, Marke oder Modell. Es
+            bleiben zwei generische, tatsächlich eindeutige Pfade: ein
+            belegtes Produktionsjahresfenster (`jahr_belegt`) ODER die
+            STRUKTURELLE "Modell IV (CODE)"-Schreibweise
+            (`generationsnummer_strukturell`, aus `_generationscodes()`s
+            Römisch-Zahl-Erkennung) -- beide unverändert aus der bestehenden
+            Infrastruktur, keine neue Heuristik.
   Sichtbarer Bericht/Empfehlung: `vehicle_identity.generation` bleibt `None`
-            (UNKNOWN) statt fälschlich "RS" -- keine nachgelagerte Aussage
-            ("Generation RS bestätigt") kann mehr daraus entstehen.
+            (UNKNOWN) statt fälschlich "RS"/"GT3" -- keine nachgelagerte
+            Aussage ("Generation RS bestätigt") kann mehr daraus entstehen.
 
 UNABHÄNGIGKEITS-NACHWEIS (Auftrag: "ein auf master bestehender ähnlicher
 Fehler beweist nicht, dass die neue Änderung keine zusätzliche Auswirkung
 hat"): Fall A unten zeigt empirisch, dass der Fehler mit UNVERÄNDERTEM
-`aux=None` (Nutzer tippt gar keinen Zusatz) GENAUSO auftrat -- die neue
-alphabetische Abtrennung (`_ist_modell_code_kandidat`) hat auf DIESEN
-Mechanismus (`_generationscodes()`/`_generationen_pruefen()`, der unabhängig
-auf dem Quelltext selbst arbeitet) keinerlei Einfluss. Sie VERGRÖSSERT aber
-die Zahl der ÜBERHAUPT als Code erkannten ziffernlosen Zusätze (NC/ND/RS/ST/
-FR statt vorher gar keiner) -- das macht den bereits bestehenden Mechanismus
-für MEHR reale Fälle relevant, auch wenn sie ihn nicht verursacht. Genau
-diese vergrößerte Klasse schließt der Fix unten.
+`aux=None` (Nutzer tippt gar keinen Zusatz) GENAUSO auftrat -- die
+alphabetische Code-Abtrennung (`_ist_modell_code_kandidat`, vorheriger Fix)
+hat auf DIESEN Mechanismus (`_generationscodes()`/`_generationen_pruefen()`,
+der unabhängig auf dem Quelltext selbst arbeitet) keinerlei Einfluss. Sie
+VERGRÖSSERT aber die Zahl der ÜBERHAUPT als Code erkannten ziffernlosen
+Zusätze (NC/ND/RS/ST/FR statt vorher gar keiner) -- das macht den bereits
+bestehenden Mechanismus für MEHR reale Fälle relevant, auch wenn sie ihn
+nicht verursacht. Runde 2 schließt jetzt BEIDE Klassen (alphabetisch UND
+numerisch) über denselben, einheitlichen Pfad -- keine Marken-/Modell-/
+GT3-Sonderliste.
 
-Digit-tragende Codes (GT3, R32, USC10, F82, W205, B9) bleiben UNVERÄNDERT --
-das ist ein vorbestehendes, von diesem Auftrag ausdrücklich nicht
-umfasstes Verhalten (siehe Abschlussbericht).
+Digit-tragende Codes mit ECHTER Evidenz (Jahresfenster oder struktureller
+Generationszählung) bleiben bestätigbar -- siehe test_identity_model_code_
+split.py (C2/E/F/G, dort jetzt mit Produktionsfenster statt bloßem Kontext).
 
     python scripts/test_isolated.py test_generation_kontext_falschbestaetigung_fix.py
 """
@@ -156,6 +164,38 @@ async def run():
           "strukturell NIE zur Generation werden (kein Buchstabe im Code, "
           "Regressionsschutz, bereits in test_identity_model_code_split.py geprüft)",
           ident_e_992.belegt is True and ident_e_992.generation is None)
+
+    # ── Fall F: der bereits gemeldete, zuvor bewusst offen gelassene ────────
+    # DIGIT-TRAGENDE Fall ("911 GT3") -- jetzt über denselben, gemeinsamen
+    # Pfad wie die alphabetischen Fälle geschlossen. Exakt derselbe Repro wie
+    # im vorigen Abschlussbericht (Porsche 911 GT3, Kontext OHNE Jahresfenster
+    # und OHNE strukturelle "Modell IV (CODE)"-Zählung).
+    ident_f_gt3, _, z_f_gt3 = await _ident("Porsche", "911 GT3", 2021, [
+        treffer("https://www.porsche.de/911-gt3", "Porsche 911 GT3",
+                "Der Porsche 911 GT3, diese Generation, ist ein Hochleistungssportwagen."),
+        treffer("https://www.auto-motor-und-sport.de/porsche-911-gt3", "911 GT3 im Test",
+                "Der Porsche 911 GT3, diese Generation, beschleunigt in 3,4 Sekunden."),
+    ])
+    check("Fall F (GT3-Fall, jetzt geschlossen): 'GT3' MIT Kontext, aber OHNE "
+          "Jahresfenster und OHNE strukturelle Generationszählung -> bleibt "
+          "UNKNOWN (vorher auf master fälschlich 'GT3' bestätigt, unabhängig "
+          "vom alphabetischen Fix)",
+          ident_f_gt3.belegt is True and ident_f_gt3.generation is None,
+          f"belegt={ident_f_gt3.belegt} generation={ident_f_gt3.generation}")
+
+    # Derselbe GT3-Fall MIT echtem Jahresfenster -> bleibt bestätigbar (kein
+    # Datenverlust, derselbe generische Pfad wie bei alphabetischen Codes).
+    ident_f_gt3_jahr, _, _ = await _ident("Porsche", "911 GT3", 2021, [
+        treffer("https://www.porsche.de/911-gt3", "Porsche 911 GT3",
+                "Der Porsche 911 GT3, diese Generation, wird seit 2021 gebaut."),
+        treffer("https://www.auto-motor-und-sport.de/porsche-911-gt3", "911 GT3 im Test",
+                "Der Porsche 911 GT3, diese Generation, wird seit 2021 gebaut und "
+                "beschleunigt in 3,4 Sekunden."),
+    ])
+    check("Fall F: derselbe Code MIT echtem Produktionsfenster bleibt "
+          "bestätigbar -- derselbe Pfad wie bei NC/USC10/F82, kein "
+          "Informationsverlust",
+          ident_f_gt3_jahr.generation == "GT3", str(ident_f_gt3_jahr.generation))
 
 
 asyncio.run(run())
