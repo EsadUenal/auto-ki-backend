@@ -910,16 +910,46 @@ _ROEMISCH = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VII
 _GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|werkscode"
                           r"|interne?[nr]?\s+bezeichnung|\bgen\.", re.IGNORECASE)
 
+# Semantische Generationslücke (Fortsetzungsauftrag, Runde 3, CONFIRMED):
+# "Ein Produktionsfenster belegt zeitliche Passung, aber nicht die semantische
+# Rolle des Codes." `kontext` (oben) schliesst bewusst vage Woerter wie
+# "Generation"/"Typ"/"Modellreihe" ein -- genau diese Vagheit erlaubte es
+# bisher, dass `jahr_belegt` ALLEIN (kombiniert mit SOLCH einem vagen Wort
+# irgendwo in der Naehe) jeden Code bestaetigte, der zufaellig von einem
+# passenden Zeitraum begleitet wird. Eine echte Leistungsvariante (z.B. "911
+# GT3") wird i.d.R. im selben Produktionszeitraum wie ihre Chassisgeneration
+# gebaut/verkauft -- ein Jahresfenster um den Variantennamen ist deshalb KEIN
+# Beleg dafuer, dass der Variantenname selbst eine Generation bezeichnet
+# (reproduziert: "Der Porsche 911 GT3, diese Generation, wird seit 2021
+# gebaut." bestaetigte bisher faelschlich generation="GT3").
+#
+# Eindeutige Bezeichnung ("Baureihe", "Chassis-Code"/"Chassiscode",
+# "Werkscode", "Codename", "interne Bezeichnung") ist dagegen KEINE vage
+# Ortsangabe, sondern eine explizite Rollenzuweisung: eine Quelle, die einen
+# Code so einfuehrt, behauptet damit ausdruecklich, dass GENAU DIESER Code
+# eine Baureihe/einen Chassiscode bezeichnet -- unabhaengig davon, ob zusaetz-
+# lich ein Jahresfenster genannt wird. Diese Woerter sind eine STRENGE Teil-
+# menge von `_GEN_KONTEXT` (ohne "generation"/"typ"/"modellreihe"/"gen." --
+# genau die vagen Woerter, die den obigen Fehlalarm ausloesten).
+_ROLLE_BEZEICHNUNG = re.compile(
+    r"baureihe|chassis-?code|werkscode|codename|interne?[nr]?\s+bezeichnung", re.IGNORECASE)
+
 
 def _generationscodes(r: dict, modell: str | None) -> list[dict]:
     """Generationscodes, die UNMITTELBAR hinter dem Modellnamen stehen ("MX-5 ND",
     "MX-5 (ND)", "Golf VII"), je mit
 
-      zeitraum  Jahresfenster direkt dahinter (oder None),
-      kontext   ein Generationswort in der Umgebung ("vierte Generation (… ND)")
-                bzw. die Form "Modell IV (ND …)" — sonst ist das Kürzel oft eine
-                Ausstattungs-/Karosserie-/Leistungsbezeichnung,
-      nummer    Generationsnummer aus "Modell IV (ND …)" (IV = 4).
+      zeitraum     Jahresfenster direkt dahinter (oder None),
+      kontext      ein (vages) Generationswort in der Umgebung ("vierte
+                   Generation (… ND)") bzw. die Form "Modell IV (ND …)" --
+                   sonst ist das Kürzel oft eine Ausstattungs-/Karosserie-/
+                   Leistungsbezeichnung. Allein NIE hinreichend (s.
+                   `_generationen_pruefen()`).
+      rollenbeleg  eine EINDEUTIGE Bezeichnung ("Baureihe …", "Chassis-Code
+                   …", "Werkscode …", "Codename …", "interne Bezeichnung …")
+                   in der Umgebung -- eine explizite Rollenzuweisung, kein
+                   bloss benachbartes Wort (s. Moduldocstring-Block oben).
+      nummer       Generationsnummer aus "Modell IV (ND …)" (IV = 4).
 
     Eine römische Zahl mit folgendem Klammercode ist die NUMMER, der
     Klammercode der CODE derselben Generation (vorher entstand daraus "IV" als
@@ -958,10 +988,27 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
                 nummer, code = _ROEMISCH[code], folge.group(1)
                 ende = m.end() + folge.end()
         umgebung = text[ende: ende + 70]
-        kontext = bool(nummer) or bool(_GEN_KONTEXT.search(
-            text[max(0, m.start() - 60): m.start()] + " " + text[m.start(): ende + 30]))
+        fenster = text[max(0, m.start() - 60): m.start()] + " " + text[m.start(): ende + 30]
+        kontext = bool(nummer) or bool(_GEN_KONTEXT.search(fenster))
+        # Eine ORDINALE Generationszaehlung ("die vierte Generation", "4.
+        # Generation") DIREKT NACH dem Code (derselbe Bereich wie die
+        # Jahresfenster-Suche oben, daher dieselbe `umgebung`) ist -- wie die
+        # Klammer-Roemisch-Zaehlung ("Modell IV (CODE)") -- eine explizite
+        # Generationszaehlung, kein vages Wort: eine Leistungsvariante wird
+        # nie als "die vierte Generation" bezeichnet (das bezeichnet immer
+        # eine Chassisgeneration). Realer Fall (ADAC): "Der Mazda MX-5 ND
+        # (seit 2015) ist die vierte Generation des Roadsters." -- OHNE diesen
+        # Pfad waere dieser reale, bereits produktiv genutzte Quellensatz
+        # (ohne das Wort "Baureihe"/"Chassiscode") nicht mehr hinreichend. Die
+        # Ordinalzahl steht je nach Quelle VOR ODER NACH dem Code ("Die vierte
+        # Generation des Mazda MX-5 (ND, seit 2015)" vs. "Der Mazda MX-5 ND
+        # (seit 2015) ist die vierte Generation") -- deshalb beide Richtungen
+        # prüfen (`fenster` rückwärts bis 60 Zeichen, `umgebung` vorwärts bis
+        # 70 Zeichen, dieselben Reichweiten wie die bestehenden Fenster oben).
+        rollenbeleg = bool(_ROLLE_BEZEICHNUNG.search(fenster)) or bool(_RE_GEN_NUMMER.search(fenster)) \
+            or bool(_RE_GEN_NUMMER.search(umgebung))
         out.append({"code": code, "zeitraum": zeitraum(umgebung), "kontext": kontext,
-                    "nummer": nummer})
+                    "nummer": nummer, "rollenbeleg": rollenbeleg})
     return out
 
 
@@ -1124,7 +1171,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
             kontext=g["kontext"], generationsnummer_strukturell=bool(g["nummer"]),
-            bonus=varianten_bonus)
+            rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus)
         if g["nummer"]:
             add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
                 jahr_belegt=passt is True)
@@ -1257,11 +1304,14 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
       * Ein Code, dessen Jahresfenster in irgendeiner Quelle das Baujahr
         ausschließt und in keiner Quelle einschließt, ist überall ausgeschlossen
         (eine Vergleichsseite "NA/ND" nennt beide, eine andere grenzt NA ein).
-      * Ein Code ohne Jahresfenster UND ohne strukturelle Generationszählung
-        (s.u.) zählt nicht: er ist dann oft eine Ausstattungs-, Karosserie-
-        oder Leistungsbezeichnung ("… G 184", "… RF", "… RS"). Vorher
-        entstanden daraus Konflikte, die jede Generation auf "unbekannt"
-        setzten.
+        Jahresfenster bleiben damit ein Widerspruchs-, aber kein
+        Bestätigungsbeleg (s. Runde 3 unten).
+      * Ein Code ohne strukturelle Generationszählung UND ohne eindeutige
+        Bezeichnung (`rollenbeleg`, s.u.) zählt nicht: er ist dann oft eine
+        Ausstattungs-, Karosserie- oder Leistungsbezeichnung ("… G 184",
+        "… RF", "… RS") -- ein bloßes Jahresfenster allein beweist das
+        Gegenteil NICHT mehr (Runde 3). Vorher entstanden daraus Konflikte,
+        die jede Generation auf "unbekannt" setzten.
 
     `bekannter_code` (Package-A-Hardening, RC-W6-B4-Nachfolge): ein aus dem
     `modell`-Feld rein FORMBASIERT abgetrennter Kandidat (`parse_core_model`/
@@ -1274,12 +1324,12 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
     sofort als "bestätigte Generation" durchgehen — obwohl GT3/R32 echte
     Leistungsvarianten sind, keine Chassis-/Baureihengenerationen. Der
     Parameter bleibt nur zur Kennzeichnung erhalten (`passend_zum_kandidat`),
-    OHNE Wirkung auf das Verwerfen: ein Code braucht weiterhin ENTWEDER ein
-    passendes Jahresfenster ODER eine strukturelle Generationszählung
-    (s.u.) — exakt dieselbe Schwelle wie jeder andere Code, unabhängig davon,
-    ob er zufällig mit der Nutzereingabe übereinstimmt UND unabhängig davon,
-    ob er eine Ziffer enthält. Ein ANDERER, abweichender Code bleibt
-    unverändert an dieselbe Schwelle gebunden — ein expliziter Widerspruch
+    OHNE Wirkung auf das Verwerfen: ein Code braucht weiterhin ENTWEDER eine
+    strukturelle Generationszählung ODER eine eindeutige Bezeichnung
+    (s.u., Runde 3) — exakt dieselbe Schwelle wie jeder andere Code,
+    unabhängig davon, ob er zufällig mit der Nutzereingabe übereinstimmt UND
+    unabhängig davon, ob er eine Ziffer enthält. Ein ANDERER, abweichender
+    Code bleibt unverändert an dieselbe Schwelle gebunden — ein expliziter Widerspruch
     (zwei vergleichbar stark belegte, aber unterschiedliche Codes) wird
     weiterhin von `konsens()` als Konflikt erkannt, nie blind übernommen.
 
@@ -1299,23 +1349,49 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
     ist deshalb jetzt für KEINEN Code mehr allein ausreichend — unabhängig
     von Ziffern, Marke oder Modell.
 
-    Verbleiben zwei GENERISCHE, tatsächlich eindeutige Evidenzpfade, beide
-    bereits bestehend und unverändert:
-      * `jahr_belegt`     ein passendes Produktionsfenster für DIESES Baujahr
-                          (reale Information über das Fahrzeug, nicht nur
-                          Text in der Nähe).
+    Runde 2 liess als Evidenz `jahr_belegt` (passendes Produktionsfenster)
+    ODER `generationsnummer_strukturell` (STRUKTURELLE "Modell IV (CODE)"-
+    Schreibweise) gelten, jeweils ALLEIN hinreichend.
+
+    Fortsetzungsauftrag (verbleibende semantische Generationslücke, Runde 3,
+    CONFIRMED): genau das war noch zu weit. Ein Produktionsfenster belegt nur
+    zeitliche Passung ("der Code existierte/wurde gebaut, als das Zielfahrzeug
+    gebaut wurde") -- NICHT, dass der Code semantisch eine Generation statt
+    einer Leistungs-/Ausstattungsvariante bezeichnet. Eine Variante wird so gut
+    wie immer INNERHALB des Produktionsfensters ihrer eigenen Chassisgeneration
+    gebaut; ein Jahresfenster um "GT3" herum ist deshalb kein Beleg dafür, dass
+    "GT3" selbst die Generation ist (reproduziert: "Der Porsche 911 GT3, diese
+    Generation, wird seit 2021 gebaut." bestätigte bisher fälschlich
+    generation="GT3" -- exakt derselbe, bereits in Runde 2 als bloße
+    Wortnachbarschaft erkannte Fehler, nur diesmal durch ein zusätzliches,
+    aber ebenso unspezifisches Jahresfenster verschleiert). `jahr_belegt`
+    entfällt deshalb jetzt als EIGENSTÄNDIGER Bestätigungspfad; es bleibt
+    Beleg für zeitliche WIDERSPRÜCHE (ein Code, den eine Quelle fürs Baujahr
+    ausschließt, bleibt ausgeschlossen -- unverändert, s. `aus`/`ein` unten),
+    ist aber für sich genommen keine Rollenbestätigung mehr.
+
+    Verbleiben zwei GENERISCHE, tatsächlich eindeutige Evidenzpfade für die
+    ROLLE selbst, unabhängig von jedem Jahresfenster:
       * `generationsnummer_strukturell` (`g["nummer"]`, `_generationscodes()`)
                           die STRUKTURELLE "Modell IV (CODE)"-Schreibweise —
                           eine römische Zahl UNMITTELBAR vor dem Code in
                           Klammern ist eine explizite Generationszählung,
-                          kein bloß benachbartes Wort, und braucht deshalb
-                          KEIN zusätzliches Jahresfenster (keine pauschale
-                          Jahresfenster-Pflicht, wenn diese eindeutigere
-                          Evidenz vorliegt).
-    Beide Pfade bleiben unverändert gültig, auch für ziffernlose Codes ("NC"
-    MIT echtem Jahresfenster bleibt bestätigbar) — nur die reine
-    Wortnachbarschaft (`kontext` ohne eines der beiden) reicht ab jetzt für
-    NIEMANDEN mehr, auch nicht für digit-tragende Codes wie "F82"/"GT3".
+                          kein bloß benachbartes Wort.
+      * `rollenbeleg`     (`g["rollenbeleg"]`, `_generationscodes()`) eine
+                          EINDEUTIGE Bezeichnung ("Baureihe …", "Chassis-Code
+                          …"/"Chassiscode …", "Werkscode …", "Codename …",
+                          "interne Bezeichnung …") in der Umgebung des Codes
+                          -- eine explizite Rollenzuweisung durch die Quelle,
+                          kein vages Wort wie "Generation"/"Typ"/"Modellreihe"
+                          (`_ROLLE_BEZEICHNUNG` ist eine STRENGE Teilmenge von
+                          `_GEN_KONTEXT`, genau ohne diese vagen Wörter).
+    Beide Pfade zählen auch OHNE Produktionsjahresfenster (eine eindeutige
+    Bezeichnung braucht kein Jahr, um die Rolle zu belegen) UND für
+    ziffernlose wie zifferntragende Codes gleich -- kein Unterschied nach
+    Marke, Modell oder Ziffern. Reine Wortnachbarschaft (`kontext`) UND ein
+    bloßes Jahresfenster (`jahr_belegt`) reichen -- einzeln wie zusammen --
+    für KEINEN Code mehr aus, auch nicht für digit-tragende Codes wie
+    "F82"/"GT3".
 
     Betrifft NUR das Verwerfen/Bestätigen der Generation selbst:
     `auxiliary_code`/Modell-/Variantendaten bleiben vollständig erhalten
@@ -1335,7 +1411,7 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
             c["passend_zum_kandidat"] = True
         if c["wert"] in aus - ein:
             c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
-        elif not (c.get("jahr_belegt") or c.get("generationsnummer_strukturell")):
+        elif not (c.get("generationsnummer_strukturell") or c.get("rollenbeleg")):
             c["verworfen"] = "ohne_generationskontext"
 
 

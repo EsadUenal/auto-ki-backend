@@ -112,19 +112,20 @@ if _FEHLER:
     raise SystemExit(1)
 print("ALLE ALIGNMENT-ALPHABETISCHE-ZUSAETZE-GEGENPRUEFUNGEN GRUEN")
 
-# Bewusst NICHT als gruener Test kodiert (siehe Abschlussbericht statt eines
-# hier vorgetaeuschten "bestanden"): eine kurze alphabetische Leistungs-
-# variante (z.B. "RS") kann bei einer Quelle mit einer generischen
-# Generations-Kontextformulierung ("..., diese Generation, ...") direkt NACH
-# dem Zusatz denselben, bereits VOR diesem Auftrag bestehenden
-# Bestaetigungs-Pfad ausloesen wie ein echter Chassiscode -- `_generationen_
-# pruefen()` unterscheidet "echte Chassisgeneration" nicht von "Leistungs-/
-# Ausstattungsvariante", fuer BEIDE genuegt dieselbe Kontextnaehe. Reproduziert
-# an einem PRE-EXISTING Fall (Porsche "911 GT3" + Kontextsatz bestaetigt
-# faelschlich generation="GT3", unveraendert auf master vorhanden) -- die
-# alphabetische Codeerweiterung vergroessert die Zahl der betroffenen
-# Zusatzwoerter, ist aber nicht die Ursache. Eine echte Reparatur verlangt,
-# "echte Generation" von "Variante" bei der KONTEXTPRUEFUNG selbst zu trennen
-# -- das waere eine Parser-Neuarchitektur und ausdruecklich nicht Teil dieses
-# Auftrags ("nur bei konkretem Fehler nachbessern, keine Parser-
-# Neuarchitektur"). Dokumentiert als offener, vorbestehender Punkt.
+# INZWISCHEN GESCHLOSSEN (Fortsetzungsauftrag, Runde 3 -- "verbleibende
+# semantische Generationslücke"): der hier dokumentierte offene Punkt bestand
+# darin, dass eine kurze alphabetische Leistungsvariante (z.B. "RS") bei einer
+# Quelle mit generischer Kontextformulierung ("..., diese Generation, ...",
+# optional PLUS einem zufällig passenden Produktionsfenster) denselben
+# Bestätigungspfad wie ein echter Chassiscode auslöste -- `_generationen_
+# pruefen()` unterschied "echte Chassisgeneration" nicht von "Leistungs-/
+# Ausstattungsvariante" (reproduziert am Porsche-"911 GT3"-Fall). Jetzt
+# verlangt die Rollenbestätigung selbst entweder eine strukturelle
+# Generationszählung ("Modell IV (CODE)") ODER eine eindeutige Bezeichnung
+# ("Baureihe …", "Chassis-Code …", "Werkscode …", "Codename …", "interne
+# Bezeichnung …") -- ein vages Wort wie "Generation" (mit oder ohne
+# Jahresfenster) reicht für KEINEN Code mehr aus, unabhängig von Ziffern,
+# Marke oder Modell. Keine Marken-/Modell-/GT3-Allowlist nötig: siehe
+# `_ROLLE_BEZEICHNUNG` in app/technical_research.py und die volle Kette in
+# test_generation_kontext_falschbestaetigung_fix.py (Fall F/G/H) sowie
+# test_identity_model_code_split.py (C2/E/F/G/J).

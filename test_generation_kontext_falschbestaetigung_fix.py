@@ -48,9 +48,38 @@ nicht verursacht. Runde 2 schließt jetzt BEIDE Klassen (alphabetisch UND
 numerisch) über denselben, einheitlichen Pfad -- keine Marken-/Modell-/
 GT3-Sonderliste.
 
-Digit-tragende Codes mit ECHTER Evidenz (Jahresfenster oder struktureller
-Generationszählung) bleiben bestätigbar -- siehe test_identity_model_code_
-split.py (C2/E/F/G, dort jetzt mit Produktionsfenster statt bloßem Kontext).
+Digit-tragende Codes mit ECHTER Evidenz (strukturelle Generationszählung oder
+eindeutige Bezeichnung) bleiben bestätigbar -- siehe test_identity_model_code_
+split.py (C2/E/F/G, dort jetzt mit Chassiscode-/Baureihe-Bezeichnung statt
+bloßem Kontext+Jahresfenster).
+
+RUNDE 3 (verbleibende semantische Generationslücke, Fortsetzungsauftrag,
+CONFIRMED): Runde 2 liess `jahr_belegt` (passendes Produktionsfenster) ALLEIN
+weiterhin als hinreichenden Beleg gelten. Das war noch zu weit -- ein
+Produktionsfenster belegt nur zeitliche Passung, nicht die semantische ROLLE
+des Codes. Eine Leistungsvariante wird so gut wie immer innerhalb des
+Produktionsfensters ihrer eigenen Chassisgeneration gebaut: "Der Porsche 911
+GT3, diese Generation, wird seit 2021 gebaut." bestätigte deshalb bisher
+weiterhin fälschlich generation="GT3" (Fall F unten, vorher trotz Runde 2
+offen -- "911 GT3 mit echtem Produktionsfenster bleibt bestätigbar" war der
+zuletzt gemeldete Befund).
+  NACHHER (Runde 3): `jahr_belegt` entfällt als EIGENSTÄNDIGER
+  Bestätigungspfad (bleibt Beleg für zeitliche WIDERSPRÜCHE, s. weiterhin
+  Fall C "ausserhalb"). Es bleiben zwei generische, tatsächlich eindeutige
+  Pfade für die Rolle selbst, beide OHNE Jahresfensterpflicht:
+    * `generationsnummer_strukturell` -- die strukturelle "Modell IV (CODE)"-
+      Schreibweise (unverändert aus Runde 2).
+    * `rollenbeleg` -- eine EINDEUTIGE Bezeichnung ("Baureihe …",
+      "Chassis-Code …"/"Chassiscode …", "Werkscode …", "Codename …",
+      "interne Bezeichnung …") in der Umgebung des Codes; eine explizite
+      Rollenzuweisung durch die Quelle, kein vages Wort wie "Generation"
+      (NEU in Runde 3, `_ROLLE_BEZEICHNUNG` in app/technical_research.py).
+  Keine GT3-/Marken-/Modell-Allowlist: dieselbe Schwelle gilt für jeden Code.
+  Fall F zeigt jetzt BEIDES -- GT3 bleibt (korrekt) unbestätigt, AUCH mit
+  Jahresfenster; Fall G zeigt eine eindeutige Bezeichnung OHNE jedes
+  Jahresfenster als eigenständig hinreichend; Fall H zeigt echte Generation
+  und Variante gemeinsam auf einer Seite (Generation bestätigt, Variante
+  bleibt Variante).
 
     python scripts/test_isolated.py test_generation_kontext_falschbestaetigung_fix.py
 """
@@ -106,54 +135,65 @@ async def run():
           "automatisch die Generation (derselbe Fix wie Fall A)",
           ident_b.generation is None, str(ident_b.generation))
 
-    # ── Fall C: tatsächlich belegte Generation (Jahresfenster PLUS Kontext) ─
+    # ── Fall C: tatsächlich belegte Generation (eindeutige Bezeichnung PLUS ──
+    # Jahresfenster). Runde 3: "diese Generation" (vages Wort) reicht nicht
+    # mehr -- die Quelle muss den Code ausdrücklich als Baureihe bezeichnen.
     quelle_nc_mit_jahr = [
         treffer("https://www.adac.de/mx5-nc", "Mazda MX-5 NC",
-                "Der Mazda MX-5 NC, diese Generation, wurde von 2005 bis 2015 gebaut."),
+                "Der Mazda MX-5 NC, diese Baureihe, wurde von 2005 bis 2015 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/mazda-mx5-nc", "Mazda MX-5 NC im Test",
-                "Der Mazda MX-5 NC, diese Generation, wurde von 2005 bis 2015 gebaut."),
+                "Der Mazda MX-5 NC, diese Baureihe, wurde von 2005 bis 2015 gebaut."),
     ]
     ident_c_innerhalb, _, _ = await _ident("Mazda", "MX-5 NC", 2008, quelle_nc_mit_jahr)
-    check("Fall C: ziffernloser Code MIT belegtem Jahresfenster UND Kontext, "
-          "Baujahr INNERHALB -> Generation WIRD bestätigt (kein Datenverlust, "
-          "echte Bestätigung bleibt möglich)",
+    check("Fall C: ziffernloser Code MIT eindeutiger Bezeichnung ('Baureihe') "
+          "UND Jahresfenster, Baujahr INNERHALB -> Generation WIRD bestätigt "
+          "(kein Datenverlust, echte Bestätigung bleibt möglich)",
           ident_c_innerhalb.generation == "NC", str(ident_c_innerhalb.generation))
+    # Jahresfenster bleibt EIN Widerspruchsbeleg (Runde 3 unverändert): auch
+    # eine eindeutige Bezeichnung rettet den Code nicht, wenn eine Quelle das
+    # Zielbaujahr explizit AUSSCHLIESST.
     ident_c_ausserhalb, _, _ = await _ident("Mazda", "MX-5 NC", 2019, quelle_nc_mit_jahr)
     check("Fall C: dieselbe Quelle, Baujahr AUSSERHALB des genannten Fensters "
-          "-> Generation bleibt unbestätigt", ident_c_ausserhalb.generation is None,
+          "-> Generation bleibt unbestätigt, TROTZ eindeutiger Bezeichnung "
+          "(Jahreswiderspruch bleibt wirksam)", ident_c_ausserhalb.generation is None,
           str(ident_c_ausserhalb.generation))
 
     # ── Fall D: expliziter Generationswiderspruch (zwei ziffernlose Codes, ──
-    # beide mit Jahr+Kontext, für dasselbe Zielbaujahr) -- darf NICHT blind
-    # einen gewinnen lassen (konsens()-Konfliktlogik unverändert wirksam).
+    # beide mit eindeutiger Bezeichnung+Jahr, für dasselbe Zielbaujahr) --
+    # darf NICHT blind einen gewinnen lassen (konsens()-Konfliktlogik
+    # unverändert wirksam). Runde 3: beide Codes brauchen jetzt je einen
+    # eigenen Rollenbeleg, sonst waeren (seit `jahr_belegt` allein nicht mehr
+    # genuegt) beide schon individuell unbestätigt und der Test belegte
+    # keinen echten Konflikt zwischen zwei TATSÄCHLICH bestätigten Werten mehr.
     quelle_widerspruch = [
         treffer("https://www.adac.de/beispiel-rs", "Beispiel Modell RS",
-                "Das Beispiel Modell RS, diese Generation, wurde von 2015 bis 2020 gebaut."),
+                "Das Beispiel Modell RS, diese Baureihe, wurde von 2015 bis 2020 gebaut."),
         treffer("https://www.auto-motor-und-sport.de/beispiel-st", "Beispiel Modell ST",
-                "Das Beispiel Modell ST, diese Generation, wurde von 2015 bis 2020 gebaut."),
+                "Das Beispiel Modell ST, diese Baureihe, wurde von 2015 bis 2020 gebaut."),
     ]
     ident_d, _, _ = await _ident("Beispiel", "Modell", 2018, quelle_widerspruch)
     check("Fall D: zwei vergleichbar starke, aber WIDERSPRECHENDE ziffernlose "
-          "Codes (RS vs. ST) -> UNKNOWN, kein blinder Gewinner",
+          "Codes (RS vs. ST), JEWEILS mit eigenem Rollenbeleg -> UNKNOWN, "
+          "kein blinder Gewinner (echter Konflikt zweier bestätigter Werte)",
           ident_d.generation is None, str(ident_d.generation))
 
-    # ── Fall E: bestehende NC/ND- und numerische Zusatzfälle bleiben stabil ─
+    # ── Fall E: bestehende NC/ND- und numerische Zusatzfälle bleiben stabil, ─
+    # SOWEIT ihre Quellen die Generation tatsächlich belegen. Runde 3: "(seit
+    # 2015)" (ein offenes Jahresfenster) ist jetzt NICHT mehr allein
+    # hinreichend -- die Quelle bekommt deshalb zusätzlich eine eindeutige
+    # Bezeichnung ("Baureihe"), exakt dieselbe neue Schwelle wie Fall C.
     ident_e_nd, _, z_e_nd = await _ident("Mazda", "MX-5 ND", 2019, [
         treffer("https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/mazda/mx-5/",
                 "Mazda MX-5 (ND) seit 2015: Technische Daten",
-                "Der Mazda MX-5 ND (seit 2015) ist die vierte Generation des Roadsters."),
+                "Der Mazda MX-5 ND, Baureihe seit 2015, ist die vierte Generation des Roadsters."),
         treffer("https://www.auto-motor-und-sport.de/test/mazda-mx-5-2-0-skyactiv-g-184/",
                 "Mazda MX-5 2.0 Skyactiv-G 184 im Test",
-                "Die vierte Generation des Mazda MX-5 (ND, seit 2015): 2.0 Skyactiv-G."),
+                "Die vierte Generation (Baureihe) des Mazda MX-5 (ND, seit 2015): 2.0 Skyactiv-G."),
     ])
-    # Korrektur zur eigenen Erwartung: "(seit 2015)" IST ein echtes, offenes
-    # Jahresfenster (jahr_belegt=True) -- bei Baujahr 2019 eine ECHTE,
-    # unveränderte Bestätigung (jahr_belegt war schon vor diesem Fix allein
-    # hinreichend), keine Regression und kein erneuter Beleg des Fixes selbst.
-    check("Fall E: MX-5 ND mit echtem offenem Jahresfenster ('seit 2015') UND "
-          "Kontext, Baujahr 2019 im Fenster -> unverändert korrekt bestätigt "
-          "(jahr_belegt war immer schon allein hinreichend, von diesem Fix "
-          "nicht berührt)",
+    check("Fall E: MX-5 ND mit eindeutiger Bezeichnung ('Baureihe') UND "
+          "offenem Jahresfenster ('seit 2015'), Baujahr 2019 im Fenster -> "
+          "bestätigt (Positivfall erhalten, jetzt über den Rollenbeleg-Pfad "
+          "statt des in Runde 3 entfallenen `jahr_belegt`-Alleinpfads)",
           ident_e_nd.belegt is True and ident_e_nd.generation == "ND",
           f"belegt={ident_e_nd.belegt} generation={ident_e_nd.generation}")
     ident_e_992, _, z_e_992 = await _ident("Porsche", "911 992", 2020, [
@@ -183,8 +223,13 @@ async def run():
           ident_f_gt3.belegt is True and ident_f_gt3.generation is None,
           f"belegt={ident_f_gt3.belegt} generation={ident_f_gt3.generation}")
 
-    # Derselbe GT3-Fall MIT echtem Jahresfenster -> bleibt bestätigbar (kein
-    # Datenverlust, derselbe generische Pfad wie bei alphabetischen Codes).
+    # Derselbe GT3-Fall MIT echtem Produktionsfenster -- die VERBLEIBENDE
+    # semantische Generationslücke (Runde 3, vorher offen: "911 GT3 mit
+    # echtem Produktionsfenster -> GT3 bleibt bestätigbar"). Ein
+    # Produktionsfenster belegt nur zeitliche Passung, NICHT die semantische
+    # Rolle -- "GT3" bleibt eine Leistungsvariante, keine Chassisgeneration,
+    # auch wenn ein Zeitraum zufällig zum Zielbaujahr passt. JETZT (Runde 3)
+    # korrekt weiterhin UNKNOWN, obwohl ein Jahresfenster vorliegt.
     ident_f_gt3_jahr, _, _ = await _ident("Porsche", "911 GT3", 2021, [
         treffer("https://www.porsche.de/911-gt3", "Porsche 911 GT3",
                 "Der Porsche 911 GT3, diese Generation, wird seit 2021 gebaut."),
@@ -192,10 +237,48 @@ async def run():
                 "Der Porsche 911 GT3, diese Generation, wird seit 2021 gebaut und "
                 "beschleunigt in 3,4 Sekunden."),
     ])
-    check("Fall F: derselbe Code MIT echtem Produktionsfenster bleibt "
-          "bestätigbar -- derselbe Pfad wie bei NC/USC10/F82, kein "
-          "Informationsverlust",
-          ident_f_gt3_jahr.generation == "GT3", str(ident_f_gt3_jahr.generation))
+    check("Fall F (Generationslücke jetzt geschlossen): 'GT3' MIT Kontext UND "
+          "echtem Produktionsfenster, aber OHNE eindeutige Bezeichnung und "
+          "OHNE strukturelle Generationszählung -> bleibt UNKNOWN (vorher "
+          "fälschlich 'GT3' bestätigt -- ein Produktionsfenster beweist "
+          "zeitliche Passung, nicht die semantische Rolle des Codes)",
+          ident_f_gt3_jahr.belegt is True and ident_f_gt3_jahr.generation is None,
+          f"belegt={ident_f_gt3_jahr.belegt} generation={ident_f_gt3_jahr.generation}")
+
+    # ── Fall G: eindeutige Bezeichnung OHNE JEDES Jahresfenster -- zählt ────
+    # eigenständig (Auftrag: "ausdrücklich belegter Baureihen-/Chassiscode
+    # ohne Jahresfenster darf nicht pauschal abgelehnt werden"). Bewusst ein
+    # generisches Platzhaltermodell (keine Marken-/Modell-Allowlist).
+    ident_g, _, _ = await _ident("Beispiel", "Modell XY9", 2016, [
+        treffer("https://www.adac.de/beispiel-xy9", "Beispiel Modell XY9",
+                "Das Beispiel Modell XY9, Chassiscode dieser Baureihe, hat ein neues Fahrwerk."),
+        treffer("https://www.auto-motor-und-sport.de/beispiel-xy9", "Beispiel Modell XY9 im Test",
+                "Das Beispiel Modell XY9, interne Bezeichnung der aktuellen Baureihe, im Test."),
+    ])
+    check("Fall G: eindeutige Bezeichnung ('Chassiscode'/'interne "
+          "Bezeichnung') OHNE jedes Jahresfenster -> Generation WIRD "
+          "bestätigt (eigenständig hinreichend, kein Jahr nötig)",
+          ident_g.generation == "XY9", str(ident_g.generation))
+
+    # ── Fall H: echte Generation UND Variante gemeinsam auf derselben Seite ─
+    # -- die Generation wird bestätigt, die Variante bleibt Variante (geht
+    # nicht als Generation durch, auch wenn sie direkt danach auf derselben
+    # Seite steht -- "Klammerposition allein beweist die Rolle nicht").
+    ident_h, _, z_h = await _ident("Mazda", "MX-5 RS", 2017, [
+        treffer("https://www.adac.de/mx5-nd-rs", "Mazda MX-5 ND RS",
+                "Der MX-5 RS ist die Sportversion des Mazda Roadsters. Ganz unabhängig "
+                "davon: Die Baureihe Mazda MX-5 ND wird seit 2015 gebaut."),
+        treffer("https://www.auto-motor-und-sport.de/mazda-mx5-nd-rs", "Mazda MX-5 ND RS im Test",
+                "Der MX-5 RS ist die Sportversion des Mazda Roadsters. Ganz unabhängig "
+                "davon: Die Baureihe Mazda MX-5 ND wird seit 2015 gebaut."),
+    ])
+    check("Fall H: echte Generation ('ND', eindeutige Bezeichnung) UND "
+          "Variante ('RS') auf derselben Seite -> die ECHTE Generation wird "
+          "bestätigt", ident_h.generation == "ND", str(ident_h.generation))
+    check("Fall H: die Variante 'RS' bleibt als Variante erhalten (auxiliary_"
+          "code) und wird NICHT zur Generation, obwohl sie auf derselben "
+          "Seite direkt neben der Baureihe steht",
+          z_h.get("auxiliary_code") == "RS", f"aux={z_h.get('auxiliary_code')}")
 
 
 asyncio.run(run())
