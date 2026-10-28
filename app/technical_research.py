@@ -948,11 +948,50 @@ _GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|w
 #     bei GLEICHBLEIBENDEM HSN 5013 -- TSN ist amtlicher Typschluessel,
 #     keine Generationsrolle.
 # USC10 bleibt damit laut realer Quellenlage ein Teiledatenbank-"Type"
-# UNTERHALB der Baureihen-Ebene (XC1/UXC1) -- fuer `identity.generation`
-# dieser App aber weiterhin der richtige Zielwert, weil die Schwachstellen-/
-# Wartungs-Abgrenzung genau zwischen den GESCHWISTERVARIANTEN innerhalb
-# XC1/UXC1 (RC 300h/RC 350/RC F) unterscheiden muss -- UXC1 allein waere
-# dafuer zu grob (s. `phase_fakten()`-Verwendung von `identitaet.generation`).
+# UNTERHALB der Baureihen-Ebene (XC1/UXC1) -- und ist fuer `identity.
+# generation` dieser App DESHALB FALSCH, nicht nur unbelegt (Korrektur nach
+# Gegenpruefung, RC-F-Identitaetsvertrag-Folgeauftrag, 2026-10-28). Die
+# vorherige Begruendung hier ("UXC1 allein waere fuer die Geschwister-
+# varianten-Abgrenzung zu grob") war selbst unbelegt und ist durch direkten
+# Codetest widerlegt (s. test_rc_f_generation_contract_diagnose.py): die
+# Abgrenzung RC 300h/RC 350 vs. RC F passiert bereits auf CORE-MODEL-Ebene
+# (`_ziel()["modell"]` = "RC F", nicht bloss "RC") -- `ausgerichtet()`/
+# `_modell_ausgerichtet()` verwerfen eine reine RC-300h-/RC-350-Quelle schon
+# beim Alignment, BEVOR `_fremde_generation()` ueberhaupt einen Code
+# vergleicht. Und `_fremde_generation()` selbst vergleicht nur rohe
+# Codestrings: UXC1 unterscheidet eine "300H"/"350"-Quelle davon GENAUSO
+# sicher wie USC10 (keiner der beiden Strings ist je gleich "300H"/"350").
+# `identity.generation` soll laut Datenmodell (`db/schema.sql::baureihe.
+# generation`) und `_ziel()`s eigenem Drei-Stufen-Vertrag (CORE MODEL /
+# AUXILIARY CANDIDATE / CONFIRMED GENERATION, s. dort) die BAUREIHEN-Ebene
+# tragen, nicht die Teiledatenbank-Type-Ebene -- USC10 waere damit, selbst
+# bei einer kuenftigen Rollenbeleg-Quelle, der FALSCHE Wert fuer dieses Feld,
+# kein Zielkonflikt zwischen Belegbarkeit und Variantenabgrenzung.
+#
+# OFFENE LUECKE (hier bewusst NICHT behoben, s. Uebergabe "RC-F-Identitaets-
+# blockade"): die echte Baureihen-Evidenz (ADAC "RC (UXC1)", carwiki.de
+# "Baureihe: XC1") ist mit dem aktuellen CORE-MODEL-Anker ("RC F") strukturell
+# UNERREICHBAR -- `_generationscodes()` sucht den Code nur UNMITTELBAR hinter
+# dem kompletten Core-Model-String, die realen Quellen schreiben UXC1/XC1
+# aber hinter dem BLOSSEN Markennamen "RC" (ohne "F"). Direkt nachgewiesen:
+# mit denselben drei Quellen liefert `_generationscodes()` fuer ADAC/
+# carwiki.de keinen einzigen Codekandidaten, nur fuer das rolling.hu-Type-Feld
+# (USC10) -- echter Evidenzverlust, keine erfundene Bestaetigung, und nicht
+# Lexus-spezifisch: strukturell fuer jedes Modell mit eigenem Trimnamen
+# (Marke+Modell+Trim vs. Marke+Modell). Eine generische Behebung muesste
+# Modellname und Trimname trennen, OHNE das fahrzeug-/markenspezifisch zu
+# raten -- exakt die Baureihe-vs-Variante-Frage, die `app/autofinder_
+# variante.py` fuer AutoFinder bereits NICHT per Heuristik, sondern nur ueber
+# belegbare Eigenschaften loest. Bleibt als Architekturentscheidung offen,
+# nicht auf Verdacht umgesetzt. Die naheliegendere, nicht-spekulative Abhilfe
+# fuer DIESEN konkreten Fall ist ohnehin kein Vertrags-Patch, sondern ein
+# fehlender Katalogeintrag: Lexus RC fehlt komplett in `db/seed_fahrzeug
+# daten.sql` (kein `baureihe`-Eintrag) -- mit einem regulaeren Eintrag
+# (modell="RC", generation="UXC1", motorvariante "RC F") kaeme die Generation
+# ueber den laengst bestehenden, bereits korrekten DB-Pfad
+# (`VehicleIdentity.from_check_context`), ganz ohne Web-Extraktion. Reine
+# Datenarbeit, kein Identitaetsvertrags-Fix -- und laut AGENTS.md nicht
+# ungefragt zu starten.
 # "Modellcode" selbst bleibt dennoch generisch belegt (nicht USC10-spezifisch):
 # oeffentlich dokumentiert (VIN-Aufbau, carVertical-Erklaerung zu Audi/
 # Mercedes-FIN) bezeichnet "Modellcode" dort ausdruecklich die Stellen, die
