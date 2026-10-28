@@ -1,28 +1,48 @@
 """
-RC-F-Identitaetsvertrag-Folgeauftrag (zweite Runde, 2026-10-28): belegter
-Familien-Zugehoerigkeitsbeleg fuer Baureihen-/Generationscodes.
+RC-F-Identitaetsvertrag-Folgeauftrag (dritte Runde, 2026-10-28): echter,
+POSITIVER Zugehoerigkeitsbeleg fuer Baureihen-/Generationscodes -- nicht nur
+eine raeumliche-Naehe-Ausschlusspruefung.
 
 BEFUND (erste Runde, Commit 6878a29): `_generationscodes()` verankerte
 Generationscodes ausschliesslich auf dem vollen Core-Model-String ("RC F").
 Reale Quellen schreiben den Baureihen-Code aber oft hinter dem BLOSSEN
-Markennamen/der Modellfamilie ("RC (UXC1)", nicht "RC F (UXC1)") -- die
-erste Fassung machte das ueber eine reine ZEICHEN-Fenstersuche erreichbar.
+Markennamen/der Modellfamilie ("RC (UXC1)", nicht "RC F (UXC1)").
 
-GEGENPRUEFUNG (dieser Auftrag): reine raeumliche Naehe reicht NICHT als
-Zugehoerigkeitsbeleg. `_modellfamilie_zugehoerigkeit_belegt()` (app/
-technical_research.py) ersetzt die Fenstersuche durch drei generische,
-bereits anderswo im Modul genutzte Pruefungen:
-  * eine echte Absatz-/Ueberschriftengrenze begrenzt den Suchraum
-    (Navigations-/Querverweis-Fall);
-  * eine FREMDE Marke zwischen Codefundstelle und Zielmodell-Nennung
-    verwirft den Fund (Vergleichsseiten-Fall);
-  * eine Verneinung im Teilsatz der Zielmodell-Nennung verwirft den Fund.
+GEGENPRUEFUNG RUNDE 2 (Commit 48306e7): ersetzte die reine Zeichen-
+Fensterpruefung durch Ausschlusspruefungen (Absatzgrenze/fremde Marke/
+Verneinung) -- IMMER NOCH nicht ausreichend: "Zielmodell steht irgendwo im
+selben Block" ohne fremde Marke genuegte weiterhin als Fund, auch wenn ein
+ANDERES Modell DERSELBEN Marke (z.B. eine Nachbar-Tabellenzeile "Modell RC
+350, Baureihe RC (XYZ)") dem Code tatsaechlich naeher stand (real
+reproduziert, Faelle K/L/M unten).
+
+GEGENPRUEFUNG RUNDE 3 (dieser Auftrag): `_modellfamilie_zugehoerigkeit_
+belegt()` (app/technical_research.py) prueft jetzt POSITIV, welchem Modell
+ein Code zugeordnet ist, in drei Schritten:
+  0. der EIGENE, durch Satzendezeichen begrenzte Satz des Codes ist
+     autoritativ, wenn er selbst eine Fahrzeug-Aussage traegt (dieselbe
+     Satzanfangs-Konstruktion wie der F16-Fix, aber mit TEILMENGEN-
+     Kompatibilitaet statt strikter Gleichheit -- "RC" vs. Ziel "RC F" ist
+     neutral, "RC 350"/"RC Convertible" vs. "RC F" ist ein Widerspruch);
+  1. ohne eindeutigen eigenen Satz entscheidet die naechstgelegene
+     Feldlabel-Nennung ("Modell:"/"Fahrzeug:", wie ADAC/carwiki.de sie
+     selbst verwenden) -- RUECKWAERTS hat Vorrang, weil Identitaetsfelder in
+     realen Specsheets VOR Klassifikationsfeldern wie "Baureihe" stehen;
+  2. das Zielmodell muss SELBST (nicht nur ein kompatibler Praefix wie "RC")
+     im Fenster vorkommen, ohne Verneinung und ohne fremde Marke dazwischen.
 Zusaetzlich schliesst `_rollenbeleg_feldlabel()` die reale Luecke bei
 Feldlabel:Wert-Quellen (Doppelpunkt/Zeilenumbruch trennt Rollenwort und Code
-bisher in zwei Teilsaetze), und eine neue, rein strukturelle Erkennung in
+bisher in zwei Teilsaetze), und eine strukturelle Erkennung in
 `_generationscodes()` deckt die arabische Ordnungszahl-Form "Modell (N.
 Generation) (CODE)" ab (real bei auto-motor-und-sport.de gefunden, analog
 zur bestehenden roemischen Form "Modell IV (CODE)").
+
+XC1/UXC1 (Fall H): begrenzte oeffentliche Recherche (car.info, lexusclub.cz,
+carspace.me, manuals.cz, what-breaks.com) zeigt fuer dieselbe RC-Baureihe
+durchgehend einen DRITTEN Code "XC10" -- weder zu "XC1" (carwiki.de/AMS)
+noch zu "UXC1" (ADAC) exakt passend. Die Beziehung bleibt UNGEKLAERT (nicht
+als nachgewiesener fachlicher Widerspruch zu behandeln, aber auch nicht
+gleichzusetzen) -- s. Kommentar bei Fall H.
 
 Reale, unveraendert zitierte Quellen (per Browser-Tool nachgeprueft,
 28.10.2026):
@@ -35,10 +55,13 @@ Reale, unveraendert zitierte Quellen (per Browser-Tool nachgeprueft,
   * auto-motor-und-sport.de/marken-modelle/lexus/rc/
     "Lexus RC (1. Generation) (XC1) im Ueberblick (ab 2015)" mit Artikel
     "LEXUS RC F TRACK EDITION IM SUPERTEST" auf derselben Seite.
+  * car.info / lexusclub.cz / carspace.me / manuals.cz / what-breaks.com:
+    unabhaengig von ADAC/carwiki.de, nennen "XC10" fuer RC 200t/300h/350/F
+    gemeinsam, 2014/2015-2025 (s. Fall H).
 
 Alle anderen Fahrzeuge/Quellen in diesem File (BMW M4, Vergleichsseiten,
-Navigationsbloecke) sind SYNTHETISCHE Gegenfaelle, ausdruecklich als solche
-benannt -- keine realen Veroeffentlichungen.
+Navigationsbloecke, Modellfamilien-Tabellen) sind SYNTHETISCHE Gegenfaelle,
+ausdruecklich als solche benannt -- keine realen Veroeffentlichungen.
 
     python scripts/test_isolated.py test_identity_familie_zugehoerigkeit.py
 """
@@ -173,6 +196,87 @@ async def test_f_explizite_verneinung_verwirft():
 
 
 print("\n" + "=" * 78)
+print("ZWEITE GEGENPRUEFUNGSRUNDE -- positiver Beleg statt Ausschlusspruefung")
+print("=" * 78)
+
+
+async def test_k_zwei_modellfamilien_feldlabel_selber_absatz():
+    # SYNTHETISCH, Feldlabel-Form (wie ADAC/carwiki.de): zwei Zeilen
+    # DERSELBEN Marke im selben Absatz -- die naechstgelegene Zeile zum
+    # jeweiligen Code muss entscheiden, nicht reine Zeichendistanz.
+    g = generation_fuer(
+        "Lexus", "RC F", 2017, "5.0 V8",
+        "https://example.test/modelle",
+        "Lexus RC Modelle",
+        "Modell RC 350 Baureihe RC (UXB2). Modell RC F Baureihe RC (UXC1).")
+    check("K) 'Modell RC 350 Baureihe RC (UXB2). Modell RC F Baureihe RC "
+          "(UXC1).' -> nur UXC1, UXB2 bleibt unbestaetigt", g == "UXC1", f"generation={g!r}")
+
+
+async def test_l_zwei_modellfamilien_fliesstext_selber_absatz():
+    # SYNTHETISCH, Fliesstext-Form: dieselbe Situation ohne Feldlabel --
+    # der EIGENE Satz des Codes ("Die Lexus RC 350, Chassiscode ...") nennt
+    # explizit ein ANDERES, nicht kompatibles Modell.
+    g = generation_fuer(
+        "Lexus", "RC F", 2017, "5.0 V8",
+        "https://example.test/modelle-fliesstext",
+        "Lexus RC Modelle",
+        "Die Lexus RC 350, Chassiscode RC (UXB2) dieser Baureihe, ist beliebt. "
+        "Die Lexus RC F, Chassiscode RC (UXC1) dieser Baureihe, ist das Topmodell.")
+    check("L) Fliesstext, zwei Modellfamilien im selben Absatz -> nur UXC1",
+          g == "UXC1", f"generation={g!r}")
+
+
+async def test_m_tabelle_ohne_leerzeilen_zielmodell_in_mittlerer_zeile():
+    # SYNTHETISCH: Tabelle mit DREI Modell-/Baureihenzeilen ohne Leerzeilen
+    # dazwischen -- das Zielmodell steht in der MITTLEREN Zeile, die
+    # Nachbarzeilen tragen je einen EIGENEN, abweichenden Code.
+    g = generation_fuer(
+        "Lexus", "RC F", 2017, "5.0 V8",
+        "https://example.test/tabelle",
+        "Lexus RC Modelle",
+        "Modell RC 350 Baureihe RC (UXA1). Modell RC F Baureihe RC (UXC1). "
+        "Modell RC Convertible Baureihe RC (UXD1).")
+    check("M) Zielmodell in mittlerer Tabellenzeile zwischen zwei fremden "
+          "Zeilen -> nur UXC1 (nicht UXA1/UXD1 der Nachbarzeilen)",
+          g == "UXC1", f"generation={g!r}")
+
+
+async def test_n_ueberlappende_jahresfenster_beide_rollenbelegt():
+    # GENERISCH (kein konkretes Fahrzeug): zwei Baureihen-Codes mit
+    # UEBERLAPPENDEN Zeitfenstern, beide fuer das Baujahr zutreffend und
+    # beide rollenbelegt -- ein echter Widerspruch, den `konsens()` als
+    # solchen erkennen muss (nicht blind den ersten nehmen).
+    z = _ziel("Lexus", "RC F", 2019, "5.0 V8", None)
+    r = treffer(
+        "https://example.test/ueberlappend", "Lexus RC Generationen Uebersicht",
+        "Die Lexus RC (UXC1), Chassiscode dieser Baureihe, deckt 2014 bis 2022 ab. "
+        "Die Lexus RC (UXC9), Chassiscode dieser Baureihe, deckt 2018 bis 2025 ab. "
+        "Der Lexus RC F gehoert zu dieser Baureihe.")
+    claims = _identitaets_claims(r, z)
+    _generationen_pruefen(claims, z.get("auxiliary_code"))
+    gen_claims = [c for c in claims if c["feld"] == "generation" and not c.get("verworfen")]
+    werte = {c["wert"] for c in gen_claims}
+    check("N) zwei ueberlappende, je rollenbelegte Zeitfenster (2014-2022 UND "
+          "2018-2025, Baujahr 2019) -> BEIDE Claims bleiben erhalten (echter "
+          "Widerspruch, keine blinde Auswahl)", werte == {"UXC1", "UXC9"}, f"werte={werte!r}")
+
+
+async def test_o_fehlende_jahresangabe_kein_spontaner_zweitwert():
+    # GENERISCH: ein zweiter, fehlender-Jahresangabe-Code darf NICHT
+    # spontan neben dem belegten entstehen (Grundregel: keine zusaetzliche
+    # Mehrdeutigkeit erfinden, wo die Quelle nur EINEN Code nennt).
+    g = generation_fuer(
+        "Lexus", "RC F", 2017, "5.0 V8",
+        "https://example.test/ohne-jahr",
+        "Lexus RC Generationen Uebersicht",
+        "Die Lexus RC (UXC1), Chassiscode dieser Baureihe, wird gebaut. "
+        "Der Lexus RC F gehoert zu dieser Baureihe.")
+    check("O) ein Code ohne Jahresangabe, sonst rollenbelegt -> UXC1, keine "
+          "erfundene Mehrdeutigkeit", g == "UXC1", f"generation={g!r}")
+
+
+print("\n" + "=" * 78)
 print("ROLLEN-/GENERATIONSWIDERSPRUCH -- echte Quellen widersprechen sich")
 print("=" * 78)
 
@@ -193,13 +297,27 @@ async def test_g_mehrere_generationen_jahresfenster_entscheidet():
           "2017 -> UXC1 (2014-2020), nicht UXC2 (seit 2024)", g == "UXC1", f"generation={g!r}")
 
 
-async def test_h_xc1_uxc1_echter_widerspruch_kein_konsens():
+async def test_h_xc1_uxc1_beziehung_ungeklaert_kein_konsens():
     # REALE Quellen (ADAC + carwiki.de + auto-motor-und-sport.de) zusammen:
     # ADAC nennt "UXC1", carwiki.de/AMS nennen "XC1" -- zwei UNTERSCHIEDLICHE
-    # Codestrings fuer dieselbe Baureihe, laut Auftrag NICHT ohne eigene
-    # Aequivalenzevidenz gleichzusetzen. Das bestehende `konsens()` erkennt
-    # das bereits generisch als Konflikt vergleichbar starker Quellen ->
-    # generation bleibt UNKNOWN, statt einen der beiden Werte zu erfinden.
+    # Codestrings. WICHTIG (Gegenpruefung, zweite Runde): das ist NICHT
+    # dasselbe wie ein NACHGEWIESENER fachlicher Widerspruch (unterschiedliche
+    # tatsaechliche Generationen) -- begrenzte oeffentliche Recherche
+    # (car.info, lexusclub.cz, carspace.me, manuals.cz, what-breaks.com, alle
+    # unabhaengig von ADAC/carwiki.de) nennt fuer dieselbe RC-Baureihe
+    # (2014-2025, RC 200t/300h/350/F gemeinsam) durchgehend "XC10" -- ein
+    # DRITTER Code, der weder zu "XC1" noch zu "UXC1" exakt passt. Eine
+    # plausible Erklaerung (ADAC/carwiki.de teilen vermutlich eine deutsche
+    # Fahrzeugdaten-Quelle, die die Endziffer "0" abschneidet; "U" waere dann
+    # ein Antriebsvariante-Praefix wie bei rolling.hu "USC10") ist NICHT durch
+    # eine Hersteller-/Homologationsquelle belegt -- bleibt also ebenso
+    # unbewiesen wie ein echter Widerspruch. Die Beziehung ist UNGEKLAERT,
+    # nicht nachgewiesen widerspruechlich. Das bestehende `konsens()` traegt
+    # diese Unterscheidung nicht explizit (es erkennt nur "zwei verschiedene
+    # Werte, vergleichbares Gewicht" -> Konflikt) -- das genuegt hier trotzdem:
+    # UNKNOWN ist in BEIDEN Faellen (echter Widerspruch ODER ungeklaerte
+    # Aequivalenz) die korrekte, konservative Ausgabe; keine neue Architektur
+    # noetig, nur diese Praezisierung im Reporting/Kommentar.
     quelle = [
         treffer("https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/lexus/rc/xc1/339429/",
                 "Lexus RC F Ultimate Edition Automatik (08/24 - 06/25): Technische Daten | ADAC",
@@ -219,8 +337,8 @@ async def test_h_xc1_uxc1_echter_widerspruch_kein_konsens():
                 "der Rennstrecke? LEXUS LC 500 UND RC F: V8-Sportler auf Abschiedstour."),
     ]
     ident, abgelehnt, _ = await _ident("Lexus", "RC F", 2017, "5.0 V8", quelle)
-    check("H) ADAC (UXC1) vs. carwiki.de+AMS (XC1) zusammen -> ECHTER Konflikt, "
-          "generation bleibt UNKNOWN (kein erfundener Gleichsetzungswert)",
+    check("H) ADAC (UXC1) vs. carwiki.de+AMS (XC1) zusammen -> Beziehung "
+          "ungeklaert, generation bleibt UNKNOWN (kein erfundener Gleichsetzungswert)",
           ident.belegt is True and ident.generation is None,
           f"belegt={ident.belegt} generation={ident.generation!r}")
 
@@ -254,9 +372,14 @@ async def _run_all():
     await test_e_navigationsblock_absatzgrenze_verwirft()
     await test_f_explizite_verneinung_verwirft()
     await test_g_mehrere_generationen_jahresfenster_entscheidet()
-    await test_h_xc1_uxc1_echter_widerspruch_kein_konsens()
+    await test_h_xc1_uxc1_beziehung_ungeklaert_kein_konsens()
     await test_i_gt3_haertung_unberuehrt()
     await test_j_golf_r32_haertung_unberuehrt()
+    await test_k_zwei_modellfamilien_feldlabel_selber_absatz()
+    await test_l_zwei_modellfamilien_fliesstext_selber_absatz()
+    await test_m_tabelle_ohne_leerzeilen_zielmodell_in_mittlerer_zeile()
+    await test_n_ueberlappende_jahresfenster_beide_rollenbelegt()
+    await test_o_fehlende_jahresangabe_kein_spontaner_zweitwert()
     print("\n" + "=" * 78)
     if _FEHLER:
         print(f"{len(_FEHLER)} FEHLER:", _FEHLER)

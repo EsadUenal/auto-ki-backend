@@ -1247,6 +1247,69 @@ def _modell_regex(modell: str | None) -> str:
 #   * eine Verneinung IM TEILSATZ der gefundenen Zielmodell-Nennung
 #     (dieselbe `_verneint_im_teilsatz()`/`_verneint_nach_position()`-Logik
 #     wie jeder andere Claim im Modul) verwirft den Fund ebenfalls.
+# Gegenpruefung (Folgeauftrag, zweite Praezisierungsrunde, 2026-10-28):
+# "gleicher Absatz + keine fremde Marke + keine Verneinung" sind reine
+# AUSSCHLUSSPRUEFUNGEN -- sie lassen "Zielmodell steht irgendwo im selben
+# Block" als FUND durchgehen, auch wenn ein ANDERES Modell DERSELBEN Marke
+# (z.B. eine zweite Tabellenzeile "Modell RC 350, Baureihe RC (XYZ)" direkt
+# vor unserem Zielmodell) dem Code naeher steht als unser Zielmodell. Reale
+# Specsheets (ADAC) und Uebersichten (carwiki.de) markieren "wer gemeint
+# ist" aber durch ihr EIGENES Feldlabel ("Modell"/"Fahrzeug") -- das ist der
+# POSITIVE Beleg, den `_modellnennungen_kandidaten()` einsammelt.
+#
+# Positiv-Regel: die ZUM CODE NAECHSTGELEGENE Feldlabel-Modellnennung (egal
+# in welcher Richtung; ODER die exakte Zielmodell-Nennung selbst, falls
+# naeher) muss mit dem Zielmodell KOMPATIBEL sein (identisch, ODER eine
+# Teilmengenbeziehung wie "RC" zu "RC F" -- dieselbe Teilmengen-Idee wie
+# `familien_kompatibel()` in app/autofinder_identity.py, hier lokal
+# nachgebildet, kein Modulimport zwischen AutoFinder und KaufCheck). Ist die
+# naechstgelegene Nennung ein ANDERES, NICHT kompatibles Modell (z.B.
+# "RC 350" bei Zielmodell "RC F"), ist der Code dessen Zeile/Record
+# zugeordnet -- kein Fund, unabhaengig davon, ob das Zielmodell WEITER WEG
+# ebenfalls vorkommt. Zusaetzlich muss das Zielmodell SELBST (nicht nur ein
+# kompatibler Praefix wie "RC") im selben, absatzbegrenzten Fenster
+# vorkommen -- ein blosser Familienname allein ("Fahrzeug: RC") bestaetigt
+# nichts, er macht nur den naheliegenden Kandidaten nicht-widersprechend.
+#
+# BEWUSST NUR Feldlabel, KEINE "Marke + folgende Grossbuchstaben-Woerter"-
+# Heuristik (anders als der F16-Fix bei `_RE_GROSSGESCHRIEBENE_FOLGE"): im
+# Deutschen werden ALLE Substantive grossgeschrieben, nicht nur Eigennamen
+# ("Lexus RC Generationen", "Lexus RC Baureihen") -- eine solche Heuristik
+# zieht hier beliebige Substantive der Umgebung als scheinbar "fremdes
+# Modell" ein (reproduzierter Gegenfall: ein Seitentitel "Lexus RC
+# Generationen" wurde faelschlich als eigenstaendiges, inkompatibles Modell
+# gelesen). Reale Positivfaelle (ADAC/carwiki.de) sind beide Feldlabel-
+# gestuetzt; wo kein Feldlabel vorliegt (z.B. auto-motor-und-sport.de), trägt
+# die separate EXAKTE Zielmodell-Erwaehnung (`modell_treffer` unten) den
+# Fund bereits allein.
+_MODELLNENNUNG_LABELWORT = frozenset(("modell", "model", "fahrzeug", "marke", "baureihe", "typ"))
+_RE_MODELLNENNUNG_FELD = re.compile(
+    r"\b(?i:modell|model|fahrzeug)\s*:?\s+([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*"
+    r"(?:\s+(?i:(?!modell|model|fahrzeug|marke|baureihe|typ))[A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*){0,3})")
+
+
+def _modellnennungen_kandidaten(text: str) -> list[tuple[int, int, frozenset]]:
+    """Feldlabel-Kandidaten fuer 'hier wird EIN Modell genannt': ein
+    Feldlabel ("Modell"/"Model"/"Fahrzeug", wie ADAC/carwiki.de es selbst
+    nennen) gefolgt von seinem Wert. Label-Woerter selbst (Modell/Model/
+    Fahrzeug/Marke/Baureihe/Typ) zaehlen nie als Wert -- sonst waere
+    "Fahrzeug: Modell" bereits wegen des Worts "Modell" ein scheinbar
+    fremdes Modell. Case-insensitiv nur fuer das Feldlabel/die Ausschluss-
+    woerter selbst (`(?i:...)`, gescoped) -- der Wert bleibt bewusst
+    gross-/kleinschreibungssensitiv (verhindert, dass ein beliebiges
+    grossgeschriebenes deutsches Substantiv wie "Generationen" als
+    fortgesetzter Modellname mitgelesen wird, s. Moduldocstring oben)."""
+    kandidaten: list[tuple[int, int, frozenset]] = []
+    for m in _RE_MODELLNENNUNG_FELD.finditer(text):
+        tok = frozenset(_tokens(m.group(1)))
+        if tok and not tok <= _MODELLNENNUNG_LABELWORT:
+            kandidaten.append((m.start(1), m.end(1), tok))
+    return kandidaten
+
+
+_RE_SATZGRENZE_EIGENE = re.compile(r"[.;!?]")
+
+
 def _modellfamilie_zugehoerigkeit_belegt(text: str, marke: str | None, modell: str | None,
                                          start: int, ende: int,
                                          fenster: int = _FAMILIE_FENSTER) -> bool:
@@ -1255,35 +1318,77 @@ def _modellfamilie_zugehoerigkeit_belegt(text: str, marke: str | None, modell: s
     if not modell_rx:
         return False
     marke_tokens = _tokens(marke)
+    ziel_tokens = frozenset(_tokens(modell))
     modell_treffer = re.compile(r"(?i:" + modell_rx + r")\b")
 
-    def _pruefe(begrenzt: str, m2: "re.Match", abs_pos: int, zwischentext: str) -> bool:
-        if _tokens(zwischentext) & MARKEN - marke_tokens:
-            return False
-        return not (_verneint_im_teilsatz(text, abs_pos) or _verneint_nach_position(text, abs_pos))
+    vor_anfang = max(0, start - fenster)
+    vorspann = _ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text[vor_anfang:start])[-1]
+    vor_offset = start - len(vorspann)
+    nach_grenze = ende + fenster
+    nachspann = _ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text[ende:nach_grenze])[0]
+    nach_offset = ende
 
-    # Rueckwaerts: Code steht NACH der Zielmodell-Nennung (z.B. "Modell RC F
-    # ... Baureihe RC (UXC1)"). Die LETZTE (naechstgelegene) Nennung vor der
-    # Codefundstelle zaehlt; nur bis zur naechsten echten Absatz-/
-    # Ueberschriftengrenze zurueck.
-    vorspann = _ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text[max(0, start - fenster):start])[-1]
-    vorspann_treffer = list(modell_treffer.finditer(vorspann))
-    if vorspann_treffer:
-        m2 = vorspann_treffer[-1]
-        abs_start = start - len(vorspann)
-        if _pruefe(vorspann, m2, abs_start + m2.start(), vorspann[m2.end():]):
-            return True
+    # Schritt 0 (echte Fliesstext-Saetze): der EIGENE, durch Satzendezeichen
+    # begrenzte Satz des Codes (nicht Doppelpunkt -- der trennt Feldlabel
+    # von Wert INNERHALB desselben Records, s.u.) ist autoritativ, falls er
+    # selbst eine Fahrzeug-Aussage traegt. Dieselbe Satzanfangs-Konstruktion
+    # wie der F16-Fix ("Der/Die/Das <Marke> <Folge>", `_RE_SATZANFANG_
+    # NOMINALPHRASE`/`_RE_GROSSGESCHRIEBENE_FOLGE`) -- NICHT aber dessen
+    # strikte `_modell_ausgerichtet()`-Pruefung: die verlangt exakte
+    # Uebereinstimmung und wuerde "Die Lexus RC (UXC1), Chassiscode dieser
+    # Baureihe, ..." (gefundene Folge nur "RC", ein kompatibler Praefix,
+    # keine andere Variante) faelschlich als Widerspruch werten (real
+    # reproduziert). Hier zaehlt die TEILMENGEN-Kompatibilitaet wie beim
+    # Feldlabel-Pfad: "RC" ⊆ "RC F" ist neutral, "RC 350"/"RC Convertible"
+    # (NICHT kompatibel) ist ein definitiver Widerspruch, unabhaengig davon,
+    # was WEITER WEG noch folgt (behebt den Gegenfall "zwei Modellfamilien
+    # im selben Absatz" in Fliesstextform, ohne den F16-Mechanismus selbst
+    # anzufassen).
+    eigen_vor = [m.end() for m in _RE_SATZGRENZE_EIGENE.finditer(text, vor_anfang, start)]
+    eigen_satz_start = eigen_vor[-1] if eigen_vor else vor_anfang
+    eigen_nach = _RE_SATZGRENZE_EIGENE.search(text, ende, nach_grenze)
+    eigen_satz_ende = eigen_nach.start() if eigen_nach else nach_grenze
+    eigener_satz = text[eigen_satz_start:eigen_satz_ende]
+    nach_marke = _RE_SATZANFANG_NOMINALPHRASE.match(eigener_satz)
+    if nach_marke and _tokens(nach_marke.group(1)) <= marke_tokens:
+        folge = _RE_GROSSGESCHRIEBENE_FOLGE.match(eigener_satz[nach_marke.end():])
+        if folge:
+            gefunden = frozenset(_tokens(folge.group(1)))
+            if gefunden and not (gefunden <= ziel_tokens or ziel_tokens <= gefunden):
+                return False
 
-    # Vorwaerts: Code steht VOR der Zielmodell-Nennung. Die ERSTE
-    # (naechstgelegene) Nennung nach der Codefundstelle zaehlt; nur bis zur
-    # naechsten echten Absatz-/Ueberschriftengrenze nach vorn.
-    nachspann = _ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text[ende:ende + fenster])[0]
-    nachspann_treffer = list(modell_treffer.finditer(nachspann))
-    if nachspann_treffer:
-        m2 = nachspann_treffer[0]
-        if _pruefe(nachspann, m2, ende + m2.start(), nachspann[:m2.start()]):
-            return True
-    return False
+    # Schritt 1 (Feldlabel-Eigentuemer, Tabellen-/Specsheet-Form ohne
+    # Satzendezeichen, z.B. ADAC/carwiki.de): die ZUM CODE naechstgelegene
+    # "Modell:"/"Fahrzeug:"-Nennung entscheidet, welchem Record der Code
+    # gehoert. RUECKWAERTS hat Vorrang -- Identitaetsfelder stehen in realen
+    # Specsheets VOR Klassifikationsfeldern wie "Baureihe" (ADAC: "Modell
+    # RC F ... Baureihe RC (UXC1)"; carwiki.de: "Fahrzeug: RC ... Baureihe:
+    # RC XC1") --, NICHT reine Zeichendistanz (die haengt vom Zufall
+    # unterschiedlich langer Feldnamen ab und fuehrt sonst in die falsche
+    # Zeile, s. Gegenpruefung "Tabelle ohne Leerzeilen").
+    rueck_feld = _modellnennungen_kandidaten(vorspann)
+    vor_feld = _modellnennungen_kandidaten(nachspann)
+    eigentuemer_tok = (max(rueck_feld, key=lambda k: k[1])[2] if rueck_feld
+                       else (min(vor_feld, key=lambda k: k[0])[2] if vor_feld else None))
+    if eigentuemer_tok is not None and not (eigentuemer_tok <= ziel_tokens
+                                            or ziel_tokens <= eigentuemer_tok):
+        return False   # naechstgelegenes Feldlabel nennt ein ANDERES Modell.
+
+    # Schritt 2: das Zielmodell muss SELBST (nicht nur ein kompatibler
+    # Praefix wie "RC") im Fenster vorkommen -- ohne Verneinung und ohne
+    # fremde Marke dazwischen.
+    exakte = ([(vor_offset + m.start(), vor_offset + m.end()) for m in modell_treffer.finditer(vorspann)]
+             + [(nach_offset + m.start(), nach_offset + m.end()) for m in modell_treffer.finditer(nachspann)])
+    if not exakte:
+        return False
+    exakte.sort(key=lambda se: max(se[0] - ende, start - se[1], 0))
+    s0, e0 = exakte[0]
+    if _verneint_im_teilsatz(text, s0) or _verneint_nach_position(text, s0):
+        return False
+    zwischen_start, zwischen_ende = (ende, s0) if s0 >= ende else (e0, start)
+    if _tokens(text[zwischen_start:zwischen_ende]) & MARKEN - marke_tokens:
+        return False   # fremde Marke zwischen Code und Zielmodell-Nennung.
+    return True
 
 
 # Negationssichere Identity-Claims (Backend-Folgeauftrag, reproduziert):
