@@ -175,15 +175,19 @@ async def test_c2_code_mit_kontext_bestaetigt():
           ident.generation == "USC10", str(ident.generation))
 
 
-# C3) Dieselbe Rolle, aber mit "Modellcode" statt "Chassiscode" (Fortsetzungs-
-# auftrag: belegter Zusatz zu `_ROLLE_BEZEICHNUNG`). Real dokumentierte Quellen
-# zu USC10 (Teiledatenbanken, Lexus/Toyota-Fahrzeugtyp-Angaben) nennen die
-# Rolle nie mit "Chassiscode"/"Baureihe" wörtlich, sondern (wenn ueberhaupt
-# explizit) als "Model Code"/"Typ-Code" -- "Modellcode" ist die deutsche
-# Entsprechung und oeffentlich (VIN-Aufbau-Erklaerungen) als Synonym fuer
-# "interne Bezeichnung"/"Baureihe" belegt, ausdruecklich abgegrenzt von
-# Aufbauvariante/Motortyp. Ohne diese Ergaenzung bliebe USC10 trotz echter
-# Rollenzuweisung unbestaetigt -- derselbe generische Verlust wie C vor C2.
+# C3) Dieselbe Mechanik, aber mit "Modellcode" statt "Chassiscode" --
+# PRUEFT NUR DEN MECHANISMUS (Fortsetzungsauftrag, nach Gegenpruefung
+# praezisiert): KEINE reale Quelle nennt USC10 tatsaechlich "Modellcode"
+# (s. Kommentar bei `_ROLLE_BEZEICHNUNG` in app/technical_research.py fuer
+# die real mit exakten URLs gegengeprueften Rollen -- rolling.hu fuehrt
+# USC10 nur unter dem Feld "Type", ADAC/carwiki.de vergeben "Baureihe"
+# ausschliesslich an den breiteren Code UXC1/XC1). Dieser Test (synthetisch,
+# wie alle anderen hier) zeigt nur: WENN eine Quelle "Modellcode" so
+# verwendet, wie es die VIN-Dokumentation fuer dieses Wort generisch belegt
+# (Modell-/Baureihenebene, nicht Aufbauvariante/Motortyp), wird der
+# Mechanismus das korrekt als Rollenbeleg anerkennen -- das ist eine Aussage
+# ueber den CODE, nicht ueber USC10 im Speziellen. Ohne eine solche Quelle
+# bleibt USC10 laut realer Lage weiterhin UNKNOWN (s. Test B/C oben).
 async def test_c3_modellcode_als_rollenbeleg():
     quelle = [
         treffer("https://www.lexus.de/rc-f", "Lexus RC F USC10",
@@ -242,6 +246,32 @@ async def test_c5_motorcode_neben_interne_bezeichnung_kein_leak():
     check("C5) 'USC10' bleibt unbestaetigt -- 'interne Bezeichnung' ist im "
           "eigenen Teilsatz ausdruecklich XYZ99 zugewiesen und fuer USC10 "
           "sogar verneint ('nicht USC10')",
+          ident.generation is None, str(ident.generation))
+
+
+# C6) Real reproduzierter Gegenfall (Fortsetzungsauftrag, Marketingbezeichnungs-
+# Fall, jetzt generisch geschlossen): "ist nur die Marketingbezeichnung
+# dieser Baureihe" bestaetigte bisher faelschlich USC10 als Generation, weil
+# das blosse Wort "Baureihe" im selben Teilsatz stand -- obwohl der Satz
+# NICHT behauptet, dass USC10 die Baureihe IST, sondern nur, dass USC10 eine
+# (Marketing-)Bezeichnung FUER eine anderswo etablierte Baureihe ist. Fix:
+# "Baureihe" als Genitivobjekt eines vorangehenden "...bezeichnung"-Worts
+# zaehlt nicht mehr als eigener Rollenbeleg (s. `_BAUREIHE_FREMDBEZUG`).
+# Keine Fahrzeug-/Code-Ausnahme, keine Sonderfallliste -- derselbe generische
+# Mechanismus gilt fuer jedes "X-bezeichnung dieser/der Baureihe".
+async def test_c6_marketingbezeichnung_kein_rollenbeleg():
+    quelle = [
+        treffer("https://www.lexus.de/rc-f", "Lexus RC F USC10",
+                "Der Lexus RC F USC10 ist nur die Marketingbezeichnung "
+                "dieser Baureihe."),
+        treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F USC10 im Test",
+                "Der Lexus RC F USC10 hat 477 PS und ist nur die "
+                "Marketingbezeichnung dieser Baureihe."),
+    ]
+    ident, abgelehnt, _ = await _ident("Lexus", "RC F USC10", 2017, "5.0 V8", quelle)
+    check("C6) Identitaet belegt (Core-Modell reicht)", ident.belegt is True)
+    check("C6) 'USC10' bleibt unbestaetigt -- 'Baureihe' ist hier Genitivobjekt "
+          "von 'Marketingbezeichnung', keine Rollenzuweisung AN den Code",
           ident.generation is None, str(ident.generation))
 
 
@@ -441,6 +471,7 @@ async def _run_all():
     await test_c3_modellcode_als_rollenbeleg()
     await test_c4_modellcode_bindet_nur_eigenen_code()
     await test_c5_motorcode_neben_interne_bezeichnung_kein_leak()
+    await test_c6_marketingbezeichnung_kein_rollenbeleg()
     await test_d_core_akzeptiert_code_offen()
     await test_d2_code_ohne_kontext_bmw()
     await test_e_code_bestaetigt_bmw()

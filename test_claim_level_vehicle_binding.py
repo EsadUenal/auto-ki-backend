@@ -144,6 +144,47 @@ claims_h = [c for r in treffer_h_ambiguous for c in _identitaets_claims(r, ZIEL)
 check("H1 keine eindeutige powertrain-Zuordnung bei vager, nicht variantengebundener "
       "Hybrid-Erwaehnung", "HEV" not in claims_fuer("powertrain", claims_h))
 
+print("\n=== I) F16-Gegenfall (Fortsetzungsauftrag, KLAR SYNTHETISCH, echte zur Marke "
+      "passende Herstellerdomain) ===")
+# SYNTHETISCH -- kein realer Pressetext (der echte newsroom.lexus.eu-Fall ist
+# unveraendert als Regression in test_rc_f_schwachstelle_wartung_reparatur
+# paket.py::F16 erhalten, dort OHNE extrahierbares Antriebsvokabular). Dieser
+# Gegenfall prueft dieselbe Kontamination MIT tatsaechlich extrahierbarer
+# Antriebs-/Getriebeangabe, auf einer echten, zur angefragten Marke
+# passenden Herstellerdomain (lexus.de, Tier 1 ueber `_marke_eigene_domain()`
+# -- s. F17 in test_rc_f_schwachstelle_wartung_reparaturpaket.py), bis zum
+# VOLLSTAENDIGEN `werte_identitaet_aus()`-Ergebnis, nicht nur isoliert ueber
+# `_identitaets_claims()`. Der Satzanfang "Der Lexus RC 300h ist ..." traf
+# bis zu diesem Fix die Marken-Kulanz in `_claim_widerspricht_fahrzeug_
+# lokal()` (das Zielmodell "RC F" wird dort NIE genannt) -- keine RC-F-/
+# F-SPORT-Sonderlogik im Fix, derselbe generische Mechanismus wie Fall A-H.
+ZIEL_RC_F = dict(marke="Lexus", modell="RC F", baujahr=2017, motor=None)
+treffer_i = [
+    treffer("https://www.lexus.de/rc-f", "Lexus RC F",
+            "Der Lexus RC 300h ist ein Vollhybrid mit stufenlosem Getriebe. "
+            "Der Lexus RC F hat Heckantrieb und ein Achtstufen-Automatikgetriebe."),
+    treffer("https://www.auto-motor-und-sport.de/lexus-rc-f", "Lexus RC F im Test",
+            "Der Lexus RC 300h ist ein Vollhybrid mit stufenlosem Getriebe. "
+            "Der Lexus RC F hat 477 PS, Heckantrieb und ein "
+            "Achtstufen-Automatikgetriebe."),
+]
+claims_i = [c for r in treffer_i for c in _identitaets_claims(r, ZIEL_RC_F)]
+check("I1 KEIN powertrain-Claim (HEV) aus der Fremdvariante 'RC 300h'",
+      "HEV" not in claims_fuer("powertrain", claims_i))
+check("I2 Antriebs-Claim (Heckantrieb) der tatsaechlichen Zielvariante 'RC F' "
+      "bleibt erhalten -- gemischte Seite liefert die korrekte Zielmodell"
+      "angabe weiterhin", "Heck" in claims_fuer("drivetrain", claims_i))
+check("I3 Getriebe-Claim (Automatik) der tatsaechlichen Zielvariante bleibt erhalten",
+      "automatik" in claims_fuer("transmission", claims_i))
+identitaet_i, _ = werte_identitaet_aus(treffer_i, ZIEL_RC_F)
+check("I4 identity.powertrain bleibt None (kein Hybrid-Consensus aus der "
+      "Fremdvariante) -- vollstaendiges werte_identitaet_aus()-Ergebnis",
+      identitaet_i.powertrain is None)
+check("I5 identity.antrieb (Heckantrieb) wird trotzdem korrekt bestaetigt",
+      identitaet_i.antrieb == "Heck")
+check("I6 identity.getriebe (Automatik) wird trotzdem korrekt bestaetigt",
+      identitaet_i.getriebe == "automatik")
+
 print()
 if _FEHLER:
     print(f"{len(_FEHLER)} FEHLER:")

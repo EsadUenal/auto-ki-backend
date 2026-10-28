@@ -932,19 +932,41 @@ _GEN_KONTEXT = re.compile(r"generation|baureihe|modellreihe|\btyps?\b|codename|w
 # menge von `_GEN_KONTEXT` (ohne "generation"/"typ"/"modellreihe"/"gen." --
 # genau die vagen Woerter, die den obigen Fehlalarm ausloesten).
 #
-# "Modellcode" (Fortsetzungsauftrag, belegter Zusatz): echte Quellen fuer
-# USC10 (Lexus RC F) nennen die Rolle nie mit einem der obigen Woerter,
-# sondern (wenn ueberhaupt explizit) als "Model Code"/"Typ-Code" -- ein
-# generischer Verlust fuer genau diese Formulierung, nicht nur fuer USC10.
-# Oeffentlich dokumentiert (VIN-Aufbau, z.B. carVertical-Erklaerung zu Audi/
-# Mercedes-FIN): "Modellcode" bezeichnet dort ausdruecklich die Stellen, die
-# das MODELL/die BAUREIHE identifizieren, UND wird dort explizit von
-# "Aufbauvariante"/"Motortyp" (eigene Stellen) abgegrenzt -- also dieselbe
+# "Modellcode" (Fortsetzungsauftrag, PRAEZISIERUNG nach Gegenpruefung): KEINE
+# real gefundene Quelle nennt USC10 woertlich "Modellcode"/"Chassiscode"/
+# "Baureihe" -- das ist ausdruecklich NICHT belegt, nur das generische Wort
+# selbst (s.u.). Real mit exakten URLs gegengeprueft (27.10.2026):
+#   * shop.rolling.hu/catalog/SCHAEFFLER/lexus-rc-c1-f-usc10 -- Feld "Model":
+#     "RC (C1)", Feld "Type": "F (USC10)". Getrennte Felder, kein deutsches
+#     Rollenwort fuer USC10.
+#   * adac.de/.../lexus/rc/xc1/339429 -- Feld "Herstellerinterne
+#     Baureihenbezeichnung": "RC (UXC1) (12/14-06/25)" -- die Baureihen-
+#     Rolle traegt laut ADAC der BREITERE Code UXC1 (deckt RC 300h/RC 350/
+#     RC F gemeinsam ab), NICHT USC10.
+#   * carwiki.de/lexus-rc-hsn-tsn-schluesselnummer/ -- Feld "Baureihe":
+#     "XC1"; TSN (AJM/ALQ) variiert dagegen nach Motor/Getriebe/Karosserie
+#     bei GLEICHBLEIBENDEM HSN 5013 -- TSN ist amtlicher Typschluessel,
+#     keine Generationsrolle.
+# USC10 bleibt damit laut realer Quellenlage ein Teiledatenbank-"Type"
+# UNTERHALB der Baureihen-Ebene (XC1/UXC1) -- fuer `identity.generation`
+# dieser App aber weiterhin der richtige Zielwert, weil die Schwachstellen-/
+# Wartungs-Abgrenzung genau zwischen den GESCHWISTERVARIANTEN innerhalb
+# XC1/UXC1 (RC 300h/RC 350/RC F) unterscheiden muss -- UXC1 allein waere
+# dafuer zu grob (s. `phase_fakten()`-Verwendung von `identitaet.generation`).
+# "Modellcode" selbst bleibt dennoch generisch belegt (nicht USC10-spezifisch):
+# oeffentlich dokumentiert (VIN-Aufbau, carVertical-Erklaerung zu Audi/
+# Mercedes-FIN) bezeichnet "Modellcode" dort ausdruecklich die Stellen, die
+# das MODELL/die BAUREIHE identifizieren, UND wird explizit von
+# "Aufbauvariante"/"Motortyp" (eigene Stellen) abgegrenzt -- dieselbe
 # semantische Kategorie wie "Baureihe"/"Chassiscode"/"interne Bezeichnung",
-# nicht die eines Varianten-/Motor-/Ausstattungscodes. Deshalb hier ergaenzt,
-# NICHT aber "Typcode"/"Motorcode"/"Variantencode" (unbelegt, dass diese
-# dieselbe Generations-Rolle statt einer Varianten-/Ausstattungsrolle
-# behaupten) -- keine Erweiterung auf Verdacht, nur die belegte.
+# nicht die eines Varianten-/Motor-/Ausstattungscodes. Ergaenzt als
+# KANDIDATENSIGNAL fuer JEDEN Code, dessen Quelle es tatsaechlich so nennt --
+# NICHT als nachtraeglich erfundene Bestaetigung speziell fuer USC10. Wird
+# eine solche Quelle nie gefunden, bleibt USC10 laut `_generationen_pruefen()`
+# UNKNOWN -- das ist korrekt, kein Fehler. "Typcode"/"Motorcode"/
+# "Variantencode" bleiben bewusst draussen (unbelegt, dass diese dieselbe
+# Generations-Rolle statt einer Varianten-/Ausstattungsrolle behaupten) --
+# keine Erweiterung auf Verdacht, nur die generisch belegte.
 _ROLLE_BEZEICHNUNG = re.compile(
     r"baureihe|chassis-?code|werkscode|codename|modellcode"
     r"|interne?[nr]?\s+bezeichnung", re.IGNORECASE)
@@ -954,6 +976,34 @@ _ROLLE_BEZEICHNUNG = re.compile(
 # Grenze -- sonst würde die ordinale Zählung "4. Generation" an ihrem
 # eigenen Punkt zerschnitten (s. `_rollenbeleg_eigener_teilsatz()`-Docstring).
 _TEILSATZGRENZE_ROLLENBELEG = re.compile(r"[;:!?]|\bsondern\b|(?<!\d)\.", re.IGNORECASE)
+
+# Fortsetzungsauftrag (real reproduzierter Gegenfall, Marketingbezeichnungs-
+# Fall): "Der Lexus RC F USC10 ist nur die Marketingbezeichnung dieser
+# Baureihe." bestaetigte bisher faelschlich einen Rollenbeleg -- das blosse
+# Wort "Baureihe" (eigene Teilalternative in `_ROLLE_BEZEICHNUNG`, s.o.)
+# stand zwar im selben Teilsatz wie der Code, bezeichnet dort aber NICHT den
+# Code selbst als Baureihe, sondern ist das Genitivobjekt eines ANDEREN,
+# vorangehenden Substantivs ("Marketingbezeichnung ... DIESER BAUREIHE" =
+# "die Marketingbezeichnung VON dieser Baureihe") -- ein Verweis AUF eine
+# bereits anderswo etablierte Baureihe, keine Rollenzuweisung AN den Code.
+# Alle bestehenden, echten Rollenbelege ("[CODE], Chassiscode dieser
+# Baureihe, ...", "diese Baureihe", "Baureihe seit 2015", "(Baureihe)", "Die
+# Baureihe Modell CODE ...") haben dieses vorangehende Fremdsubstantiv NICHT
+# -- "Baureihe" steht dort entweder allein/am Satzanfang oder direkt hinter
+# einem der ANDEREN Rollenwoerter (die dann ohnehin schon selbst als eigener
+# Treffer zaehlen, s.u.). Generischer Fix (keine Fahrzeug-/Code-Ausnahme,
+# keine wachsende Liste): ein zusammengesetztes Substantiv, das auf
+# "bezeichnung" ENDET (Marketingbezeichnung, Verkaufsbezeichnung,
+# Handelsbezeichnung, Modellbezeichnung, ...), unmittelbar gefolgt von einem
+# Genitivartikel ("der"/"dieser"/"des"/"diese"), macht aus dem NACHFOLGENDEN
+# "Baureihe" ein Genitivobjekt DIESES Substantivs -- kein eigenstaendiger
+# Rollenbeleg mehr fuer den Code. Betrifft NUR die bare "Baureihe"-
+# Alternative: "interne Bezeichnung der Baureihe" bleibt unveraendert
+# bestaetigt, weil "interne Bezeichnung" selbst schon ein eigener,
+# unveraenderter Treffer in `_ROLLE_BEZEICHNUNG` ist (endet nicht auf
+# "bezeichnung" MIT vorangestelltem Fremdwort -- "interne" ist kein
+# Substantiv, sondern das Adjektiv der Phrase selbst).
+_BAUREIHE_FREMDBEZUG = re.compile(r"\w*bezeichnung\s+(?:der|dieser|des|diese)\s*\Z", re.IGNORECASE)
 
 
 def _generationscodes(r: dict, modell: str | None) -> list[dict]:
@@ -1141,6 +1191,9 @@ def _rollenbeleg_eigener_teilsatz(text: str, start: int, ende: int) -> bool:
     teilsatz = text[teilsatz_start:teilsatz_ende]
     for rx in (_ROLLE_BEZEICHNUNG, _RE_GEN_NUMMER):
         for m in rx.finditer(teilsatz):
+            if (m.group().strip().lower() == "baureihe"
+                    and _BAUREIHE_FREMDBEZUG.search(teilsatz[:m.start()])):
+                continue   # Genitivobjekt eines fremden Substantivs, s.o. -- kein Beleg
             if not (_verneint_im_teilsatz(teilsatz, m.start())
                     or _verneint_nach_position(teilsatz, m.start())):
                 return True
@@ -2331,6 +2384,32 @@ def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
 # Fall explizit: nicht raten, Kontextvererbung lieber konservativ blockieren.
 _RE_SATZANFANG_NOMINALPHRASE = re.compile(r"^\s*[Dd](?:er|ie|as)\s+([A-ZÄÖÜ][\wÄÖÜäöüß-]*)")
 
+# F16-Folgefix (real reproduzierter Gegenfall, Fremdvariante mit tatsaechlich
+# extrahierbarer Antriebsangabe bei passender Herstellerdomain): "Die Lexus
+# RC 300h ist ein Vollhybrid..." bestaetigte bisher faelschlich einen
+# Antriebs-Claim fuer das Zielmodell "RC F", weil `_RE_SATZANFANG_
+# NOMINALPHRASE` (oben, Signatur bewusst unveraendert) laut eigener
+# Definition NUR das ERSTE Wort nach "Der/Die/Das" einfaengt -- bei "Die
+# Lexus RC 300h ist ..." also NUR "Lexus", NIE den direkt folgenden,
+# tatsaechlich ABWEICHENDEN Modellnamen "RC 300h". Trifft `unsicher` exakt
+# die eigene Marke, konnte die bisherige Pruefung (`bool(eigene_tokens &
+# marke_tokens)`) deshalb NIE unterscheiden, ob direkt danach dasselbe
+# Zielmodell weitergenannt wird ("Lexus RC F") oder ein ANDERES ("Lexus RC
+# 300h") -- beide ergeben identisch `unsicher == marke`.
+#
+# Generischer Fix (kein Fahrzeug-/Code-Ausschluss, keine Sonderfallliste):
+# NUR in genau diesem einen Fall (die Satzanfangs-Phrase ist exakt die
+# Marke) werden die unmittelbar NACHFOLGENDEN grossgeschriebenen/
+# codeartigen Tokens (begrenzt auf wenige, s.u.) zusaetzlich eingesammelt
+# und mit derselben, bereits bestehenden `_modell_ausgerichtet()`-Pruefung
+# gegen das Zielmodell abgeglichen -- keine neue Heuristik, nur eine
+# vollstaendigere Eingabe fuer die bereits vorhandene Pruefung. Folgt nach
+# der Marke nichts Grossgeschriebenes mehr ("Die Lexus ist auch mit X
+# erhaeltlich." -- reine Markenfortsetzung ohne neuen Modellnamen), bleibt
+# die bisherige Kulanz unveraendert erhalten.
+_RE_GROSSGESCHRIEBENE_FOLGE = re.compile(
+    r"\s+([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*(?:\s+[A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*){0,3})")
+
 
 def _unsichere_satzanfangs_nominalphrase(satz: str, modell: str | None) -> str | None:
     """Satz beginnt mit "Der/Die/Das X", X ist nicht als Zielmodell, Bauteil
@@ -2405,8 +2484,15 @@ def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
     # EIGENE Marke/das EIGENE Modell.
     if unsicher:
         eigene_tokens = _tokens(unsicher)
-        ist_eigene_marke_oder_modell = (bool(eigene_tokens & _tokens(marke))
-                                        or _modell_ausgerichtet(eigene_tokens, modell))
+        ist_eigene_marke_oder_modell = _modell_ausgerichtet(eigene_tokens, modell)
+        if not ist_eigene_marke_oder_modell and eigene_tokens <= _tokens(marke):
+            # s. `_RE_GROSSGESCHRIEBENE_FOLGE`-Kommentar oben: `unsicher` ist
+            # exakt die Marke -- ohne weitere Prüfung käme JEDE direkt
+            # folgende, abweichende Modellbezeichnung ungeprüft durch.
+            nach_marke = _RE_SATZANFANG_NOMINALPHRASE.match(satz)
+            folge = _RE_GROSSGESCHRIEBENE_FOLGE.match(satz[nach_marke.end():]) if nach_marke else None
+            ist_eigene_marke_oder_modell = (
+                not folge or _modell_ausgerichtet(eigene_tokens | _tokens(folge.group(1)), modell))
         # Abschlussauftrag (2026-10-25), real reproduzierter Fall: ein Satz
         # wie "Der Ölwechsel erfolgt alle 60.000 Kilometer beim Lexus RC F."
         # nennt das Zielmodell EXPLIZIT -- die Satzanfangs-Nominalphrase
