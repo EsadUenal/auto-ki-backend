@@ -286,6 +286,46 @@ async def test_p_spaltenweise_tabelle_strukturell_unentscheidbar():
           gen_claims == [], f"gen_claims={gen_claims!r}")
 
 
+async def test_q_feldlabel_schreibweise_unabhaengig_von_grossschreibung():
+    # SYNTHETISCH, Review-Folgeauftrag (vierte Runde): die vorherige Fassung
+    # verlangte Titelschreibung ("Modell"/"Fahrzeug") fuer das Feldlabel
+    # selbst, um carwiki.des Tabellen-Spaltenkopfzeile ("MODELL HSN ...")
+    # auszuschliessen -- das haette aber auch ein ECHTES, durchgehend
+    # grossgeschriebenes Feld ("MODELL: RC F") uebersehen, real reproduziert.
+    # Jetzt entscheidet die Label-/Wertstruktur (Doppelpunkt ODER direkt
+    # folgendes bekanntes Feldlabel ODER Textende), nicht die Schreibweise.
+    for marke, modell, titel, inhalt, erwartet, bezeichnung in (
+        ("Lexus", "RC F", "Lexus RC Modell", "MODELL: RC F Baureihe RC (UXC1).",
+         "UXC1", "GROSSGESCHRIEBEN mit Doppelpunkt -> uebernommen"),
+        ("Lexus", "RC F", "Lexus RC Modell", "modell: RC F Baureihe RC (UXC1).",
+         "UXC1", "kleingeschrieben mit Doppelpunkt -> uebernommen"),
+        ("Lexus", "RC F", "Lexus RC Modell",
+         "MODELL RC F Typ Ultimate Baureihe RC (UXC1).",
+         "UXC1", "GROSSGESCHRIEBEN, kein Doppelpunkt, gefolgt von 'Typ' -> uebernommen"),
+        ("Lexus", "RC F", "Lexus RC Modell",
+         "MODELL: RC 350 Baureihe RC (XYZ1).",
+         None, "fremdes Modell GROSSGESCHRIEBEN -> darf NICHT uebergangen werden, "
+               "Code bleibt unbestaetigt"),
+    ):
+        g = generation_fuer(marke, modell, 2017, "5.0 V8",
+                            "https://example.test/feldlabel-schreibweise", titel, inhalt)
+        check(f"Q) {bezeichnung}: {inhalt!r} -> generation={erwartet!r}",
+              g == erwartet, f"generation={g!r}")
+    # Reale carwiki.de-Spaltenkopfzeile bleibt weiterhin korrekt ausgeschlossen
+    # (unabhaengig von der Feldlabel-Schreibweisen-Lockerung oben).
+    g_carwiki = generation_fuer(
+        "Lexus", "RC F", 2017, "5.0 V8",
+        "https://carwiki.de/lexus-rc-hsn-tsn-schluesselnummer/",
+        "Lexus RC HSN & TSN | Tabelle aller Schluesselnummern",
+        "Uebersicht: Alle Schluesselnummern (HSN/TSN) der Lexus RC Baureihen. "
+        "Hersteller: Lexus Fahrzeug: RC Baureihe: RC XC1 Karosserie: Coupe "
+        "MODELL HSN SCHLUESSELNUMMER TSN SCHLUESSELNUMMER KRAFTSTOFF HUBRAUM LEISTUNG BAUJAHR "
+        "Lexus RC F Carbon Automatik 5013 AJM Benzin 4969 cm3 477 PS 2014 bis 2025")
+    check("Q) reale carwiki.de-Spaltenkopfzeile 'MODELL HSN ...' erzeugt weiterhin "
+          "KEINE eigene Modellnennung (Fall B bleibt gueltig) -> generation=XC1",
+          g_carwiki == "XC1", f"generation={g_carwiki!r}")
+
+
 async def test_n_ueberlappende_jahresfenster_beide_rollenbelegt():
     # GENERISCH (kein konkretes Fahrzeug): zwei Baureihen-Codes mit
     # UEBERLAPPENDEN Zeitfenstern, beide fuer das Baujahr zutreffend und
@@ -423,6 +463,7 @@ async def _run_all():
     await test_l_zwei_modellfamilien_fliesstext_selber_absatz()
     await test_m_tabelle_ohne_leerzeilen_zielmodell_in_mittlerer_zeile()
     await test_p_spaltenweise_tabelle_strukturell_unentscheidbar()
+    await test_q_feldlabel_schreibweise_unabhaengig_von_grossschreibung()
     await test_n_ueberlappende_jahresfenster_beide_rollenbelegt()
     await test_o_fehlende_jahresangabe_kein_spontaner_zweitwert()
     print("\n" + "=" * 78)

@@ -1286,35 +1286,57 @@ def _modell_regex(modell: str | None) -> str:
 # die separate EXAKTE Zielmodell-Erwaehnung (`modell_treffer` unten) den
 # Fund bereits allein.
 _MODELLNENNUNG_LABELWORT = frozenset(("modell", "model", "fahrzeug", "marke", "baureihe", "typ"))
-# NICHT `(?i:...)` fuer das Feldlabel selbst (Gegenpruefung, dritte Runde,
-# real reproduziert an carwiki.de): die Quelle enthaelt NEBEN dem echten
-# Feldlabel "Fahrzeug:" (Titelschreibung) auch eine Tabellen-SPALTENKOPFZEILE
-# "MODELL HSN SCHLUESSELNUMMER TSN ..." (durchgehend GROSSGESCHRIEBEN, reale
-# Webseiten-Konvention fuer Spaltenkoepfe) -- waere "modell" dort case-
-# insensitiv erkannt, zaehlte die Kopfzeile faelschlich als zweite,
-# widerspruechliche Modellnennung. Deutsche Feldlabel stehen in echten
-# Specsheets immer in Titelschreibung ("Modell", "Fahrzeug"), nie komplett
-# grossgeschrieben -- dieselbe, bereits beobachtete Konvention wie bei ADAC.
+# Gegenpruefung (vierte Praezisierungsrunde, 2026-10-28): Grossschreibung ist
+# KEIN verlaesslicher Header-Indikator -- ein echtes, durchgehend
+# grossgeschriebenes Feld ("MODELL: RC F", manche Specsheets schreiben
+# Feldlabel komplett in Grossbuchstaben) waere mit einer reinen Titel-
+# schreibungs-Anforderung ebenso uebergangen wie carwiki.des Tabellen-
+# Spaltenkopfzeile. Das Feldlabel ist deshalb wieder case-insensitiv
+# (`(?i:...)`); stattdessen entscheidet die LABEL-/WERTSTRUKTUR, ob ein
+# Fund ein echtes Feld ist: GENAU EINE der drei Bedingungen muss gelten --
+#   1. ein Doppelpunkt steht direkt zwischen Label und Wert
+#      ("Fahrzeug: RC", "MODELL: RC F");
+#   2. der erfasste Wert wird UNMITTELBAR von einem der bekannten Feldlabel-
+#      Woerter selbst gefolgt ("Modell RC F Typ ..." -- "Typ" ist das
+#      naechste Feld DESSELBEN Records, kein Doppelpunkt noetig, wie bei
+#      ADAC real);
+#   3. der erfasste Wert reicht bis zum Ende des uebergebenen Textausschnitts
+#      (z.B. des eigenen Satzes) -- nichts Unbekanntes folgt mehr.
+# Eine Tabellen-Spaltenkopfzeile ("MODELL HSN SCHLUESSELNUMMER TSN ...")
+# erfuellt KEINE der drei Bedingungen: kein Doppelpunkt, das naechste Wort
+# ("HSN"/"KRAFTSTOFF"/...) ist kein bekanntes Feldlabel, und danach folgt
+# weiterer, unbekannter Text -- wird also korrekt verworfen, unabhaengig
+# von der Schreibweise. Reale Gegenprobe: carwiki.de/ADAC beide gruen,
+# siehe test_identity_familie_zugehoerigkeit.py Fall Q.
 _RE_MODELLNENNUNG_FELD = re.compile(
-    r"\b(?:Modell|Model|Fahrzeug)\s*:?\s+([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*"
+    r"\b(?i:modell|model|fahrzeug)(:?)\s*([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*"
     r"(?:\s+(?i:(?!modell|model|fahrzeug|marke|baureihe|typ))[A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*){0,3})")
+_RE_MODELLNENNUNG_FOLGELABEL = re.compile(
+    r"\A\s*(?i:modell|model|fahrzeug|marke|baureihe|typ)\b")
 
 
 def _modellnennungen_kandidaten(text: str) -> list[tuple[int, int, frozenset]]:
     """Feldlabel-Kandidaten fuer 'hier wird EIN Modell genannt': ein
-    Feldlabel ("Modell"/"Model"/"Fahrzeug", TITELSCHREIBUNG wie ADAC/
-    carwiki.de es selbst nennen -- nicht GROSSGESCHRIEBEN wie eine
-    Tabellenkopfzeile, s.o.) gefolgt von seinem Wert. Label-Woerter selbst
-    (Modell/Model/Fahrzeug/Marke/Baureihe/Typ) zaehlen nie als Wert -- sonst
-    waere "Fahrzeug: Modell" bereits wegen des Worts "Modell" ein scheinbar
-    fremdes Modell. Der Wert bleibt gross-/kleinschreibungssensitiv
-    (verhindert, dass ein beliebiges grossgeschriebenes deutsches Substantiv
-    wie "Generationen" als fortgesetzter Modellname mitgelesen wird)."""
+    Feldlabel ("Modell"/"Model"/"Fahrzeug", JEDE Schreibweise) gefolgt von
+    einem Wert, der durch echte Label-/Wertstruktur als Feld erkennbar ist
+    (s. Kommentar oben bei `_RE_MODELLNENNUNG_FELD`) -- nicht nur durch
+    Naehe. Label-Woerter selbst (Modell/Model/Fahrzeug/Marke/Baureihe/Typ)
+    zaehlen nie als Wert -- sonst waere "Fahrzeug: Modell" bereits wegen des
+    Worts "Modell" ein scheinbar fremdes Modell. Der Wert bleibt gross-/
+    kleinschreibungssensitiv (verhindert, dass ein beliebiges
+    grossgeschriebenes deutsches Substantiv wie "Generationen" als
+    fortgesetzter Modellname mitgelesen wird)."""
     kandidaten: list[tuple[int, int, frozenset]] = []
     for m in _RE_MODELLNENNUNG_FELD.finditer(text):
-        tok = frozenset(_tokens(m.group(1)))
+        hat_doppelpunkt = bool(m.group(1))
+        rest = text[m.end(2):]
+        echtes_feld = (hat_doppelpunkt or not rest.strip(" \t\r\n.;!?:,")
+                      or bool(_RE_MODELLNENNUNG_FOLGELABEL.match(rest)))
+        if not echtes_feld:
+            continue   # z.B. eine Tabellen-Spaltenkopfzeile, kein echtes Feld.
+        tok = frozenset(_tokens(m.group(2)))
         if tok and not tok <= _MODELLNENNUNG_LABELWORT:
-            kandidaten.append((m.start(1), m.end(1), tok))
+            kandidaten.append((m.start(2), m.end(2), tok))
     return kandidaten
 
 
