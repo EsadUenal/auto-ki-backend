@@ -1107,9 +1107,83 @@ def _generationscodes(r: dict, modell: str | None) -> list[dict]:
         # Zeichen-Reichweite -- s. `_rollenbeleg_eigener_teilsatz()`-
         # Docstring) UND selbst nicht verneint.
         rollenbeleg = _rollenbeleg_eigener_teilsatz(text, m.start(), ende)
+        # `start`/`ende` additiv (RC-F-Identitaetsvertrag-Folgeauftrag,
+        # 2026-10-28): bestehende Aufrufer lesen weiterhin nur ihre bekannten
+        # Schluessel, `_modell_in_fenster()` unten braucht aber die Fundstelle,
+        # um einen ueber ein Modell-PRAEFIX gefundenen Code gegen das volle
+        # Zielmodell zu verankern.
         out.append({"code": code, "zeitraum": zeitraum(umgebung), "kontext": kontext,
-                    "nummer": nummer, "rollenbeleg": rollenbeleg})
+                    "nummer": nummer, "rollenbeleg": rollenbeleg, "start": m.start(), "ende": ende})
     return out
+
+
+# Familien-Zugehoerigkeitsbeleg (RC-F-Identitaetsvertrag-Folgeauftrag,
+# 2026-10-28): `_generationscodes()` verankert bisher AUSSCHLIESSLICH auf dem
+# vollen Core-Model-String (`ziel["modell"]`, z.B. "RC F") -- ein real
+# belegter Baureihen-/Generationscode, den eine Quelle hinter dem BLOSSEN
+# Markennamen/der Modellfamilie schreibt ("RC (UXC1)", nicht "RC F (UXC1)"),
+# bleibt dadurch strukturell unerreichbar, selbst wenn dieselbe Quelle das
+# Zielmodell direkt daneben nennt (real reproduziert: ADAC-Fahrzeugdatenblatt
+# "Modell RC F" / "Baureihe RC (UXC1) (12/14-06/25)" als zwei Zeilen DERSELBEN
+# Tabelle; carwiki.de HSN/TSN-Uebersicht "Baureihe: RC XC1" mit "Lexus RC F
+# Carbon Automatik" als Tabellenzeile DERSELBEN Baureihen-Uebersicht).
+#
+# Weder blosses Abschneiden des letzten Modell-Tokens noch Namensaehnlichkeit
+# duerfen das fuer sich bestaetigen (s. Auftrag) -- deshalb zwei UNABHAENGIGE
+# Bedingungen, beide muessen gelten:
+#   1. Ein Code wird -- wie bisher -- nur durch den bestehenden, unveraenderten
+#      Rollenbeleg-/Struktur-Mechanismus (`_rollenbeleg_eigener_teilsatz()`/
+#      `_generationen_pruefen()`) bestaetigt, jetzt zusaetzlich auch verankert
+#      auf einem PRAEFIX des Modellnamens (`_modellfamilie_praefixe()` --
+#      reine, aussagefreie Kandidaten, analog zu `auxiliary_code` in `_ziel()`,
+#      NIEMALS allein hinreichend).
+#   2. ZUSAETZLICH muss DIESELBE Quelle, in RAEUMLICHER NAEHE zur Codefundstelle
+#      (±`_FAMILIE_FENSTER` Zeichen -- großzügig genug für eine Tabellenzeile
+#      ODER einen Fliesstext-Satz, aber nicht die ganze Seite), das VOLLE
+#      Zielmodell selbst nennen (`_modell_in_fenster()`) -- die Quelle belegt
+#      damit SELBST, dass das Zielmodell zu dieser Baureihe/Generation
+#      gehoert, statt dass unser Code das aus Namensaehnlichkeit schliesst.
+#   Codes ohne Ziffer (z.B. ein blosses "F" aus "RC F", das die Praefix-
+#   Verankerung auf "RC" sonst als Code einfangen würde) werden für den
+#   Praefix-Pfad verworfen -- ein kürzerer Anker ist unschärfer als der volle
+#   Core-Model-Anker, der bereits ziffernlose 1-2-Buchstaben-Codes zulässt
+#   (s. `_generationscodes()`-Kommentar, Root Cause 3); die Ziffer bleibt hier
+#   die zusätzliche Eindeutigkeit, die den kürzeren Anker aufwiegt.
+# Betrifft NUR die Generation (s.u. Aufrufer) -- Motor-/Getriebe-/Antriebs-/
+# Wartungs-/Defekt-Claims bleiben unveraendert an die bestehende Claim-Level-
+# Vehicle-Binding (`_segment_kontext_saetze()`) gebunden, von dieser
+# Erweiterung unberuehrt.
+_FAMILIE_FENSTER = 1000
+
+
+def _modellfamilie_praefixe(modell: str | None) -> list[str]:
+    """Strukturelle PRAEFIXE des Modellnamens ('RC F' -> ['RC']), OHNE jede
+    eigene Aussagekraft -- reine Kandidaten fuer `_generationscodes()`-
+    Verankerung, analog zu `auxiliary_code` in `_ziel()`. Ein Praefix allein
+    bestaetigt NIE eine Baureihen-Zugehoerigkeit (das waere reine
+    Namensaehnlichkeit); erst `_modell_in_fenster()` (eigene, unabhaengige
+    Quellenaussage) entscheidet, ob ein hierueber gefundener Code
+    uebernommen wird. Einwortmodelle ("RC", "911") liefern keine Praefixe --
+    es gibt dort nichts abzutrennen."""
+    teile = [t for t in re.split(r"[\s-]+", (modell or "").strip()) if t]
+    return [" ".join(teile[:i]) for i in range(1, len(teile))]
+
+
+def _modell_regex(modell: str | None) -> str:
+    return r"[\s-]*".join(re.escape(t) for t in re.split(r"[\s-]+", (modell or "").strip()) if t)
+
+
+def _modell_in_fenster(text: str, modell: str | None, start: int, ende: int,
+                       fenster: int = _FAMILIE_FENSTER) -> bool:
+    """Ob das VOLLE Zielmodell in raeumlicher Naehe (±`fenster` Zeichen) zur
+    Fundstelle [start, ende) eines ueber ein Praefix verankerten Codes
+    genannt wird -- der Zugehoerigkeitsbeleg aus dem Moduldocstring-Block
+    oben."""
+    modell_rx = _modell_regex(modell)
+    if not modell_rx:
+        return False
+    ausschnitt = text[max(0, start - fenster): ende + fenster]
+    return bool(re.search(r"(?i:" + modell_rx + r")\b", ausschnitt))
 
 
 # Negationssichere Identity-Claims (Backend-Folgeauftrag, reproduziert):
@@ -1321,6 +1395,34 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         if g["nummer"]:
             add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
                 jahr_belegt=passt is True)
+    # Familien-Zugehoerigkeitsbeleg (s. Moduldocstring-Block bei
+    # `_modellfamilie_praefixe()`): zusaetzlich zum exakten Core-Model-Anker
+    # oben auch auf einem Modell-PRAEFIX verankerte Codes zulassen -- NUR
+    # ziffertragend und NUR, wenn dieselbe Quelle das volle Zielmodell in
+    # raeumlicher Naehe zur Codefundstelle selbst nennt. `voller_text` ist
+    # bewusst der UNGEFILTERTE Dokumenttext (wie `r` fuer die exakte
+    # Verankerung oben, nicht die Claim-Level-Vehicle-Binding-`text`-Variable)
+    # -- dieselbe Quelle, auf der auch `_generationscodes()` selbst arbeitet.
+    if grund != "schwach":
+        voller_text = f"{r.get('title') or ''}. {r.get('content') or ''}"
+        exakte_codes = {g["code"] for g in _generationscodes(r, ziel.get("modell"))}
+        for praefix in _modellfamilie_praefixe(ziel.get("modell")):
+            for g in _generationscodes(r, praefix):
+                if g["code"] in exakte_codes or not re.search(r"\d", g["code"]):
+                    continue
+                if not _modell_in_fenster(voller_text, ziel.get("modell"), g["start"], g["ende"]):
+                    continue
+                exakte_codes.add(g["code"])
+                passt = _im_zeitraum(baujahr, g["zeitraum"])
+                if passt is False:
+                    add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"])
+                    continue
+                add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
+                    kontext=g["kontext"], generationsnummer_strukturell=bool(g["nummer"]),
+                    rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus)
+                if g["nummer"]:
+                    add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
+                        jahr_belegt=passt is True)
     for m in _RE_GEN_NUMMER.finditer(text):
         nr = m.group(1) or _ORDINAL.get(_norm(m.group(2)).replace(" ", ""))
         if nr:
