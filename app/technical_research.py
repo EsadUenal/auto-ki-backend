@@ -1257,19 +1257,22 @@ def _modell_regex(modell: str | None) -> str:
 # ist" aber durch ihr EIGENES Feldlabel ("Modell"/"Fahrzeug") -- das ist der
 # POSITIVE Beleg, den `_modellnennungen_kandidaten()` einsammelt.
 #
-# Positiv-Regel: die ZUM CODE NAECHSTGELEGENE Feldlabel-Modellnennung (egal
-# in welcher Richtung; ODER die exakte Zielmodell-Nennung selbst, falls
-# naeher) muss mit dem Zielmodell KOMPATIBEL sein (identisch, ODER eine
-# Teilmengenbeziehung wie "RC" zu "RC F" -- dieselbe Teilmengen-Idee wie
-# `familien_kompatibel()` in app/autofinder_identity.py, hier lokal
-# nachgebildet, kein Modulimport zwischen AutoFinder und KaufCheck). Ist die
-# naechstgelegene Nennung ein ANDERES, NICHT kompatibles Modell (z.B.
-# "RC 350" bei Zielmodell "RC F"), ist der Code dessen Zeile/Record
-# zugeordnet -- kein Fund, unabhaengig davon, ob das Zielmodell WEITER WEG
-# ebenfalls vorkommt. Zusaetzlich muss das Zielmodell SELBST (nicht nur ein
-# kompatibler Praefix wie "RC") im selben, absatzbegrenzten Fenster
-# vorkommen -- ein blosser Familienname allein ("Fahrzeug: RC") bestaetigt
-# nichts, er macht nur den naheliegenden Kandidaten nicht-widersprechend.
+# Positiv-Regel (dritte Praezisierungsrunde, 2026-10-28 -- s. ausfuehrliche
+# Begruendung im Funktionskoerper bei Schritt 1): die Feldlabel-Modellnennung
+# zaehlt NUR innerhalb des EIGENEN, satzzeichenbegrenzten Satzes des Codes
+# (derselbe `eigener_satz` wie Schritt 0) -- NICHT ueber das ganze,
+# absatzbegrenzte Fenster per Zeichendistanz (das war die zweite Runde, s.
+# Commit 48306e7/2d38c07, real widerlegt durch eine spaltenweise
+# serialisierte Vergleichstabelle). GENAU EIN Kandidat im eigenen Satz
+# entscheidet (identisch ODER Teilmengenbeziehung wie "RC" zu "RC F" --
+# dieselbe Teilmengen-Idee wie `familien_kompatibel()` in app/
+# autofinder_identity.py, hier lokal nachgebildet); ist er NICHT kompatibel
+# (z.B. "RC 350" bei Zielmodell "RC F"), kein Fund. ZWEI ODER MEHR Kandidaten
+# im eigenen Satz sind eine STRUKTURELLE MEHRDEUTIGKEIT, die harte Ablehnung
+# auslöst -- OHNE Rueckfall auf die blosse Zielmodell-Erwaehnung in Schritt
+# 2 (sonst waere eine erkannte Mehrdeutigkeit wirkungslos). KEIN Kandidat im
+# eigenen Satz bestaetigt nichts, verwirft aber auch nichts -- Schritt 2
+# entscheidet dann allein (auto-motor-und-sport.de ohne jedes Feldlabel).
 #
 # BEWUSST NUR Feldlabel, KEINE "Marke + folgende Grossbuchstaben-Woerter"-
 # Heuristik (anders als der F16-Fix bei `_RE_GROSSGESCHRIEBENE_FOLGE"): im
@@ -1283,22 +1286,30 @@ def _modell_regex(modell: str | None) -> str:
 # die separate EXAKTE Zielmodell-Erwaehnung (`modell_treffer` unten) den
 # Fund bereits allein.
 _MODELLNENNUNG_LABELWORT = frozenset(("modell", "model", "fahrzeug", "marke", "baureihe", "typ"))
+# NICHT `(?i:...)` fuer das Feldlabel selbst (Gegenpruefung, dritte Runde,
+# real reproduziert an carwiki.de): die Quelle enthaelt NEBEN dem echten
+# Feldlabel "Fahrzeug:" (Titelschreibung) auch eine Tabellen-SPALTENKOPFZEILE
+# "MODELL HSN SCHLUESSELNUMMER TSN ..." (durchgehend GROSSGESCHRIEBEN, reale
+# Webseiten-Konvention fuer Spaltenkoepfe) -- waere "modell" dort case-
+# insensitiv erkannt, zaehlte die Kopfzeile faelschlich als zweite,
+# widerspruechliche Modellnennung. Deutsche Feldlabel stehen in echten
+# Specsheets immer in Titelschreibung ("Modell", "Fahrzeug"), nie komplett
+# grossgeschrieben -- dieselbe, bereits beobachtete Konvention wie bei ADAC.
 _RE_MODELLNENNUNG_FELD = re.compile(
-    r"\b(?i:modell|model|fahrzeug)\s*:?\s+([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*"
+    r"\b(?:Modell|Model|Fahrzeug)\s*:?\s+([A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*"
     r"(?:\s+(?i:(?!modell|model|fahrzeug|marke|baureihe|typ))[A-ZÄÖÜ0-9][\wÄÖÜäöüß-]*){0,3})")
 
 
 def _modellnennungen_kandidaten(text: str) -> list[tuple[int, int, frozenset]]:
     """Feldlabel-Kandidaten fuer 'hier wird EIN Modell genannt': ein
-    Feldlabel ("Modell"/"Model"/"Fahrzeug", wie ADAC/carwiki.de es selbst
-    nennen) gefolgt von seinem Wert. Label-Woerter selbst (Modell/Model/
-    Fahrzeug/Marke/Baureihe/Typ) zaehlen nie als Wert -- sonst waere
-    "Fahrzeug: Modell" bereits wegen des Worts "Modell" ein scheinbar
-    fremdes Modell. Case-insensitiv nur fuer das Feldlabel/die Ausschluss-
-    woerter selbst (`(?i:...)`, gescoped) -- der Wert bleibt bewusst
-    gross-/kleinschreibungssensitiv (verhindert, dass ein beliebiges
-    grossgeschriebenes deutsches Substantiv wie "Generationen" als
-    fortgesetzter Modellname mitgelesen wird, s. Moduldocstring oben)."""
+    Feldlabel ("Modell"/"Model"/"Fahrzeug", TITELSCHREIBUNG wie ADAC/
+    carwiki.de es selbst nennen -- nicht GROSSGESCHRIEBEN wie eine
+    Tabellenkopfzeile, s.o.) gefolgt von seinem Wert. Label-Woerter selbst
+    (Modell/Model/Fahrzeug/Marke/Baureihe/Typ) zaehlen nie als Wert -- sonst
+    waere "Fahrzeug: Modell" bereits wegen des Worts "Modell" ein scheinbar
+    fremdes Modell. Der Wert bleibt gross-/kleinschreibungssensitiv
+    (verhindert, dass ein beliebiges grossgeschriebenes deutsches Substantiv
+    wie "Generationen" als fortgesetzter Modellname mitgelesen wird)."""
     kandidaten: list[tuple[int, int, frozenset]] = []
     for m in _RE_MODELLNENNUNG_FELD.finditer(text):
         tok = frozenset(_tokens(m.group(1)))
@@ -1358,21 +1369,35 @@ def _modellfamilie_zugehoerigkeit_belegt(text: str, marke: str | None, modell: s
                 return False
 
     # Schritt 1 (Feldlabel-Eigentuemer, Tabellen-/Specsheet-Form ohne
-    # Satzendezeichen, z.B. ADAC/carwiki.de): die ZUM CODE naechstgelegene
-    # "Modell:"/"Fahrzeug:"-Nennung entscheidet, welchem Record der Code
-    # gehoert. RUECKWAERTS hat Vorrang -- Identitaetsfelder stehen in realen
-    # Specsheets VOR Klassifikationsfeldern wie "Baureihe" (ADAC: "Modell
-    # RC F ... Baureihe RC (UXC1)"; carwiki.de: "Fahrzeug: RC ... Baureihe:
-    # RC XC1") --, NICHT reine Zeichendistanz (die haengt vom Zufall
-    # unterschiedlich langer Feldnamen ab und fuehrt sonst in die falsche
-    # Zeile, s. Gegenpruefung "Tabelle ohne Leerzeilen").
-    rueck_feld = _modellnennungen_kandidaten(vorspann)
-    vor_feld = _modellnennungen_kandidaten(nachspann)
-    eigentuemer_tok = (max(rueck_feld, key=lambda k: k[1])[2] if rueck_feld
-                       else (min(vor_feld, key=lambda k: k[0])[2] if vor_feld else None))
-    if eigentuemer_tok is not None and not (eigentuemer_tok <= ziel_tokens
-                                            or ziel_tokens <= eigentuemer_tok):
-        return False   # naechstgelegenes Feldlabel nennt ein ANDERES Modell.
+    # Satzendezeichen, z.B. ADAC/carwiki.de): WELCHEM Record der Code
+    # gehoert, wird NUR innerhalb des EIGENEN Satzes entschieden (derselbe
+    # `eigener_satz` wie Schritt 0 -- keine zweite, eigene Reichweite). Das
+    # ist eine ECHTE Strukturgrenze (Satzendezeichen trennen Records, s.
+    # Schritt 0/Faelle K-M), keine Distanzschaetzung.
+    #
+    # Gegenpruefung (dritte Praezisierungsrunde, real reproduziert): die
+    # vorherige Fassung nahm "der naechste Feldlabel-Fund gewinnt" ueber das
+    # GESAMTE, nur absatzbegrenzte Fenster (~1000 Zeichen) -- das setzt
+    # voraus, dass "naeher" automatisch "derselbe Record" bedeutet. Fuer eine
+    # SPALTENWEISE (attributmajor) serialisierte Vergleichstabelle
+    # ("Modell RC 350 Modell RC F Baureihe RC (UXA1) Baureihe RC (UXC1).")
+    # ist das falsch: der flache Text allein belegt NICHT, welches "Modell"-
+    # Feld zu welchem "Baureihe"-Wert gehoert -- blosse Naehe ist keine
+    # Zugehoerigkeit. GENAU EIN Feldlabel-Kandidat im eigenen Satz ist ein
+    # Beleg (positiv oder als Widerspruch); KEINER ist kein Beleg (Schritt 2
+    # entscheidet allein, z.B. auto-motor-und-sport.de ohne jedes Feldlabel);
+    # ZWEI ODER MEHR sind eine STRUKTURELLE MEHRDEUTIGKEIT, die der Text
+    # selbst nicht aufloest -- harte Ablehnung, OHNE auf Schritt 2
+    # zurueckzufallen (eine blosse Zielmodell-Erwaehnung irgendwo im Fenster
+    # waere sonst ein Freifahrschein genau fuer den Fall, den diese Pruefung
+    # verhindern soll).
+    satz_kandidaten = _modellnennungen_kandidaten(eigener_satz)
+    if len(satz_kandidaten) >= 2:
+        return False   # mehrere Modellnennungen im eigenen Satz -- Text belegt die Zuordnung nicht.
+    if len(satz_kandidaten) == 1:
+        eigentuemer_tok = satz_kandidaten[0][2]
+        if not (eigentuemer_tok <= ziel_tokens or ziel_tokens <= eigentuemer_tok):
+            return False   # die einzige Modellnennung im eigenen Satz ist ein ANDERES Modell.
 
     # Schritt 2: das Zielmodell muss SELBST (nicht nur ein kompatibler
     # Praefix wie "RC") im Fenster vorkommen -- ohne Verneinung und ohne

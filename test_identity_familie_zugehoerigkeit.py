@@ -16,20 +16,31 @@ ANDERES Modell DERSELBEN Marke (z.B. eine Nachbar-Tabellenzeile "Modell RC
 350, Baureihe RC (XYZ)") dem Code tatsaechlich naeher stand (real
 reproduziert, Faelle K/L/M unten).
 
-GEGENPRUEFUNG RUNDE 3 (dieser Auftrag): `_modellfamilie_zugehoerigkeit_
-belegt()` (app/technical_research.py) prueft jetzt POSITIV, welchem Modell
-ein Code zugeordnet ist, in drei Schritten:
-  0. der EIGENE, durch Satzendezeichen begrenzte Satz des Codes ist
-     autoritativ, wenn er selbst eine Fahrzeug-Aussage traegt (dieselbe
-     Satzanfangs-Konstruktion wie der F16-Fix, aber mit TEILMENGEN-
-     Kompatibilitaet statt strikter Gleichheit -- "RC" vs. Ziel "RC F" ist
-     neutral, "RC 350"/"RC Convertible" vs. "RC F" ist ein Widerspruch);
-  1. ohne eindeutigen eigenen Satz entscheidet die naechstgelegene
-     Feldlabel-Nennung ("Modell:"/"Fahrzeug:", wie ADAC/carwiki.de sie
-     selbst verwenden) -- RUECKWAERTS hat Vorrang, weil Identitaetsfelder in
-     realen Specsheets VOR Klassifikationsfeldern wie "Baureihe" stehen;
-  2. das Zielmodell muss SELBST (nicht nur ein kompatibler Praefix wie "RC")
-     im Fenster vorkommen, ohne Verneinung und ohne fremde Marke dazwischen.
+GEGENPRUEFUNG RUNDE 3 (Commit 2d38c07): `_modellfamilie_zugehoerigkeit_
+belegt()` prueft POSITIV, welchem Modell ein Code zugeordnet ist -- Schritt 0
+(eigener Satz, Teilmengen-Kompatibilitaet) plus Schritt 1 (Feldlabel-
+Nennung "Modell:"/"Fahrzeug:", RUECKWAERTS hat Vorrang ueber das GESAMTE
+absatzbegrenzte Fenster). IMMER NOCH nicht ausreichend: Runde 3s "naechster
+Feldlabel-Fund gewinnt" nimmt an, dass Naehe automatisch Record-Zugehoerigkeit
+bedeutet. Fuer eine SPALTENWEISE (attributmajor) serialisierte Vergleichs-
+tabelle ("Modell RC 350 Modell RC F Baureihe RC (UXA1) Baureihe RC (UXC1).",
+beide "Modell:"-Felder VOR beiden Codes) ist das falsch -- real reproduziert
+im Review-Folgeauftrag: BEIDE Codes wurden faelschlich akzeptiert (Fall P).
+
+GEGENPRUEFUNG RUNDE 4 (dieser Auftrag): Schritt 1 entscheidet jetzt NUR noch
+innerhalb des EIGENEN, satzzeichenbegrenzten Bereichs des Codes (derselbe
+`eigener_satz` wie Schritt 0 -- keine zweite, eigene Reichweite mehr). GENAU
+EIN Feldlabel-Kandidat dort ist ein Beleg (positiv oder Widerspruch); KEINER
+ist kein Beleg (Schritt 2 entscheidet allein); ZWEI ODER MEHR sind eine
+STRUKTURELLE MEHRDEUTIGKEIT -- harte Ablehnung, OHNE Rueckfall auf die
+blosse Zielmodell-Erwaehnung in Schritt 2 (Fall P: fuer BEIDE Codes bleibt
+die Generation korrekt UNKNOWN, nicht nur fuer den falschen). Zusaetzlich:
+das Feldlabel selbst ("Modell"/"Fahrzeug") zaehlt nur in TITELSCHREIBUNG,
+nicht GROSSGESCHRIEBEN -- carwiki.de enthaelt neben dem echten Feldlabel
+"Fahrzeug:" auch eine Tabellen-Spaltenkopfzeile "MODELL HSN ..."
+(durchgehend grossgeschrieben, reale Konvention fuer Spaltenkoepfe), die
+sonst faelschlich als zweite, widersprechende Modellnennung gezaehlt haette.
+
 Zusaetzlich schliesst `_rollenbeleg_feldlabel()` die reale Luecke bei
 Feldlabel:Wert-Quellen (Doppelpunkt/Zeilenumbruch trennt Rollenwort und Code
 bisher in zwei Teilsaetze), und eine strukturelle Erkennung in
@@ -242,6 +253,39 @@ async def test_m_tabelle_ohne_leerzeilen_zielmodell_in_mittlerer_zeile():
           g == "UXC1", f"generation={g!r}")
 
 
+print("\n" + "=" * 78)
+print("DRITTE GEGENPRUEFUNGSRUNDE -- Mehrdeutigkeit sperrt hart, kein Rueckfall")
+print("=" * 78)
+
+
+async def test_p_spaltenweise_tabelle_strukturell_unentscheidbar():
+    # SYNTHETISCH, real reproduzierter Fehler (Review-Folgeauftrag, dritte
+    # Runde): eine SPALTENWEISE (attributmajor) serialisierte Vergleichs-
+    # tabelle -- "Attribut: Wert1 Wert2" statt "ein Fahrzeug, alle Felder"
+    # (anders als Fall K/L/M, die alle RECORD-major sind, wie ADAC/carwiki.de
+    # es tatsaechlich tun). Hier stehen BEIDE "Modell:"-Felder VOR beiden
+    # "Baureihe:"-Codes -- aus dem flachen Text ist NICHT mehr ableitbar,
+    # welches Modell zu welchem Code gehoert. Die vorherige Fassung
+    # (Zeichendistanz-Vorrang rueckwaerts) akzeptierte hier FAELSCHLICH
+    # BEIDE Codes (u.a. den falschen 'UXA1' fuer 'RC 350'). Jetzt: GENAU EIN
+    # Feldlabel-Kandidat im EIGENEN, satzzeichenbegrenzten Bereich des Codes
+    # entscheidet; ZWEI sind eine harte, unueberwindbare Ablehnung -- OHNE
+    # Rueckfall auf die blosse Zielmodell-Erwaehnung. Fuer BEIDE Codes
+    # bleibt die Generation deshalb korrekt UNKNOWN (nicht nur fuer den
+    # falschen).
+    z = _ziel("Lexus", "RC F", 2017, "5.0 V8", None)
+    r = treffer(
+        "https://example.test/vergleichstabelle", "Lexus RC Modellvergleich",
+        "Modell RC 350 Modell RC F Baureihe RC (UXA1) Baureihe RC (UXC1).")
+    claims = _identitaets_claims(r, z)
+    _generationen_pruefen(claims, z.get("auxiliary_code"))
+    gen_claims = [c for c in claims if c["feld"] == "generation" and not c.get("verworfen")]
+    check("P) spaltenweise serialisierte Vergleichstabelle (zwei 'Modell:'-Felder "
+          "VOR beiden 'Baureihe:'-Codes) -> KEIN Claim fuer UXA1 ODER UXC1 "
+          "(strukturell unentscheidbar, nicht erraten)",
+          gen_claims == [], f"gen_claims={gen_claims!r}")
+
+
 async def test_n_ueberlappende_jahresfenster_beide_rollenbelegt():
     # GENERISCH (kein konkretes Fahrzeug): zwei Baureihen-Codes mit
     # UEBERLAPPENDEN Zeitfenstern, beide fuer das Baujahr zutreffend und
@@ -378,6 +422,7 @@ async def _run_all():
     await test_k_zwei_modellfamilien_feldlabel_selber_absatz()
     await test_l_zwei_modellfamilien_fliesstext_selber_absatz()
     await test_m_tabelle_ohne_leerzeilen_zielmodell_in_mittlerer_zeile()
+    await test_p_spaltenweise_tabelle_strukturell_unentscheidbar()
     await test_n_ueberlappende_jahresfenster_beide_rollenbelegt()
     await test_o_fehlende_jahresangabe_kein_spontaner_zweitwert()
     print("\n" + "=" * 78)
