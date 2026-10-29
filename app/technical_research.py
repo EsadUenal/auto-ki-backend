@@ -815,6 +815,42 @@ _RE_ANTRIEBSART_FELD = re.compile(
     r"\bAntriebsart\s*[:\|]?\s*(Hinterrad\w*|Heck\w*|Vorderrad\w*|Front\w*|Allrad\w*)\b", re.I)
 _RE_KRAFTSTOFFART_FELD = re.compile(
     r"\bKraftstoffart\s*[:\|]?\s*(Super\s*Plus|Super|Normal|E10|Diesel)\b", re.I)
+
+# Zielgueltigkeits-Folgeauftrag (29.10.2026, CONFIRMED am realen ADAC-
+# Datenblatt): ein Datenblatt wie ADAC fuehrt NEBEN der groben Baureihenspanne
+# ("Baureihe RC (UXC1) (12/14 - 06/25)") ein EIGENES, engeres Feldpaar
+# "Modellstart X Modellende Y" fuer GENAU die auf dieser Seite beschriebene
+# Variante (z.B. "RC F Ultimate Edition", Modellstart 08/24, Modellende 06/25
+# -- obwohl die Baureihe UXC1 seit 12/14 existiert). Alle Detail-Claims
+# (PS/Hubraum/Kraftstoff/Antrieb/Antriebsart/Getriebe/Motorcode) dieser Seite
+# beschreiben nur DIESE Variante -- ein abweichendes Zielbaujahr ausserhalb
+# von [Modellstart, Modellende] ist ein realer Beleg GEGEN Uebertragbarkeit,
+# unabhaengig davon, ob die weitere, groebere Baureihenspanne das Baujahr
+# noch deckt. (`zeitraum()` erkennt dieses MM/YY-Format ohnehin nicht -- das
+# bestehende generation-Gate bleibt davon unberuehrt, hier geht es um die
+# NICHT-Generation-Felder, die bisher UEBERHAUPT kein Jahresfenster pruefen.)
+# Beide Grenzen MUESSEN vorhanden sein: ein offenes/laufendes Modellende
+# (bei aktuell verkauften Varianten oft ganz ohne "Modellende"-Angabe) darf
+# nie zu einem Ausschluss fuehren -- fehlende Daten sind kein Beleg.
+_RE_MODELLZEITRAUM_FELD = re.compile(
+    r"\bModellstart\s*[:\|]?\s*(\d{1,2})\s*/\s*(\d{2,4}).{0,20}?"
+    r"\bModellende\s*[:\|]?\s*(\d{1,2})\s*/\s*(\d{2,4})\b", re.I | re.S)
+
+
+def _mm_yy_jahr(ziffern: str) -> int:
+    n = int(ziffern)
+    return n if n >= 100 else 2000 + n
+
+
+def _datenblatt_zeitraum(text: str) -> tuple[int, int] | None:
+    """Das EIGENE Modellstart/Modellende-Fenster DIESES Datenblatts, falls
+    explizit angegeben -- s. Kommentar bei `_RE_MODELLZEITRAUM_FELD`."""
+    m = _RE_MODELLZEITRAUM_FELD.search(text or "")
+    if not m:
+        return None
+    return _mm_yy_jahr(m.group(2)), _mm_yy_jahr(m.group(4))
+
+
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
                                   r"|\b(sechs|f(?:ü|ue)nf)gang[- ]?(?:schaltgetriebe|handschaltung)"
                                   r"|\b(\d)-speed manual", re.I)
@@ -1717,7 +1753,20 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     baujahr = ziel.get("baujahr")
     claims: list[dict] = []
 
+    # Zielgueltigkeits-Folgeauftrag: das DOKUMENT-eigene Modellstart/Modellende-
+    # Fenster (falls vorhanden) bindet alle NICHT-Generation-Claims DIESER
+    # Quelle an das Zielbaujahr -- s. `_RE_MODELLZEITRAUM_FELD`-Kommentar.
+    # Immer am VOLLEN Dokumenttext geprueft (nicht am ggf. bereits
+    # segmentgefilterten `text`): das Feldpaar beschreibt die GANZE Seite,
+    # nicht nur den lokal an das Zielmodell gebundenen Satzausschnitt.
+    _datenblatt_fenster = _datenblatt_zeitraum(f"{r.get('title') or ''}. {r.get('content') or ''}")
+    _ausserhalb_datenblatt = (
+        _datenblatt_fenster is not None and baujahr is not None
+        and _im_zeitraum(baujahr, _datenblatt_fenster) is False)
+
     def add(feld, wert, **extra):
+        if _ausserhalb_datenblatt and feld not in ("generation", "generation_nummer"):
+            extra.setdefault("verworfen", "baujahr_ausserhalb_datenblatt")
         claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": tier, "url": url, **extra})
 
     # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von
