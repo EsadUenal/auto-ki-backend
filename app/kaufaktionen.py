@@ -1607,7 +1607,13 @@ def _aus_rueckrufen(s: _Sammler, insights: list[Insight]) -> None:
             frage_aktion = recall_handlung(status)
         else:
             frage = f"Ist bekannt, ob dieses Fahrzeug von der Rückrufaktion zu „{mangel}“ betroffen ist?"
-            frage_aktion = "Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. " + recall_handlung(status)
+            # F6: "Baureihe" nur behaupten, wenn ein ENFAL-Katalogeintrag bekannt
+            # ist. Canonical-only Rückrufe (RC-W6, kein `baureihe_id`) kennen nur
+            # Marke+Nameplate -> "dieses Modell" statt "dieser Baureihe".
+            scope_satz = ("Für Teile dieser Baureihe ist eine Rückrufaktion gemeldet. "
+                         if i.rueckruf_baureihe_bekannt else
+                         "Für dieses Modell ist eine Rückrufaktion gemeldet. ")
+            frage_aktion = scope_satz + recall_handlung(status)
         s.add(VERKAEUFERFRAGEN, schluessel, falls + frage, frage_aktion, rang,
               evidence_ids=[i.id], kategorie="rueckruf",
               gruppe="Rückrufaktion")

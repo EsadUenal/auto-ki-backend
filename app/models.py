@@ -472,6 +472,12 @@ class Insight(BaseModel):
     # SERIES_RELEVANT | VARIANT_POSSIBLE | VEHICLE_POSSIBLE | UNKNOWN.
     # NOT_APPLICABLE erscheint nie am sichtbaren Insight (es wird entfernt).
     recall_state: str | None = None
+    # F6: nur Rückrufe. True = ENFAL-Baureihen-Katalogeintrag vorhanden
+    # (`baureihe_id` bekannt). False = canonical-only (RC-W6, Marke+Nameplate
+    # ohne ENFAL-Katalogeintrag). None = nicht gesetzt (andere Kategorien, oder
+    # ein Rückruf-Pfad, der dieses Feld noch nicht befüllt). Der Wortlaut darf
+    # "Baureihe" nur behaupten, wo dieses Feld True ist — sonst "Modell".
+    rueckruf_baureihe_bekannt: bool | None = None
     # Web-Fakten: Geltungsbereich laut Quelle (z.B. "frühe Baujahre") und ob er
     # für DIESES Fahrzeug belegt ist ("covered" | "unresolved").
     geltungsbereich: str | None = None

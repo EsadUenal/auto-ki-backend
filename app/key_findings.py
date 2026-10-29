@@ -302,10 +302,17 @@ def _rueckruf_findings(insights: list[Insight]) -> list[KeyFinding]:
     if unklar:
         # NIE als sicher betroffen darstellen (applicability=unclear).
         n = len(unklar)
+        # F6: "Baureihe" nur behaupten, wenn JEDER zusammengefasste Rückruf einen
+        # ENFAL-Katalogeintrag hat. Ist auch nur einer canonical-only (RC-W6, kein
+        # `baureihe_id`) oder das Feld unbekannt, bleibt die Formulierung beim
+        # neutralen "Modell" -- sie behauptet dann für keinen der Rückrufe mehr,
+        # als tatsächlich belegt ist.
+        alle_katalog = all(i.rueckruf_baureihe_bekannt for i in unklar)
+        scope_wort = "die Baureihe" if alle_katalog else "dieses Modell"
         out.append(KeyFinding(
             id="", kategorie="rueckruf", stufe=STUFE_INFO, icon="🛈",
             titel=f"{n} Rückruf{'e' if n > 1 else ''} mit unklarer Betroffenheit",
-            beschreibung="Für die Baureihe hinterlegt, betrifft aber bestimmte Varianten. "
+            beschreibung=f"Für {scope_wort} hinterlegt, betrifft aber bestimmte Varianten. "
                          + "; ".join(_mangel_kurz(i) for i in unklar[:3]),
             aktion=HINWEIS_FIN,
             evidence_ids=[i.id for i in unklar],

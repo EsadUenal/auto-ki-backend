@@ -554,6 +554,18 @@ RUECKRUF_APPLICABILITY_TEXT: dict[str, str] = {
 }
 
 
+def rueckruf_wortlaut(applicability: str, *, baureihe_bekannt: bool = True) -> str:
+    """F6: `RUECKRUF_APPLICABILITY_TEXT`, aber "Baureihe" wird nur behauptet, wenn
+    ein ENFAL-Katalogeintrag (`baureihe_id`) bekannt ist. Canonical-only Rückrufe
+    (RC-W6: Marke+Nameplate ohne ENFAL-Katalogeintrag) kennen keine ENFAL-Baureihe
+    — `baureihe_bekannt=False` ersetzt "Baureihe" durch "Modell". Default `True`
+    erhält das bisherige Verhalten für jeden Aufrufer, der diese Unterscheidung
+    (noch) nicht kennt (z.B. alte serialisierte Insights ohne das neue Feld)."""
+    if applicability == "series_only" and not baureihe_bekannt:
+        return "Für Teile dieses Modells gemeldet (keine ENFAL-Baureihen-Zuordnung): per FIN prüfen"
+    return RUECKRUF_APPLICABILITY_TEXT.get(applicability, applicability)
+
+
 # ── Varianten-Scope eines Rückrufs (KaufCheck-Final-Stabilization, Cluster G) ──
 #
 # BEFUND (Production-Run Opel Astra K 1.4 Turbo 125 PS): ein Rückruf erschien,
@@ -829,6 +841,11 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     nicht auf "variant_match", der Rückruf selbst bleibt konservativ als
     "series_only" erhalten.
     """
+    # F6: "Baureihe" ist nur belegt, wenn ein ENFAL-Katalogeintrag (`baureihe_id`)
+    # vorliegt. Canonical-only Rückrufe (RC-W6, nur Marke+Nameplate) kennen keine
+    # ENFAL-Baureihe — der Wortlaut behauptet dann "Modell" statt "Baureihe".
+    baureihe_bekannt = r.get("baureihe_id") is not None
+    baureihen_bezug = "die Baureihe" if baureihe_bekannt else "dieses Modell (keine ENFAL-Baureihen-Zuordnung)"
     text = " ".join(filter(None, [r.get("mangel"), r.get("abhilfe"), r.get("betroffene_baujahre")]))
     ist_hv_rueckruf = bool(_HV_MUSTER.search(text))
     qualifier = _paren_qualifier(r.get("betroffene_baujahre"))       # z.B. "phev"
@@ -853,7 +870,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
             # mehrdeutige Elektrifizierung) -> Betroffenheit NICHT bestimmbar.
             return ("unclear", "niedrig",
                     f"Betroffenheit unklar: der Rückruf betrifft bestimmte Varianten. {_HINWEIS_FIN}",
-                    "Für die Baureihe hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
+                    f"Für {baureihen_bezug} hinterlegt; die genaue Variantenbetroffenheit ist ohne erkannte Motorisierung nicht gesichert.")
         if matcht:
             # Passende Variante + Baujahr-Deckung + PLAUSIBLE KBA-Referenz -> stärkste
             # OHNE-VIN erreichbare Stufe: "kann diese Variante betreffen", nicht
@@ -916,7 +933,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     if passt is True:
         if kba_ok:
             return ("series_only", "hoch",
-                    f"Sicherheitsrelevant: betrifft die Baureihe im gemeldeten "
+                    f"Sicherheitsrelevant: betrifft {baureihen_bezug} im gemeldeten "
                     f"Zeitraum. {_HINWEIS_FIN}", "")
         return ("series_only", "mittel",
                 f"Sicherheitsrelevant. {_HINWEIS_FIN}", "")
@@ -954,7 +971,7 @@ def _annotiere(r: dict, motor_match: dict | None, baujahr: int | None,
         beschr = f"{beschr}{'' if beschr.endswith(('.', '!', '?')) else '.'} Abhilfe: {r['abhilfe'].strip()}"
     if r.get("datum"):
         beschr = f"{beschr} (Rückruf {r['datum']})"
-    wortlaut = RUECKRUF_APPLICABILITY_TEXT.get(applicability, applicability)
+    wortlaut = rueckruf_wortlaut(applicability, baureihe_bekannt=r.get("baureihe_id") is not None)
     text = f"{beschr} [{wortlaut}]" + (f". {variant_hinweis}" if variant_hinweis else "")
     return {
         **r,

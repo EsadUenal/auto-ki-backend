@@ -25,7 +25,7 @@ from app.recall_filter import (
     _baujahr_passt, _jahre,
     rueckruf_applicability as _rueckruf_applicability,
     kba_referenz_anzeige,
-    RUECKRUF_APPLICABILITY_TEXT,
+    rueckruf_wortlaut,
     RECALL_STATE_AUS_APPLICABILITY,
     rueckruf_scope as _rueckruf_scope,
     RECALL_NOT_APPLICABLE as _RECALL_NOT_APPLICABLE,
@@ -415,10 +415,15 @@ def build_insights(
         # (app/rueckruf_titel.py); der volle amtliche Text steht unverändert in
         # `beschreibung`.
         kurz = rueckruf_kurztitel(r.get("mangel"))
+        # F6: "Baureihe" im Titel behauptet einen ENFAL-Katalogeintrag. Canonical-
+        # only Rückrufe (RC-W6: `baureihe_id` nicht gesetzt, nur Marke+Nameplate)
+        # kennen keine ENFAL-Baureihe -> "Modell" statt "Baureihe".
+        baureihe_bekannt = r.get("baureihe_id") is not None
+        scope_wort = "Baureihe" if baureihe_bekannt else "Modell"
         if applicability in ("confirmed_by_vin", "variant_match"):
             titel = f"{kurz} ({praefix})"
         else:
-            titel = f"{kurz} ({praefix}, Baureihe)"
+            titel = f"{kurz} ({praefix}, {scope_wort})"
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
@@ -433,6 +438,7 @@ def build_insights(
             recall_status=recall_status(applicability),
             recall_state=RECALL_STATE_AUS_APPLICABILITY.get(applicability),
             trust=trust_rueckruf,
+            rueckruf_baureihe_bekannt=baureihe_bekannt,
             einfluss=recall_handlung(recall_status(applicability)),
         ))
 
@@ -480,6 +486,7 @@ def build_insights(
                 recall_status=recall_status("unclear"),
                 recall_state=RECALL_STATE_AUS_APPLICABILITY.get("unclear"),
                 trust="unverified_db",
+                rueckruf_baureihe_bekannt=True,
                 einfluss=recall_handlung(recall_status("unclear")),
             ))
 
@@ -1099,7 +1106,14 @@ def format_evidence_for_prompt(insights: list[Insight]) -> str:
         label = _evidence_label(i)
         zeile = f"[{i.id}] {label} | Confidence: {i.confidence} | {i.titel}"
         if i.kategorie == "rueckruf" and i.applicability:
-            wortlaut = RUECKRUF_APPLICABILITY_TEXT.get(i.applicability, i.applicability)
+            # F6: "Baureihe" nur, wenn `rueckruf_baureihe_bekannt` das bestätigt
+            # (ENFAL-Katalogeintrag). `None` (Feld nicht gesetzt) erhält bewusst
+            # das alte Verhalten (Default `True` in `rueckruf_wortlaut`).
+            baureihe_bekannt = i.rueckruf_baureihe_bekannt
+            if baureihe_bekannt is None:
+                wortlaut = rueckruf_wortlaut(i.applicability)
+            else:
+                wortlaut = rueckruf_wortlaut(i.applicability, baureihe_bekannt=baureihe_bekannt)
             zeile += f" | Betroffenheit: {wortlaut}"
         lines.append(zeile)
     return "\n".join(lines)
