@@ -842,7 +842,18 @@ def _mm_yy_jahr(ziffern: str) -> int:
     return n if n >= 100 else 2000 + n
 
 
-def _datenblatt_zeitraum(text: str) -> tuple[int, int] | None:
+# Unterscheidbares Ergebnis fuer "kein Modellstart/Modellende-Feldpaar
+# gefunden" (= None, s.u.) vs. "mehrere VERSCHIEDENE Feldpaare gefunden,
+# Zuordnung zu einem einzelnen Claim nicht entscheidbar" (dieser Sentinel).
+# Beide duerfen NICHT gleich behandelt werden: eine Quelle ganz ohne
+# Zeitangabe ist kein Beleg GEGEN Uebertragbarkeit (bleibt unverworfen) --
+# eine Quelle mit einer erkannten, aber NICHT aufloesbaren Zuordnung ist
+# dagegen ein belegter Verlust der Zuordnung und darf nicht wie eine
+# unbedenkliche Luecke durchgereicht werden (s. `_identitaets_claims()`).
+ZEITRAUM_MEHRDEUTIG = "mehrdeutig"
+
+
+def _datenblatt_zeitraum(text: str) -> tuple[int, int] | str | None:
     """Das EIGENE Modellstart/Modellende-Fenster DIESES Datenblatts, falls
     explizit UND EINDEUTIG angegeben -- s. Kommentar bei
     `_RE_MODELLZEITRAUM_FELD`.
@@ -851,16 +862,18 @@ def _datenblatt_zeitraum(text: str) -> tuple[int, int] | None:
     Modellstart/Modellende-Feldpaar, nennen (z.B. "RC F Automatik" UND
     "RC F Ultimate Edition" auf derselben Seite). Welches Paar zu welchem
     lokal gebundenen Claim gehoert, ist ohne eine eigene, hier bewusst NICHT
-    gebaute Satz-/Absatzbindung nicht entscheidbar -- ein EINZELNES,
-    dokumentweit gueltiges Fenster zu raten waere riskanter als gar keins.
-    Deshalb: genau EIN (ggf. mehrfach wortgleich wiederholtes) Fenster bindet,
-    ZWEI ODER MEHR VERSCHIEDENE Fenster verwerfen die Bindung komplett (None,
-    kein Ausschluss) statt eines davon willkuerlich zu bevorzugen."""
+    gebaute Satz-/Absatzbindung nicht entscheidbar. Deshalb: genau EIN (ggf.
+    mehrfach wortgleich wiederholtes) Fenster bindet normal; ZWEI ODER MEHR
+    VERSCHIEDENE Fenster liefern `ZEITRAUM_MEHRDEUTIG` -- NICHT `None` (siehe
+    Modulkonstante oben): der Aufrufer muss diesen Fall GENAUSO wie einen
+    belegten Ausschluss behandeln, nicht wie eine fehlende Zeitangabe."""
     fenster = {(_mm_yy_jahr(m.group(2)), _mm_yy_jahr(m.group(4)))
                for m in _RE_MODELLZEITRAUM_FELD.finditer(text or "")}
-    if len(fenster) != 1:
-        return None
-    return next(iter(fenster))
+    if len(fenster) > 1:
+        return ZEITRAUM_MEHRDEUTIG
+    if len(fenster) == 1:
+        return next(iter(fenster))
+    return None
 
 
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
@@ -1785,13 +1798,21 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # segmentgefilterten `text`): das Feldpaar beschreibt die GANZE Seite,
     # nicht nur den lokal an das Zielmodell gebundenen Satzausschnitt.
     _datenblatt_fenster = _datenblatt_zeitraum(f"{r.get('title') or ''}. {r.get('content') or ''}")
-    _ausserhalb_datenblatt = (
-        _datenblatt_fenster is not None and baujahr is not None
-        and _im_zeitraum(baujahr, _datenblatt_fenster) is False)
+    # Mehrdeutigkeit (`ZEITRAUM_MEHRDEUTIG`) ist KEIN "keine Zeitangabe" --
+    # eine erkannte, aber nicht aufloesbare Varianten-Zuordnung darf keinen
+    # beliebigen Claim dieser Quelle als zielgueltig durchreichen. Beide
+    # Faelle (eindeutig ausserhalb ODER mehrdeutig) fuehren deshalb zum
+    # gleichen Verwerfen -- nur mit unterscheidbarem Grund fuer Diagnose.
+    _verwurf_grund_datenblatt = (
+        "baujahr_datenblatt_mehrdeutig" if _datenblatt_fenster == ZEITRAUM_MEHRDEUTIG
+        else "baujahr_ausserhalb_datenblatt" if (
+            isinstance(_datenblatt_fenster, tuple) and baujahr is not None
+            and _im_zeitraum(baujahr, _datenblatt_fenster) is False)
+        else None)
 
     def add(feld, wert, **extra):
-        if _ausserhalb_datenblatt and feld not in ("generation", "generation_nummer"):
-            extra.setdefault("verworfen", "baujahr_ausserhalb_datenblatt")
+        if _verwurf_grund_datenblatt and feld not in ("generation", "generation_nummer"):
+            extra.setdefault("verworfen", _verwurf_grund_datenblatt)
         claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": tier, "url": url, **extra})
 
     # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von

@@ -13,8 +13,14 @@ genannten Faelle ab:
      "Baureihe RC (UXC1) (12/14 - 06/25)") ueberschreibt den engeren,
      explizit angegebenen Variantenzeitraum NICHT.
   D) Mehrere VERSCHIEDENE Modellstart/Modellende-Paare auf einer
-     Vergleichsseite werden NICHT pauschal als ein Quellenzeitraum behandelt
-     (Ambiguitaet -> keine Bindung statt Ratens).
+     Vergleichsseite werden NICHT pauschal als EIN Quellenzeitraum behandelt
+     (Ambiguitaet -> keine Bindung an ein geratenes Fenster). Fortsetzungs-
+     auftrag (29.10.2026, nach Commit 272c423): eine erkannte, aber nicht
+     aufloesbare Zuordnung ist dabei KEIN "keine Zeitangabe" -- sie liefert
+     das Sentinel `ZEITRAUM_MEHRDEUTIG` und wird wie ein belegter Ausschluss
+     behandelt (eigener Grund `baujahr_datenblatt_mehrdeutig`), NICHT wie
+     eine unbedenkliche Luecke durchgereicht (s. test_zielgueltigkeit_
+     mehrdeutigkeit_kausal.py fuer den kausalen Vorher/Nachher-Nachweis).
   E) MM/YY (zwei- UND vierstellig) wird korrekt geparst.
   F) Ein fehlendes Modellende (laufende/aktuelle Variante) erfindet KEINEN
      abgeschlossenen Zeitraum -- kein Ausschluss ohne beide Grenzen.
@@ -29,7 +35,9 @@ verwendeten, per Browser verifizierten Original-Zitaten).
 
     python test_modellzeitraum_filter_haertung.py
 """
-from app.technical_research import _datenblatt_zeitraum, _identitaets_claims, _ziel
+from app.technical_research import (
+    _datenblatt_zeitraum, _identitaets_claims, _ziel, ZEITRAUM_MEHRDEUTIG,
+)
 
 _FEHLER: list[str] = []
 
@@ -106,14 +114,20 @@ VERGLEICHSSEITE = treffer(
     "Antriebsart Hinterrad Kraftstoffart Super. Lexus RC F Ultimate Edition "
     "Modellstart 08/24 Modellende 06/25 Motorcode 2UR-GSE Antriebsart Hinterrad "
     "Kraftstoffart Super.")
-check("D1 _datenblatt_zeitraum() liefert None bei zwei verschiedenen Fenstern "
-      "(keine Bindung geraten)", _datenblatt_zeitraum(
-          f"{VERGLEICHSSEITE['title']}. {VERGLEICHSSEITE['content']}") is None)
+check("D1 _datenblatt_zeitraum() liefert das Sentinel ZEITRAUM_MEHRDEUTIG bei "
+      "zwei verschiedenen Fenstern (NICHT None -- Mehrdeutigkeit ist kein "
+      "'keine Zeitangabe')", _datenblatt_zeitraum(
+          f"{VERGLEICHSSEITE['title']}. {VERGLEICHSSEITE['content']}") == ZEITRAUM_MEHRDEUTIG)
 claims_d = _identitaets_claims(VERGLEICHSSEITE, z_2017)
 fuel_d = claims_fuer("fuel", claims_d)
-check("D2 fuel-Claims der Vergleichsseite bleiben UNVERWORFEN (Ambiguitaet "
-      "blockiert den Ausschluss, statt eines der beiden Fenster zu raten)",
-      bool(fuel_d) and all(not c.get("verworfen") for c in fuel_d), str(fuel_d))
+check("D2 fuel-Claims der Vergleichsseite werden VERWORFEN (eigener Grund "
+      "'baujahr_datenblatt_mehrdeutig') -- eine erkannte, aber nicht "
+      "aufloesbare Varianten-Zuordnung darf keinen Wert zielgueltig "
+      "durchreichen, statt eines der beiden Fenster zu raten (s. "
+      "test_zielgueltigkeit_mehrdeutigkeit_kausal.py fuer den Nachweis, dass "
+      "dies vor dem Fix tatsaechlich einen falschen Wert bestaetigt haette)",
+      bool(fuel_d) and all(c.get("verworfen") == "baujahr_datenblatt_mehrdeutig"
+                           for c in fuel_d), str(fuel_d))
 
 print("\n" + "=" * 70)
 print("E) MM/YY-Format: zwei- UND vierstellige Jahresangabe korrekt geparst")
