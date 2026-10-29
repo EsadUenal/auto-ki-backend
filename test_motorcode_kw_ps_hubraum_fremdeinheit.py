@@ -202,6 +202,56 @@ for satzteil, erwartet in [
           str(werte(cx, "displacement")))
 
 print("\n" + "=" * 70)
+print("6) Antriebsart-/Kraftstoffart-Feldkontext (Quellenbindungs-Folgeauftrag "
+      "29.10.2026, CONFIRMED am realen ADAC-Datenblatt: 'Antriebsart Hinterrad', "
+      "'Kraftstoffart Super' trugen bisher KEINEN Claim)")
+print("=" * 70)
+
+# Realer ADAC-Wortlaut (adac.de/.../lexus/rc/xc1/288844/ und .../339429/,
+# 29.10.2026 per Browser nachgeprueft): "Antriebsart Hinterrad",
+# "Kraftstoffart Super" als eigene Feldzeilen.
+c_adac = claims_fuer(
+    "Marke Lexus Modell RC F Typ Automatik Baureihe RC (UXC1) (12/14 - 06/25) "
+    "Motorcode 2UR-GSE Leistung maximal in PS 464 Antriebsart Hinterrad "
+    "Getriebeart Automatikgetriebe Kraftstoffart Super Hubraum 4969 ccm")
+check("6a real ADAC 'Antriebsart Hinterrad' erzeugt jetzt drivetrain=Heck",
+      "Heck" in werte(c_adac, "drivetrain"), str(werte(c_adac, "drivetrain")))
+check("6b real ADAC 'Kraftstoffart Super' erzeugt jetzt fuel=benzin",
+      "benzin" in werte(c_adac, "fuel"), str(werte(c_adac, "fuel")))
+
+c_front = claims_fuer("Der Lexus RC F hat Antriebsart Vorderrad laut Datenblatt.")
+check("6c 'Antriebsart Vorderrad' erzeugt drivetrain=Front (generisch, nicht nur Heck)",
+      "Front" in werte(c_front, "drivetrain"), str(werte(c_front, "drivetrain")))
+
+c_allrad = claims_fuer("Der Lexus RC F hat Antriebsart Allrad laut Datenblatt.")
+check("6d 'Antriebsart Allrad' erzeugt drivetrain=Allrad (generisch)",
+      "Allrad" in werte(c_allrad, "drivetrain"), str(werte(c_allrad, "drivetrain")))
+
+c_diesel_feld = claims_fuer("Der Lexus RC F hat laut Datenblatt Kraftstoffart Diesel.")
+check("6e 'Kraftstoffart Diesel' erzeugt fuel=diesel (generisch, nicht nur Super->benzin)",
+      "diesel" in werte(c_diesel_feld, "fuel"), str(werte(c_diesel_feld, "fuel")))
+
+# Gegenfaelle (ausdruecklich gefordert): strukturelle Feldbindung darf NICHT
+# in Prosa ueberschwappen.
+c_lenkung = claims_fuer(
+    "Der Lexus RC F verfuegt serienmaessig ueber eine elektrische Hinterradlenkung.")
+check("6f GEGENFALL 'elektrische Hinterradlenkung' erzeugt KEINEN drivetrain-Claim "
+      "(Lenkungs-, keine Antriebsangabe)",
+      werte(c_lenkung, "drivetrain") == [], str(werte(c_lenkung, "drivetrain")))
+
+c_prosa1 = claims_fuer("Der Lexus RC F ist ein super Auto mit tollem Sound.")
+check("6g GEGENFALL ''super Auto' (Prosa, kein Feldlabel) erzeugt KEINEN fuel-Claim",
+      werte(c_prosa1, "fuel") == [], str(werte(c_prosa1, "fuel")))
+
+c_prosa2 = claims_fuer("Der Lexus RC F fuehlt sich super an und beschleunigt kraftvoll.")
+check("6h GEGENFALL 'fuehlt sich super an' (Prosa) erzeugt KEINEN fuel-Claim",
+      werte(c_prosa2, "fuel") == [], str(werte(c_prosa2, "fuel")))
+
+c_v8_allein = claims_fuer("Der Lexus RC F hat einen 5.0 V8 Motor.")
+check("6i KEINE Ableitung von 'benzin' allein aus der Motorbauart V8",
+      werte(c_v8_allein, "fuel") == [], str(werte(c_v8_allein, "fuel")))
+
+print("\n" + "=" * 70)
 if FEHLER:
     print(f"{len(FEHLER)} FEHLER:")
     for f in FEHLER:

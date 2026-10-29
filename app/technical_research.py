@@ -796,6 +796,25 @@ _KRAFTSTOFF_CLAIM = (("diesel", re.compile(r"\bdiesel\w*|\btdi\b|\bcdi\b|\bdci\b
 _ANTRIEB_CLAIM = (("Heck", re.compile(r"hinterradantrieb|heckantrieb|hinterr(?:ä|ae)der|rear[- ]wheel", re.I)),
                   ("Front", re.compile(r"frontantrieb|vorderradantrieb|front[- ]wheel", re.I)),
                   ("Allrad", re.compile(r"allradantrieb|allrad\b|all[- ]wheel|\bawd\b|quattro|xdrive|4matic|4motion", re.I)))
+
+# Quellenbindungs-Folgeauftrag (29.10.2026, CONFIRMED am realen ADAC-
+# Datenblatt): strukturierte Feldlabel:Wert-Angaben ("Antriebsart Hinterrad",
+# "Kraftstoffart Super") tragen die Antriebs-/Kraftstoffart NICHT als
+# Kompositum (wie `_ANTRIEB_CLAIM`/`_KRAFTSTOFF_CLAIM` fuer Fliesstext
+# verlangen: "Heckantrieb", "Benzin"), sondern als kurzes Einzelwort direkt
+# hinter dem eigenen Feldlabel. "Hinterrad" ALLEIN in Fliesstext waere zu
+# unspezifisch (z.B. "elektrische Hinterradlenkung" -- eine Lenkungs-, keine
+# Antriebsangabe) -- das Feldlabel selbst macht die Rolle hier eindeutig,
+# genau wie bei der bestehenden Feldlabel:Wert-Modellerkennung
+# (`_modellnennungen_kandidaten`/`_rollenbeleg_feldlabel`). "Super"/"Super
+# Plus"/"Normal"/"E10" sind Ottokraftstoff-SORTEN und werden NUR in diesem
+# engen Feldkontext als "benzin" gewertet -- "Super" allein in Prosa ("ein
+# super Auto") bleibt bewusst unbeachtet, keine Ableitung von Benzin allein
+# aus einer Motorbauart wie "V8".
+_RE_ANTRIEBSART_FELD = re.compile(
+    r"\bAntriebsart\s*[:\|]?\s*(Hinterrad\w*|Heck\w*|Vorderrad\w*|Front\w*|Allrad\w*)\b", re.I)
+_RE_KRAFTSTOFFART_FELD = re.compile(
+    r"\bKraftstoffart\s*[:\|]?\s*(Super\s*Plus|Super|Normal|E10|Diesel)\b", re.I)
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
                                   r"|\b(sechs|f(?:ü|ue)nf)gang[- ]?(?:schaltgetriebe|handschaltung)"
                                   r"|\b(\d)-speed manual", re.I)
@@ -1786,6 +1805,20 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     for wert, rx in _ANTRIEB_CLAIM:
         if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
             add("drivetrain", wert)
+    for m in _RE_ANTRIEBSART_FELD.finditer(text):
+        wert_roh = m.group(1).lower()
+        for praefix, achse in (("hinterrad", "Heck"), ("heck", "Heck"),
+                               ("vorderrad", "Front"), ("front", "Front"),
+                               ("allrad", "Allrad")):
+            if wert_roh.startswith(praefix):
+                if not _verneint_im_teilsatz(text, m.start()):
+                    add("drivetrain", achse)
+                break
+    for m in _RE_KRAFTSTOFFART_FELD.finditer(text):
+        wert_roh = m.group(1).lower().replace(" ", "")
+        wert = "diesel" if wert_roh == "diesel" else "benzin"
+        if not _verneint_im_teilsatz(text, m.start()):
+            add("fuel", wert)
     # Root Cause 5 (Stufe 2): Elektrifizierungsgrad NUR aus denselben
     # ausdrücklichen Wörtern, die app/kraftstoff_powertrain.py bereits für
     # Nutzer-/Inseratstext verlangt ("reiner Verbrenner"/"ICE", "Mild-Hybrid",
