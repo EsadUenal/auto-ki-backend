@@ -101,6 +101,33 @@ check("2c mehrere Typ-/Variantencodes in eigenen Klammern werden NICHT vermischt
       werte(c3b, "engine_code") == [], str(werte(c3b, "engine_code")))
 
 print("\n" + "=" * 70)
+print("2d) Typcode-Gegenpruefung (Folgeauftrag 29.10.2026, CONFIRMED Root Cause): "
+      "eine Literangabe in Klammern belegt nur Hubraumkontext, nicht automatisch "
+      "die Motor-ROLLE des davorstehenden Codes. ALLE Codes hier sind erfundene, "
+      "synthetische Testwerte -- keine reale Quelle nennt sie so.")
+print("=" * 70)
+c_typ1 = claims_fuer("Fahrzeugtyp ABC123 (3.5-Liter-Klasse) gehoert zum Lexus RC F.")
+check("2d-1 SYNTHETISCH 'Fahrzeugtyp ABC123 (3.5-Liter-Klasse)' wird NICHT als "
+      "Motorcode uebernommen", werte(c_typ1, "engine_code") == [], str(werte(c_typ1, "engine_code")))
+
+c_typ2 = claims_fuer("Modellcode ABC123 (3.5-Liter-Klasse) gehoert zum Lexus RC F.")
+check("2d-2 SYNTHETISCH 'Modellcode ABC123 (3.5-Liter-Klasse)' wird NICHT als "
+      "Motorcode uebernommen", werte(c_typ2, "engine_code") == [], str(werte(c_typ2, "engine_code")))
+
+c_typ3 = claims_fuer("Baureihe XC10 (3.5-Liter-Klasse) bildet die Basis des Lexus RC F.")
+check("2d-3 SYNTHETISCH 'Baureihe XC10 (3.5-Liter-Klasse)' wird NICHT als "
+      "Motorcode uebernommen", werte(c_typ3, "engine_code") == [], str(werte(c_typ3, "engine_code")))
+
+c_typ_gemischt = claims_fuer(
+    "Fahrzeugtyp XYZ789 (3.5-Liter-Klasse), Motorcode 2UR-GSE (V8 5.0-liter), Lexus RC F.")
+check("2d-4 gemischte Tabelle: SYNTHETISCHER Fahrzeugtyp 'XYZ789' bleibt aussen vor, "
+      "der tatsaechliche (reale) Motorcode '2UR-GSE' bleibt erkannt -- beide Rollen "
+      "werden nicht vermischt",
+      "XYZ789" not in werte(c_typ_gemischt, "engine_code")
+      and "2UR-GSE" in werte(c_typ_gemischt, "engine_code"),
+      str(werte(c_typ_gemischt, "engine_code")))
+
+print("\n" + "=" * 70)
 print("3) kW[PS]-Klammerkonvention: nur mit Beleg, nur bei passendem Verhaeltnis")
 print("=" * 70)
 c4 = claims_fuer("Systemleistung 283 [385] / 6,600 (kW[PS]/rpm), Drehmoment "
@@ -119,6 +146,25 @@ c6 = claims_fuer("Ohne jede Einheitenerklaerung: 351 [477] / 7,100.")
 check("3d OHNE die Konvention 'kW[PS]' irgendwo im Text wird die Klammerzahl NICHT "
       "als PS vermutet (kein Rateschluss ohne Beleg)",
       werte(c6, "horsepower") == [], str(werte(c6, "horsepower")))
+
+# Gegenpruefung (Folgeauftrag 29.10.2026): das Zahlenverhaeltnis ALLEIN belegt
+# keine Fahrzeugbindung -- ein Vergleichstext, der ein FREMDES Fahrzeug im
+# SELBEN Satz/Segment nennt, liefert auch dessen Zahl mit (Dokumentation, kein
+# neuer Fix: dieselbe, bereits bestehende Grenze hat die unveraenderte
+# `_RE_PS`-Extraktion identisch -- s. Vergleichsfall direkt darunter. Eine
+# Vehicle-Binding-pro-Zahl gibt es fuer KEINE numerische Extraktion in diesem
+# Modul; sie waere eine groessere, hier nicht beauftragte Architekturaenderung).
+c7 = claims_fuer(
+    "Vergleichstest (kW[PS]/rpm): Der BMW M4 leistet 317 [431] / 7,300, "
+    "der Lexus RC F leistet 351 [477] / 7,100.")
+c7_ref = claims_fuer(
+    "Vergleichstest: Der BMW M4 leistet 431 PS, der Lexus RC F leistet 477 PS.")
+check("3e kW[PS]-Klammerpfad zeigt bei gemischter Fahrzeugnennung im selben Segment "
+      "GENAU DASSELBE Verhalten wie die unveraenderte _RE_PS-Extraktion (keine neue, "
+      "asymmetrische Luecke) -- beide liefern beide Zahlen, keine Vehicle-Bindung "
+      "pro Zahl in diesem Modul",
+      sorted(werte(c7, "horsepower")) == sorted(werte(c7_ref, "horsepower")) == [431, 477],
+      f"kW[PS]-Pfad={werte(c7, 'horsepower')} _RE_PS-Pfad={werte(c7_ref, 'horsepower')}")
 
 print("\n" + "=" * 70)
 print("4) Hubraum: Zeit-/Beschleunigungs-/Verbrauchs-/Drehzahleinheiten erzeugen "

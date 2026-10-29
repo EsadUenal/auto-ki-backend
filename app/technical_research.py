@@ -902,8 +902,27 @@ _RE_MOTORCODE_CLAIM = re.compile(
 # ein Typ-/Generationscode in Klammern (z.B. "RC (XC10)") nicht traegt --
 # dort folgt NIE eine Literangabe, nur ein weiterer Code. Keine Motorcode-
 # Allowlist, kein Marken-/Modellbezug.
+#
+# Gegenpruefung (Folgeauftrag, 29.10.2026, CONFIRMED Root Cause): eine
+# Literangabe in Klammern belegt nur den HUBRAUM-KONTEXT, nicht automatisch
+# die MOTOR-Rolle des davorstehenden Codes -- ein Fahrzeugtyp kann ebenso
+# ueber eine Hubraum-/Leistungsklasse beschrieben sein ("Fahrzeugtyp ABC123
+# (3.5-Liter-Klasse)"). Reproduziert: ohne weitere Pruefung bestaetigte die
+# Regel oben "ABC123" faelschlich als Motorcode, sowohl nach "Fahrzeugtyp"
+# als auch nach "Modellcode" (beide synthetisch, erfundene Testwerte -- real
+# nennt keine gefundene Quelle einen Code so). Fix: dieselbe generische
+# Rollenwort-Logik wie bei `_GEN_KONTEXT`/der Generations-Rollenzuweisung
+# weiter unten, nur umgekehrt -- ein eindeutiges NICHT-Motor-Rollenwort
+# UNMITTELBAR vor dem Code (Fahrzeugtyp/Modelltyp/Modellcode/Chassiscode/
+# Baumusternummer/Baureihe/Generation/Werkscode/Codename) schliesst die
+# Motorcode-Rolle an dieser Stelle aus -- unabhaengig davon, ob zusaetzlich
+# eine Literangabe folgt. Keine Codeliste, rein lexikalisch.
 _RE_MOTORCODE_KLAMMER_HUBRAUM = re.compile(
     r"\b([A-Z0-9][A-Z0-9-]{1,9})\s*\([^)]{0,30}?\d[.,]\d\s*-?\s*(?:l\b|liter|litre)[^)]{0,15}\)",
+    re.IGNORECASE)
+_TYPCODE_ROLLENWORT = re.compile(
+    r"(?:fahrzeug|modell|typen?|chassis|baumuster)[-\s]?(?:typ\w*|code|nummer|kennung)\b"
+    r"|\bbaureihe\b|\bgeneration\b|\bchassiscode\b|\bwerkscode\b|\bcodename\b",
     re.IGNORECASE)
 
 # Erkennt, ob der erfasste Wert selbst der ERSTE von mindestens ZWEI
@@ -1808,6 +1827,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         add("engine_code", m.group(1).upper())
     for m in _RE_MOTORCODE_KLAMMER_HUBRAUM.finditer(text):
+        if _TYPCODE_ROLLENWORT.search(text[max(0, m.start(1) - 40):m.start(1)]):
+            continue
         if not _ist_motorcode_wert(m.group(1), text[m.start(1):]):
             continue
         if _verneint_im_teilsatz(text, m.start()):
