@@ -844,11 +844,23 @@ def _mm_yy_jahr(ziffern: str) -> int:
 
 def _datenblatt_zeitraum(text: str) -> tuple[int, int] | None:
     """Das EIGENE Modellstart/Modellende-Fenster DIESES Datenblatts, falls
-    explizit angegeben -- s. Kommentar bei `_RE_MODELLZEITRAUM_FELD`."""
-    m = _RE_MODELLZEITRAUM_FELD.search(text or "")
-    if not m:
+    explizit UND EINDEUTIG angegeben -- s. Kommentar bei
+    `_RE_MODELLZEITRAUM_FELD`.
+
+    Eine Vergleichs-/Uebersichtsseite kann MEHRERE Varianten, je mit eigenem
+    Modellstart/Modellende-Feldpaar, nennen (z.B. "RC F Automatik" UND
+    "RC F Ultimate Edition" auf derselben Seite). Welches Paar zu welchem
+    lokal gebundenen Claim gehoert, ist ohne eine eigene, hier bewusst NICHT
+    gebaute Satz-/Absatzbindung nicht entscheidbar -- ein EINZELNES,
+    dokumentweit gueltiges Fenster zu raten waere riskanter als gar keins.
+    Deshalb: genau EIN (ggf. mehrfach wortgleich wiederholtes) Fenster bindet,
+    ZWEI ODER MEHR VERSCHIEDENE Fenster verwerfen die Bindung komplett (None,
+    kein Ausschluss) statt eines davon willkuerlich zu bevorzugen."""
+    fenster = {(_mm_yy_jahr(m.group(2)), _mm_yy_jahr(m.group(4)))
+               for m in _RE_MODELLZEITRAUM_FELD.finditer(text or "")}
+    if len(fenster) != 1:
         return None
-    return _mm_yy_jahr(m.group(2)), _mm_yy_jahr(m.group(4))
+    return next(iter(fenster))
 
 
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
@@ -1708,8 +1720,21 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         tier = max(tier, 3)
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
-        # Nur Sätze, die das Modell nennen; niedrigste Stufe.
-        tier = 3
+        # Nur Sätze, die das Modell nennen; niedrigste Stufe -- AUSSER die
+        # Quelle ist die bestaetigte eigene Domain des Herstellers
+        # (`_marke_eigene_domain()`, dieselbe Pruefung wie in
+        # `_tier_identitaet()`/`_primaerquelle()`, keine zweite Zuordnung).
+        # Zielgueltigkeits-Folgeauftrag (29.10.2026, CONFIRMED am realen
+        # toyota-media.de-Pressetext vom 01.12.2016, Sammelmeldung fuer
+        # GS F UND RC F ohne Modellnamen im Titel): "schwach" beschreibt nur,
+        # dass die Seite nicht EXKLUSIV vom Zielmodell handelt -- es ist KEIN
+        # Urteil ueber die Vertrauenswuerdigkeit der Domain selbst. Eine
+        # eigene Herstellerdomain bleibt Tier 1, solange der konkrete Satz
+        # das Zielmodell tatsaechlich ausdruecklich nennt (Satzfilter
+        # unveraendert) -- sonst wuerde eine echte Primaerquelle allein
+        # deshalb auf Tier 3 abgewertet, weil ein gemeinsamer Pressetext
+        # zweier Geschwistermodelle keines davon im Titel nennt.
+        tier = tier if _marke_eigene_domain(url, ziel.get("marke")) else 3
         text = " ".join(s for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
                         if _satz_nennt_modell(s, ziel.get("modell")))
     else:
