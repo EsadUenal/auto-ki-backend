@@ -728,12 +728,44 @@ _RE_GEN_NUMMER = re.compile(r"\b(?:(\d{1,2})\.|(erste|zweite|dritte|vierte|f(?:�
                             re.IGNORECASE)
 _RE_PS = re.compile(r"\b(\d{2,4})\s*PS\b", re.IGNORECASE)
 _RE_KW = re.compile(r"\b(\d{2,3})\s*kW\b")
+
+# Toyota-Primaerquellen-Folgeauftrag (29.10.2026): manche (insbesondere
+# japanische) Herstellertexte stellen die Leistung als "<kW> [<PS>] / <rpm>"
+# dar, mit der Einheiten-Konvention "kW[PS]/rpm" nur EINMAL in der
+# Tabellenkopfzeile genannt -- die PS-Zahl selbst traegt in der Datenzeile
+# kein eigenes "PS"-Wort (real: "351 [477] / 7,100" fuer den Lexus RC F,
+# global.toyota, 23.10.2014). `_RE_PS` (verlangt das Wort "PS" direkt am
+# Wert) erkennt das deshalb nicht. Generischer Fix UEBER die physikalische
+# kW->PS-Umrechnung (1 kW = 1.35962 PS) statt eines Formatspezialfalls: eine
+# Klammerzahl wird nur als PS akzeptiert, wenn sie zur vorangehenden Zahl im
+# physikalisch erwarteten Verhaeltnis steht (haelt eine andere Klammerangabe
+# wie Drehmoment "530 [54.0]" sicher fern -- "54.0" ist ohnehin keine reine
+# Ganzzahl) UND die Konvention "kW[PS]" irgendwo im Text selbst benannt ist
+# (keine Vermutung ohne Beleg).
+_KW_PS_KONVENTION_BELEGT = re.compile(r"kW\s*\[\s*PS\s*\]", re.IGNORECASE)
+_RE_KW_PS_KLAMMER = re.compile(r"\b(\d{2,4})\s*\[\s*(\d{2,4})\s*\]")
+_KW_ZU_PS = 1.35962
 # Package C (Forensik-Folgeauftrag): generische Schreibvarianten ergänzt, die
 # der reale Lexus-RC-F-Fall zeigte ("5.0 V8"/"Benzin"/"Automatik" blieben
 # user_only, obwohl "477 PS"/"Heck" aus denselben Quellen bestätigt wurden —
 # Abnahmepunkt 7, als Vokabular-/Extraktionslücke diagnostiziert, KEIN Claim-
 # Binding-/Konsens-Bug). Bewusst NUR zusätzliches, generisches Vokabular.
 _RE_HUBRAUM = re.compile(r"\b(\d[.,]\d)\s*(?:-?\s*(?:l\b|liter|litre)|\s+(?=[A-Za-z]))", re.IGNORECASE)
+
+# Toyota-Primaerquellen-Folgeauftrag (29.10.2026): die obige Regel verlangt im
+# unitlosen Zweig ("5.0 V8") nur IRGENDEIN folgendes Wort -- das erfasste am
+# echten Pressetext (global.toyota, RC F) ebenso "0.1 seconds" (Schaltzeit)
+# als vermeintlichen Hubraum "0.1". Generische Ausschlussliste bekannter
+# NICHT-Hubraum-Einheiten (Zeit/Beschleunigung/Drehzahl/Geschwindigkeit)
+# statt einer Motor-/Marken-Allowlist: eine Allowlist nach Zylinderform
+# (z.B. nur "V\d"/"I\d") wuerde die zahlreichen bereits bestehenden, real
+# genutzten Schreibweisen ohne Ziffer im Folgewort brechen ("2.0 TDI", "2.0
+# Diesel", "1.4 Turbo", "3.0 Biturbo", "2.0 SKYACTIV", "1.5 dCi" -- siehe
+# test_data_trust_runtime.py u.a.). Echte Liter-/cm3-Angaben und
+# Motorformulierungen bleiben unveraendert erfasst.
+_HUBRAUM_FREMDEINHEIT = re.compile(
+    r"^\s*(?:sekunden?|seconds?|sek\.?|minuten?|minutes?|stunden?|hours?|"
+    r"[a-z]?mph|km\s*/\s*h|u\s*/\s*min|rpm)\b", re.IGNORECASE)
 
 # F12 (RC-F-Folgeauftrag, Ursachenanalyse-Bericht 2026-10-25): ein reiner
 # "cm3"/"cm³"/"ccm"-Wert ("4969 cm³") blieb bisher komplett unerkannt, obwohl
@@ -854,6 +886,25 @@ _AUTOMATIK_FREMDKONTEXT = re.compile(
 _RE_MOTORCODE_CLAIM = re.compile(
     r"(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*[:|(]?\s*"
     r"([A-Z0-9][A-Z0-9-]{1,9})\b", re.IGNORECASE)
+
+# Toyota-Primaerquellen-Folgeauftrag (29.10.2026): echte Herstellertabellen
+# nennen den Motorcode oft OHNE jedes Label-Wort davor -- als Tabellenzeile
+# ("2UR-GSE  4,968  351 [477] / 7,100 ...", eigene Spaltenkoepfe weiter oben)
+# oder in einer Preis-/Ausstattungstabelle direkt gefolgt von seinem EIGENEN
+# Hubraum-/Zylinder-Deskriptor in Klammern ("2UR-GSE (V8 5.0-liter)", real:
+# global.toyota, Lexus RC F, 23.10.2014). Fuer die erste Form (Tabellenzeile
+# ohne jeden Trenner zum vorherigen Spaltenkopf) gibt es absichtlich KEINE
+# Regel -- ohne Separator ist die Zuordnung Label->Wert nicht von einer
+# zufaelligen Wortfolge zu unterscheiden (sonst waere jedes kurze Wort vor
+# einer Zahl ein "Motorcode"). Fuer die ZWEITE Form ist der Klammerinhalt
+# selbst der Beleg: eine explizite Hubraum-Literangabe (dieselbe Form wie
+# `_RE_HUBRAUM`) direkt beim Code ist ein starkes, generisches Signal, das
+# ein Typ-/Generationscode in Klammern (z.B. "RC (XC10)") nicht traegt --
+# dort folgt NIE eine Literangabe, nur ein weiterer Code. Keine Motorcode-
+# Allowlist, kein Marken-/Modellbezug.
+_RE_MOTORCODE_KLAMMER_HUBRAUM = re.compile(
+    r"\b([A-Z0-9][A-Z0-9-]{1,9})\s*\([^)]{0,30}?\d[.,]\d\s*-?\s*(?:l\b|liter|litre)[^)]{0,15}\)",
+    re.IGNORECASE)
 
 # Erkennt, ob der erfasste Wert selbst der ERSTE von mindestens ZWEI
 # aufeinanderfolgenden, rein alphabetischen Pipe-Segmenten ist (angewendet
@@ -1693,7 +1744,20 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                 add("generation_nummer", f"{int(nr)}. Generation", zeitraum=z, jahr_belegt=passt is True)
     for m in _RE_PS.finditer(text):
         add("horsepower", int(m.group(1)))
+    if _KW_PS_KONVENTION_BELEGT.search(text):
+        for m in _RE_KW_PS_KLAMMER.finditer(text):
+            kw, ps_kandidat = int(m.group(1)), int(m.group(2))
+            erwartet = kw * _KW_ZU_PS
+            if abs(ps_kandidat - erwartet) <= max(2.0, erwartet * 0.01):
+                add("horsepower", ps_kandidat)
     for m in _RE_HUBRAUM.finditer(text):
+        if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
+            continue
+        # Verbrauchsangabe ("6,5 l/100km") ist keine Hubraumangabe -- nur die
+        # blosse "l"-Abkuerzung (nicht "Liter"/"litre") kollidiert damit, und
+        # nur wenn direkt ein Bruchstrich folgt (die Verbrauchseinheit selbst).
+        if m.group(0).rstrip().lower().endswith("l") and text[m.end(0):m.end(0) + 1] == "/":
+            continue
         add("displacement", m.group(1).replace(",", "."))
     for m in _RE_HUBRAUM_CCM.finditer(text):
         add("displacement", _ccm_als_liter(m.group(1)))
@@ -1738,6 +1802,12 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         add("transmission", "automatik")
     for m in _RE_MOTORCODE_CLAIM.finditer(text):
+        if not _ist_motorcode_wert(m.group(1), text[m.start(1):]):
+            continue
+        if _verneint_im_teilsatz(text, m.start()):
+            continue
+        add("engine_code", m.group(1).upper())
+    for m in _RE_MOTORCODE_KLAMMER_HUBRAUM.finditer(text):
         if not _ist_motorcode_wert(m.group(1), text[m.start(1):]):
             continue
         if _verneint_im_teilsatz(text, m.start()):
