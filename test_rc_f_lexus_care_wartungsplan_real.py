@@ -145,18 +145,24 @@ TOYOTA_MEDIA_DE = t(
 
 LEXUS_CH_MODELLUEBERSICHT = t(
     "https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf#page=4",
-    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Betroffene Modelle",
+    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Betroffene Modelle,"
+    " Lexus Care-Wartungsplan und zusätzliche Inspektionen",
+    # EIN einziges Dokument (eine URL, ein Titel) -- Seite 4/15/16 desselben
+    # PDFs, in Originalreihenfolge aneinandergefügt. Wichtig: NICHT als
+    # DREI fiktive "#page=N"-Fragment-URLs auf derselben Basis-URL (frühere
+    # Fassung dieser Fixture): `curate_results()`/`_normalisiere_url()`
+    # streift den URL-Fragment-Anteil für die Exact-URL-Dedupe ab -- drei
+    # Treffer mit identischer Basis-URL wurden dadurch als Duplikate
+    # behandelt und auf NUR den ersten reduziert, bevor die Wartungs-
+    # Extraktion die Seiten 15/16 überhaupt sah. Reiner Fixture-/Test-
+    # Konstruktionsfehler (ein reales Web-Suchergebnis liefert eine
+    # mehrseitige PDF nie als mehrere Fragment-URLs), keine Produktänderung
+    # nötig -- hier richtiggestellt: EIN Treffer, voller zusammenhängender
+    # Text, wortgleich inkl. Original-Zeilenumbruch OHNE Satzpunkt zwischen
+    # der Modellliste und "Lexus Care-Komplettservice" (reale PDF-
+    # Formatierung, per pypdf extrahiert).
     "BETROFFENE MODELLE Produktionsstart RC 300h (Oktober 2015 ~) RC F "
-    "(September 2014 ~) LC 500 (März 2017 ~) Falls für Ihren Markt zutreffend.")
-
-LEXUS_CH_WARTUNGSPLAN_SEITE15 = t(
-    "https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf#page=15",
-    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Lexus Care-Wartungsplan",
-    # Wortgleich inkl. Original-Zeilenumbruch OHNE Satzpunkt zwischen der
-    # Modellliste und "Lexus Care-Komplettservice" (reale PDF-Formatierung,
-    # per pypdf extrahiert) -- ein hier künstlich ergänzter Punkt hätte den
-    # Satz vorzeitig umgebrochen und die Zwischenservice-Zeile aus dem
-    # lokalen Rückbezugsfenster zur RC-F-Nennung herausgeschoben.
+    "(September 2014 ~) LC 500 (März 2017 ~) Falls für Ihren Markt zutreffend.\n\n"
     "LEXUS CARE-WARTUNGSPLAN Für ES 300h, IS 300h, LS 500, LS 500h, LC 500, "
     "LC 500h, NX 350h, NX 450h+, RX 300, RX 350, RX 350L, RX 450h, RX 450hL, "
     "RC 300h, RC F , UX 200 und UX 250h\n"
@@ -164,11 +170,7 @@ LEXUS_CH_WARTUNGSPLAN_SEITE15 = t(
     "zuerst eintritt. Lexus Care-Zwischenservice: alle 15.000 km oder einmal "
     "jährlich, je nachdem, was zuerst eintritt. Dieser Service beinhaltet "
     "einen Öl- und Filterwechsel sowie zusätzliche Inspektionen von Lenkung, "
-    "Bremsen, Beleuchtung und Reifen.")
-
-LEXUS_CH_WARTUNGSPLAN_SEITE16 = t(
-    "https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf#page=16",
-    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Zusätzliche Inspektionen",
+    "Bremsen, Beleuchtung und Reifen.\n\n"
     "Lexus RC F zusätzliche Inspektionen laut Lexus Care-Wartungsplan: "
     "Ventilspiel (Inspektion mit Messfühler, LC 500, RC F) alle 90.000 km "
     "oder 6 Jahre. Automatikgetriebeöl alle 60.000 km oder 4 Jahre.")
@@ -210,8 +212,7 @@ async def main() -> None:
         web_fixture={
             "identitaet": [ROLLING_HU, ADAC_ULTIMATE, ADAC_AUTOMATIK, CARWIKI, AMS,
                           TOYOTA_JAPAN, TOYOTA_MEDIA_DE],
-            "wartung": [LEXUS_CH_MODELLUEBERSICHT, LEXUS_CH_WARTUNGSPLAN_SEITE15,
-                       LEXUS_CH_WARTUNGSPLAN_SEITE16],
+            "wartung": [LEXUS_CH_MODELLUEBERSICHT],
             "schwachstelle": [], "rueckruf": [],
         })
     print("recommendation_state:", r.recommendation_state, "| empfehlung:", r.empfehlung)

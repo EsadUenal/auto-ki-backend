@@ -3086,6 +3086,53 @@ def _rueckwaerts_erbfaehige_indizes(satz_liste: list[str], *, modell: str | None
     return erbfaehig
 
 
+# F10-Folgefund (2026-11-02, real belegt am Lexus-Garantie-/Serviceheft,
+# tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf, Seite 15): "Lexus
+# Care-Zwischenservice: alle 15.000 km ..." nennt das Intervall, aber kein
+# Bauteil -- das folgt erst im UNMITTELBAR NÄCHSTEN Satz ("Dieser Service
+# beinhaltet einen Öl- und Filterwechsel ..."), der selbst kein Intervall
+# trägt. Anders als `_rueckwaerts_erbfaehige_indizes()`/`_RUECKREFERENZ`
+# oben geht es hier NICHT um eine FAHRZEUG-Bindung (der Folgesatz nennt
+# kein Fahrzeug, nur den zuvor benannten Vorgang) -- dieselbe Grundidee
+# (Distanz 1, echte Rückreferenz, kein Segmentbruch, keine Mehrdeutigkeit)
+# wird hier auf der BAUTEIL-Achse neu angewendet, keine zweite,
+# parallele Architektur. Generisches Sprachmuster (Demonstrativpronomen +
+# "Service/Vorgang/Leistung/Wartung" + erläuterndes Verb) -- kein
+# Fahrzeug-/Marken-/Modellbezug, keine Lexus-Sonderregel.
+_RE_VORGANG_RUECKREFERENZ = re.compile(
+    r"^\s*(?:dieser|diese|dieses)\s+(?:service|vorgang|leistung|wartung|massnahme|maßnahme|arbeit)\b"
+    r".{0,80}?\b(?:beinhaltet|umfasst|enth(?:ä|ae)lt|besteht\s+aus)\b", re.IGNORECASE)
+
+
+def _wartung_vorgangs_rueckreferenz_saetze(satz_liste: list[str]) -> list[str]:
+    """Zusätzliche, aus je ZWEI unmittelbar aufeinanderfolgenden Sätzen
+    zusammengesetzte Kandidatensätze (Original-Sätze bleiben unverändert in
+    `satz_liste` erhalten -- reine Ergänzung, kein Ersatz) für den Fall
+    "<Intervallsatz ohne Bauteil>. Dieser Service beinhaltet <Bauteil>."
+    (s. Kommentar oben). Bindet NUR, wenn:
+      * der folgende Satz mit einer generischen Vorgangs-Rückreferenz
+        beginnt (`_RE_VORGANG_RUECKREFERENZ`), UND
+      * der UNMITTELBAR VORHERIGE Satz GENAU EIN Intervall trägt --
+        mehrere Intervalle/benannte Vorgänge im selben Satz (oder gar
+        keines) bleiben mehrdeutig bzw. unbelegt, keine geratene
+        Zuordnung.
+    Segmentbrüche/Modell- oder Abschnittswechsel werden dadurch automatisch
+    respektiert: `satz_liste` ist bereits die vom Aufrufer vorgefilterte,
+    segment-/modellbewusste Liste (`_segment_kontext_saetze()`) -- zwei
+    hier benachbarte Sätze waren bereits im Originaltext benachbart UND
+    demselben Segment/Modellkontext zugeordnet."""
+    ergaenzt: list[str] = []
+    for i in range(1, len(satz_liste)):
+        folge = satz_liste[i]
+        if not _RE_VORGANG_RUECKREFERENZ.match(folge):
+            continue
+        vorheriger = satz_liste[i - 1]
+        if len(_INTERVALL.findall(vorheriger)) != 1:
+            continue
+        ergaenzt.append(f"{vorheriger} {folge}")
+    return ergaenzt
+
+
 def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
     """Enge Erkennung eines ANDEREN, explizit genannten Fahrzeug-Subjekts in
     der "beim/für den X"-Konstruktion (oder einer kontrastiven Konstruktion,
@@ -3892,6 +3939,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                                     and bool(marke or modell)),
                 segment_marker=[m for _, m in satz_markiert],
                 abgelehnt=abgelehnt, url=url, kategorie=kategorie)
+            if kategorie == "wartung":
+                # F10-Folgefund (s. `_wartung_vorgangs_rueckreferenz_saetze()`):
+                # NUR zusätzliche Kandidatensätze, die Original-Sätze bleiben
+                # unverändert in der Liste -- reine Ergänzung.
+                erlaubte_saetze = list(erlaubte_saetze) + _wartung_vorgangs_rueckreferenz_saetze(
+                    erlaubte_saetze)
         else:
             # RC-W3 (Release-Risiko 1): die obere 300-Zeichen-Grenze von
             # `_saetze()` verwarf einen realistischen, langen Multi-Claim-
