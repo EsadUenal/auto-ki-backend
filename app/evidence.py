@@ -750,6 +750,8 @@ def build_insights(
                               if fakt.kategorie == "rueckruf" else None),
                 geltungsbereich=getattr(fakt, "geltungsbereich", None),
                 geltung_fuer_fahrzeug=getattr(fakt, "geltung_fuer_fahrzeug", None),
+                herkunftsregion=getattr(fakt, "herkunftsregion", None),
+                regionale_geltung=getattr(fakt, "regionale_geltung", None),
                 # §11: Web-Evidence trägt eine echte Quellenlage (URL + Domain-
                 # Qualität + Anzahl unabhängiger Domains) und bekommt deshalb eine
                 # EIGENE Trust-Stufe — sie ist weder ein ungeprüfter DB-Satz noch
@@ -860,6 +862,18 @@ def _web_beschreibung(fakt, baujahr) -> str:
                  f"Fahrzeug{f' (Baujahr {baujahr})' if baujahr else ''} dazu gehört, ist nicht belegt.")
     elif geltung == "covered" and bereich:
         text += f" Laut Quelle betrifft das den Zeitraum {bereich}, der das Baujahr einschließt."
+    # ENFAL-Folgeauftrag ("offene regionale Gültigkeit bis zum Nutzerbericht
+    # erhalten"): EIGENE Achse neben der Baujahr-Geltung oben (`geltung`/
+    # `bereich`) -- beide können unabhängig voneinander zutreffen, deshalb ein
+    # eigenständiges `if`, kein `elif` in derselben Kette. Nennt die belegte
+    # Grundlage (`herkunftsregion`, z.B. "Domainendung .ch") UND lässt die
+    # Übertragbarkeit ausdrücklich offen -- KEINE Ungeeignetheitsaussage, KEIN
+    # geratenes Land (s. `_wartung_herkunftsregion()`).
+    if getattr(fakt, "regionale_geltung", None) == "unresolved":
+        herkunft = getattr(fakt, "herkunftsregion", None)
+        text += (f" Herkunft laut Quelle: {herkunft}. " if herkunft else " ") + (
+            "Ob diese Angabe für Ihr Fahrzeug in Deutschland gilt, ist nicht bestätigt. "
+            "Mit dem fahrzeugeigenen Wartungsplan oder einer Vertragswerkstatt abgleichen.")
     return text
 
 

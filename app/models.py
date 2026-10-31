@@ -482,6 +482,18 @@ class Insight(BaseModel):
     # für DIESES Fahrzeug belegt ist ("covered" | "unresolved").
     geltungsbereich: str | None = None
     geltung_fuer_fahrzeug: str | None = None
+    # ENFAL-Folgeauftrag ("offene regionale Gültigkeit", 2026-11): EIGENE Achse,
+    # getrennt von `geltungsbereich`/`geltung_fuer_fahrzeug` (die beschreiben
+    # BAUJAHR-Fenster, nicht Region). `herkunftsregion` benennt NUR die belegte
+    # Grundlage der Herkunftseinordnung (z.B. "Domainendung .ch (nicht .de)") —
+    # NIE ein daraus geratenes Land. `regionale_geltung` ist bewusst NUR
+    # "unresolved" (eine ausländische Herstellerdomain belegt weder Geltung
+    # noch Ungeeignetheit für das deutsche Zielfahrzeug) oder None (keine
+    # bestimmbare, von der deutschen Zieldomain abweichende Herkunft -- KEINE
+    # geratene Zuordnung). Kein "incompatible"/"invalid": eine abweichende
+    # Domainendung allein begründet nach Auftragslage niemals Ungeeignetheit.
+    herkunftsregion: str | None = None
+    regionale_geltung: str | None = None
 
 
 Insight.model_rebuild()
@@ -710,6 +722,12 @@ class WebFakt(BaseModel):
     # unabhängigen Quellen berichtet"/"...genannt") -- NIE "verifiziert".
     # None = normaler Pfad (Haupt-Fakt oder Candidate-Anreicherung).
     beleglage: str | None = None
+    # ENFAL-Folgeauftrag ("offene regionale Gültigkeit", 2026-11): s. Insight-
+    # Feld gleichen Namens -- nur hier erstmals BEFÜLLT (app/technical_research.py
+    # `_wartung_herkunftsregion()`, ausschließlich kategorie=="wartung"), von
+    # app/evidence.py unverändert an das Insight durchgereicht.
+    herkunftsregion: str | None = None
+    regionale_geltung: str | None = None
 
 
 class TechnischeRecherche(BaseModel):

@@ -365,6 +365,62 @@ def _ist_regionsfremd(url: str) -> bool:
     return any(d in dom for d in US_QUELLEN_AUSSCHLUSS)
 
 
+# ENFAL-Folgeauftrag ("offene regionale Gültigkeit bis zum Nutzerbericht
+# erhalten", 2026-11): belegter Befund (reales Dokument tools.lexus.ch,
+# Lexus-Schweiz-"Garantie- und Serviceheft") -- ein Wartungsintervall aus
+# einer HERSTELLERDOMAIN mit abweichender Landes-TLD ist weder bestätigt
+# noch widerlegt für ein deutsches Zielfahrzeug. Bisher verschwand diese
+# Unklarheit: `geltung_fuer_fahrzeug`/`geltungsbereich` (siehe Insight/
+# WebFakt) bilden ausschließlich das BAUJAHR-Fenster der Quelle ab, keine
+# Region -- eine CH-Domain ohne Baujahr-Widerspruch lief unverändert als
+# scheinbar uneingeschränkt gültig durch.
+#
+# Zielmarkt hier bewusst NUR die eigene Domainendung der Quelle selbst
+# (`.de` = Zieldomain dieses Produkts, Deutschland) -- KEIN neuer
+# Ländererkennungs-Mechanismus, KEINE Übersetzung einer TLD in einen
+# Landesnamen (das wäre genau die vom Auftrag ausgeschlossene "umfassende
+# Ländererkennung" und ein geratenes Land). Ausschliesslich eine simple,
+# bereits vorhandene PSL-Zerlegung (`_psl_teile`, s.o.) auf ein
+# ZWEIBUCHSTABIGES Public-Suffix geprüft -- das deckt echte Landes-TLDs
+# (.ch/.at/.fr/...) ab, OHNE generische/zweiteilige Suffixe (.com, .co.uk)
+# oder ICANN-Dot-Brand-Endungen (.toyota, s. `_marke_eigene_domain()`) als
+# vermeintliches Land zu werten. Ist das Suffix NICHT zweibuchstabig oder
+# keine URL bestimmbar, bleibt die Herkunft ausdrücklich UNBESTIMMT (kein
+# Flag, kein geratenes Land) -- genau die vom Auftrag verlangte, explizit
+# behandelte Grenze ("Dokumentherkunft im echten Produktpfad nicht belastbar
+# ermittelbar").
+#
+# Ergebnis ist NIE eine Ungeeignetheits-/Ausschlussaussage ("Keine
+# Marktgültigkeit allein aus einer Domainendung ableiten", Auftrag §3) --
+# nur "unresolved": die Quelle bleibt eine gültige Herstellerquelle, nur die
+# Übertragbarkeit auf das deutsche Zielfahrzeug ist ungeklärt.
+#
+# "eu" bewusst NEBEN "de" im Zielmarkt-Suffix-Set: derselbe, bereits
+# bestehende Zielmarktvertrag wie `_ZIELMARKT_ORTE` oben (dort zählen
+# "european union"/"eu"/"europe"/"europa" bereits als Zielmarkt, nicht als
+# Fremdmarkt) -- eine ".eu"-Domain ist keine Landes-TLD eines EINZELNEN
+# fremden Staates, sondern dieselbe Wiederverwendung des vorhandenen
+# Zielmarktvertrags auf Domain-Ebene (Auftrag §3: "Vorhandenen
+# Zielmarktvertrag verwenden und dokumentieren").
+_ZIEL_DOMAIN_SUFFIXE = frozenset({"de", "eu"})
+_RE_LAND_SUFFIX = re.compile(r"^[a-z]{2}$")
+
+
+def _wartung_herkunftsregion(url: str | None) -> tuple[str | None, str | None]:
+    """(herkunftsregion, regionale_geltung) für EINEN Wartungs-Web-Fakt.
+
+    NUR für kategorie=="wartung" aufgerufen (s. Aufrufer in `_extrahiere_fakten()`).
+    `None, None`, wenn keine URL vorliegt oder deren Public Suffix keine
+    zweibuchstabige Landes-TLD ist (inkl. der Zieldomains `.de`/`.eu` selbst --
+    dort gibt es keine offene Frage, kein Hinweis nötig)."""
+    if not url:
+        return None, None
+    suffix = (_psl_teile(url).suffix or "").lower()
+    if not _RE_LAND_SUFFIX.match(suffix) or suffix in _ZIEL_DOMAIN_SUFFIXE:
+        return None, None
+    return f"Domainendung .{suffix} (nicht .de)", "unresolved"
+
+
 # Herstellervertrauen-Folgeauftrag (2026-11-01, dritte Korrekturrunde): die
 # Domain-Liste `US_QUELLEN_AUSSCHLUSS` oben erkennt nur FREMDE Drittmedien,
 # nie eine Markteinführungsmeldung der HERSTELLERDOMAIN SELBST (reale
@@ -4147,10 +4203,17 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         bauteil_anzeige = e["bauteil"]
         if kategorie == "rueckruf" and len(e.get("bauteile") or []) > 1:
             bauteil_anzeige = " / ".join(e["bauteile"])
+        # ENFAL-Folgeauftrag ("offene regionale Gültigkeit"): NUR für
+        # kategorie=="wartung" (Auftragsscope, s. `_wartung_herkunftsregion()`
+        # Docstring) -- schwachstelle/rueckruf bleiben unverändert.
+        herkunftsregion, regionale_geltung = (
+            _wartung_herkunftsregion(quellen[0].url if quellen else None)
+            if kategorie == "wartung" else (None, None))
         fakten.append(WebFakt(
             kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
+            herkunftsregion=herkunftsregion, regionale_geltung=regionale_geltung,
         ))
     fakten.sort(key=lambda f: ({"hoch": 0, "mittel": 1, "niedrig": 2}[f.confidence],
                                f.bauteil or ""))
