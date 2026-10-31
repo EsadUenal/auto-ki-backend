@@ -69,8 +69,7 @@ from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
     _domain_von, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
-    curate_results, ist_amtliche_quelle, pressedomain_fremder_absatzmarkt,
-    registrable_domain, score_domain, tavily_search,
+    curate_results, ist_amtliche_quelle, registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -366,32 +365,78 @@ def _ist_regionsfremd(url: str) -> bool:
     return any(d in dom for d in US_QUELLEN_AUSSCHLUSS)
 
 
-# Herstellervertrauen-Folgeauftrag (Dot-Brand-Abschluss, 2026-10-31): die
+# Herstellervertrauen-Folgeauftrag (2026-11-01, dritte Korrekturrunde): die
 # Domain-Liste `US_QUELLEN_AUSSCHLUSS` oben erkennt nur FREMDE Drittmedien,
 # nie eine Markteinführungsmeldung der HERSTELLERDOMAIN SELBST (reale
 # Lücke, erst durch den Dot-Brand-Fix sichtbar geworden, s. global.toyota:
-# "went on sale today in Japan", Preistabelle in Yen) — ein Hersteller
-# veröffentlicht ausländische Markteinführungen oft unter seiner eigenen,
-# weltweiten Domain, nicht unter einer eigenen Länder-Subdomain. Ein Preis
-# in einer unzweideutigen FREMDEN Währung (keine Länder-/Markenliste,
-# sondern ein bereits an anderer Stelle als reales Signal genutztes Muster,
-# vgl. die "bhp" vs. "PS"-Unterscheidung in
-# test_rc_f_herstellerquelle_vollstaendiger_replay.py) belegt, dass DIESER
-# Text eine EIGENE, andere Markteinführung beschreibt — unabhängig von der
-# Vertrauensstufe der Domain. Wirkt NUR auf die Claim-Tier-Deckelung in
-# `_identitaets_claims()` (identisch zu `_ist_regionsfremd()`), NIE auf die
-# Marke/Modell-Existenzfrage und NIE auf die Domain-Vertrauensstufe selbst
-# (`_marke_eigene_domain()`/`_tier_identitaet()` bleiben unverändert) — eine
-# explizit fremdbezogene Angabe bleibt dadurch UNGEKLÄRT (web_only-Schwelle
-# nicht erreicht), wird aber nicht zu einem falschen Widerspruch.
-_RE_FREMDWAEHRUNG = re.compile(
-    r"[¥₩₹]\s?[\d.,]+|[\d][\d.,]*\s*(?:yen|won|yuan|rmb|renminbi|baht|dirhams?|"
-    r"rupien?|rupees?|riyal|ringgit|pesos?)\b", re.I)
+# "went on sale today in Japan"). Zwei vorherige Lösungsversuche waren
+# jeweils FALSCH GRANULIERT, nicht nur unvollständig:
+#   1) Eine reine Währungsheuristik (Preis in Yen/Won/...) ist trivial zu
+#      umgehen -- derselbe Satz bleibt eine Japan-Markteinführungsmeldung
+#      auch OHNE die Preiszahl. Entfernen einer Zahl darf keine neue
+#      Zielgültigkeit schaffen.
+#   2) Ein curatiertes DOMAIN-Faktum ("diese ganze Domain ist fremder
+#      Absatzmarkt") generalisiert den Geltungsbereich EINES Artikels
+#      fälschlich auf die GESAMTE Domain -- ein synthetischer Gegentest
+#      zeigte real, dass dadurch auch ein ausdrücklich für Deutschland/EU
+#      gültiger Text auf DERSELBEN Domain mitgedeckelt worden wäre.
+# Richtige Granularität: DOKUMENTBEZOGEN, genauer SATZBEZOGEN -- ob ein
+# KONKRETER Satz eine ausdrückliche Markteinführungs-/Verkaufsstart-Aussage
+# für einen ANDEREN Markt als Deutschland/EU trägt. Eine bloße Orts-/
+# Ländernennung ALLEIN (ohne Verkaufsstart-/Launch-Verb) zählt NICHT --
+# das träfe sonst z.B. jede Erwähnung eines Produktionswerks fälschlich.
+# Der Geltungsbereich bleibt auf den Anker-Satz UND ein eng begrenztes
+# Zeichenfenster danach beschränkt (deckt den real belegten Fall ab, in dem
+# Verkaufsstart-Aussage und technischer Claim in zwei aufeinanderfolgenden
+# Sätzen desselben Fließtexts stehen) und endet spätestens an einer
+# Absatzgrenze -- ein unabhängiger, späterer Abschnitt (z.B. eine getrennte,
+# ausdrücklich DE-/EU-gültige Aussage) bleibt davon unberührt. Wirkt NUR auf
+# die Claim-Tier-Deckelung in `_identitaets_claims()` (identisch zu
+# `_ist_regionsfremd()`), NIE auf die Marke/Modell-Existenzfrage und NIE auf
+# die Domain-Vertrauensstufe selbst (`_marke_eigene_domain()`/
+# `_tier_identitaet()` bleiben unverändert) — eine explizit fremdbezogene
+# Angabe bleibt dadurch UNGEKLÄRT (web_only-Schwelle nicht erreicht), wird
+# aber nicht zu einem falschen Widerspruch. Erhebt KEINEN Anspruch auf
+# Vollständigkeit (nur dieses eine, generische Satzmuster; andere Sprachen/
+# Formulierungen bleiben unerkannt -- bewusste, dokumentierte Grenze).
+_ZIELMARKT_ORTE = {"deutschland", "germany", "european union", "eu", "europe", "europa"}
+_RE_MARKTEINFUEHRUNG = re.compile(
+    r"\b(?:went on sale|launch(?:es|ed)?|on sale)\b[^.?!]{0,40}?\bin\s+"
+    r"([A-ZÄÖÜ][\wäöüß]+(?:\s+[A-ZÄÖÜ][\wäöüß]+){0,2})"
+    r"|\b(?:Markteinf(?:ü|ue)hrung|Verkaufsstart)\b[^.?!]{0,40}?\bin\s+"
+    r"([A-ZÄÖÜ][\wäöüß]+(?:\s+[A-ZÄÖÜ][\wäöüß]+){0,2})", re.I)
+# " " (Paragraph Separator) wird von `_identitaets_claims()` an jeder
+# bereits anderswo berechneten Segmentgrenze (`_saetze_mit_segmentgrenze()`)
+# in den extraktionsfähigen `text` eingefügt, bevor Sätze zu einer Zeile
+# zusammengefügt werden -- echte Absatz-/Segmentgrenzen überleben diesen
+# Join sonst nicht (reiner Leerzeichen-Join verwischt sie). `\n\s*\n` bleibt
+# als Fallback für unveränderten Rohtext (z.B. im "schwach"-Zweig).
+_SEGMENTGRENZE_SENTINEL = " "
+_RE_ABSATZGRENZE = re.compile(r"\n\s*\n|" + _SEGMENTGRENZE_SENTINEL)
+# Fenstergröße bewusst klein (Teilsatzgrenzen-Größenordnung wie an anderer
+# Stelle in diesem Modul) -- deckt "Ankersatz + unmittelbar folgender Satz"
+# ab, ohne beliebig weit in unabhängige, spätere Abschnitte zu reichen.
+_FREMDMARKT_FENSTER = 220
 
 
-def _ist_fremdwaehrungskontext(r: dict) -> bool:
-    text = f"{r.get('title') or ''} {r.get('content') or ''}"
-    return bool(_RE_FREMDWAEHRUNG.search(text))
+def _fremdmarkt_spannen(text: str) -> list[tuple[int, int]]:
+    """Zeichenbereiche in `text`, die einer ausdrücklichen Markteinführungs-
+    aussage für einen ANDEREN Markt als Deutschland/EU zugeordnet sind."""
+    text = text or ""
+    spannen: list[tuple[int, int]] = []
+    for m in _RE_MARKTEINFUEHRUNG.finditer(text):
+        ort = (m.group(1) or m.group(2) or "").strip().lower()
+        if ort in _ZIELMARKT_ORTE:
+            continue
+        fenster_ende = m.start() + _FREMDMARKT_FENSTER
+        absatz = _RE_ABSATZGRENZE.search(text, m.end())
+        ende = min(fenster_ende, absatz.start()) if absatz else fenster_ende
+        spannen.append((m.start(), min(ende, len(text))))
+    return spannen
+
+
+def _in_fremdmarkt_span(pos: int | None, spannen: list[tuple[int, int]]) -> bool:
+    return pos is not None and any(start <= pos < ende for start, ende in spannen)
 
 
 # ── Provider-Schnittstelle ───────────────────────────────────────────────────
@@ -1772,33 +1817,6 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # wirkt NUR hier (Claim-Gewichtung), NICHT auf `_identitaet_belegt()` — die
         # Existenzfrage selbst bleibt für internationale Quellen offen.
         tier = max(tier, 3)
-    elif pressedomain_fremder_absatzmarkt(url):
-        # Herstellervertrauen-Folgeauftrag (2026-10-31, Gegenfall B CONFIRMED):
-        # eine reine Inhaltsheuristik ("enthält der Text eine fremde
-        # Währung") ist trivial zu umgehen -- derselbe Pressetext bleibt
-        # eine Japan-Markteinführungsmeldung auch OHNE die Preistabelle, das
-        # Entfernen einer Zahl schafft keine neue Zielgültigkeit. Primäres,
-        # robustes Signal ist deshalb dasselbe curatierte, einzeln belegte
-        # Domain-Faktum wie `marken` selbst (`Pressedomain.fremder_
-        # absatzmarkt`, app/web_search.py) -- KEINE Länder-/Währungsliste,
-        # sondern dieselbe Sorgfaltspflicht wie für jeden anderen Eintrag in
-        # `_HERSTELLER_PRESSEDOMAINS`. Eine echte Herstellerdomain bleibt
-        # dabei für Marke/Modell-Existenz und für ihre eigene Vertrauens-
-        # stufe unverändert Tier 1 -- nur die Claim-Gewichtung für DIESE
-        # Domain wird gedeckelt, bis ein eigener Übertragbarkeitsbeleg
-        # vorliegt (noch keiner -- s. Ausdruck "Ausländische Quellen sind
-        # nicht pauschal ungeeignet", eine spätere, einzeln belegte
-        # Korrektur dieses Flags bleibt möglich).
-        tier = max(tier, 3)
-    elif _ist_fremdwaehrungskontext(r):
-        # Zusätzliches, schwächeres Signal (Herstellervertrauen-Folgeauftrag):
-        # fängt denselben Fall bei einer NOCH NICHT curatierten fremden
-        # Pressedomain auf, bis sie wie oben einzeln belegt eingetragen ist.
-        # Dieselbe Deckelung, aber inhaltsbasiert statt domainbasiert -- eine
-        # Quelle kann eine echte, vertrauenswürdige Herstellerdomain sein
-        # (Tier 1 bleibt für Marke/Modell-Existenz unverändert) und trotzdem
-        # in GENAU diesem Text eine fremde Markteinführung beschreiben.
-        tier = max(tier, 3)
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe -- AUSSER die
@@ -1855,7 +1873,25 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             [s for s, _ in satz_mit_grenze], marke=ziel.get("marke"), modell=ziel.get("modell"),
             titel_stark=True, segment_marker=[g for _, g in satz_mit_grenze],
             url=url, kategorie="identitaet")
-        text = " ".join(lokale_saetze)
+        # Herstellervertrauen-Folgeauftrag (2026-11-01): `lokale_saetze` ist
+        # eine gefilterte Teilfolge von `satz_mit_grenze` ohne eigene
+        # Grenzinformation -- fuer `_fremdmarkt_spannen()` (satzuebergreifende
+        # Vererbung NUR innerhalb desselben Absatzes/Segments, siehe dort)
+        # wird dieselbe, bereits berechnete Segmentgrenze hier als
+        # unsichtbares Trennzeichen in `text` zurueckgegeben, statt sie zu
+        # verwerfen. Reiner Formatierungs-Marker, kein eigener Claim-Text.
+        _rest = list(satz_mit_grenze)
+        _text_teile: list[str] = []
+        for i, s in enumerate(lokale_saetze):
+            while _rest and _rest[0][0] != s:
+                _rest.pop(0)
+            neue_grenze = bool(_rest and _rest[0][1]) if _rest else False
+            if _rest:
+                _rest.pop(0)
+            if i > 0 and neue_grenze:
+                _text_teile.append(_SEGMENTGRENZE_SENTINEL)
+            _text_teile.append(s)
+        text = " ".join(_text_teile)
     baujahr = ziel.get("baujahr")
     claims: list[dict] = []
 
@@ -1878,10 +1914,17 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             and _im_zeitraum(baujahr, _datenblatt_fenster) is False)
         else None)
 
-    def add(feld, wert, **extra):
+    # Satzbezogen (nicht domain- oder dokumentweit, s. Kommentar bei
+    # `_fremdmarkt_spannen()`): am bereits ausgerichteten `text` geprüft --
+    # derselbe Text, gegen den die folgenden Claim-Regexe laufen, also
+    # dieselben Zeichenpositionen wie die `m.start()`-Übergaben unten.
+    _fremdmarkt = _fremdmarkt_spannen(text)
+
+    def add(feld, wert, *, pos=None, **extra):
         if _verwurf_grund_datenblatt and feld not in ("generation", "generation_nummer"):
             extra.setdefault("verworfen", _verwurf_grund_datenblatt)
-        claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": tier, "url": url, **extra})
+        eff_tier = max(tier, 3) if _in_fremdmarkt_span(pos, _fremdmarkt) else tier
+        claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": eff_tier, "url": url, **extra})
 
     # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von
     # genau dieser Motorisierung: ihr Generationscode wiegt eine Stufe mehr.
@@ -1944,13 +1987,13 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             if passt is not False:
                 add("generation_nummer", f"{int(nr)}. Generation", zeitraum=z, jahr_belegt=passt is True)
     for m in _RE_PS.finditer(text):
-        add("horsepower", int(m.group(1)))
+        add("horsepower", int(m.group(1)), pos=m.start())
     if _KW_PS_KONVENTION_BELEGT.search(text):
         for m in _RE_KW_PS_KLAMMER.finditer(text):
             kw, ps_kandidat = int(m.group(1)), int(m.group(2))
             erwartet = kw * _KW_ZU_PS
             if abs(ps_kandidat - erwartet) <= max(2.0, erwartet * 0.01):
-                add("horsepower", ps_kandidat)
+                add("horsepower", ps_kandidat, pos=m.start())
     for m in _RE_HUBRAUM.finditer(text):
         if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
             continue
@@ -1959,15 +2002,17 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # nur wenn direkt ein Bruchstrich folgt (die Verbrauchseinheit selbst).
         if m.group(0).rstrip().lower().endswith("l") and text[m.end(0):m.end(0) + 1] == "/":
             continue
-        add("displacement", m.group(1).replace(",", "."))
+        add("displacement", m.group(1).replace(",", "."), pos=m.start())
     for m in _RE_HUBRAUM_CCM.finditer(text):
-        add("displacement", _ccm_als_liter(m.group(1)))
+        add("displacement", _ccm_als_liter(m.group(1)), pos=m.start())
     for wert, rx in _KRAFTSTOFF_CLAIM:
-        if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
-            add("fuel", wert)
+        for m in rx.finditer(text):
+            if not _verneint_im_teilsatz(text, m.start()):
+                add("fuel", wert, pos=m.start())
     for wert, rx in _ANTRIEB_CLAIM:
-        if any(not _verneint_im_teilsatz(text, m.start()) for m in rx.finditer(text)):
-            add("drivetrain", wert)
+        for m in rx.finditer(text):
+            if not _verneint_im_teilsatz(text, m.start()):
+                add("drivetrain", wert, pos=m.start())
     for m in _RE_ANTRIEBSART_FELD.finditer(text):
         wert_roh = m.group(1).lower()
         for praefix, achse in (("hinterrad", "Heck"), ("heck", "Heck"),
@@ -1975,13 +2020,13 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                                ("allrad", "Allrad")):
             if wert_roh.startswith(praefix):
                 if not _verneint_im_teilsatz(text, m.start()):
-                    add("drivetrain", achse)
+                    add("drivetrain", achse, pos=m.start())
                 break
     for m in _RE_KRAFTSTOFFART_FELD.finditer(text):
         wert_roh = m.group(1).lower().replace(" ", "")
         wert = "diesel" if wert_roh == "diesel" else "benzin"
         if not _verneint_im_teilsatz(text, m.start()):
-            add("fuel", wert)
+            add("fuel", wert, pos=m.start())
     # Root Cause 5 (Stufe 2): Elektrifizierungsgrad NUR aus denselben
     # ausdrücklichen Wörtern, die app/kraftstoff_powertrain.py bereits für
     # Nutzer-/Inseratstext verlangt ("reiner Verbrenner"/"ICE", "Mild-Hybrid",
@@ -1996,14 +2041,14 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         if _verneint_im_teilsatz(text, m.start()):
             continue
         gaenge = m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3)
-        add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None)
+        add("transmission", "manuell", detail=f"{gaenge}-Gang" if gaenge else None, pos=m.start())
     _automatik_stufen_spans: list[tuple[int, int]] = []
     for m in _RE_GETRIEBE_AUTO.finditer(text):
         _automatik_stufen_spans.append(m.span())
         if _verneint_im_teilsatz(text, m.start()):
             continue
         stufen = (m.group(1) or _ZAHLWORT.get(_norm(m.group(2) or "")) or m.group(3) or m.group(4))
-        add("transmission", "automatik", detail=f"{stufen}-Stufen" if stufen else None)
+        add("transmission", "automatik", detail=f"{stufen}-Stufen" if stufen else None, pos=m.start())
     for m in _RE_AUTOMATIK_ALLEIN.finditer(text):
         # Bereits über die staerkere Stufenangabe erfasst (z.B. "Achtstufen-
         # Automatik") -- nicht als zweiten, inhaltsgleichen Claim derselben
@@ -2015,13 +2060,13 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         vor = text[max(0, m.start() - 30):m.start()]
         if _AUTOMATIK_FREMDKONTEXT.search(vor):
             continue
-        add("transmission", "automatik")
+        add("transmission", "automatik", pos=m.start())
     for m in _RE_MOTORCODE_CLAIM.finditer(text):
         if not _ist_motorcode_wert(m.group(1), text[m.start(1):]):
             continue
         if _verneint_im_teilsatz(text, m.start()):
             continue
-        add("engine_code", m.group(1).upper())
+        add("engine_code", m.group(1).upper(), pos=m.start())
     for m in _RE_MOTORCODE_KLAMMER_HUBRAUM.finditer(text):
         if _TYPCODE_ROLLENWORT.search(text[max(0, m.start(1) - 40):m.start(1)]):
             continue
@@ -2029,7 +2074,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         if _verneint_im_teilsatz(text, m.start()):
             continue
-        add("engine_code", m.group(1).upper())
+        add("engine_code", m.group(1).upper(), pos=m.start())
     return claims
 
 
