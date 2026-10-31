@@ -178,6 +178,30 @@ check("Scope: dieselbe Motoroel-Aussage wird fuer 'schwachstelle' NICHT als Fakt
       len(fakten_sw) == 0, f"fakten={fakten_sw} abgelehnt={abgelehnt_sw}")
 
 
+print("\n" + "=" * 78)
+print("I) F10-Folgefund (Lexus Schweiz Garantie-/Serviceheft, tools.lexus.ch): "
+      "'Öl- und Filterwechsel' bleibt vorher unerkannt")
+print("=" * 78)
+from app.technical_research import _wartung_vokabular, _norm
+
+_oel_filter_satz = _norm("Dieser Service beinhaltet einen Öl- und Filterwechsel.")
+check("I1) 'Öl- und Filterwechsel' normalisiert zu 'oel und filterwechsel' "
+      "(das zusammenhaengende Teilwort 'oelwechsel' kommt darin NICHT vor)",
+      "oelwechsel" not in _oel_filter_satz and "oel und filterwechsel" in _oel_filter_satz,
+      _oel_filter_satz)
+check("I2) die neue Vokabular-Ergaenzung erkennt die Kurzform trotzdem als Motoroel-Bauteil",
+      any(m in _oel_filter_satz for m in _wartung_vokabular()
+          if _wartung_vokabular()[m] == "motoroel" and m in _oel_filter_satz))
+
+_lexus_ch_oel_filter = treffer(
+    "https://www.repareo.de/lexus-rc-f-service", "Lexus RC F Service",
+    "Beim Lexus RC F wird alle 15.000 km ein Öl- und Filterwechsel durchgefuehrt.")
+fakten_i, abgelehnt_i, _ = _wartung_candidate_fakten(
+    [_lexus_ch_oel_filter], marke="Lexus", modell="RC F", generation=None, motor=None)
+check("I3) dieselbe Aussage als vollstaendiger Satz (Intervall + Kurzform im selben Satz) "
+      "erzeugt jetzt einen Kandidaten statt 'no_component'",
+      "no_component" not in _gruende(abgelehnt_i), str(abgelehnt_i))
+
 print("\n" + "=" * 60)
 if _FEHLER:
     print(f"{len(_FEHLER)} FEHLER:")

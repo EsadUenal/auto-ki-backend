@@ -2713,6 +2713,16 @@ def _bauteil_vokabular() -> dict[str, str]:
 # Erweiterung. Kein markenspezifischer Begriff.
 _WARTUNG_VOKABULAR_ERWEITERUNG: dict[str, str] = {
     "motoroel": "motoroel", "oelwechsel": "motoroel", "motorenoel": "motoroel",
+    # F10-Folgefund (2026-11-01, realer Beleg: Lexus Schweiz "Garantie- und
+    # Serviceheft", tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf, Seite
+    # 15): "Öl- und Filterwechsel" ist eine im Deutschen gängige, korrekte
+    # Kurzform fuer "Ölwechsel und Filterwechsel" (ein gemeinsames Suffix
+    # wird nur einmal genannt) -- `_norm()` zerlegt das aber zu "oel und
+    # filterwechsel", wodurch das zusammenhaengende Teilwort "oelwechsel"
+    # NIE als Substring vorkommt. Reines Sprachmuster, keine Fahrzeug-/
+    # Markensonderregel -- betrifft jede Quelle mit dieser gaengigen
+    # Kurzform, unabhaengig von Marke/Modell.
+    "oel und filterwechsel": "motoroel",
 }
 
 
