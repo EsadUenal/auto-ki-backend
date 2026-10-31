@@ -1867,6 +1867,17 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # wirkt NUR hier (Claim-Gewichtung), NICHT auf `_identitaet_belegt()` — die
         # Existenzfrage selbst bleibt für internationale Quellen offen.
         tier = max(tier, 3)
+    # ENFAL-Folgeauftrag ("Generationsbelege nach belegter Modellfamilien-
+    # Zugehörigkeit bewerten", 2026-11): die EIGENTLICHE Domain-Qualität
+    # (inkl. der Regionsfremd-Anpassung oben) VOR der pauschalen "schwach"-
+    # Abwertung unten -- NUR für den Praefix-Pfad weiter unten verwendet
+    # (`_modellfamilie_zugehoerigkeit_belegt()`), der die Zuordnung zum
+    # Zielmodell bereits EIGENSTAENDIG und belastbar prueft (Absatzgrenze/
+    # Fremdmarke/Verneinung, keine reine Titel-/Namensnaehe). Fuer alle
+    # ANDEREN Claim-Felder (PS/Hubraum/Kraftstoff/...) bleibt die Abwertung
+    # unten unveraendert wirksam -- siehe deren Aufruf von `add()` ohne
+    # `tier_override`.
+    tier_vor_schwach_abwertung = tier
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe -- AUSSER die
@@ -1970,10 +1981,17 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # dieselben Zeichenpositionen wie die `m.start()`-Übergaben unten.
     _fremdmarkt = _fremdmarkt_spannen(text)
 
-    def add(feld, wert, *, pos=None, **extra):
+    def add(feld, wert, *, pos=None, tier_override=None, **extra):
         if _verwurf_grund_datenblatt and feld not in ("generation", "generation_nummer"):
             extra.setdefault("verworfen", _verwurf_grund_datenblatt)
-        eff_tier = max(tier, 3) if _in_fremdmarkt_span(pos, _fremdmarkt) else tier
+        # `tier_override`: NUR vom Praefix-Pfad unten gesetzt, wenn
+        # `_modellfamilie_zugehoerigkeit_belegt()` die Zuordnung bereits
+        # eigenstaendig bestaetigt hat (s. Kommentar bei
+        # `tier_vor_schwach_abwertung`) -- kein anderer Aufrufer nutzt dies,
+        # alle uebrigen Claims (PS/Hubraum/Kraftstoff/...) bleiben exakt wie
+        # bisher an die (ggf. abgewertete) `tier`-Variable gebunden.
+        basis_tier = tier_override if tier_override is not None else tier
+        eff_tier = max(basis_tier, 3) if _in_fremdmarkt_span(pos, _fremdmarkt) else basis_tier
         claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": eff_tier, "url": url, **extra})
 
     # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von
@@ -2019,15 +2037,25 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                 continue
             exakte_codes.add(g["code"])
             passt = _im_zeitraum(baujahr, g["zeitraum"])
+            # `tier_override=tier_vor_schwach_abwertung`: dieser Code hat die
+            # eigenstaendige Zugehoerigkeitspruefung direkt oberhalb bereits
+            # bestanden -- die pauschale "schwach"-Abwertung (Titel nennt nur
+            # die Modellfamilie) ist hier kein zusaetzliches Risiko mehr,
+            # sie wuerde eine bereits belastbar zugeordnete Quelle doppelt
+            # bestrafen. Betrifft NUR generation/generation_nummer dieser
+            # EINEN, einzeln bestaetigten Codefundstelle -- keine andere
+            # Claim-Art, keine andere Quelle, keine pauschale Ausnahme.
             if passt is False:
-                add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"])
+                add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"],
+                    tier_override=tier_vor_schwach_abwertung)
                 continue
             add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
                 kontext=g["kontext"], generationsnummer_strukturell=bool(g["nummer"]),
-                rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus)
+                rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus,
+                tier_override=tier_vor_schwach_abwertung)
             if g["nummer"]:
                 add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
-                    jahr_belegt=passt is True)
+                    jahr_belegt=passt is True, tier_override=tier_vor_schwach_abwertung)
     for m in _RE_GEN_NUMMER.finditer(text):
         nr = m.group(1) or _ORDINAL.get(_norm(m.group(2)).replace(" ", ""))
         if nr:
