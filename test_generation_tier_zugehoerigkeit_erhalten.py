@@ -126,6 +126,30 @@ check("E2) VW-PS-Claim bleibt ebenso auf Tier 3 wie im Lexus-Fall",
       bool(andere_e) and all(c["tier"] == 3 for c in andere_e if c["feld"] == "horsepower"),
       str(andere_e))
 
+# ── F) Derselbe Fall MIT explizitem Fremdmarkt (US_QUELLEN_AUSSCHLUSS) ─────
+# ENFAL-Abschlussauftrag ("Generations-Tier-Fix abschliessend absichern"):
+# `tier_vor_schwach_abwertung` wird NACH der Regionsfremd-Anpassung
+# (`_ist_regionsfremd()`, Zeile ~1858) erfasst -- der Praefix-Pfad darf eine
+# US-Quelle also NICHT ueber die Regionsfremd-Deckelung hinaus aufwerten,
+# selbst wenn `_modellfamilie_zugehoerigkeit_belegt()` die Zuordnung
+# bestaetigt. motortrend.com steht in `US_QUELLEN_AUSSCHLUSS`
+# (app/web_search.py) und hat KEINEN eigenen Fachmedien-Bonus -- ihr
+# natuerliches Tier waere ohne Fremdmarkt-Anpassung bereits 3; dieser Fall
+# beweist trotzdem die REIHENFOLGE im Code (Fremdmarkt-Deckelung wirkt auf
+# `tier`, BEVOR `tier_vor_schwach_abwertung` diesen Wert festhaelt), nicht
+# nur ein zufaelliges Zahlenergebnis.
+US_QUELLE = treffer(
+    "https://www.motortrend.com/cars/lexus/rc/",
+    "Lexus RC (1. Generation) (XC1) Overview (from 2015)",
+    "Lexus RC (1. Generation) (XC1) Overview (from 2015). The Lexus RC F "
+    "makes 477 hp.")
+gen_f = generation_claims("Lexus", "RC F", 2017, "5.0 V8", US_QUELLE)
+check("F1) US-Quelle (US_QUELLEN_AUSSCHLUSS) bleibt trotz bestaetigter "
+      "Zugehoerigkeit auf Tier 3 begrenzt -- die Regionsfremd-Deckelung wird "
+      "vom tier_override NICHT umgangen",
+      bool(gen_f) and all(c["tier"] == 3 for c in gen_f if not c.get("verworfen")),
+      str(gen_f))
+
 print()
 if _FEHLER:
     print(f"FEHLER: {len(_FEHLER)} Check(s) fehlgeschlagen: {_FEHLER}")
