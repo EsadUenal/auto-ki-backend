@@ -381,27 +381,38 @@ async def test_g_mehrere_generationen_jahresfenster_entscheidet():
           "2017 -> UXC1 (2014-2020), nicht UXC2 (seit 2024)", g == "UXC1", f"generation={g!r}")
 
 
-async def test_h_xc1_uxc1_beziehung_ungeklaert_kein_konsens():
+async def test_h_xc1_uxc1_zeitlich_vertraeglich_nachweisweg_b():
+    # KORRIGIERT (ENFAL-Folgeauftrag "Generation über drei belastbare
+    # Nachweiswege auflösen", 2026-11): die vorige Fassung dieses Tests ging
+    # davon aus, dass UNKNOWN "in BEIDEN Faellen (echter Widerspruch ODER
+    # ungeklaerte Aequivalenz) die korrekte Ausgabe" sei -- das vermischte
+    # genau zwei fachlich UNTERSCHIEDLICHE Dinge: "zwei Codes, deren
+    # Zeitfenster sich NACHWEISLICH ausschliessen" (echter Widerspruch,
+    # bleibt UNKNOWN) und "zwei Codes ohne jeden belegten Ausschlussgrund,
+    # von denen mindestens einer das Zielbaujahr tatsaechlich bestaetigt"
+    # (KEIN belegter Widerspruch -- die vorige Fassung verwarf das trotzdem,
+    # nur weil die Zeichenketten verschieden sind).
+    #
     # REALE Quellen (ADAC + carwiki.de + auto-motor-und-sport.de) zusammen:
-    # ADAC nennt "UXC1", carwiki.de/AMS nennen "XC1" -- zwei UNTERSCHIEDLICHE
-    # Codestrings. WICHTIG (Gegenpruefung, zweite Runde): das ist NICHT
-    # dasselbe wie ein NACHGEWIESENER fachlicher Widerspruch (unterschiedliche
-    # tatsaechliche Generationen) -- begrenzte oeffentliche Recherche
-    # (car.info, lexusclub.cz, carspace.me, manuals.cz, what-breaks.com, alle
-    # unabhaengig von ADAC/carwiki.de) nennt fuer dieselbe RC-Baureihe
-    # (2014-2025, RC 200t/300h/350/F gemeinsam) durchgehend "XC10" -- ein
-    # DRITTER Code, der weder zu "XC1" noch zu "UXC1" exakt passt. Eine
-    # plausible Erklaerung (ADAC/carwiki.de teilen vermutlich eine deutsche
-    # Fahrzeugdaten-Quelle, die die Endziffer "0" abschneidet; "U" waere dann
-    # ein Antriebsvariante-Praefix wie bei rolling.hu "USC10") ist NICHT durch
-    # eine Hersteller-/Homologationsquelle belegt -- bleibt also ebenso
-    # unbewiesen wie ein echter Widerspruch. Die Beziehung ist UNGEKLAERT,
-    # nicht nachgewiesen widerspruechlich. Das bestehende `konsens()` traegt
-    # diese Unterscheidung nicht explizit (es erkennt nur "zwei verschiedene
-    # Werte, vergleichbares Gewicht" -> Konflikt) -- das genuegt hier trotzdem:
-    # UNKNOWN ist in BEIDEN Faellen (echter Widerspruch ODER ungeklaerte
-    # Aequivalenz) die korrekte, konservative Ausgabe; keine neue Architektur
-    # noetig, nur diese Praezisierung im Reporting/Kommentar.
+    # ADAC nennt "UXC1" (kein Zeitfenster geparst -- MM/JJ-Format "12/14 -
+    # 06/25" wird von `zeitraum()` nicht erkannt, separat bekannte, hier
+    # nicht ursaechliche Grenze), carwiki.de nennt "XC1" (ebenfalls kein
+    # Zeitfenster), auto-motor-und-sport.de nennt EBENFALLS "XC1" MIT einem
+    # tatsaechlich geparsten, das Zielbaujahr 2017 bestaetigenden Zeitfenster
+    # ("ab 2015", zeitraum=(2015, None)). Keine der drei Quellen widerspricht
+    # einer anderen zeitlich -- es gibt keinen belegten Ausschluss, nur
+    # unterschiedliche Schreibweisen UND ein belegtes, bestaetigendes
+    # Zeitfenster. `_generation_cluster_ableiten()` (Nachweisweg B) fuehrt
+    # "UXC1"/"XC1" deshalb zu EINEM Cluster zusammen (Anzeigewert "XC1",
+    # verankert am belegten AMS-Zeitfenster) -- OHNE die Codes selbst
+    # gleichzusetzen: `generation_cluster` bewahrt BEIDE Schreibweisen.
+    #
+    # Offen bleibt WEITERHIN (nicht Gegenstand dieses Tests, nicht durch
+    # Nachweisweg B beruehrt): ob ein DRITTER, bei begrenzter oeffentlicher
+    # Recherche (car.info, lexusclub.cz, carspace.me, manuals.cz,
+    # what-breaks.com) gefundener Code "XC10" zu demselben oder einem
+    # ANDEREN Cluster gehoert -- dieser dritte Code steht in KEINER der drei
+    # Fixtures hier und fliesst deshalb in dieses Ergebnis nicht ein.
     quelle = [
         treffer("https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/lexus/rc/xc1/339429/",
                 "Lexus RC F Ultimate Edition Automatik (08/24 - 06/25): Technische Daten | ADAC",
@@ -421,10 +432,14 @@ async def test_h_xc1_uxc1_beziehung_ungeklaert_kein_konsens():
                 "der Rennstrecke? LEXUS LC 500 UND RC F: V8-Sportler auf Abschiedstour."),
     ]
     ident, abgelehnt, _ = await _ident("Lexus", "RC F", 2017, "5.0 V8", quelle)
-    check("H) ADAC (UXC1) vs. carwiki.de+AMS (XC1) zusammen -> Beziehung "
-          "ungeklaert, generation bleibt UNKNOWN (kein erfundener Gleichsetzungswert)",
-          ident.belegt is True and ident.generation is None,
-          f"belegt={ident.belegt} generation={ident.generation!r}")
+    check("H) ADAC (UXC1) + carwiki.de/AMS (XC1), kein belegter Zeitwiderspruch, "
+          "AMS-Zeitfenster bestaetigt 2017 -> Nachweisweg B leitet 'XC1' ab, "
+          "Cluster bewahrt beide Schreibweisen",
+          ident.belegt is True and ident.generation == "XC1"
+          and set(ident.generation_cluster) == {"UXC1", "XC1"}
+          and ident.generation_nachweisweg == "abgeleitet",
+          f"belegt={ident.belegt} generation={ident.generation!r} "
+          f"cluster={ident.generation_cluster!r} nachweisweg={ident.generation_nachweisweg!r}")
 
 
 print("\n" + "=" * 78)
@@ -456,7 +471,7 @@ async def _run_all():
     await test_e_navigationsblock_absatzgrenze_verwirft()
     await test_f_explizite_verneinung_verwirft()
     await test_g_mehrere_generationen_jahresfenster_entscheidet()
-    await test_h_xc1_uxc1_beziehung_ungeklaert_kein_konsens()
+    await test_h_xc1_uxc1_zeitlich_vertraeglich_nachweisweg_b()
     await test_i_gt3_haertung_unberuehrt()
     await test_j_golf_r32_haertung_unberuehrt()
     await test_k_zwei_modellfamilien_feldlabel_selber_absatz()

@@ -373,6 +373,18 @@ class VehicleIdentity:
                 # wenn keine Domainnamen vorliegen.
                 if eintrag.get("domain_namen"):
                     neu["domain_namen"] = sorted(eintrag["domain_namen"])
+                # ENFAL-Folgeauftrag ("Generation über drei belastbare
+                # Nachweiswege auflösen", 2026-11): Herkunft und Ausschluss-
+                # Grundlagen nachvollziehbar speichern (Auftrag §4) --
+                # NUR für "generation", NUR additiv, ändert nichts an der
+                # bestehenden Bestätigungslogik oben.
+                if feld == "generation":
+                    if getattr(identitaet, "generation_nachweisweg", None):
+                        neu["nachweisweg"] = identitaet.generation_nachweisweg
+                    if getattr(identitaet, "generation_cluster", None):
+                        neu["cluster"] = list(identitaet.generation_cluster)
+                    if getattr(identitaet, "generation_nutzerabgleich", None):
+                        neu["nutzerabgleich"] = identitaet.generation_nutzerabgleich
                 self.field_evidence[feld] = neu
                 continue
             vorhanden = getattr(self, feld, None)
