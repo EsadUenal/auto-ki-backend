@@ -289,6 +289,18 @@ def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
     teile = _psl_teile(url_oder_domain)
     if teile.domain and teile.domain.replace("-", "") == marke_norm:
         return True
+    # F9-Folgefix (RC-F, 2026-10-31): ICANN-Dot-Brand-Endungen ("global.toyota",
+    # ggf. ".bmw"/".mercedes-benz"/...) tragen den Markennamen selbst in der
+    # TLD statt in einem Label davor -- `_psl_teile("global.toyota")` liefert
+    # domain="global", suffix="toyota", der obige Label-Vergleich trifft also
+    # NIE. Eine solche Endung ist beim jeweiligen Markenbetreiber als
+    # geschlossene Registry geführt (nur der Hersteller selbst kann darunter
+    # registrieren) -- derselbe generische Markenabgleich wie oben, nur gegen
+    # die TLD statt gegen das Label, keine neue Markenliste. Real belegt:
+    # Toyota Motor Corporations offizielle Pressemitteilung vom 23.10.2014
+    # liegt unter genau dieser Domain (global.toyota/en/detail/4101939).
+    if teile.suffix and teile.suffix.replace("-", "") == marke_norm:
+        return True
     # F17-Fix (RC-F-Ursachenanalyse, 2026-10-25): eigenständig benannte,
     # einzeln belegte Presse-Domain (siehe `app.web_search._HERSTELLER_
     # PRESSEDOMAINS`) -- dieselbe, einzige Zuordnung wie in `score_domain()`/

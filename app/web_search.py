@@ -183,6 +183,19 @@ _HERSTELLER_PRESSEDOMAINS: dict[str, frozenset[str]] = {
     # vom 01.12.2016 ("Lexus RC F, 5,0-Liter-V8, 477 PS, Achtstufen-Sport-
     # Automatik").
     "toyota-media.de": frozenset({"toyota", "lexus"}),
+    # F9-Folgefix (RC-F, 2026-10-31): offizielle globale Newsroom-Domain von
+    # Toyota Motor Corporation (ICANN-Dot-Brand-Endung ".toyota", registrable
+    # domain "global.toyota") -- fuehrt ebenfalls originaere Lexus-Pressetexte,
+    # belegt am real abrufbaren Pressetext vom 23.10.2014 ("Lexus Launches
+    # All-new 'RC F' High-performance Coupe in Japan", global.toyota/en/
+    # detail/4101939, mit eigener "RC F Engine Key Specifications"-Tabelle:
+    # Motorcode 2UR-GSE, 4.968 ccm, 351 kW/477 PS, Rear-wheel drive). Der neue
+    # generische Dot-Brand-Abgleich in `_marke_eigene_domain()` (app/
+    # technical_research.py) erkennt diese Endung bereits fuer die Anfrage-
+    # marke "Toyota" selbst -- fuer die Submarke "Lexus" (kein eigenes
+    # ".lexus") bleibt dieselbe, bereits bestehende explizite Zuordnung wie
+    # bei "toyota-media.de" noetig, keine zweite, abweichende Regel.
+    "global.toyota": frozenset({"toyota", "lexus"}),
 }
 
 

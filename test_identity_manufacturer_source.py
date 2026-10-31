@@ -89,6 +89,33 @@ for marke, domain in _BEKANNTE_MARKEN:
 check("Zusatz: _tier('lexus.de'-URL) OHNE Markenkontext bleibt unveraendert (3, wie vor dem Fix)",
       _tier("https://www.lexus.de/rc-f") == 3)
 
+# G) F9-Folgefix (RC-F-Identitätsaufgabe, 2026-10-31): ICANN-Dot-Brand-TLD
+# ("global.toyota") trägt den Markennamen in der Endung statt in einem Label
+# davor -- `_psl_teile` liefert dafür domain="global", suffix="toyota". Der
+# alte Label-Vergleich allein hätte das NIE erkannt (real belegt: Toyota
+# Motor Corporations offizielle Pressemitteilung vom 23.10.2014 zur
+# Lexus-RC-F-Markteinführung liegt genau dort,
+# global.toyota/en/detail/4101939).
+check("G) global.toyota / Marke 'Toyota' -> _marke_eigene_domain() erkennt die Dot-Brand-Endung",
+      _marke_eigene_domain("global.toyota", "Toyota") is True)
+check("G) global.toyota / Marke 'Toyota' -> _tier_identitaet Tier 1",
+      _tier_identitaet("https://global.toyota/en/detail/4101939", "Toyota") == 1)
+
+# H) Submarke ohne eigene Dot-Brand-Endung (kein ".lexus"): dieselbe,
+# bereits bestehende explizite Pressedomain-Zuordnung wie bei
+# "toyota-media.de" (app.web_search._HERSTELLER_PRESSEDOMAINS) greift auch
+# für die Dot-Brand-Endung des Mutterkonzerns -- real belegt (dieselbe
+# Pressemitteilung nennt ausdrücklich den Lexus RC F).
+check("H) global.toyota / Submarke 'Lexus' -> über _HERSTELLER_PRESSEDOMAINS erkannt",
+      _marke_eigene_domain("global.toyota", "Lexus") is True)
+check("H) global.toyota / Submarke 'Lexus' -> _tier_identitaet Tier 1",
+      _tier_identitaet("https://global.toyota/en/detail/4101939", "Lexus") == 1)
+
+# I) Sanity: eine unbeteiligte Marke wird durch die Dot-Brand-Endung NICHT
+# fälschlich als deren eigene Domain erkannt (keine pauschale Lockerung).
+check("I) global.toyota / unbeteiligte Marke 'Honda' -> KEIN Treffer",
+      _marke_eigene_domain("global.toyota", "Honda") is False)
+
 print("\n" + "=" * 60)
 if _FEHLER:
     print(f"{len(_FEHLER)} FEHLER:")
