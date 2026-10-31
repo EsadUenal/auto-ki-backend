@@ -1,27 +1,27 @@
 """
-ENFAL-Folgeauftrag ("offene regionale Gültigkeit bis zum Nutzerbericht
-erhalten", 2026-11): dauerhafte, gezielte Regression für die additive
-Evidenzmodell-Erweiterung `WebFakt.herkunftsregion` / `WebFakt.regionale_geltung`
-(app/models.py) und deren Durchreichung bis in den sichtbaren Bericht
-(app/technical_research.py:`_wartung_herkunftsregion()`,
-app/evidence.py:`_web_beschreibung()`).
+ENFAL-Folgeauftrag ("regionale Evidenz aus dem Dokument statt aus der
+Domainendung", 2026-11): KORRIGIERT eine vorige, fehlerhafte Fassung dieser
+Regression. Die vorige Fassung leitete `WebFakt.herkunftsregion`/
+`regionale_geltung` aus der Domainendung der Quelle ab (z.B. "Domainendung
+.ch (nicht .de)") -- eine ccTLD belegt aber WEDER den regionalen
+Dokumentkontext NOCH dessen Übertragbarkeit; auch `.de`/`.eu` belegen keine
+Zielgültigkeit (eine EU-Domainregistrierung ist keine Aussage über
+europaweit gültige Wartungsvorschriften). Diese Fassung prüft stattdessen
+NUR noch den tatsächlichen Dokumenttext (`_wartung_marktvorbehalt()`,
+app/technical_research.py) -- die Domain spielt keine Rolle mehr.
 
-Nachgewiesene Lücke (Kontextübergabe 2026-10-31, real am Dokument
-tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf, "Lexus Garantie- und
-Serviceheft", Schweiz): ein Wartungsintervall aus einer vertrauten
-Herstellerdomain mit abweichender Landes-TLD lief bisher UNEINGESCHRÄNKT
-gültig durch den Bericht -- `geltung_fuer_fahrzeug`/`geltungsbereich` bilden
-ausschließlich das BAUJAHR-Fenster der Quelle ab, keine Region.
-
-NUR kategorie=="wartung" (Auftragsscope). Domain-Herkunft wird NIE zu einer
-Ungeeignetheitsaussage -- nur "unresolved" (Quelle bleibt gültig, nur die
-Übertragbarkeit auf das deutsche Zielfahrzeug ist ungeklärt).
+Originalbeleg (Seite 4, "BETROFFENE MODELLE", Lexus-Schweiz-"Garantie- und
+Serviceheft", tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf): "RC 300h
+(Oktober 2015 ~) RC F (September 2014 ~) LC 500 (März 2017 ~) FALLS FÜR
+IHREN MARKT ZUTREFFEND." -- das Dokument schränkt seine eigene Modellliste
+AUSDRÜCKLICH mit einem Marktvorbehalt ein. Das ist der einzige erkannte,
+eng gefasste Beleg -- KEINE Länder-/Spracherkennung.
 
     python scripts/test_isolated.py test_wartung_regionale_geltung.py
 """
 from app.evidence import _web_beschreibung
 from app.models import WebFakt
-from app.technical_research import _extrahiere_fakten, _wartung_herkunftsregion
+from app.technical_research import _extrahiere_fakten, _wartung_marktvorbehalt
 
 _FEHLER: list[str] = []
 
@@ -36,77 +36,91 @@ def treffer(url, titel, inhalt):
     return {"url": url, "title": titel, "content": inhalt}
 
 
-# ── A) Reales Schweizer Dokument: Herkunft + offene Übertragbarkeit erkannt ──
+_MARKTVORBEHALT_SATZ = (
+    "Lexus RC F Wartungsplan: Automatikgetriebeöl alle 60.000 km oder 4 Jahre, "
+    "falls für Ihren Markt zutreffend.")
+_OHNE_VORBEHALT_SATZ = (
+    "Lexus RC F Wartungsplan: Automatikgetriebeöl alle 60.000 km oder 4 Jahre.")
+
+# ── A) Identischer Dokumentinhalt auf UNTERSCHIEDLICHEN Domains: keine
+#      unterschiedliche Gültigkeit allein durch die URL ───────────────────
+fakten_ch = _extrahiere_fakten(
+    [treffer("https://tools.lexus.ch/heft.pdf", "Lexus Serviceheft", _MARKTVORBEHALT_SATZ)],
+    "wartung", marke="Lexus", modell="RC F", baujahr=2017)
+fakten_de = _extrahiere_fakten(
+    [treffer("https://www.lexus.de/heft.pdf", "Lexus Serviceheft", _MARKTVORBEHALT_SATZ)],
+    "wartung", marke="Lexus", modell="RC F", baujahr=2017)
+check("A1) .ch und .de liefern bei IDENTISCHEM Dokumenttext dasselbe Ergebnis "
+      "(regionale_geltung haengt NICHT von der Domain ab)",
+      bool(fakten_ch) and bool(fakten_de)
+      and fakten_ch[0].regionale_geltung == fakten_de[0].regionale_geltung == "unresolved"
+      and fakten_ch[0].herkunftsregion == fakten_de[0].herkunftsregion,
+      f"ch={fakten_ch} de={fakten_de}")
+
+# ── B) Ausdrücklich PASSENDES Dokument auf .ch: kein pauschaler
+#      Fremdmarkt-Warnhinweis (kein Vorbehalt im Text -> kein Flag) ────────
+fakten_ch_ok = _extrahiere_fakten(
+    [treffer("https://tools.lexus.ch/heft.pdf", "Lexus Serviceheft", _OHNE_VORBEHALT_SATZ)],
+    "wartung", marke="Lexus", modell="RC F", baujahr=2017)
+check("B1) .ch-Dokument OHNE Marktvorbehalt im Text -> KEIN Flag allein wegen der Domain",
+      bool(fakten_ch_ok) and fakten_ch_ok[0].regionale_geltung is None
+      and fakten_ch_ok[0].herkunftsregion is None,
+      str(fakten_ch_ok))
+
+# ── C) Ausdrücklich FREMDER Dokumentkontext auf .de: nicht allein wegen
+#      .de als passend behandeln (Vorbehalt im Text -> Flag bleibt, trotz .de) ─
+fakten_de_vorbehalt = _extrahiere_fakten(
+    [treffer("https://www.lexus.de/heft.pdf", "Lexus Serviceheft", _MARKTVORBEHALT_SATZ)],
+    "wartung", marke="Lexus", modell="RC F", baujahr=2017)
+check("C1) .de-Dokument MIT Marktvorbehalt im Text -> Flag bleibt bestehen "
+      "(die Domain allein macht es NICHT automatisch passend)",
+      bool(fakten_de_vorbehalt) and fakten_de_vorbehalt[0].regionale_geltung == "unresolved")
+
+# ── D) Reales Lexus-Dokument: tatsächlicher Herkunftsbeleg + sichtbarer Hinweis ─
 _LEXUS_CH_REAL = treffer(
     "https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf",
-    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Lexus Care-Wartungsplan",
+    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Betroffene Modelle, "
+    "Lexus Care-Wartungsplan",
+    "BETROFFENE MODELLE Produktionsstart RC 300h (Oktober 2015 ~) RC F "
+    "(September 2014 ~) LC 500 (März 2017 ~) Falls für Ihren Markt zutreffend.\n\n"
     "Lexus RC F zusätzliche Inspektionen laut Lexus Care-Wartungsplan: "
     "Automatikgetriebeöl alle 60.000 km oder 4 Jahre.")
-fakten_a = _extrahiere_fakten([_LEXUS_CH_REAL], "wartung", marke="Lexus", modell="RC F", baujahr=2017)
-check("A1) genau ein Fakt erkannt (Automatikgetriebeöl)",
-      len(fakten_a) == 1, str(fakten_a))
-check("A2) herkunftsregion benennt die Domainendung, kein geratenes Land",
-      bool(fakten_a) and fakten_a[0].herkunftsregion == "Domainendung .ch (nicht .de)",
-      str(fakten_a[0].herkunftsregion if fakten_a else None))
-check("A3) regionale_geltung bleibt 'unresolved' (keine Ungeeignetheit)",
-      bool(fakten_a) and fakten_a[0].regionale_geltung == "unresolved",
-      str(fakten_a[0].regionale_geltung if fakten_a else None))
-text_a = _web_beschreibung(fakten_a[0], 2017) if fakten_a else ""
-check("A4) die offene Übertragbarkeit ist im sichtbaren Hinweistext verständlich "
-      "(Herkunft benannt, Geltung für Deutschland ausdrücklich offen, kein Kaufverbot)",
-      "Herkunft laut Quelle: Domainendung .ch" in text_a
-      and "nicht bestätigt" in text_a and "Deutschland" in text_a,
-      text_a)
+fakten_real = _extrahiere_fakten([_LEXUS_CH_REAL], "wartung", marke="Lexus", modell="RC F",
+                                 baujahr=2017)
+check("D1) genau ein Fakt erkannt (Automatikgetriebeöl)", len(fakten_real) == 1, str(fakten_real))
+check("D2) herkunftsregion benennt den ECHTEN Textbeleg, kein geratenes Land",
+      bool(fakten_real) and fakten_real[0].herkunftsregion is not None
+      and "markt" in fakten_real[0].herkunftsregion.lower()
+      and "schweiz" not in fakten_real[0].herkunftsregion.lower()
+      and "lexus" not in fakten_real[0].herkunftsregion.lower(),
+      str(fakten_real[0].herkunftsregion if fakten_real else None))
+check("D3) regionale_geltung bleibt 'unresolved' (keine Ungeeignetheit)",
+      bool(fakten_real) and fakten_real[0].regionale_geltung == "unresolved")
+text_d = _web_beschreibung(fakten_real[0], 2017) if fakten_real else ""
+check("D4) der sichtbare Hinweis ist verständlich formuliert, OHNE technischen "
+      "Domain-Jargon (z.B. keine 'Domainendung .ch'-Formulierung)",
+      "Domainendung" not in text_d and "Deutschland" in text_d and "nicht bestätigt" in text_d,
+      text_d)
 
-# ── B) Passender Herstellerbeleg mit .de-Domain: KEIN falscher Unsicherheitshinweis ─
-_BMW_DE = treffer(
-    "https://www.bmw.de/wartungsplan/3er", "BMW 3er Wartungsplan",
-    "Beim BMW 3er gilt der Zwischenservice: alle 25.000 km oder einmal jährlich. "
-    "Dieser Service umfasst einen Bremsflüssigkeitswechsel sowie eine Sichtprüfung.")
-fakten_b = _extrahiere_fakten([_BMW_DE], "wartung", marke="BMW", modell="3er", baujahr=2020)
-check("B1) .de-Herstellerquelle bekommt KEINE herkunftsregion",
-      bool(fakten_b) and fakten_b[0].herkunftsregion is None and fakten_b[0].regionale_geltung is None,
-      str(fakten_b))
-text_b = _web_beschreibung(fakten_b[0], 2020) if fakten_b else ""
-check("B2) kein Regional-Hinweis im Bericht für die .de-Quelle",
-      "Herkunft laut Quelle" not in text_b, text_b)
+# ── E) Fehlender Dokumentbeleg: keine erfundene Region ──────────────────────
+check("E1) kein Marktvorbehalt im Dokumenttext -> kein Flag, egal welche Domain",
+      _wartung_marktvorbehalt([treffer("https://www.repareo.com/service", "Service",
+                                       _OHNE_VORBEHALT_SATZ)]) == (None, None))
+check("E2) leere Treffer-Liste -> kein Flag", _wartung_marktvorbehalt([]) == (None, None))
 
-# ── C) EU-Domain: Zielmarktvertrag (Deutschland liegt in der EU) -- kein Flag ──
-_HERSTELLER_EU = treffer(
-    "https://www.lexus.eu/wartungsplan", "Lexus EU Wartungsplan",
-    "Beim Lexus RC F gilt der Zwischenservice: alle 15.000 km oder einmal jährlich. "
-    "Dieser Service umfasst einen Ölwechsel sowie eine Sichtprüfung.")
-fakten_c = _extrahiere_fakten([_HERSTELLER_EU], "wartung", marke="Lexus", modell="RC F", baujahr=2017)
-check("C1) .eu-Domain zählt laut vorhandenem Zielmarktvertrag (_ZIELMARKT_ORTE) "
-      "als Zielmarkt, nicht als Fremdmarkt -- kein Flag",
-      bool(fakten_c) and fakten_c[0].herkunftsregion is None and fakten_c[0].regionale_geltung is None,
-      str(fakten_c))
+# ── F) Scope-Isolierung: NUR kategorie=="wartung" ───────────────────────────
+fakten_schwachstelle = _extrahiere_fakten(
+    [treffer("https://tools.lexus.ch/heft.pdf", "Lexus Schwachstelle",
+             "Beim Lexus RC F tritt gelegentlich Ölverlust an der Ölwanne auf, "
+             "falls für Ihren Markt zutreffend.")],
+    "schwachstelle", marke="Lexus", modell="RC F", baujahr=2017)
+check("F1) kategorie=='schwachstelle' bekommt NIE herkunftsregion/regionale_geltung",
+      all(f.herkunftsregion is None and f.regionale_geltung is None for f in fakten_schwachstelle),
+      str(fakten_schwachstelle))
 
-# ── D) Fehlende regionale Information erfindet kein Land ────────────────────
-check("D1) generische .com-Domain ohne Landes-TLD -> kein Flag, kein geratenes Land",
-      _wartung_herkunftsregion("https://www.repareo.com/lexus-rc-f-service") == (None, None))
-check("D2) ICANN-Dot-Brand-Endung (.toyota) ist keine Landes-TLD -> kein Flag",
-      _wartung_herkunftsregion("https://global.toyota/service") == (None, None))
-check("D3) keine URL -> kein Flag",
-      _wartung_herkunftsregion(None) == (None, None) and _wartung_herkunftsregion("") == (None, None))
-check("D4) mehrteiliges Public Suffix (.co.uk) ist keine einzelne Landes-TLD -> kein Flag",
-      _wartung_herkunftsregion("https://www.example.co.uk/service") == (None, None))
-
-# ── E) Scope-Isolierung: NUR kategorie=="wartung" bekommt die neuen Felder ──
-_SCHWACHSTELLE_CH = treffer(
-    "https://tools.lexus.ch/fileadmin/schwachstelle.pdf", "Lexus RC F Schwachstelle",
-    "Beim Lexus RC F tritt gelegentlich Ölverlust an der Ölwanne auf.")
-fakten_e = _extrahiere_fakten([_SCHWACHSTELLE_CH], "schwachstelle", marke="Lexus", modell="RC F",
-                             baujahr=2017)
-check("E1) kategorie=='schwachstelle' bekommt NIE herkunftsregion/regionale_geltung "
-      "(additiv, Default unverändert außerhalb des Auftragsscope)",
-      all(f.herkunftsregion is None and f.regionale_geltung is None for f in fakten_e),
-      str(fakten_e))
-
-# ── F) Default-Verhalten bei nicht gesetzten Feldern unverändert (Pydantic-Default) ─
+# ── G) Default-Verhalten bei nicht gesetzten Feldern unverändert ───────────
 _fakt_ohne_feld = WebFakt(kategorie="wartung", aussage="Test ohne Herkunftsfeld")
-check("F1) WebFakt ohne explizite Herkunftsfelder bleibt None/None (altes Verhalten "
-      "bestehender/gespeicherter Checks unverändert)",
+check("G1) WebFakt ohne explizite Herkunftsfelder bleibt None/None",
       _fakt_ohne_feld.herkunftsregion is None and _fakt_ohne_feld.regionale_geltung is None)
 
 print()

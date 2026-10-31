@@ -862,17 +862,18 @@ def _web_beschreibung(fakt, baujahr) -> str:
                  f"Fahrzeug{f' (Baujahr {baujahr})' if baujahr else ''} dazu gehört, ist nicht belegt.")
     elif geltung == "covered" and bereich:
         text += f" Laut Quelle betrifft das den Zeitraum {bereich}, der das Baujahr einschließt."
-    # ENFAL-Folgeauftrag ("offene regionale Gültigkeit bis zum Nutzerbericht
-    # erhalten"): EIGENE Achse neben der Baujahr-Geltung oben (`geltung`/
+    # ENFAL-Folgeauftrag ("regionale Evidenz aus dem Dokument statt aus der
+    # Domainendung"): EIGENE Achse neben der Baujahr-Geltung oben (`geltung`/
     # `bereich`) -- beide können unabhängig voneinander zutreffen, deshalb ein
-    # eigenständiges `if`, kein `elif` in derselben Kette. Nennt die belegte
-    # Grundlage (`herkunftsregion`, z.B. "Domainendung .ch") UND lässt die
-    # Übertragbarkeit ausdrücklich offen -- KEINE Ungeeignetheitsaussage, KEIN
-    # geratenes Land (s. `_wartung_herkunftsregion()`).
+    # eigenständiges `if`, kein `elif` in derselben Kette. `herkunftsregion`
+    # kommt NUR aus einem im Dokumenttext selbst gefundenen Marktvorbehalt
+    # (s. `_wartung_marktvorbehalt()`), NIE aus der Domain/TLD. Verständliche
+    # Sprache (Auftrag §4: keine technische Formulierung wie "Domainendung
+    # .ch") -- KEINE Ungeeignetheitsaussage, KEIN geratenes Land.
     if getattr(fakt, "regionale_geltung", None) == "unresolved":
         herkunft = getattr(fakt, "herkunftsregion", None)
-        text += (f" Herkunft laut Quelle: {herkunft}. " if herkunft else " ") + (
-            "Ob diese Angabe für Ihr Fahrzeug in Deutschland gilt, ist nicht bestätigt. "
+        text += (f" {herkunft}. " if herkunft else " ") + (
+            "Ob das für Ihr Fahrzeug in Deutschland zutrifft, ist nicht bestätigt. "
             "Mit dem fahrzeugeigenen Wartungsplan oder einer Vertragswerkstatt abgleichen.")
     return text
 

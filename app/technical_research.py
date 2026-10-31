@@ -365,60 +365,54 @@ def _ist_regionsfremd(url: str) -> bool:
     return any(d in dom for d in US_QUELLEN_AUSSCHLUSS)
 
 
-# ENFAL-Folgeauftrag ("offene regionale Gültigkeit bis zum Nutzerbericht
-# erhalten", 2026-11): belegter Befund (reales Dokument tools.lexus.ch,
-# Lexus-Schweiz-"Garantie- und Serviceheft") -- ein Wartungsintervall aus
-# einer HERSTELLERDOMAIN mit abweichender Landes-TLD ist weder bestätigt
-# noch widerlegt für ein deutsches Zielfahrzeug. Bisher verschwand diese
-# Unklarheit: `geltung_fuer_fahrzeug`/`geltungsbereich` (siehe Insight/
-# WebFakt) bilden ausschließlich das BAUJAHR-Fenster der Quelle ab, keine
-# Region -- eine CH-Domain ohne Baujahr-Widerspruch lief unverändert als
-# scheinbar uneingeschränkt gültig durch.
+# ENFAL-Folgeauftrag ("regionale Evidenz aus dem Dokument statt aus der
+# Domainendung", 2026-11): KORREKTUR der vorigen Fassung. Diese prüfte
+# ausschließlich die Domainendung der Quelle (zweibuchstabige Landes-TLD) --
+# eine ccTLD belegt aber WEDER den regionalen Dokumentkontext NOCH dessen
+# Übertragbarkeit; auch `.de`/`.eu` belegen keine Zielgültigkeit (eine
+# EU-Domainregistrierung ist keine Aussage über europaweit gültige
+# Wartungsvorschriften). Die Domain spielt hier deshalb KEINE Rolle mehr.
 #
-# Zielmarkt hier bewusst NUR die eigene Domainendung der Quelle selbst
-# (`.de` = Zieldomain dieses Produkts, Deutschland) -- KEIN neuer
-# Ländererkennungs-Mechanismus, KEINE Übersetzung einer TLD in einen
-# Landesnamen (das wäre genau die vom Auftrag ausgeschlossene "umfassende
-# Ländererkennung" und ein geratenes Land). Ausschliesslich eine simple,
-# bereits vorhandene PSL-Zerlegung (`_psl_teile`, s.o.) auf ein
-# ZWEIBUCHSTABIGES Public-Suffix geprüft -- das deckt echte Landes-TLDs
-# (.ch/.at/.fr/...) ab, OHNE generische/zweiteilige Suffixe (.com, .co.uk)
-# oder ICANN-Dot-Brand-Endungen (.toyota, s. `_marke_eigene_domain()`) als
-# vermeintliches Land zu werten. Ist das Suffix NICHT zweibuchstabig oder
-# keine URL bestimmbar, bleibt die Herkunft ausdrücklich UNBESTIMMT (kein
-# Flag, kein geratenes Land) -- genau die vom Auftrag verlangte, explizit
-# behandelte Grenze ("Dokumentherkunft im echten Produktpfad nicht belastbar
-# ermittelbar").
+# Reale, belegte Textgrundlage (Seite 4, "BETROFFENE MODELLE", Lexus-
+# Schweiz-"Garantie- und Serviceheft", tools.lexus.ch/fileadmin/pdf_new/
+# lex-sw-00de.pdf): "RC 300h (Oktober 2015 ~) RC F (September 2014 ~) LC 500
+# (März 2017 ~) FALLS FÜR IHREN MARKT ZUTREFFEND." -- das Dokument schränkt
+# seine eigene Modellliste AUSDRÜCKLICH mit einem Marktvorbehalt ein. Das ist
+# ein ECHTER, im Dokumenttext selbst stehender Beleg für eine ungeklärte
+# Übertragbarkeit -- unabhängig davon, von welcher Domain die Seite stammt.
+# Erkannt wird NUR dieses eine, eng gefasste Satzmuster (plus die englische
+# Standardformulierung "if applicable...your market", analog zum bereits
+# bestehenden zweisprachigen Muster bei `_RE_MARKTEINFUEHRUNG`) -- KEINE
+# Länder-/Spracherkennung, KEIN Ableiten eines Landes aus dem Fundtext.
 #
 # Ergebnis ist NIE eine Ungeeignetheits-/Ausschlussaussage ("Keine
 # Marktgültigkeit allein aus einer Domainendung ableiten", Auftrag §3) --
 # nur "unresolved": die Quelle bleibt eine gültige Herstellerquelle, nur die
-# Übertragbarkeit auf das deutsche Zielfahrzeug ist ungeklärt.
-#
-# "eu" bewusst NEBEN "de" im Zielmarkt-Suffix-Set: derselbe, bereits
-# bestehende Zielmarktvertrag wie `_ZIELMARKT_ORTE` oben (dort zählen
-# "european union"/"eu"/"europe"/"europa" bereits als Zielmarkt, nicht als
-# Fremdmarkt) -- eine ".eu"-Domain ist keine Landes-TLD eines EINZELNEN
-# fremden Staates, sondern dieselbe Wiederverwendung des vorhandenen
-# Zielmarktvertrags auf Domain-Ebene (Auftrag §3: "Vorhandenen
-# Zielmarktvertrag verwenden und dokumentieren").
-_ZIEL_DOMAIN_SUFFIXE = frozenset({"de", "eu"})
-_RE_LAND_SUFFIX = re.compile(r"^[a-z]{2}$")
+# Übertragbarkeit auf das deutsche Zielfahrzeug ist ungeklärt. Findet sich
+# KEIN solcher Vorbehalt im Dokumenttext, bleibt die Herkunft ausdrücklich
+# UNBESTIMMT (kein Flag, kein geratenes Land, keine geratene Zielgültigkeit)
+# -- genau die vom Auftrag verlangte, explizit behandelte Grenze
+# ("Dokumentherkunft im echten Produktpfad nicht belastbar ermittelbar").
+_RE_MARKT_VORBEHALT = re.compile(
+    r"falls\s+f(?:ü|ue)r\s+ihren?\s+markt\s+zutreffend"
+    r"|sofern\s+f(?:ü|ue)r\s+ihren?\s+markt\s+zutreffend"
+    r"|wenn\s+f(?:ü|ue)r\s+ihren?\s+markt\s+zutreffend"
+    r"|if\s+applicable\s+(?:to|in|for)\s+your\s+market", re.IGNORECASE)
 
 
-def _wartung_herkunftsregion(url: str | None) -> tuple[str | None, str | None]:
+def _wartung_marktvorbehalt(treffer: list[dict]) -> tuple[str | None, str | None]:
     """(herkunftsregion, regionale_geltung) für EINEN Wartungs-Web-Fakt.
 
     NUR für kategorie=="wartung" aufgerufen (s. Aufrufer in `_extrahiere_fakten()`).
-    `None, None`, wenn keine URL vorliegt oder deren Public Suffix keine
-    zweibuchstabige Landes-TLD ist (inkl. der Zieldomains `.de`/`.eu` selbst --
-    dort gibt es keine offene Frage, kein Hinweis nötig)."""
-    if not url:
+    Liest AUSSCHLIESSLICH den tatsächlichen Dokumenttext (Titel+Inhalt ALLER
+    beitragenden Treffer) -- NIE die Domain/URL (s. Moduldocstring oben).
+    `None, None`, wenn im Text kein ausdrücklicher Marktvorbehalt steht --
+    das ist die Default-Haltung: ein fehlender Beleg erfindet keine Region."""
+    text = " ".join(f"{r.get('title') or ''} {r.get('content') or ''}" for r in treffer)
+    if not _RE_MARKT_VORBEHALT.search(text):
         return None, None
-    suffix = (_psl_teile(url).suffix or "").lower()
-    if not _RE_LAND_SUFFIX.match(suffix) or suffix in _ZIEL_DOMAIN_SUFFIXE:
-        return None, None
-    return f"Domainendung .{suffix} (nicht .de)", "unresolved"
+    return ('Die Quelle schränkt sich selbst ein ("falls für Ihren Markt zutreffend")',
+            "unresolved")
 
 
 # Herstellervertrauen-Folgeauftrag (2026-11-01, dritte Korrekturrunde): die
@@ -4203,12 +4197,13 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         bauteil_anzeige = e["bauteil"]
         if kategorie == "rueckruf" and len(e.get("bauteile") or []) > 1:
             bauteil_anzeige = " / ".join(e["bauteile"])
-        # ENFAL-Folgeauftrag ("offene regionale Gültigkeit"): NUR für
-        # kategorie=="wartung" (Auftragsscope, s. `_wartung_herkunftsregion()`
-        # Docstring) -- schwachstelle/rueckruf bleiben unverändert.
+        # ENFAL-Folgeauftrag ("regionale Evidenz aus dem Dokument statt aus
+        # der Domainendung"): NUR für kategorie=="wartung" (Auftragsscope,
+        # s. `_wartung_marktvorbehalt()` Docstring) -- schwachstelle/rueckruf
+        # bleiben unverändert. Liest `e["treffer"]` (die rohen Dokument-
+        # Treffer dieser Gruppe), NICHT die Quell-URL.
         herkunftsregion, regionale_geltung = (
-            _wartung_herkunftsregion(quellen[0].url if quellen else None)
-            if kategorie == "wartung" else (None, None))
+            _wartung_marktvorbehalt(e["treffer"]) if kategorie == "wartung" else (None, None))
         fakten.append(WebFakt(
             kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
