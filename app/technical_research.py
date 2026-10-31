@@ -365,6 +365,34 @@ def _ist_regionsfremd(url: str) -> bool:
     return any(d in dom for d in US_QUELLEN_AUSSCHLUSS)
 
 
+# Herstellervertrauen-Folgeauftrag (Dot-Brand-Abschluss, 2026-10-31): die
+# Domain-Liste `US_QUELLEN_AUSSCHLUSS` oben erkennt nur FREMDE Drittmedien,
+# nie eine Markteinführungsmeldung der HERSTELLERDOMAIN SELBST (reale
+# Lücke, erst durch den Dot-Brand-Fix sichtbar geworden, s. global.toyota:
+# "went on sale today in Japan", Preistabelle in Yen) — ein Hersteller
+# veröffentlicht ausländische Markteinführungen oft unter seiner eigenen,
+# weltweiten Domain, nicht unter einer eigenen Länder-Subdomain. Ein Preis
+# in einer unzweideutigen FREMDEN Währung (keine Länder-/Markenliste,
+# sondern ein bereits an anderer Stelle als reales Signal genutztes Muster,
+# vgl. die "bhp" vs. "PS"-Unterscheidung in
+# test_rc_f_herstellerquelle_vollstaendiger_replay.py) belegt, dass DIESER
+# Text eine EIGENE, andere Markteinführung beschreibt — unabhängig von der
+# Vertrauensstufe der Domain. Wirkt NUR auf die Claim-Tier-Deckelung in
+# `_identitaets_claims()` (identisch zu `_ist_regionsfremd()`), NIE auf die
+# Marke/Modell-Existenzfrage und NIE auf die Domain-Vertrauensstufe selbst
+# (`_marke_eigene_domain()`/`_tier_identitaet()` bleiben unverändert) — eine
+# explizit fremdbezogene Angabe bleibt dadurch UNGEKLÄRT (web_only-Schwelle
+# nicht erreicht), wird aber nicht zu einem falschen Widerspruch.
+_RE_FREMDWAEHRUNG = re.compile(
+    r"[¥₩₹]\s?[\d.,]+|[\d][\d.,]*\s*(?:yen|won|yuan|rmb|renminbi|baht|dirhams?|"
+    r"rupien?|rupees?|riyal|ringgit|pesos?)\b", re.I)
+
+
+def _ist_fremdwaehrungskontext(r: dict) -> bool:
+    text = f"{r.get('title') or ''} {r.get('content') or ''}"
+    return bool(_RE_FREMDWAEHRUNG.search(text))
+
+
 # ── Provider-Schnittstelle ───────────────────────────────────────────────────
 
 class TechnicalVehicleResearchProvider(Protocol):
@@ -1742,6 +1770,13 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # lassen bereits EINE Tier-1/2-Quelle für ein Feld genügen). Die Deckelung
         # wirkt NUR hier (Claim-Gewichtung), NICHT auf `_identitaet_belegt()` — die
         # Existenzfrage selbst bleibt für internationale Quellen offen.
+        tier = max(tier, 3)
+    elif _ist_fremdwaehrungskontext(r):
+        # Herstellervertrauen-Folgeauftrag (s. `_ist_fremdwaehrungskontext()`):
+        # dieselbe Deckelung, aber inhaltsbasiert statt domainbasiert -- eine
+        # Quelle kann eine echte, vertrauenswürdige Herstellerdomain sein
+        # (Tier 1 bleibt für Marke/Modell-Existenz unverändert) und trotzdem
+        # in GENAU diesem Text eine fremde Markteinführung beschreiben.
         tier = max(tier, 3)
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
     if grund == "schwach":
