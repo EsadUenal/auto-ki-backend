@@ -69,7 +69,8 @@ from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
     _domain_von, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
-    curate_results, ist_amtliche_quelle, registrable_domain, score_domain, tavily_search,
+    curate_results, ist_amtliche_quelle, pressedomain_fremder_absatzmarkt,
+    registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -1771,9 +1772,29 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # wirkt NUR hier (Claim-Gewichtung), NICHT auf `_identitaet_belegt()` — die
         # Existenzfrage selbst bleibt für internationale Quellen offen.
         tier = max(tier, 3)
+    elif pressedomain_fremder_absatzmarkt(url):
+        # Herstellervertrauen-Folgeauftrag (2026-10-31, Gegenfall B CONFIRMED):
+        # eine reine Inhaltsheuristik ("enthält der Text eine fremde
+        # Währung") ist trivial zu umgehen -- derselbe Pressetext bleibt
+        # eine Japan-Markteinführungsmeldung auch OHNE die Preistabelle, das
+        # Entfernen einer Zahl schafft keine neue Zielgültigkeit. Primäres,
+        # robustes Signal ist deshalb dasselbe curatierte, einzeln belegte
+        # Domain-Faktum wie `marken` selbst (`Pressedomain.fremder_
+        # absatzmarkt`, app/web_search.py) -- KEINE Länder-/Währungsliste,
+        # sondern dieselbe Sorgfaltspflicht wie für jeden anderen Eintrag in
+        # `_HERSTELLER_PRESSEDOMAINS`. Eine echte Herstellerdomain bleibt
+        # dabei für Marke/Modell-Existenz und für ihre eigene Vertrauens-
+        # stufe unverändert Tier 1 -- nur die Claim-Gewichtung für DIESE
+        # Domain wird gedeckelt, bis ein eigener Übertragbarkeitsbeleg
+        # vorliegt (noch keiner -- s. Ausdruck "Ausländische Quellen sind
+        # nicht pauschal ungeeignet", eine spätere, einzeln belegte
+        # Korrektur dieses Flags bleibt möglich).
+        tier = max(tier, 3)
     elif _ist_fremdwaehrungskontext(r):
-        # Herstellervertrauen-Folgeauftrag (s. `_ist_fremdwaehrungskontext()`):
-        # dieselbe Deckelung, aber inhaltsbasiert statt domainbasiert -- eine
+        # Zusätzliches, schwächeres Signal (Herstellervertrauen-Folgeauftrag):
+        # fängt denselben Fall bei einer NOCH NICHT curatierten fremden
+        # Pressedomain auf, bis sie wie oben einzeln belegt eingetragen ist.
+        # Dieselbe Deckelung, aber inhaltsbasiert statt domainbasiert -- eine
         # Quelle kann eine echte, vertrauenswürdige Herstellerdomain sein
         # (Tier 1 bleibt für Marke/Modell-Existenz unverändert) und trotzdem
         # in GENAU diesem Text eine fremde Markteinführung beschreiben.

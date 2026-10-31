@@ -18,7 +18,7 @@ import re
 import time
 from contextlib import contextmanager
 from datetime import date
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -177,12 +177,36 @@ _HERSTELLER_MARKEN = frozenset({
 # Vermutung). Wird sowohl von `_ist_herstellerseite()` hier als auch von
 # `app.technical_research._marke_eigene_domain()` genutzt -- EINE Quelle für
 # diese Zuordnung, keine zweite, abweichende Liste.
-_HERSTELLER_PRESSEDOMAINS: dict[str, frozenset[str]] = {
+class Pressedomain(NamedTuple):
+    """Ein curatiertes, einzeln belegtes Presse-/Newsroom-Domain-Faktum --
+    siehe `_HERSTELLER_PRESSEDOMAINS`. `fremder_absatzmarkt` ist KEIN
+    Heuristik-Ergebnis, sondern dieselbe Art manuell belegter Tatsache wie
+    `marken` selbst (Herstellervertrauen-Folgeauftrag, 2026-10-31, s.
+    Modulkopf-Kommentar unten): markiert eine Domain, deren eigener Inhalt
+    sich NICHT pauschal auf den deutschen/europäischen Zielmarkt übertragen
+    lässt (z.B. eine Markteinführungsmeldung für ein anderes Land)."""
+    marken: frozenset[str]
+    fremder_absatzmarkt: bool = False
+
+
+# Herstellervertrauen-Folgeauftrag (2026-10-31): eine automatische
+# Inhaltsheuristik (z.B. "enthält der Text eine fremde Währung") erkennt
+# zwar den REALEN Fall (Yen-Preistabelle bei global.toyota), ist aber
+# trivial zu umgehen -- derselbe Text bleibt eine Japan-Markteinführungs-
+# meldung auch OHNE die Preistabelle ("went on sale today in Japan"),
+# verliert dann aber das Heuristik-Signal. Entfernen eines Preises schafft
+# keine neue Zielgültigkeit. Statt einer weiteren, ebenso umgehbaren
+# Text-Heuristik (keine Länder-/Währungs-Sonderliste) wird dieselbe, bereits
+# bestehende, EINZELN BELEGTE Zuordnung wie für `marken` genutzt: ob eine
+# konkrete Presse-Domain für den deutschen/europäischen Markt gilt, ist ein
+# PER-DOMAIN-Faktum, das ein Mensch anhand des realen Texts einmal
+# feststellt -- nicht aus dem jeweiligen Einzeldokument neu erraten wird.
+_HERSTELLER_PRESSEDOMAINS: dict[str, Pressedomain] = {
     # Offizielles deutsches Presseportal von Toyota Deutschland GmbH (fuehrt
     # auch Lexus-Pressemitteilungen) -- belegt am real abrufbaren Pressetext
     # vom 01.12.2016 ("Lexus RC F, 5,0-Liter-V8, 477 PS, Achtstufen-Sport-
-    # Automatik").
-    "toyota-media.de": frozenset({"toyota", "lexus"}),
+    # Automatik"). Deutscher Markt -- `fremder_absatzmarkt` bleibt False.
+    "toyota-media.de": Pressedomain(frozenset({"toyota", "lexus"})),
     # F9-Folgefix (RC-F, 2026-10-31): offizielle globale Newsroom-Domain von
     # Toyota Motor Corporation (ICANN-Dot-Brand-Endung ".toyota", registrable
     # domain "global.toyota") -- fuehrt ebenfalls originaere Lexus-Pressetexte,
@@ -195,7 +219,14 @@ _HERSTELLER_PRESSEDOMAINS: dict[str, frozenset[str]] = {
     # marke "Toyota" selbst -- fuer die Submarke "Lexus" (kein eigenes
     # ".lexus") bleibt dieselbe, bereits bestehende explizite Zuordnung wie
     # bei "toyota-media.de" noetig, keine zweite, abweichende Regel.
-    "global.toyota": frozenset({"toyota", "lexus"}),
+    # `fremder_absatzmarkt=True`: dieser konkrete Pressetext beschreibt
+    # ausdrücklich die japanische Markteinführung (Dateline "Tokyo", "went
+    # on sale today in Japan", Yen-Preise) -- ohne eigenen Beleg, dass die
+    # genannten Detailwerte auch für den deutschen/europäischen Markt
+    # gelten. Betrifft NUR die Claim-Tier-Deckelung in
+    # `_identitaets_claims()` (identisch zu `_ist_regionsfremd()`), NIE die
+    # Marke/Modell-Existenzfrage und NIE die Domain-Vertrauensstufe selbst.
+    "global.toyota": Pressedomain(frozenset({"toyota", "lexus"}), fremder_absatzmarkt=True),
 }
 
 
@@ -204,8 +235,17 @@ def _pressedomain_gehoert_marke(domain_oder_url: str, marke_norm: str) -> bool:
     Marke -- genutzt von `app.technical_research._marke_eigene_domain()`
     (Identitäts-Primärquellenpfad), damit beide Stellen dieselbe, einzige
     Zuordnung lesen statt einer zweiten, abweichenden Liste."""
-    marken = _HERSTELLER_PRESSEDOMAINS.get(registrable_domain(domain_oder_url), frozenset())
-    return marke_norm in marken
+    eintrag = _HERSTELLER_PRESSEDOMAINS.get(registrable_domain(domain_oder_url))
+    return bool(eintrag and marke_norm in eintrag.marken)
+
+
+def pressedomain_fremder_absatzmarkt(url: str) -> bool:
+    """True für eine curatiert als fremder Absatzmarkt belegte Presse-Domain
+    (s. `Pressedomain.fremder_absatzmarkt`) -- genutzt von
+    `app.technical_research._identitaets_claims()` zur Claim-Tier-Deckelung,
+    identisch zur domainbasierten `_ist_regionsfremd()`-Deckelung dort."""
+    eintrag = _HERSTELLER_PRESSEDOMAINS.get(registrable_domain(url))
+    return bool(eintrag and eintrag.fremder_absatzmarkt)
 
 
 # §9: Informations-/Ratgeber-/Nachschlage-Seiten sind KEINE konkreten Vergleichs-

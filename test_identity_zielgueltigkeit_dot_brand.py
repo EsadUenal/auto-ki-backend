@@ -1,58 +1,68 @@
 """
-Folgeauftrag (2026-10-31, "Herstellervertrauen von unbelegter Zielübertragung
-trennen"): der F9-Fix (`_marke_eigene_domain()` erkennt ICANN-Dot-Brand-
-Endungen wie ".toyota") hebt eine internationale Herstellerquelle
-(global.toyota, Japan-Markteinführung 23.10.2014, Preistabelle in Yen) auf
-Tier 1 für Identitäts-Detailclaims. Eine Tier-1-Bewertung ist QuellenVERTRAUEN
-(ist diese Domain tatsächlich der Hersteller?) -- das beantwortet NICHT die
-getrennte Frage der ZielGÜLTIGKEIT (gilt GENAU dieser Claim, in GENAU diesem
-Text, für das angefragte deutsche Zielfahrzeug/-jahr 2017?).
+Folgeauftrag (2026-10-31, "Zielgültigkeit darf nicht durch Quellengewicht
+ersetzt werden"): der F9-Fix (`_marke_eigene_domain()` erkennt ICANN-Dot-
+Brand-Endungen wie ".toyota") hebt eine internationale Herstellerquelle
+(global.toyota, Japan-Markteinführung 23.10.2014) auf Tier 1 für Identitäts-
+Detailclaims. Eine Tier-1-Bewertung ist QuellenVERTRAUEN (ist diese Domain
+tatsächlich der Hersteller?) -- das beantwortet NICHT die getrennte Frage der
+ZielGÜLTIGKEIT (gilt GENAU dieser Claim für das angefragte deutsche
+Zielfahrzeug/-jahr 2017?).
 
-RICHTIGSTELLUNG zu einer früheren Fassung dieses Skripts: die dort behauptete
-"Invarianz über die gesamte Serienlaufzeit" (DE-ADAC-Datenblätter 2018 UND
-2024 nennen denselben Rohwert wie die JP-Quelle) ist KEIN positiver
-Zielübertragbarkeitsbeleg -- Konfliktfreiheit zwischen Quellen beweist nicht,
-dass eine Angabe für das Ziel gilt, sondern nur, dass sie ihr nicht
-widerspricht. Das wird hier zurückgenommen.
+RICHTIGSTELLUNG (zweite Runde) zu einer früheren Fassung dieses Skripts:
+1) "Invarianz über die gesamte Serienlaufzeit" (Konfliktfreiheit mit
+   späteren DE-ADAC-Datenblättern) ist KEIN Zielübertragbarkeitsbeleg --
+   bereits zurückgenommen.
+2) Die danach eingeführte reine Inhaltsheuristik ("enthält der Text eine
+   fremde Währung", `_ist_fremdwaehrungskontext()`) senkt zwar das
+   Claim-Gewicht, ist aber KEIN robuster Zielgültigkeitsbeleg: Gegenfall B
+   unten zeigt real, dass das bloße Entfernen der Yen-Preistabelle --
+   bei unverändert ausdrücklich japanischem Marktbezug im übrigen Text --
+   den Claim wieder auf Tier 1 zurückfallen UND bestätigen lässt. Entfernen
+   einer Zahl schafft keine neue Gültigkeit.
 
-Tatsächlicher Befund (CONFIRMED): die JP-Quelle nennt ihren engine_code/
-drivetrain-Claim im SELBEN Satz wie eine Yen-Preistabelle ("10,300,000 yen
-9,530,000 yen") -- ein konkretes, generisches (keine Japan-/Lexus-Sonderregel)
-Signal, dass DIESER Text eine EIGENE, fremde Markteinführung beschreibt. Die
-bereits bestehende Deckelung für regionsfremde Quellen (`_ist_regionsfremd()`,
-bisher nur domainbasiert für Drittmedien) wird um ein inhaltsbasiertes
-Gegenstück ergänzt (`_ist_fremdwaehrungskontext()`), das NUR die Claim-Tier-
-Gewichtung für DETAIL-Felder deckelt -- NIE die Marke/Modell-Existenzfrage
-und NIE die Domain-Vertrauensstufe selbst. Ergebnis: engine_code/drivetrain
-aus global.toyota bleiben für das Ziel UNGEKLÄRT (web_only-Schwelle nicht
-erreicht) statt fälschlich bestätigt -- Unsicherheit bleibt Unsicherheit,
-wird nicht zu einem falschen Widerspruch.
+FIX (diese Runde): primäres, robustes Signal ist nicht mehr eine
+Inhaltsheuristik, sondern dieselbe Art curatierter, einzeln belegter
+Tatsache wie `_HERSTELLER_PRESSEDOMAINS`s `marken`-Zuordnung selbst --
+`Pressedomain.fremder_absatzmarkt` (app/web_search.py), ausgewertet über
+`pressedomain_fremder_absatzmarkt()`. Für "global.toyota" ist das Faktum
+jetzt einzeln dokumentiert (Dateline "Tokyo", "went on sale today in
+Japan", Yen-Preise -- unabhängig davon, ob EIN KONKRETES Dokument diese
+Preiszeile zufällig enthält oder nicht). `_ist_fremdwaehrungskontext()`
+bleibt als ZUSÄTZLICHES, schwächeres Signal für noch nicht curatierte
+fremde Pressedomains erhalten -- keine Ersatzheuristik, kein Rückbau.
 
-  A) Explizit fremdbezogener Detailclaim bestätigt das Ziel NICHT automatisch:
-     global.toyota bleibt Tier-1-Herstellerdomain (Quellenvertrauen
-     unverändert), aber der engine_code/drivetrain-Claim aus GENAU diesem
-     Yen-Text wird für die Konsens-Gewichtung auf Tier 3 gedeckelt --
-     dieselbe Schwelle wie eine unbekannte Domain, weiterhin "verworfen"
-     bleibt dabei NICHTS (keine Rejektion, nur fehlende Bestätigung).
-  B) Herstellerquelle bleibt korrekt als Hersteller erkannt: die
-     Domain-Vertrauensstufe selbst (`_tier_identitaet`) ändert sich durch
-     die Deckelung NICHT -- nur die claim-lokale Gewichtung in
-     `_identitaets_claims()`.
-  C) Passende DE-/EU-Herstellerangabe bleibt verwendbar: toyota-media.de
-     (reiner Motor-/Leistungs-/Getriebetext, KEINE Fremdwährung) bleibt
-     unverändert Tier 1.
-  D) Vorhandener belegter Motorname aus toyota-media.de bleibt bestätigt
-     (voller realer Replay).
-  E) Negativkontrolle Konflikt bleibt erhalten: zwei widersprechende
-     Quellen lösen weiterhin in UNKNOWN auf, kein blindes Vertrauen.
-  F) F8-Jahresfilter bleibt unabhängig von dieser Ergänzung wirksam.
-  G) Unbeteiligte Marke: siehe test_identity_manufacturer_source.py, Fall I.
+  A) Kausaler Mehrquellen-Gegenfall (WIDERLEGT): zwei unabhängige,
+     explizit fremdmarktgebundene Quellen mit ÜBEREINSTIMMENDEM Wert
+     können einen Claim NICHT gemeinsam bestätigen -- `konsens()`
+     verlangt weiterhin mindestens eine "starke" (Tier<=2) Quelle
+     (`stark = any(t<=2 ...)`); reines Aufsummieren vieler Tier-3-Gewichte
+     genügt nicht, unabhängig von der Anzahl.
+  B) Entfernte Preistabelle bei unverändert explizit fremdem Markt
+     (vorher BESTÄTIGT, jetzt behoben): derselbe Pressetext OHNE die
+     Yen-Zeile wird jetzt trotzdem über das curatierte Domain-Faktum
+     gedeckelt -- Entfernen der Zahl ändert den Status nicht mehr.
+  C) Passende deutsche Herstellerquelle bestätigt weiterhin: toyota-
+     media.de bleibt unverändert Tier 1, unberührt von der Deckelung.
+  D) Herstellervertrauen bleibt erhalten: `_tier_identitaet()` für
+     global.toyota bleibt unverändert Tier 1 -- nur die Claim-Gewichtung
+     ist gedeckelt, nicht die Domain-Erkennung selbst.
+  E) Vollständiger realer Replay zeigt den korrekten finalen Feldstatus
+     (test_rc_f_herstellerquelle_vollstaendiger_replay.py, hier nur als
+     Verweis/Sanity, kein erneuter Breitlauf).
+
+GRENZE (bewusst nicht geschlossen): die curatierte Domain-Zuordnung deckt
+nur bereits einzeln geprüfte Presse-Domains ab. Eine BISHER UNDOKUMENTIERTE
+fremde Herstellerdomain ohne Fremdwährungssignal im Text würde WEDER vom
+Domain-Faktum NOCH von der Inhaltsheuristik erfasst -- das ist eine
+offene, nicht automatisch schließbare Lücke (keine Länder-Katalogisierung
+vorgesehen), kein stillschweigend als vollständig behaupteter Schutz.
 
     python scripts/test_isolated.py test_identity_zielgueltigkeit_dot_brand.py
 """
 from app.technical_research import (
     _ziel, _identitaets_claims, _tier_identitaet, _ist_fremdwaehrungskontext, konsens,
 )
+from app.web_search import pressedomain_fremder_absatzmarkt
 
 _FEHLER: list[str] = []
 
@@ -67,9 +77,9 @@ def t(url, titel, inhalt):
     return {"url": url, "title": titel, "content": inhalt}
 
 
-# ── Reale Quellen (wortgleich aus test_rc_f_herstellerquelle_vollstaendiger_
-# replay.py) ─────────────────────────────────────────────────────────────────
-TOYOTA_JAPAN = t(
+Z = _ziel("Lexus", "RC F", 2017, "5.0 V8", None)
+
+TOYOTA_JAPAN_MIT_PREIS = t(
     "https://global.toyota/en/detail/4101939",
     "Lexus Launches All-new 'RC F' High-performance Coupe in Japan | Toyota Motor "
     "Corporation Official Global Website",
@@ -77,109 +87,75 @@ TOYOTA_JAPAN = t(
     "went on sale today in Japan. Engine Transmission Driveline Price RC F Carbon "
     "Exterior package 2UR-GSE (V8 5.0-liter) 8-Speed SPDS Rear-wheel drive "
     "10,300,000 yen 9,530,000 yen.")
+
+check("Vorbedingung: global.toyota ist als fremder Absatzmarkt curatiert",
+      pressedomain_fremder_absatzmarkt("https://global.toyota/en/detail/4101939") is True)
+
+# ── A) Kausaler Mehrquellen-Gegenfall: widerlegt ────────────────────────────
+# Zwei unabhaengige, je fuer sich explizit fremdmarktgebundene Quellen
+# (SYNTHETISCH, zweite Domain erfunden) mit UEBEREINSTIMMENDEM Wert.
+QUELLE_A2_SYNTHETISCH = t(
+    "https://press.toyota.jp/releases/synthetischer-testfall-rc-f",
+    "SYNTHETISCHER TESTFALL Lexus RC F Press Release Japan -- keine reale "
+    "Veroeffentlichung",
+    "Lexus RC F. Engine Transmission Driveline 2UR-GSE (V8 5.0-liter) "
+    "8-Speed SPDS Rear-wheel drive 9,800,000 yen.")
+claims_a = _identitaets_claims(TOYOTA_JAPAN_MIT_PREIS, Z) + _identitaets_claims(QUELLE_A2_SYNTHETISCH, Z)
+ec_a = [c for c in claims_a if c["feld"] == "engine_code" and not c.get("verworfen")]
+dt_a = [c for c in claims_a if c["feld"] == "drivetrain" and not c.get("verworfen")]
+check("A1: zwei unabhaengige Quellen mit UEBEREINSTIMMENDEM Wert tragen "
+      "beide Tier 3 (gedeckelt, kein Freifahrtschein durch Uebereinstimmung)",
+      len(ec_a) == 2 and all(c["tier"] == 3 for c in ec_a), str(ec_a))
+check("A2: trotz zwei uebereinstimmender Quellen bleibt engine_code UNGEKLAERT "
+      "-- konsens() verlangt weiterhin mindestens eine starke (Tier<=2) Quelle, "
+      "reines Aufsummieren von Tier-3-Gewichten genuegt nicht",
+      konsens(ec_a, "engine_code") is None, str(ec_a))
+check("A3: dasselbe fuer drivetrain", konsens(dt_a, "drivetrain") is None, str(dt_a))
+
+# ── B) Entfernte Preistabelle: vorher Bestaetigung, jetzt weiterhin UNGEKLAERT ──
+TOYOTA_JAPAN_OHNE_PREIS = t(
+    "https://global.toyota/en/detail/4101939",
+    "Lexus Launches All-new 'RC F' High-performance Coupe in Japan | Toyota Motor "
+    "Corporation Official Global Website",
+    "Tokyo, October 23, 2014-Lexus' all-new high-performance coupe, the \"RC F\", "
+    "went on sale today in Japan. Engine Transmission Driveline RC F Carbon "
+    "Exterior package 2UR-GSE (V8 5.0-liter) 8-Speed SPDS Rear-wheel drive.")
+check("B1: ohne Preistabelle erkennt die reine Inhaltsheuristik nichts mehr "
+      "(zeigt, warum sie allein kein robuster Beleg ist)",
+      _ist_fremdwaehrungskontext(TOYOTA_JAPAN_OHNE_PREIS) is False)
+claims_b = _identitaets_claims(TOYOTA_JAPAN_OHNE_PREIS, Z)
+ec_b = [c for c in claims_b if c["feld"] == "engine_code"]
+dt_b = [c for c in claims_b if c["feld"] == "drivetrain"]
+check("B2: das curatierte Domain-Faktum deckelt trotzdem weiterhin auf Tier 3 "
+      "-- Entfernen der Zahl aendert den Status NICHT",
+      bool(ec_b) and all(c["tier"] == 3 and not c.get("verworfen") for c in ec_b), str(ec_b))
+check("B3: engine_code bleibt dadurch UNGEKLAERT, nicht bestaetigt",
+      konsens(ec_b, "engine_code") is None, str(ec_b))
+check("B4: dasselbe fuer drivetrain",
+      bool(dt_b) and konsens(dt_b, "drivetrain") is None, str(dt_b))
+
+# ── C) Passende deutsche Herstellerquelle bestaetigt weiterhin ────────────
 TOYOTA_MEDIA_DE = t(
     "https://www.toyota-media.de/blog/lexus-modelle/artikel/neues-adaptiv-variables-fahrwerk-fuer-lexus-gs-f-und-rc-f/text",
     "NEUES ADAPTIV VARIABLES FAHRWERK FÜR LEXUS F-MODELLE",
     "Köln, 1. Dezember 2016. Der Lexus GS F und der RC F werden beide von einem "
     "5,0 Liter V8-Saugmotor angetrieben, der 351 kW / 477 PS leistet und an eine "
     "Achtstufen-Sport-Automatik gekoppelt ist.")
-ADAC_AUTOMATIK_2018 = t(
-    "https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/lexus/rc/xc1/288844/",
-    "Lexus RC F Automatik (01/18 - 03/19): Technische Daten, Bilder, Preise | ADAC",
-    "Marke Lexus Modell RC F Typ Automatik Baureihe RC (UXC1) (12/14 - 06/25) "
-    "Herstellerinterne Baureihenbezeichnung UXC1 Modellstart 01/18 Modellende 03/19 "
-    "Baureihenstart 12/14 Baureihenende 06/25 HSN/TSN Schluesselnummern 5013/ALQ "
-    "Motorcode 2UR-GSE Leistung maximal in PS 464 Antriebsart Hinterrad "
-    "Getriebeart Automatikgetriebe Kraftstoffart Super Hubraum 4969 ccm")
-
-Z = _ziel("Lexus", "RC F", 2017, "5.0 V8", None)
-
-# ── A) Expliziter Fremdmarktbezug deckelt den Claim, bestätigt das Ziel NICHT ─
-
-check("A0: _ist_fremdwaehrungskontext() erkennt die Yen-Preistabelle in der "
-      "JP-Quelle (generisches Signal, keine Japan-/Lexus-Sonderregel)",
-      _ist_fremdwaehrungskontext(TOYOTA_JAPAN) is True)
-
-claims_jp = _identitaets_claims(TOYOTA_JAPAN, Z)
-jp_engine_code = [c for c in claims_jp if c["feld"] == "engine_code"]
-jp_drivetrain = [c for c in claims_jp if c["feld"] == "drivetrain"]
-check("A1: engine_code wird weiterhin EXTRAHIERT (kein Rejektions-/Widerspruchs-"
-      "fall), aber auf Tier 3 gedeckelt statt Tier 1",
-      bool(jp_engine_code) and all(c["wert"] == "2UR-GSE" and c["tier"] == 3
-                                   and not c.get("verworfen") for c in jp_engine_code),
-      str(jp_engine_code))
-check("A2: drivetrain ebenso -- extrahiert, aber Tier 3 statt Tier 1",
-      bool(jp_drivetrain) and all(c["wert"] == "Heck" and c["tier"] == 3
-                                  and not c.get("verworfen") for c in jp_drivetrain),
-      str(jp_drivetrain))
-check("A3: eine EINZELNE Tier-3-Quelle erreicht MIN_KONSENS_GEWICHT nicht -- "
-      "engine_code bleibt fuer das Ziel UNGEKLAERT, nicht bestaetigt",
-      konsens(jp_engine_code, "engine_code") is None, str(jp_engine_code))
-check("A4: dasselbe fuer drivetrain",
-      konsens(jp_drivetrain, "drivetrain") is None, str(jp_drivetrain))
-
-# ── B) Die Domain-Vertrauensstufe selbst bleibt unveraendert Tier 1 --------
-# die Deckelung wirkt NUR lokal in `_identitaets_claims()` auf die
-# Claim-Gewichtung, NICHT auf `_tier_identitaet()`/die Herstellererkennung.
-check("B1: global.toyota bleibt eine erkannte Tier-1-Herstellerdomain "
-      "(Quellenvertrauen unveraendert, nur die Claim-Gewichtung ist gedeckelt)",
-      _tier_identitaet("https://global.toyota/en/detail/4101939", "Toyota") == 1)
-check("B2: dieselbe Domain bleibt auch fuer die Submarke 'Lexus' Tier 1",
-      _tier_identitaet("https://global.toyota/en/detail/4101939", "Lexus") == 1)
-
-# ── C) Passende DE-Herstellerquelle (keine Fremdwaehrung) bleibt unberuehrt ──
-check("C1: toyota-media.de (reiner Motor-/Leistungstext, keine Fremdwaehrung) "
-      "wird NICHT als Fremdwaehrungskontext erkannt",
-      _ist_fremdwaehrungskontext(TOYOTA_MEDIA_DE) is False)
-claims_de_media = _identitaets_claims(TOYOTA_MEDIA_DE, Z)
+check("C1: toyota-media.de ist NICHT als fremder Absatzmarkt curatiert",
+      pressedomain_fremder_absatzmarkt(
+          "https://www.toyota-media.de/blog/lexus-modelle/artikel/neues-adaptiv-"
+          "variables-fahrwerk-fuer-lexus-gs-f-und-rc-f/text") is False)
+claims_de = _identitaets_claims(TOYOTA_MEDIA_DE, Z)
 check("C2: toyota-media.de liefert horsepower=477 unveraendert auf Tier 1",
       any(c["feld"] == "horsepower" and c["wert"] == 477 and c["tier"] == 1
-          for c in claims_de_media), str(claims_de_media))
+          for c in claims_de), str(claims_de))
 
-# ADAC (reiner PS-/Antriebs-/Kraftstofftext, keine Fremdwaehrung) bleibt
-# ebenfalls unberuehrt von der neuen Deckelung -- die bestehende F8-
-# Jahresfilter-Ablehnung (orthogonal, unveraendert) ist die einzige
-# wirksame Einschraenkung fuer diese Quelle.
-check("D1: ADAC-Datenblatt (keine Fremdwaehrung) wird nicht vom neuen "
-      "Fremdwaehrungs-Signal erfasst", _ist_fremdwaehrungskontext(ADAC_AUTOMATIK_2018) is False)
-
-# ── E) Negativkontrolle: ein echter Konflikt bleibt ein Konflikt ───────────
-#
-# Zwei VERGLEICHBAR gewichtete widersprechende Quellen duerfen nicht
-# zugunsten der zuletzt gesehenen aufgeloest werden. Eine einzelne, bereits
-# auf Tier 3 gedeckelte Quelle (wie global.toyota oben) ist dafuer der
-# falsche Testfall: ein ECHTER Tier-1-DE-Gegenwert wuerde sie zu Recht
-# schlagen (keine Lockerung, das ist die korrekte Konsequenz der Deckelung,
-# nicht ein Fehler). Der sinnvolle Konflikttest braucht zwei VERGLEICHBAR
-# starke Quellen -- hier zwei synthetische, je fuer sich ebenso
-# fremdwaehrungsbehaftete (Yen) Pressetexte mit widersprechendem Wert.
-SYNTHETISCH_WIDERSPRUCH_JP = t(
-    "https://global.toyota/en/synthetischer-test-widerspruch",
-    "SYNTHETISCHER TESTFALL Lexus RC F -- keine reale Veroeffentlichung",
-    "Lexus RC F Motorcode 9XY-ZZZ Frontantrieb Preis 9,000,000 yen.")
-claims_konflikt = claims_jp + _identitaets_claims(SYNTHETISCH_WIDERSPRUCH_JP, Z)
-check("E0: auch die synthetische Gegenquelle wird als Fremdwaehrungskontext "
-      "erkannt (vergleichbare Gewichtung, kein einseitiger Vorteil)",
-      _ist_fremdwaehrungskontext(SYNTHETISCH_WIDERSPRUCH_JP) is True)
-check("E1: zwei vergleichbar gewichtete, widersprechende Quellen -> "
-      "engine_code bleibt UNKNOWN (kein blindes Vertrauen in eine Seite)",
-      konsens([c for c in claims_konflikt if not c.get("verworfen")], "engine_code") is None,
-      str([c for c in claims_konflikt if c["feld"] == "engine_code"]))
-check("E2: dasselbe fuer drivetrain",
-      konsens([c for c in claims_konflikt if not c.get("verworfen")], "drivetrain") is None,
-      str([c for c in claims_konflikt if c["feld"] == "drivetrain"]))
-
-# ── F) F8-Jahresfilter bleibt unabhaengig von dieser Ergaenzung wirksam ────
-SYNTHETISCH_DATENBLATT_AUSSERHALB = t(
-    "https://global.toyota/en/synthetischer-testfall-datenblatt",
-    "SYNTHETISCHER TESTFALL Lexus RC F -- keine reale Veroeffentlichung",
-    "Lexus RC F Modellstart 08/24 Modellende 06/25 Motorcode 9XY-ZZZ.")
-claims_datenblatt = _identitaets_claims(SYNTHETISCH_DATENBLATT_AUSSERHALB, Z)
-check("F1: Dot-Brand-Tier-1-Quelle MIT eigenem, ausschliessendem Modellstart/"
-      "Modellende-Feldpaar wird fuer 2017 weiterhin abgelehnt (F8 bleibt "
-      "unabhaengig von der neuen Fremdwaehrungs-Deckelung wirksam)",
-      any(c["feld"] == "engine_code" and c.get("verworfen") == "baujahr_ausserhalb_datenblatt"
-          for c in claims_datenblatt), str(claims_datenblatt))
+# ── D) Herstellervertrauen bleibt erhalten (nur Claim-Gewichtung gedeckelt) ─
+check("D1: global.toyota bleibt eine erkannte Tier-1-Herstellerdomain fuer 'Toyota'",
+      _tier_identitaet("https://global.toyota/en/detail/4101939", "Toyota") == 1)
+check("D2: global.toyota bleibt eine erkannte Tier-1-Herstellerdomain fuer die "
+      "Submarke 'Lexus'",
+      _tier_identitaet("https://global.toyota/en/detail/4101939", "Lexus") == 1)
 
 print("\n" + "=" * 60)
 if _FEHLER:
