@@ -17,16 +17,33 @@ toyota-media.de -- unveraendert aus
 test_rc_f_herstellerquelle_vollstaendiger_replay.py zitiert -- PLUS das
 Lexus-Original-Rettungsdatenblatt aus test_rc_f_lexus_originalbeleg.py).
 
+NACHTRAG (ENFAL-Folgeauftrag "Paketabnahme um das vorhandene Serviceheft
+vervollstaendigen", 2026-11): die ERSTE Fassung dieser Abnahme fuehrte die
+"wartung"-Kategorie nur mit CARWIKI_OELWECHSEL und schloss daraus, F10
+bleibe fuer Wartung offen. Das war UNVOLLSTAENDIG -- das reale, bereits vor
+dieser Abnahme gesicherte Lexus-Schweiz-"Garantie- und Serviceheft"
+(tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf, woertlich unveraendert
+aus test_rc_f_lexus_care_wartungsplan_real.py zitiert, EIN Treffer/EINE URL,
+keine Fragment-URL-Aufteilung) fehlte im berichteten Quellensatz. Mit beiden
+Quellen zusammen (unten ergaenzt) zeigt der echte Produktpfad DREI sichtbare
+Wartungshinweise (Automatikgetriebeöl, Oel und filterwechsel, Ventilspiel),
+jeweils mit dem dokumentbezogenen Marktvorbehalt ("falls fuer Ihren Markt
+zutreffend" -- app/technical_research.py `_wartung_marktvorbehalt()`, seit
+Commit 1a24e3d). F10-Wartung ist damit fuer DIESEN Quellensatz NICHT mehr
+offen -- F10-Schwachstelle bleibt getrennt davon offen (keine
+Schwachstellen-Quelle vorhanden, keine neue Recherche in dieser Runde).
+
 Kein field_evidence wird manuell vorbestaetigt, keine fertige Identitaet
 oder Empfehlung wird injiziert -- beides entsteht ausschliesslich aus dem
 echten Lauf von `run_kaufcheck()` mit diesen Quellen.
 
 STOP-Grenzen: kein bezahlter Aufruf, keine Production-DB, keine
-Veroeffentlichung. "Rueckruf"/"Schwachstelle" bleiben LEER (F8/F10 historisch
-belegt bzw. offen, s. Abschlussbericht) -- keine neue Recherche in dieser
-Runde. Dieser Offline-Replay beweist WEDER echte Live-Auffindbarkeit der
-Quellen durch Tavily NOCH die Qualitaet eines echten Gemini-Berichtstexts
-(der Gemini-Stub liefert eine feste, erkennbar synthetische Berichtszeile).
+Veroeffentlichung. "Rueckruf"/"Schwachstelle" bleiben LEER (F8 historisch
+belegt, F10-Schwachstelle offen, s. Abschlussbericht) -- keine neue
+Recherche in dieser Runde. Dieser Offline-Replay beweist WEDER echte
+Live-Auffindbarkeit der Quellen durch Tavily NOCH die Qualitaet eines
+echten Gemini-Berichtstexts (der Gemini-Stub liefert eine feste, erkennbar
+synthetische Berichtszeile).
 
     python scripts/test_isolated.py test_rc_f_paketabnahme_f1_f18.py
 """
@@ -149,6 +166,27 @@ LEXUS_PDF = t(
     "Lexus RC F Rettungskarte",
     "Lexus RC F\n(UXC1 (EU, M), ab 09/2014)\nStand: 10/2014\n"
     "Lexus RC F (UXC1 (EU, ab 09/2014)")
+# NACHTRAG: bereits gesichertes Lexus-Schweiz-Serviceheft (woertlich,
+# unveraendert aus test_rc_f_lexus_care_wartungsplan_real.py zitiert -- EIN
+# Treffer, EINE URL, volle zusammenhaengende Seite 4+15/16 desselben PDFs,
+# keine kuenstliche Fragment-URL-Aufteilung).
+LEXUS_CH_MODELLUEBERSICHT = t(
+    "https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf#page=4",
+    "Lexus Garantie- und Serviceheft (Schweiz, Deutsch) -- Betroffene Modelle,"
+    " Lexus Care-Wartungsplan und zusätzliche Inspektionen",
+    "BETROFFENE MODELLE Produktionsstart RC 300h (Oktober 2015 ~) RC F "
+    "(September 2014 ~) LC 500 (März 2017 ~) Falls für Ihren Markt zutreffend.\n\n"
+    "LEXUS CARE-WARTUNGSPLAN Für ES 300h, IS 300h, LS 500, LS 500h, LC 500, "
+    "LC 500h, NX 350h, NX 450h+, RX 300, RX 350, RX 350L, RX 450h, RX 450hL, "
+    "RC 300h, RC F , UX 200 und UX 250h\n"
+    "Lexus Care-Komplettservice: alle 30.000 km oder 2 Jahre, je nachdem, was "
+    "zuerst eintritt. Lexus Care-Zwischenservice: alle 15.000 km oder einmal "
+    "jährlich, je nachdem, was zuerst eintritt. Dieser Service beinhaltet "
+    "einen Öl- und Filterwechsel sowie zusätzliche Inspektionen von Lenkung, "
+    "Bremsen, Beleuchtung und Reifen.\n\n"
+    "Lexus RC F zusätzliche Inspektionen laut Lexus Care-Wartungsplan: "
+    "Ventilspiel (Inspektion mit Messfühler, LC 500, RC F) alle 90.000 km "
+    "oder 6 Jahre. Automatikgetriebeöl alle 60.000 km oder 4 Jahre.")
 
 ALLE_IDENTITAETSQUELLEN = [ROLLING_HU, ADAC_ULTIMATE, ADAC_AUTOMATIK, CARWIKI, AMS,
                            TOYOTA_JAPAN, TOYOTA_MEDIA_DE, LEXUS_PDF]
@@ -156,7 +194,8 @@ ALLE_IDENTITAETSQUELLEN = [ROLLING_HU, ADAC_ULTIMATE, ADAC_AUTOMATIK, CARWIKI, A
 
 async def main() -> None:
     web_fixture = {"identitaet": ALLE_IDENTITAETSQUELLEN,
-                  "wartung": [CARWIKI_OELWECHSEL], "schwachstelle": [], "rueckruf": []}
+                  "wartung": [CARWIKI_OELWECHSEL, LEXUS_CH_MODELLUEBERSICHT],
+                  "schwachstelle": [], "rueckruf": []}
     r = await _lauf(KaufCheckRequest(
         marke="Lexus", modell="RC F", baujahr=2017, kilometerstand=82000, motor="5.0 V8",
         kraftstoff="Benzin", leistung_ps=477, getriebe="Automatik", antrieb="Heck",
@@ -221,16 +260,19 @@ async def main() -> None:
     #      der Mechanismus trotzdem wirksam ist, wenn er greifen wuerde). ──
     andere_generation = [a for a in abgelehnt if a.get("grund") == "andere_generation"]
     source_quality = [a for a in abgelehnt if a.get("grund") == "source_quality"]
-    check("2a) ehrlicher Befund fuer DIESEN realen Quellensatz: die einzige "
-          "abgelehnte Wartungsquelle (carwiki.de/Oelwechsel) wird NICHT "
-          "wegen 'andere_generation' verworfen, sondern wegen "
-          "'source_quality' (Quellenschwelle fuer die Kategorie 'wartung', "
-          "UNABHAENGIG von UXC1/XC1 -- bereits VOR dem Generationsfilter "
-          "geprueft, s. app/technical_research.py Zeile ~4231-4243). Keine "
-          "unbemerkte, durch diese Runde neu verursachte Verlust-Illusion",
-          len(andere_generation) == 0 and any(
-              "lexus-rc-oelwechsel" in (a.get("url") or "") for a in source_quality),
-          f"andere_generation={andere_generation!r} source_quality={source_quality!r}")
+    print("--- abgelehnte Wartungs-/Schwachstellen-Fakten (vollstaendig) ---")
+    for a in abgelehnt:
+        if a.get("kategorie") in ("wartung", "schwachstelle"):
+            print(" ", a)
+    check("2a) ehrlicher Befund fuer DIESEN vollstaendigen Quellensatz: KEINE "
+          "Wartungsquelle wird wegen 'andere_generation' verworfen (weder "
+          "carwiki.de/Oelwechsel -- 'source_quality' -- noch das neu "
+          "ergaenzte Lexus-Schweiz-Serviceheft, dessen einzelne Satzfragmente "
+          "aus eigenstaendigen Gruenden wie 'no_component'/"
+          "'no_maintenance_interval' abgelehnt werden, bevor der "
+          "Generationsfilter ueberhaupt greift) -- keine unbemerkte, durch "
+          "diese Runde neu verursachte Verlust-Illusion",
+          len(andere_generation) == 0, f"andere_generation={andere_generation!r}")
     from app.technical_research import _fremde_generation
     demo_fremd = t("https://www.example-fachmedium.de/lexus-rc-usc10-wartung",
                    "Lexus RC USC10 Wartungsplan",
@@ -255,17 +297,36 @@ async def main() -> None:
 
     # ── 4) Wartungshinweise + Marktvorbehalt tatsaechlich sichtbar ─────────
     hat_marktvorbehalt = "keine belastbare Marktpreis" in r.bericht
-    hat_wartungsabschnitt = "Wartungsintervalle" in r.bericht or "Ölwechsel" in r.bericht
-    check("4a) sichtbarer Marktvorbehalt im Bericht (keine erfundene "
-          "Marktpreisbewertung ohne Marktdaten)", hat_marktvorbehalt)
-    print("--- Wartungs-/Schwachstellen-Satz im Bericht ---")
-    for zeile in r.bericht.splitlines():
-        if "Wartung" in zeile or "Schwachstelle" in zeile or "Ölwechsel" in zeile:
-            print(" ", zeile)
-    check("4b) der Bericht macht eine EXPLIZITE Aussage zu Wartungsintervallen "
-          "(bestaetigt ODER ausdruecklich 'keine ausreichend belastbaren "
-          "... bestaetigt') -- keine stillschweigende Leerstelle",
-          hat_wartungsabschnitt)
+    check("4a) sichtbarer allgemeiner Marktvorbehalt im Bericht (keine "
+          "erfundene Marktpreisbewertung ohne Marktdaten)", hat_marktvorbehalt)
+
+    wartung_insights = [i for i in r.insights if i.kategorie == "web_wartung"]
+    titel_erwartet = {"Automatikgetriebeöl", "Oel und filterwechsel", "Ventilspiel"}
+    titel_tatsaechlich = {i.titel.split(":")[0] for i in wartung_insights}
+    check("4b) alle DREI Wartungshinweise aus dem Lexus-Schweiz-Serviceheft "
+          "erscheinen tatsaechlich (Automatikgetriebeoel, Oel und "
+          "filterwechsel, Ventilspiel) -- nicht nur 'keine bestaetigt'",
+          titel_tatsaechlich == titel_erwartet, f"titel={titel_tatsaechlich!r}")
+    print("--- web_wartung Insights (vollstaendig) ---")
+    for i in wartung_insights:
+        print(f"  [{i.titel}] {i.beschreibung}")
+    check("4c) die vollstaendigen Intervalle/Bedingungen stehen in der "
+          "Beschreibung (nicht nur der Bauteilname) -- '60.000 km', "
+          "'15.000 km', '90.000 km' je im passenden Hinweis sichtbar",
+          any("60.000 km" in i.beschreibung for i in wartung_insights)
+          and any("15.000 km" in i.beschreibung for i in wartung_insights)
+          and any("90.000 km" in i.beschreibung for i in wartung_insights))
+    check("4d) der DOKUMENTBEZOGENE Marktvorbehalt (aus dem Dokumenttext "
+          "selbst, 'falls für Ihren Markt zutreffend', NICHT aus der "
+          "Domainendung -- s. _wartung_marktvorbehalt(), Commit 1a24e3d) "
+          "steht in JEDEM der drei Wartungshinweise",
+          all('falls für Ihren Markt zutreffend' in i.beschreibung
+              and "nicht bestätigt" in i.beschreibung for i in wartung_insights))
+    check("4e) carwiki.de/Oelwechsel bleibt weiterhin an 'source_quality' "
+          "ausgeschlossen (UNVERAENDERT durch die Ergaenzung -- die neue "
+          "Quelle verdraengt die alte nicht, beide werden unabhaengig "
+          "geprueft)",
+          any("lexus-rc-oelwechsel" in (a.get("url") or "") for a in source_quality))
 
     # ── 5) Empfehlung und Bericht widersprechen sich nicht ────────────────
     ueberschrift_limited = "eingeschränkt" in r.bericht.lower() or "einschränkung" in r.bericht.lower()
