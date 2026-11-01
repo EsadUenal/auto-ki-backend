@@ -321,14 +321,25 @@ _ctxF = build_laufleistungskontext(Req(baujahr=2009, kilometerstand=160_000),
 _wF = _ctxF.wartungshinweise[0]
 check("F1 Status 'darueber'", _wF.status == STATUS_DARUEBER)
 check("F2 der Text formuliert eine PRÜFUNG, keine Feststellung",
-      "sollte geprüft werden, ob die Wartung bereits durchgeführt wurde" in _wF.hinweis)
+      "Nachweis über die Durchführung zeigen lassen" in _wF.hinweis)
 check("F3 'darueber' behauptet NICHT 'nicht gemacht'",
       _treffer(_wF.hinweis, VERBOTEN_FAELLIGKEIT) == [])
 check("F4 der Text sagt ausdrücklich, dass die Daten dazu schweigen",
-      "sagen darüber nichts aus" in _wF.hinweis)
-check("F5 Differenz korrekt", _wF.differenz_km == 40_000)
-check("F6 kein Modulo: verglichen wird gegen den ERSTEN Punkt, nicht 160.000 % 120.000",
-      _wF.punkt_km == 120_000 and "40.000 km zurück" in _wF.hinweis)
+      "geht aus den vorliegenden Daten nicht hervor" in _wF.hinweis)
+check("F5 Differenz deterministisch berechnet (internes Feld, NICHT im "
+      "angezeigten Text -- s. F6)", _wF.differenz_km == 40_000)
+# ENFAL-Produktionsbefund (01.11.2026, L2): "40.000 km zurück" im Text wäre
+# GENAU der beanstandete Bug -- ein wiederkehrendes Intervall ohne bekannten
+# letzten Service erlaubt keine Rückstandsrechnung, auch wenn sie (wie hier)
+# arithmetisch korrekt gegen den ERSTEN Punkt bliebe. `punkt_km` bleibt der
+# Beleg, dass weiterhin NICHT moduliert wird; der Text selbst nennt keine
+# berechnete Distanz mehr.
+check("F6 kein Modulo: verglichen wird gegen den ERSTEN Punkt (120.000, "
+      "nicht 160.000 % 120.000) -- UND keine Rückstandszahl mehr im Text "
+      "('zurück' kam nur zusammen mit der berechneten Distanz vor, die "
+      "Intervallangabe '(120.000 km)' selbst bleibt erhalten, s. F11-äquivalent)",
+      _wF.punkt_km == 120_000 and "zurück" not in _wF.hinweis
+      and not re.search(r"\d[\d.]*\s*km\s+zur", _wF.hinweis))
 _src = inspect.getsource(__import__("app.laufleistung", fromlist=["x"]))
 def _nur_code(quelltext: str) -> str:
     """Quelltext ohne Docstrings und ohne Kommentarzeilen.
@@ -549,7 +560,8 @@ check("P3 genau eine Wartungsaktion je Bereich (kein Duplikat durch P2-5)",
       len([a for a in _ak_p.verkaeuferfragen.fahrzeugspezifisch if a.kategorie == "wartung"]) == 1
       and len([a for a in _ak_p.dokumente.fahrzeugspezifisch if a.kategorie == "wartung"]) == 1)
 check("P4 der laufleistungsbezogene, konkretere Text gewinnt",
-      any("liegt rund" in a.aktion for a in _ak_p.dokumente.fahrzeugspezifisch))
+      any("liegt bei dieser Laufleistung bereits hinter dem Fahrzeug" in a.aktion
+          for a in _ak_p.dokumente.fahrzeugspezifisch))
 check("P5 keine Besichtigungs-/Probefahrtaktion aus einem Wartungspunkt",
       not [a for a in list(_ak_p.besichtigung.fahrzeugspezifisch)
            + list(_ak_p.probefahrt.fahrzeugspezifisch) if a.kategorie == "wartung"])

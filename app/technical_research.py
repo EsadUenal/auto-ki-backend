@@ -69,7 +69,7 @@ from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleI
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
-    _domain_von, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
+    _domain_von, _marke_eigene_domain, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
     curate_results, ist_amtliche_quelle, registrable_domain, score_domain, tavily_search,
 )
 
@@ -267,10 +267,10 @@ def _tier(url: str) -> int:
 # Domain score_domain()==0 und zählt für `_identitaet_belegt()` nicht als
 # Stützquelle. Keine neue Markenliste (ausdrücklich verworfen) — stattdessen
 # eine GENERISCHE, anfragegebundene Erkennung über die Public-Suffix-bewusste
-# REGISTRIERBARE Domain (app/web_search.py:`_psl_teile`): deren Kern-Label muss
-# dem NORMALISIERTEN Zielmarkennamen aus der Anfrage EXAKT entsprechen — die
-# Subdomain davor ist FREI (Media-/Press-/Newsroom-/Länder-Subdomains der
-# echten Herstellerdomain zählen automatisch mit, ohne Sonderfall je Marke):
+# REGISTRIERBARE Domain: deren Kern-Label muss dem NORMALISIERTEN
+# Zielmarkennamen aus der Anfrage EXAKT entsprechen — die Subdomain davor ist
+# FREI (Media-/Press-/Newsroom-/Länder-Subdomains der echten Herstellerdomain
+# zählen automatisch mit, ohne Sonderfall je Marke):
 #   "lexus.de"            -> Label "lexus"      == "lexus"    -> True
 #   "media.lexus.com"     -> Label "lexus"      == "lexus"    -> True (Subdomain frei)
 #   "www.lexus.co.uk"     -> Label "lexus"      == "lexus"    -> True (PSL: ".co.uk" korrekt als Suffix erkannt)
@@ -278,35 +278,14 @@ def _tier(url: str) -> int:
 #   "lexus.fanblog.de"    -> Label "fanblog"     != "lexus"   -> False ("lexus" ist nur Subdomain eines FREMDEN Hosts)
 # Naiver `split(".")[0]` hätte bei Mehrteil-TLDs (`.co.uk`, `.com.au`) und bei
 # Subdomains beliebig danebenliegen können — deshalb PSL statt Heuristik.
-# Bewusst NUR additiv zur Identitätsstufe hier (`_tier_identitaet`) — ändert
-# NICHT `score_domain()` selbst und wirkt damit NICHT auf Markt-/Rückruf-/
-# Schwachstellen-/Wartungs-Faktenbewertung (bewusst unangetastet, Modul-Scope).
-def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
-    if not url_oder_domain or not marke:
-        return False
-    marke_norm = _norm(marke).replace(" ", "")
-    if not marke_norm:
-        return False
-    teile = _psl_teile(url_oder_domain)
-    if teile.domain and teile.domain.replace("-", "") == marke_norm:
-        return True
-    # F9-Folgefix (RC-F, 2026-10-31): ICANN-Dot-Brand-Endungen ("global.toyota",
-    # ggf. ".bmw"/".mercedes-benz"/...) tragen den Markennamen selbst in der
-    # TLD statt in einem Label davor -- `_psl_teile("global.toyota")` liefert
-    # domain="global", suffix="toyota", der obige Label-Vergleich trifft also
-    # NIE. Eine solche Endung ist beim jeweiligen Markenbetreiber als
-    # geschlossene Registry geführt (nur der Hersteller selbst kann darunter
-    # registrieren) -- derselbe generische Markenabgleich wie oben, nur gegen
-    # die TLD statt gegen das Label, keine neue Markenliste. Real belegt:
-    # Toyota Motor Corporations offizielle Pressemitteilung vom 23.10.2014
-    # liegt unter genau dieser Domain (global.toyota/en/detail/4101939).
-    if teile.suffix and teile.suffix.replace("-", "") == marke_norm:
-        return True
-    # F17-Fix (RC-F-Ursachenanalyse, 2026-10-25): eigenständig benannte,
-    # einzeln belegte Presse-Domain (siehe `app.web_search._HERSTELLER_
-    # PRESSEDOMAINS`) -- dieselbe, einzige Zuordnung wie in `score_domain()`/
-    # `_ist_herstellerseite()`, keine zweite, abweichende Liste.
-    return _pressedomain_gehoert_marke(url_oder_domain, marke_norm)
+# ENFAL-Produktionsbefund (01.11.2026, L4): dieselbe Funktion wird jetzt auch
+# von der Anzeige-Qualitätsstufe (`_qualitaets_label()`) gebraucht --
+# `app/web_search.py` importiert aber bereits NICHT von hier (dieses Modul
+# importiert umgekehrt VON `app/web_search.py`), ein Rückimport wäre zirkulär.
+# Die Funktion lebt deshalb jetzt dort (unverändert, inkl. derselben
+# PSL-/Dot-Brand-/Pressedomain-Logik) und wird hier nur noch re-importiert
+# (s. Importblock oben, `from app.web_search import (..., _marke_eigene_domain, ...)`)
+# -- EINE Logik, keine zweite, abweichende Kopie.
 
 
 # ENFAL-Folgeauftrag ("strukturierte Hersteller-Identifikation als Evidenz
@@ -837,7 +816,12 @@ def _confidence_aus_domains(anzahl_domains: int, bester_score: int) -> str:
     return "niedrig"
 
 
-def _quellen_aus(treffer: list[dict], limit: int = 3) -> list[EvidenceQuelle]:
+def _quellen_aus(treffer: list[dict], limit: int = 3, *, marke: str | None = None) -> list[EvidenceQuelle]:
+    """`marke` optional (Default None, rückwärtskompatibel): ENFAL-Produktions-
+    befund (01.11.2026, L4) -- ohne Zielmarke blieb z.B. lexus.ch als "Sonstige
+    Quelle" statt "Hersteller" gelabelt, obwohl dieselbe Marke+Domain-Zuordnung
+    für die Vertrauensschwelle bereits korrekt griff. Reine Anzeige-
+    Konsistenz, s. `_qualitaets_label()`."""
     out: list[EvidenceQuelle] = []
     gesehen: set[str] = set()
     for r in sorted(treffer, key=lambda x: -score_domain(x.get("url") or "")):
@@ -848,7 +832,7 @@ def _quellen_aus(treffer: list[dict], limit: int = 3) -> list[EvidenceQuelle]:
         gesehen.add(d)
         out.append(EvidenceQuelle(typ="web_technik", url=url,
                                   titel=(r.get("title") or d)[:120],
-                                  qualitaet=_qualitaets_label(url)))
+                                  qualitaet=_qualitaets_label(url, marke)))
         if len(out) >= limit:
             break
     return out
@@ -2708,7 +2692,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         motor=motor_bestaetigt, kraftstoff=kraftstoff, leistung_ps=leistung,
         antrieb=antrieb, powertrain=powertrain,
         getriebe=getriebe, getriebe_detail=getriebe_detail, motorcode=motorcode,
-        confidence=conf, belegende_domains=domains, quellen=_quellen_aus(stuetzend),
+        confidence=conf, belegende_domains=domains, quellen=_quellen_aus(stuetzend, marke=marke),
         feldwerte=feldwerte, identitaet_konfidenz=identitaet_konf,
         akzeptierte_claims=akzeptiert, abgelehnte_claims=abgelehnt,
         identitaets_pfad=pfad,
@@ -4422,7 +4406,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
 
     fakten: list[WebFakt] = []
     for schluessel, e in kandidaten.items():
-        quellen = _quellen_aus(e["treffer"])
+        quellen = _quellen_aus(e["treffer"], marke=marke)
         if not quellen:
             continue
         domains = len({_domain_von(q.url or "") for q in quellen})
@@ -5122,7 +5106,7 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
             # im Rückgabewert von `phase_fakten()` steht) um die zusätzlichen,
             # unabhängig bestätigenden Candidate-Quellen angereichert.
             beitraege = [k for k in gruppe if k["family"] in stimmen]
-            neue_quellen = _quellen_aus([k["treffer"] for k in beitraege])
+            neue_quellen = _quellen_aus([k["treffer"] for k in beitraege], marke=marke)
             vorhandene_urls = {q.url for q in ziel_fakt.quellen}
             for q in neue_quellen:
                 if q.url not in vorhandene_urls:
@@ -5139,7 +5123,7 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                 kategorie="wartung", bauteil=beitraege[0]["bauteil"],
                 aussage=beitraege[0]["claim"], confidence="mittel",
                 beleglage="mehrfach_unabhaengig",
-                quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+                quellen=_quellen_aus([k["treffer"] for k in beitraege], marke=marke)))
         elif status == WARTUNG_STATUS_CORROBORATED:
             # Produktentscheidung (Fortsetzungsauftrag, "Gestützte Wartungs-
             # hinweise sichtbar machen"): CORROBORATED wird jetzt IMMER sicht-
@@ -5167,7 +5151,7 @@ def _wartung_candidate_fakten(treffer: list[dict], *, marke: str | None, modell:
                     kategorie="wartung", bauteil=beitraege[0]["bauteil"],
                     aussage=beitraege[0]["claim"], confidence="niedrig",
                     beleglage="uebereinstimmend_unbestaetigt",
-                    quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+                    quellen=_quellen_aus([k["treffer"] for k in beitraege], marke=marke)))
         elif status == WARTUNG_STATUS_MULTI_SOURCE:
             # MULTI_SOURCE (>=3 Families) bleibt NUR dann (noch) nicht sichtbar,
             # wenn der Aufrufer die Source-Upgrade-Nachrecherche noch nicht
@@ -5378,7 +5362,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                                    and _schwachstelle_failure_mode(f.aussage) != failure_mode)),
                          None)
         if ziel_fakt is not None:
-            neue_quellen = _quellen_aus([k["treffer"] for k in gruppe])
+            neue_quellen = _quellen_aus([k["treffer"] for k in gruppe], marke=marke)
             vorhandene_urls = {q.url for q in ziel_fakt.quellen}
             for q in neue_quellen:
                 if q.url not in vorhandene_urls:
@@ -5400,7 +5384,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
             fakten.append(WebFakt(
                 kategorie="schwachstelle", bauteil=bauteil_text, aussage=beitraege[0]["claim"],
                 confidence="mittel", beleglage="mehrfach_unabhaengig",
-                quellen=_quellen_aus([k["treffer"] for k in beitraege])))
+                quellen=_quellen_aus([k["treffer"] for k in beitraege], marke=marke)))
             continue
         if len(families) >= 2:
             # Nahe an/über der Schwelle, aber (noch) nicht erlaubt bzw. nicht

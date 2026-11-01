@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections import Counter
 from app.bekannte_fakten import unfall_detail, unfall_status, UNFALLFREI, UNFALL
 from app.fin_hinweis import HINWEIS_FIN
+from app.recall_filter import rueckruf_wortlaut
 
 from app.risikothemen import WARTUNG_REGULAER, ist_bekannt, risikoart
 from app.servicehistorie import (
@@ -186,7 +187,26 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     rueckrufe = [i for i in insights or [] if getattr(i, "kategorie", None) == "rueckruf"]
     if rueckrufe and all(getattr(i, "applicability", None) in ("series_only", "unclear")
                          for i in rueckrufe):
-        gruende.append("Gemeldete Rückrufe gelten für Teile der Baureihe. " + HINWEIS_FIN)
+        # ENFAL-Produktionsbefund (01.11.2026, L5a): hardcodierte bisher
+        # "Baureihe" unabhängig davon, ob überhaupt ein ENFAL-Katalogeintrag
+        # bekannt ist (canonical-only, `rueckruf_baureihe_bekannt`) UND
+        # unabhängig davon, ob die Gruppe wirklich einheitlich "series_only"
+        # ist -- "unclear" heißt "Betroffenheit nicht bestimmbar", nicht
+        # "betrifft nur einen Teil der Baureihe"; eine gemischte Gruppe
+        # (ein "series_only"- UND ein "unclear"-Rückruf) bekam trotzdem
+        # genau diese eine Formulierung für BEIDE. Nutzt jetzt denselben
+        # generischen Wortlaut wie Verkäuferfragen/Dokumente
+        # (`rueckruf_wortlaut()`, app/recall_filter.py) -- EINE Formulierung
+        # je tatsächlicher (applicability, baureihe_bekannt)-Kombination,
+        # keine pauschale Ersatzformulierung für eine gemischte Gruppe.
+        kombinationen = {(i.applicability, bool(i.rueckruf_baureihe_bekannt)) for i in rueckrufe}
+        if len(kombinationen) == 1:
+            (apl, bbk), = kombinationen
+            scope_satz = rueckruf_wortlaut(apl, baureihe_bekannt=bbk).rsplit(":", 1)[0]
+            gruende.append(f"Gemeldete Rückrufe: {scope_satz}. " + HINWEIS_FIN)
+        else:
+            gruende.append("Gemeldete Rückrufe mit unterschiedlicher Betroffenheitseinstufung "
+                           "-- Details siehe unten. " + HINWEIS_FIN)
 
     # 4) Inseratsangaben — ausdrücklich als Angaben, nicht als Tatsachen
     # Servicehistorie: der kanonische Satz aus app/servicehistorie.py, damit dieselbe

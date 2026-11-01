@@ -322,11 +322,23 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 f"zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
                 f"vorliegenden Daten nicht hervor.")
     elif status == STATUS_DARUEBER:
-        rueck = _km(kilometerstand - (bis_km if bis_km is not None else von_km))
-        kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) liegt rund "
-                f"{rueck} zurück. Bei dieser Laufleistung sollte geprüft werden, ob die "
-                f"Wartung bereits durchgeführt wurde: die vorliegenden Daten sagen "
-                f"darüber nichts aus.")
+        # ENFAL-Produktionsbefund (01.11.2026, L2): die vorige Fassung rechnete
+        # `kilometerstand - von_km` aus und nannte das Ergebnis "liegt rund X km
+        # zurück" -- bei einem WIEDERKEHRENDEN Intervall (kein `bis_km`, z.B.
+        # "alle 15.000 km") ist das keine zulässige Rückstandsrechnung: ohne
+        # bekannten letzten Servicezeitpunkt weiß niemand, wie oft das Intervall
+        # seither bereits durchlaufen wurde. Bei hoher Laufleistung wird die Zahl
+        # beliebig groß und suggeriert einen konkreten, großen Rückstand, den die
+        # Daten nicht stützen -- exakt die Fälligkeitsbehauptung, die dieser
+        # Funktion laut Docstring verboten ist. KEINE Ersatzrechnung (auch eine
+        # Modulo-Rechnung kennt den letzten Service nicht) -- das Intervall bleibt
+        # genannt, der Rückstand bleibt unberechnet.
+        kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) liegt bei "
+                f"dieser Laufleistung bereits hinter dem Fahrzeug. Ohne bekannten "
+                f"Bezug zur tatsächlichen Servicehistorie lässt sich daraus kein "
+                f"Rückstand in Kilometern berechnen. Nachweis über die Durchführung "
+                f"zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
+                f"vorliegenden Daten nicht hervor.")
     else:
         return ""
     return kern + zusatz

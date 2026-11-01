@@ -213,11 +213,57 @@ _HERSTELLER_PRESSEDOMAINS: dict[str, frozenset[str]] = {
 
 def _pressedomain_gehoert_marke(domain_oder_url: str, marke_norm: str) -> bool:
     """Prüft `_HERSTELLER_PRESSEDOMAINS` für eine BESTIMMTE, normalisierte
-    Marke -- genutzt von `app.technical_research._marke_eigene_domain()`
-    (Identitäts-Primärquellenpfad), damit beide Stellen dieselbe, einzige
-    Zuordnung lesen statt einer zweiten, abweichenden Liste."""
+    Marke -- genutzt von `_marke_eigene_domain()` (Identitäts-Primärquellenpfad),
+    damit beide Stellen dieselbe, einzige Zuordnung lesen statt einer zweiten,
+    abweichenden Liste."""
     marken = _HERSTELLER_PRESSEDOMAINS.get(registrable_domain(domain_oder_url), frozenset())
     return marke_norm in marken
+
+
+# Nur für einen einzelnen Markennamen innerhalb von `_marke_eigene_domain()` --
+# bewusst NICHT dasselbe Symbol wie `app.technical_research._norm()` (27
+# Aufrufstellen dort, allgemeiner Text-Normalisierer): dieselbe einfache Regel
+# (Kleinschreibung, Umlaute transliteriert, nur Buchstaben/Ziffern), hier lokal
+# gehalten, damit `app/web_search.py` NICHT von `app/technical_research.py`
+# importieren muss (das wäre zirkulär, da `technical_research.py` bereits von
+# hier importiert, s. Modul-Importblock dort).
+_MARKENLABEL_UMLAUTE = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss",
+                                      "Ä": "a", "Ö": "o", "Ü": "u"})
+
+
+def _markenlabel(marke: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", marke.translate(_MARKENLABEL_UMLAUTE).lower())
+
+
+# ENFAL-Produktionsbefund (01.11.2026, L4): `_qualitaets_label()` kannte diese
+# Erkennung bisher NICHT -- lexus.ch erschien deshalb als "Sonstige Quelle"
+# statt "Hersteller", obwohl dieselbe Marke+Domain-Zuordnung für die
+# IDENTITÄTS-Vertrauensschwelle (`_score_domain_fuer_marke()`,
+# app/technical_research.py) bereits korrekt griff -- zwei unterschiedliche
+# Antworten auf dieselbe Frage. Diese Funktion (unverändert aus
+# `app.technical_research._marke_eigene_domain()` übernommen, dort jetzt nur
+# noch re-importiert) macht beide Stellen konsistent, OHNE die geschlossene
+# `_HERSTELLER_MARKEN`-Liste zu erweitern (§ Auftrag: keine neue Markenliste).
+def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
+    """Generische, markengebundene Erkennung über die Public-Suffix-bewusste
+    registrierbare Domain: deren Kern-Label (oder, bei ICANN-Dot-Brand-
+    Endungen wie ".toyota", die TLD selbst) muss dem normalisierten
+    Zielmarkennamen exakt entsprechen. Subdomains sind frei (Media-/Press-/
+    Newsroom-/Länder-Subdomains der echten Herstellerdomain zählen
+    automatisch mit) -- siehe `app.technical_research._marke_eigene_domain()`
+    für die ausführliche Begründung samt Beispielen; EINE Logik, hier
+    gehalten, dort re-importiert."""
+    if not url_oder_domain or not marke:
+        return False
+    marke_norm = _markenlabel(marke)
+    if not marke_norm:
+        return False
+    teile = _psl_teile(url_oder_domain)
+    if teile.domain and _markenlabel(teile.domain) == marke_norm:
+        return True
+    if teile.suffix and _markenlabel(teile.suffix) == marke_norm:
+        return True
+    return _pressedomain_gehoert_marke(url_oder_domain, marke_norm)
 
 
 # §9: Informations-/Ratgeber-/Nachschlage-Seiten sind KEINE konkreten Vergleichs-
@@ -1294,13 +1340,22 @@ def results_to_context(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _qualitaets_label(url: str) -> str:
+def _qualitaets_label(url: str, marke: str | None = None) -> str:
     """Kurzes, nutzerverständliches Label für die Quellenanzeige (kein
-    Entwicklerbegriff wie 'Tier 1' — siehe Chat-Stilregeln)."""
+    Entwicklerbegriff wie 'Tier 1' — siehe Chat-Stilregeln).
+
+    `marke` optional (Default None, rückwärtskompatibel für Aufrufer ohne
+    Zielmarke): ENFAL-Produktionsbefund (01.11.2026, L4) -- `_ist_herstellerseite()`
+    kennt nur die geschlossene `_HERSTELLER_MARKEN`-Liste und erkennt z.B.
+    "lexus.ch" nicht, obwohl `_marke_eigene_domain()` (dieselbe Funktion, die
+    bereits die Identitäts-Vertrauensschwelle fürs Feld korrekt anhebt) die
+    angefragte Marke generisch zuordnet. Ergänzt die bestehende Prüfung additiv
+    -- KEINE neue Markenliste, KEINE Änderung an Schwelle/Tier/Confidence:
+    reine Anzeige-Konsistenz."""
     domain = _domain_von(url)
     if _enthaelt_domain(domain, _AMTLICH_DOMAINS):
         return "Amtlich/Prüforganisation"
-    if _ist_herstellerseite(domain):
+    if _ist_herstellerseite(domain) or _marke_eigene_domain(url, marke):
         return "Hersteller"
     if _enthaelt_domain(domain, _FACHMEDIEN_DOMAINS):
         return "Fachmedien"
