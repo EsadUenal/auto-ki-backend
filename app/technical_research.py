@@ -335,6 +335,58 @@ def _herstelleridentifikationsdokument(url: str, marke: str | None) -> bool:
     return pfad.endswith(".pdf") and any(wort in pfad for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER)
 
 
+# ── L1-Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): ──
+# Volltext-Nachladung auch für Identitätstreffer.
+#
+# PRÜFFRAGE (Auftrag §3): "erreicht ein dünnes Suchsnippet eines Hersteller-
+# PDFs die Identitätsextraktion?" -- empirisch mit dem real gesicherten
+# Lexus-Rettungskarten-Text geprüft (s. `test_rc_f_lexus_originalbeleg.py`
+# für die Volltext-Herkunft): ein Snippet, das die Kopfzeile mit dem Code
+# ("Lexus RC F (UXC1 (EU, M), ab 09/2014)") noch enthält, reicht dem
+# BESTEHENDEN Suchpfad bereits (zusammen mit einer unabhängigen Rollenquelle
+# wie ADAC) -- KEIN Nachladen nötig. Trifft das Suchsnippet dagegen einen
+# ANDEREN Dokumentabschnitt (real im selben PDF enthalten: "12V
+# Spannungsversorgung trennen..."), bleibt die Generation unbelegt, obwohl
+# das Dokument den Code an anderer Stelle sehr wohl trägt -- dieselbe
+# Snippet-Kürzungs-Lücke wie bei L3 (Wartung), nur dort erstmals real
+# entdeckt und hier dieselbe Risikoklasse, kein eigenständiger neuer Fehler.
+#
+# FIX: derselbe bereits bestehende, bounded Extract-Pfad wie L3
+# (`hole_raw_content()`) -- aber mit einem ENGEREN, identitätsspezifischen
+# Gate: NUR Treffer, die `_herstelleridentifikationsdokument()` (oben, s.
+# dort für die generische, markengebundene Dokumenttyp-Erkennung -- KEINE
+# neue Heuristik) bereits als Hersteller-Identifikationsdokument einordnet.
+# Das ist eine reine DOKUMENTTYP-Prüfung, keine Rollen-/Codeaussage -- was
+# der nachgeladene Volltext tatsächlich enthält, durchläuft unverändert
+# dieselben bestehenden Prüfungen (`_generationscodes()`/
+# `_generationen_pruefen()`/`konsens()`/`_generation_herstelleridentifikation_
+# vorrang()`, inkl. Zeitraum-/Rollenbeleg-/Konfliktprüfung) -- KEINE pauschale
+# Übernahme eines Herstellerwerts. Bewusst NICHT für jeden dünnen Identitäts-
+# treffer (das wäre "Identitätsnachladen ohne Begründung", Auftrag §4
+# ausdrücklich nicht gewollt) -- nur für diese eine, bereits etablierte,
+# eng gefasste Dokumentklasse.
+_IDENTITAET_VOLLTEXT_NACHLADE_MAX = 2
+
+
+def _identitaet_nachlade_kandidaten(treffer: list[dict], *, marke: str | None,
+                                    limit: int = _IDENTITAET_VOLLTEXT_NACHLADE_MAX) -> list[str]:
+    """Reine, isoliert testbare Auswahl -- s. Kommentar oben für das Gate.
+    Das eigentliche Nachladen (Netzwerk) bleibt in `recherchiere()`."""
+    kandidaten: list[str] = []
+    gesehen: set[str] = set()
+    for r in treffer:
+        url = r.get("url") or ""
+        if not url or url in gesehen or hat_brauchbaren_raw_content(r):
+            continue
+        if not _herstelleridentifikationsdokument(url, marke):
+            continue
+        gesehen.add(url)
+        kandidaten.append(url)
+        if len(kandidaten) >= limit:
+            break
+    return kandidaten
+
+
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
 # dem PSL-/Pressedomain-Fix in `score_domain()` bleibt für "schwachstelle"/
 # "wartung" eine Scoring-Asymmetrie bestehen -- `score_domain()` kennt den
@@ -467,8 +519,20 @@ def _wartung_marktvorbehalt(treffer: list[dict]) -> tuple[str | None, str | None
 #
 # Gate bewusst eng, um Kosten/Umfang zu begrenzen (KEIN pauschales Nachladen
 # jedes Rohtreffers):
-#   * nur Treffer mit Domainqualität >= `MIN_SCORE_FAKT` (DIESELBE Schwelle
-#     wie die Hauptpfad-Faktenbildung -- kein neues, weicheres Kriterium),
+#   * nur Treffer mit Domainqualität >= `MIN_SCORE_FAKT` -- DIESELBE
+#     marke-bewusste Bewertung wie die Hauptpfad-Faktenbildung
+#     (`_score_domain_fuer_marke()`, s. dort), NICHT der reine, markenblinde
+#     `score_domain()`. Integrations-Nachtrag (ENFAL-Folgeauftrag, 2026-11,
+#     Integrationspruefung): die erste Fassung dieser Funktion nutzte
+#     `score_domain(url, KATEGORIE_WARTUNG)` ohne `marke` -- genau der reale
+#     Lexus-Schweiz-Serviceheft-Treffer (tools.lexus.ch) erreicht darüber 0
+#     (unbekannte Domain in der generischen, nicht markenbewussten Tier-
+#     Liste), obwohl dieselbe Marke+Domain-Zuordnung (`_marke_eigene_domain()`,
+#     bereits seit L4 produktiv in `_qualitaets_label()`) sie korrekt als
+#     Hersteller erkennt. Ohne `marke` wäre das Nachladen-Gate also GENAU für
+#     den Fall, den L3 beheben sollte, nie ausgelöst worden -- behoben durch
+#     dieselbe bereits bestehende, generische `_score_domain_fuer_marke()`,
+#     keine neue Logik, keine feste Lexus-Ausnahme.
 #   * nur Treffer, die noch KEINEN brauchbaren `raw_content` mitbringen
 #     (`hat_brauchbaren_raw_content()`, dieselbe Funktion/Schwelle wie im
 #     Marktpfad),
@@ -479,17 +543,20 @@ def _wartung_marktvorbehalt(treffer: list[dict]) -> tuple[str | None, str | None
 _WARTUNG_VOLLTEXT_NACHLADE_MAX = 3
 
 
-def _wartung_nachlade_kandidaten(treffer: list[dict],
-                                 *, limit: int = _WARTUNG_VOLLTEXT_NACHLADE_MAX) -> list[str]:
+def _wartung_nachlade_kandidaten(treffer: list[dict], *, marke: str | None = None,
+                                 limit: int = _WARTUNG_VOLLTEXT_NACHLADE_MAX) -> list[str]:
     """Reine, isoliert testbare Auswahl -- s. Moduldocstring oben für das Gate.
-    Das eigentliche Nachladen (Netzwerk) bleibt in `recherchiere()`."""
+    Das eigentliche Nachladen (Netzwerk) bleibt in `recherchiere()`. `marke`
+    bewusst Keyword-only mit Default `None` (rückwärtskompatibel): OHNE Marke
+    bleibt die Bewertung wie bisher markenblind -- nur MIT Marke wird eine
+    eigene Herstellerdomain korrekt erkannt (s. Moduldocstring)."""
     kandidaten: list[str] = []
     gesehen: set[str] = set()
     for r in treffer:
         url = r.get("url") or ""
         if not url or url in gesehen or hat_brauchbaren_raw_content(r):
             continue
-        if score_domain(url, KATEGORIE_WARTUNG) < MIN_SCORE_FAKT:
+        if _score_domain_fuer_marke(url, KATEGORIE_WARTUNG, marke) < MIN_SCORE_FAKT:
             continue
         gesehen.add(url)
         kandidaten.append(url)
@@ -498,12 +565,16 @@ def _wartung_nachlade_kandidaten(treffer: list[dict],
     return kandidaten
 
 
-def _wartung_treffer_mit_volltext(treffer: list[dict], voller_text: dict[str, str]) -> list[dict]:
+def _treffer_mit_volltext(treffer: list[dict], voller_text: dict[str, str]) -> list[dict]:
     """Merged nachgeladenen Volltext (von `hole_raw_content()`) in `content` --
-    reine, isoliert testbare Funktion, kein Netzwerk. Ein Treffer OHNE Eintrag
-    in `voller_text` (Nachladen nicht versucht, fehlgeschlagen oder zu kurz)
-    bleibt UNVERÄNDERT -- ein Fehlschlag des Originalabrufs erfindet nie eine
-    vollständige Dokumentprüfung (Auftrag §5: 'keine erfundene vollständige
+    reine, isoliert testbare Funktion, kein Netzwerk. Generisch (L1-
+    Integrationsnachtrag, 2026-11): von L3 (Wartung) UND der Identitäts-
+    Nachladung genutzt (s. `_wartung_nachlade_kandidaten()`/
+    `_identitaet_nachlade_kandidaten()`) -- die Merge-Logik selbst kennt keine
+    Kategorie. Ein Treffer OHNE Eintrag in `voller_text` (Nachladen nicht
+    versucht, fehlgeschlagen oder zu kurz) bleibt UNVERÄNDERT -- ein
+    Fehlschlag des Originalabrufs erfindet nie eine vollständige
+    Dokumentprüfung (Auftrag §5: 'keine erfundene vollständige
     Gültigkeitsprüfung')."""
     ergebnis = []
     for r in treffer:
@@ -6054,6 +6125,24 @@ def _identity_spec_gap_queries(breit: str, jahr: str | None, offene_felder: list
     return intents
 
 
+async def _sicheres_nachladen(urls: list[str]) -> tuple[dict[str, str], dict]:
+    """Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11,
+    Auftrag §4 'Abruffehler... bleiben diagnostisch erkennbar, kein
+    erfundener Beleg'): derselbe Schutz wie `suche()` unten für Search-Calls
+    -- ein Fehlschlag des Extract-Nachladens darf NIE nach außen durchschlagen
+    (Stop-Bedingung F, analog zum Hard-Ceiling-Schutz der Eskalationsrunden).
+    `hole_raw_content()` fängt Provider-/HTTP-Fehler bereits selbst ab (s.
+    app/web_search.py); dieser Wrapper deckt zusätzlich jede andere,
+    unerwartete Exception ab, bevor der Aufrufer in `recherchiere()` sie
+    erreicht."""
+    try:
+        return await hole_raw_content(urls)
+    except Exception as exc:                      # pragma: no cover — Schutznetz
+        log.warning("Volltext-Nachladung fehlgeschlagen (%s)", type(exc).__name__)
+        return {}, {"angefragt": len(urls), "aus_cache": 0, "extract_calls": 0,
+                    "extract_urls": 0, "erfolge": 0, "fehler": len(urls)}
+
+
 # ── Tavily-Implementierung ───────────────────────────────────────────────────
 
 class TavilyTechnicalResearchProvider:
@@ -6104,6 +6193,21 @@ class TavilyTechnicalResearchProvider:
                    " ".join(filter(None, [breit, jahr, "Generation Baureihe Bauzeitraum"]))]
         ident_treffer = [r for liste in await asyncio.gather(*[suche(q, phase="identitaet") for q in q_ident])
                          for r in liste]
+        # L1-Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11):
+        # Volltext-Nachladung auch fuer Identitaetstreffer -- s. Moduldocstring
+        # bei `_identitaet_nachlade_kandidaten()`. VOR der ersten `phase_
+        # identitaet()`-Berechnung, damit ein nachgeladenes Herstellerdokument
+        # schon in Runde 1 wirkt (und die Identity-Spec-Gap-Runde seltener
+        # noetig wird, statt zusaetzliche Suchkosten zu erzeugen).
+        ident_nachlade_urls = _identitaet_nachlade_kandidaten(ident_treffer, marke=marke)
+        if ident_nachlade_urls:
+            ident_voller_text, ident_nachlade_stats = await _sicheres_nachladen(ident_nachlade_urls)
+            ident_treffer = _treffer_mit_volltext(ident_treffer, ident_voller_text)
+            log.info("research_phase=identitaet_volltext kandidaten=%d nachgeladen=%d "
+                     "aus_cache=%d fehler=%d domains=%s",
+                     len(ident_nachlade_urls), len(ident_voller_text),
+                     ident_nachlade_stats["aus_cache"], ident_nachlade_stats["fehler"],
+                     ",".join(sorted({registrable_domain(u) for u in ident_nachlade_urls})) or "-")
         identitaet, abgelehnt_i = phase_identitaet(ident_treffer, z)
         abgelehnt += abgelehnt_i
         _log_identitaet_phase(ident_treffer, marke, z["modell"], identitaet)
@@ -6263,10 +6367,10 @@ class TavilyTechnicalResearchProvider:
         # sehen. Betrifft NUR `content` (die ALLE nachfolgenden Textprüfungen
         # lesen) -- kein neues Feld, keine Änderung an `_extrahiere_fakten()`
         # oder `_wartung_marktvorbehalt()` selbst nötig.
-        wartung_nachlade_urls = _wartung_nachlade_kandidaten(roh["wartung"])
+        wartung_nachlade_urls = _wartung_nachlade_kandidaten(roh["wartung"], marke=marke)
         if wartung_nachlade_urls:
-            voller_text, nachlade_stats = await hole_raw_content(wartung_nachlade_urls)
-            roh["wartung"] = _wartung_treffer_mit_volltext(roh["wartung"], voller_text)
+            voller_text, nachlade_stats = await _sicheres_nachladen(wartung_nachlade_urls)
+            roh["wartung"] = _treffer_mit_volltext(roh["wartung"], voller_text)
             log.info("research_phase=wartung_volltext kandidaten=%d nachgeladen=%d "
                      "aus_cache=%d fehler=%d domains=%s",
                      len(wartung_nachlade_urls), len(voller_text),

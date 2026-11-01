@@ -12,23 +12,33 @@ OHNE dass das von einem korrekt arbeitenden Parser zu unterscheiden wäre
 (Auftrag §3: "ein korrekt arbeitender Warnsatz-Parser genügt nicht, wenn der
 relevante Dokumentkontext vorher verloren geht").
 
-Dieser Test prüft die NEUE Auswahl-/Merge-Logik
-(`_wartung_nachlade_kandidaten`, `_wartung_treffer_mit_volltext`,
-app/technical_research.py) sowie deren Zusammenspiel mit der BEREITS
-bestehenden, unveränderten Extraktionspipeline (`_extrahiere_fakten`,
-`_wartung_marktvorbehalt`). Bewusst NICHT erneut geprüft: der volle async
-`TavilyTechnicalResearchProvider.recherchiere()`-Suchpfad selbst (Query-
-Dispatch) -- der ist bereits durch die bestehende Phasen-Architektur
-abgedeckt; hier geht es ausschließlich um den NEUEN Nachlade-Baustein.
+Dieser Test prüft die Auswahl-/Merge-Logik (`_wartung_nachlade_kandidaten`,
+`_treffer_mit_volltext`, app/technical_research.py) sowie deren Zusammenspiel
+mit der BEREITS bestehenden, unveränderten Extraktionspipeline
+(`_extrahiere_fakten`, `_wartung_marktvorbehalt`). Die Integration über den
+vollen async `recherchiere()`-Pfad (Query-Dispatch, echte Fixture-Texte,
+Kostenlimits) steht separat in `test_recherche_volltext_integration.py` --
+dort auch der Nachweis, dass das Nachladen-Gate den REALEN lexus.ch-Treffer
+tatsächlich erreicht (hier unten in Abschnitt E bereits isoliert geprüft).
 
-Case H (unten): Teiltext ohne Vorbehalt vs. vorhandenes Original MIT
+NACHTRAG (ENFAL-Recherchepfad-Folgeauftrag, 2026-11, Integrationsprüfung):
+die ERSTE Fassung dieses Gates nutzte `score_domain(url, KATEGORIE_WARTUNG)`
+OHNE `marke` -- score 0 für den realen lexus.ch-Treffer (unbekannte Domain
+in der generischen, nicht markenbewussten Liste), obwohl `_marke_eigene_
+domain()`/`_qualitaets_label()` (L4) dieselbe Domain korrekt als Hersteller
+erkennen. Das Gate hätte den Fall, den es beheben soll, NIE ausgelöst.
+Abschnitt E unten beweist das jetzt mit der realen URL (nicht nur mit
+synthetischem adac.de, das zufällig auch ohne Markenbezug hoch genug
+bewertet wird und das Problem deshalb verdeckt hätte).
+
+Case C (unten): Teiltext ohne Vorbehalt vs. vorhandenes Original MIT
 Vorbehalt -- UND der Fall eines fehlgeschlagenen Originalabrufs, der NIE eine
 erfundene vollständige Gültigkeitsprüfung erzeugen darf (Auftrag §5).
 
     python -m pytest test_wartung_volltext_nachladung.py -q
 """
 from app.technical_research import (
-    MIN_SCORE_FAKT, _wartung_nachlade_kandidaten, _wartung_treffer_mit_volltext,
+    MIN_SCORE_FAKT, _wartung_nachlade_kandidaten, _treffer_mit_volltext,
     _wartung_marktvorbehalt, _extrahiere_fakten, _WARTUNG_VOLLTEXT_NACHLADE_MAX,
 )
 
@@ -79,18 +89,50 @@ check("A6) Score-Schwelle ist DIESELBE wie im Hauptpfad (MIN_SCORE_FAKT), kein w
       MIN_SCORE_FAKT == 30)
 
 
+# ── E) Integrationsnachtrag: das Gate erreicht den REALEN lexus.ch-Treffer ──
+# tatsächlich (nicht nur ein synthetisches adac.de, das zufällig auch
+# MARKENBLIND hoch genug bewertet wird und das reale Problem verdeckt hätte).
+_LEXUS_SERVICEHEFT_URL = ("https://tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf")
+
+check("E1) realer lexus.ch-Serviceheft-Treffer OHNE Marke bleibt ausgeschlossen "
+      "(Rückwärtskompatibilität -- ohne `marke` bleibt die Bewertung markenblind, "
+      "kein stillschweigender Verhaltenswechsel für Aufrufer ohne Marke)",
+      _wartung_nachlade_kandidaten(
+          [treffer(_LEXUS_SERVICEHEFT_URL, "Lexus Garantie- und Serviceheft", "kurzer Snippet")],
+      ) == [])
+check("E2) mit der TATSÄCHLICH angefragten Marke 'Lexus' wird der reale "
+      "Serviceheft-Treffer korrekt als Kandidat erkannt -- GENAU der Fall, den "
+      "L3 beheben sollte, erreicht das Gate jetzt wirklich",
+      _wartung_nachlade_kandidaten(
+          [treffer(_LEXUS_SERVICEHEFT_URL, "Lexus Garantie- und Serviceheft", "kurzer Snippet")],
+          marke="Lexus",
+      ) == [_LEXUS_SERVICEHEFT_URL])
+check("E3) mit einer FALSCHEN Marke bleibt er ausgeschlossen -- keine pauschale "
+      "Herstellerdomain-Aufwertung unabhängig von der angefragten Marke",
+      _wartung_nachlade_kandidaten(
+          [treffer(_LEXUS_SERVICEHEFT_URL, "Lexus Garantie- und Serviceheft", "kurzer Snippet")],
+          marke="BMW",
+      ) == [])
+check("E4) eine bereits bekannte Fachmedien-Domain (adac.de) bleibt davon "
+      "unberührt -- unabhängig davon, ob/welche Marke übergeben wird",
+      _wartung_nachlade_kandidaten(
+          [treffer("https://www.adac.de/service-testmarke", "Testmarke Wartung", "Snippet")],
+          marke="Lexus",
+      ) == ["https://www.adac.de/service-testmarke"])
+
+
 # ── B) Merge: Volltext ersetzt NUR `content`, Fehlschlag bleibt unverändert ──
 
 _url_b = "https://www.adac.de/service-testmarke"
 _treffer_b = [treffer(_url_b, "Testmarke Wartung", "kurzer Snippet ohne Vorbehalt")]
 
-_gemergt_erfolg = _wartung_treffer_mit_volltext(_treffer_b, {_url_b: "voller Dokumenttext " * 50})
+_gemergt_erfolg = _treffer_mit_volltext(_treffer_b, {_url_b: "voller Dokumenttext " * 50})
 check("B1) erfolgreich nachgeladener Volltext ersetzt `content`",
       _gemergt_erfolg[0]["content"].startswith("voller Dokumenttext"))
 check("B2) `url`/`title` bleiben beim Merge unverändert",
       _gemergt_erfolg[0]["url"] == _url_b and _gemergt_erfolg[0]["title"] == "Testmarke Wartung")
 
-_gemergt_fehlschlag = _wartung_treffer_mit_volltext(_treffer_b, {})
+_gemergt_fehlschlag = _treffer_mit_volltext(_treffer_b, {})
 check("B3) fehlgeschlagenes/nicht versuchtes Nachladen (leeres Dict) -> Treffer UNVERÄNDERT "
       "(kein erfundener Volltext)",
       _gemergt_fehlschlag[0]["content"] == "kurzer Snippet ohne Vorbehalt")
@@ -123,7 +165,7 @@ check("C1) Snippet allein (ohne Vorbehalt-Textstelle) liefert den Wartungs-Fakt,
       bool(_fakten_snippet) and _fakten_snippet[0].regionale_geltung is None,
       str(_fakten_snippet))
 
-_treffer_nach_nachladung = _wartung_treffer_mit_volltext(
+_treffer_nach_nachladung = _treffer_mit_volltext(
     [treffer(_SERVICE_URL, "Testmarke Alpha Serviceheft", _SNIPPET_OHNE_VORBEHALT)],
     {_SERVICE_URL: _VOLLTEXT_MIT_VORBEHALT})
 _fakten_volltext = _extrahiere_fakten(
@@ -141,7 +183,7 @@ check("C3) derselbe Fakt (Intervall) bleibt in beiden Fällen inhaltlich erhalte
 # (z.B. Netzwerkfehler, gesperrte Domain, zu kurzer Inhalt) -- der ORIGINALE,
 # kürzere Suchtreffer bleibt die Grundlage. Es darf dabei NIE eine vollständige
 # Gültigkeitsprüfung erfunden werden, nur weil ein Nachladeversuch stattfand.
-_treffer_nach_fehlschlag = _wartung_treffer_mit_volltext(
+_treffer_nach_fehlschlag = _treffer_mit_volltext(
     [treffer(_SERVICE_URL, "Testmarke Alpha Serviceheft", _SNIPPET_OHNE_VORBEHALT)], {})
 _fakten_fehlschlag = _extrahiere_fakten(
     _treffer_nach_fehlschlag, "wartung", marke="Testmarke", modell="Alpha", baujahr=2019)
@@ -153,7 +195,7 @@ check("C4) fehlgeschlagenes Nachladen -> derselbe Fakt wie ohne Nachladeversuch 
 
 # ── D) Modell-/Markenbindung bleibt erhalten (unveränderte Pipeline) ────────
 _fakten_falsches_modell = _extrahiere_fakten(
-    _wartung_treffer_mit_volltext(
+    _treffer_mit_volltext(
         [treffer(_SERVICE_URL, "Anderes Modell", "Ein anderer Hersteltext ohne Testmarke Alpha.")],
         {_SERVICE_URL: _VOLLTEXT_MIT_VORBEHALT}),
     "wartung", marke="Testmarke", modell="Gamma", baujahr=2019)
