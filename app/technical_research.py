@@ -61,6 +61,7 @@ import asyncio
 import logging
 import re
 from typing import Protocol
+from urllib.parse import unquote
 
 from app.config import IDENTITY_DEBUG
 from app.kraftstoff_powertrain import powertrain_aus_freitext
@@ -306,6 +307,52 @@ def _marke_eigene_domain(url_oder_domain: str, marke: str | None) -> bool:
     # PRESSEDOMAINS`) -- dieselbe, einzige Zuordnung wie in `score_domain()`/
     # `_ist_herstellerseite()`, keine zweite, abweichende Liste.
     return _pressedomain_gehoert_marke(url_oder_domain, marke_norm)
+
+
+# ENFAL-Folgeauftrag ("strukturierte Hersteller-Identifikation als Evidenz
+# nutzbar machen", 2026-11, real belegt an zwei Rettungsdatenblättern):
+# lexus.de ("RCF_tcm-3150-1284184.pdf", Kopf "Lexus RC F\n(UXC1 (EU, M), ab
+# 09/2014)") und toyota.de ("RLF_GT86_ZN_tcm-17-172166.pdf", Kopf "Toyota
+# GT86\n(ZN)") ordnen einem Modell im Dokumentkopf eine interne Typkennung
+# zu -- OHNE ein Wort aus `_ROLLE_BEZEICHNUNG` zu verwenden. Das ist trotzdem
+# KEINE beliebige Klammer (s. `_generationscodes()`-Docstring, "keine Rolle
+# allein aus einer Klammer/Codeform erraten"): beide Hersteller führen diese
+# Dokumente unter ihrer EIGENEN, selbst benannten Rubrik -- lexus.de
+# "RETTUNGSDATENBLÄTTER"/"RETTUNGSKARTEN FÜR EINSATZKRÄFTE", toyota.de
+# "Rettungsdatenblätter für Rettungskräfte" (je eigene Übersichtsseite unter
+# .../fahrzeuginformationen/rettungsdatenblaetter, real abgerufen) -- amtliche
+# Dokumente zur technischen Personenrettung, deren erklärter Zweck die
+# EINDEUTIGE Fahrzeug-/Typidentifikation ist.
+#
+# Diese Funktion erkennt NUR den DOKUMENTTYP generisch (eigene Herstellerdomain
+# + eines der Rubrik-eigenen Wörter im URL-Pfad + PDF) -- sie bestätigt NICHT,
+# dass eine darin gefundene Kennung die Generation/Baureihe ist (das bleibt
+# ausschließlich Sache von `rollenbeleg`/`generationsnummer_strukturell`,
+# unverändert). Keine Markenliste: jede Marke, deren EIGENE Domain
+# (`_marke_eigene_domain()`) eines dieser Wörter im Pfad führt, zählt gleich.
+# Motorcode, Typgenehmigungsnummer, Dokumentnummer (z.B. "tcm-3150-1284184")
+# und Ausstattungsname werden dadurch NICHT privilegiert -- sie entstehen
+# ohnehin nie als "generation"-Claim (eigene Felder/Regexe), diese Funktion
+# wirkt nur auf das bereits bestehende `herstelleridentifikation`-Flag eines
+# generation-Claims, s. `_generationen_pruefen()`.
+_HERSTELLERIDENTIFIKATION_PFADWOERTER = (
+    "rettungsdatenblatt", "rettungskarte", "rettungsleitfaden", "fahrzeuginformationen")
+# Die reale toyota.de-URL trägt den Pfadumlaut PROZENTKODIERT
+# ("rettungsdatenbl%C3%A4tter") -- `unquote()` + Umlaut-Faltung (ä→a usw.)
+# VOR dem Wortvergleich, sonst verfehlt der obige ASCII-Wortstamm genau das
+# real belegte zweite Dokument.
+_UMLAUT_FALTUNG = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss"})
+
+
+def _herstelleridentifikationsdokument(url: str, marke: str | None) -> bool:
+    """True, wenn `url` ein PDF-Rettungsdatenblatt/eine Rettungskarte der
+    EIGENEN Herstellerdomain ist (s. Kommentar oben) -- reine
+    Dokumenttyp-Erkennung, KEINE Rollenaussage über einen darin gefundenen
+    Code."""
+    if not _marke_eigene_domain(url, marke):
+        return False
+    pfad = unquote(url or "").lower().translate(_UMLAUT_FALTUNG)
+    return pfad.endswith(".pdf") and any(wort in pfad for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER)
 
 
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
@@ -1999,6 +2046,11 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     ps = ziel.get("leistung_ps")
     varianten_bonus = 1 if ps and re.search(rf"\b{int(ps)}\s*(?:PS|hp)\b", r.get("title") or "",
                                             re.IGNORECASE) else 0
+    # Strukturierte Hersteller-Identifikation (s. `_herstelleridentifikationsdokument()`-
+    # Docstring) -- reine Dokumenttyp-Erkennung dieser EINEN Quelle, keine
+    # Rollenaussage. Wirkt nur zusammen mit unabhaengiger Rollenevidenz fuer
+    # EXAKT denselben Code (s. `_generationen_pruefen()`).
+    herstelleridentifikation = _herstelleridentifikationsdokument(url, ziel.get("marke"))
     for g in _generationscodes(r, ziel.get("modell")) if grund != "schwach" else []:
         passt = _im_zeitraum(baujahr, g["zeitraum"])
         if passt is False:
@@ -2006,7 +2058,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             continue
         add("generation", g["code"], zeitraum=g["zeitraum"], jahr_belegt=passt is True,
             kontext=g["kontext"], generationsnummer_strukturell=bool(g["nummer"]),
-            rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus)
+            rollenbeleg=g["rollenbeleg"], bonus=varianten_bonus,
+            herstelleridentifikation=herstelleridentifikation)
         if g["nummer"]:
             add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
                 jahr_belegt=passt is True)
@@ -2351,11 +2404,54 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
     (`"ohne_generationskontext"`), nicht gelöscht. Explizite Widersprüche
     (zwei vergleichbar starke, aber unterschiedliche belegte Codes) bleiben
     unverändert Sache von `konsens()` -- diese Funktion verwirft nur
-    UNBELEGTE Claims, nie einen Konflikt zwischen zwei belegten."""
+    UNBELEGTE Claims, nie einen Konflikt zwischen zwei belegten.
+
+    ENFAL-Folgeauftrag ("strukturierte Hersteller-Identifikation als Evidenz
+    nutzbar machen", 2026-11): ein dritter, eng begrenzter Pfad ergänzt die
+    beiden obigen NICHT, er VERKNÜPFT sie -- für EXAKT denselben Codestring
+    (keine Schreibweisen-Äquivalenz, kein Weg B). Ein Claim aus einem
+    Hersteller-Identifikationsdokument (`herstelleridentifikation=True`, s.
+    `_herstelleridentifikationsdokument()` -- eigene Herstellerdomain UND
+    eine der Rettungsdatenblatt/-karte-eigenen Rubrikbezeichnungen im
+    URL-Pfad) ordnet den Code zwar belastbar dem Zielmodell zu, trägt aber
+    oft selbst kein Rollenwort (reale Lexus-/Toyota-Rettungskarten: "Lexus
+    RC F\n(UXC1 (EU, M), ab 09/2014)", "Toyota GT86\n(ZN)" -- keine
+    "Baureihe"/"Chassis-Code"-Formulierung). Wird exakt DERSELBE Codestring
+    UNABHÄNGIG (andere Domain) UND eigenständig (eigener Rollenbeleg/eigene
+    Generationszählung, nicht selbst nur verknüpft) als Generation/Baureihe
+    bezeichnet, ergänzen sich beide Teilbelege zu einer zusammengehörigen
+    Zuordnung: die Hersteller-Primärquelle liefert die belastbare
+    Fahrzeugzuordnung, die zweite Quelle die Rollenbezeichnung für GENAU
+    diesen Code. Das bleibt NICHT dasselbe wie ein lokaler Rollenbeleg --
+    `rollenbeleg` selbst bleibt unverändert False (Transparenz: welcher Teil
+    des Belegs woher kommt bleibt nachvollziehbar), ein eigenes Flag
+    (`rollenbeleg_verknuepft`) markiert den verknüpften Status separat.
+    Schutzbedingungen, alle gleichzeitig: exakte Zeichenkette (kein
+    `.lower()`/keine Normalisierung -- bewusst strenger als `konsens()`s
+    eigener Vergleich), andere Domain (keine Selbstbestätigung einer
+    einzelnen Quelle), die verknüpfte Rollenquelle muss selbst eigenständig
+    (nicht über dieses Flag) rollenbelegt sein (keine Verkettung über zwei
+    identifikationsdokumente hinweg). Jahresfenster-Ausschluss (`aus`/`ein`
+    oben) bleibt unverändert VOR dieser Prüfung wirksam -- ein durchs eigene
+    Zeitfenster widersprochener Code bleibt widersprochen, unabhängig von
+    `herstelleridentifikation`. Bleibt der Konsens danach blockiert (zwei
+    exakt verschiedene, je belastbar belegte Codes -- z.B. weiterhin
+    UXC1 vs. XC1 beim realen RC-F-Fall), ist das unverändert Sache von
+    `konsens()`, nicht dieser Funktion -- keine Konfliktpolicy-Änderung."""
     gen = [c for c in claims if c["feld"] == "generation"]
     aus = {c["wert"] for c in gen if c.get("verworfen") == "baujahr_ausserhalb"}
     ein = {c["wert"] for c in gen if c.get("jahr_belegt")}
     bekannt_norm = (bekannter_code or "").strip().upper()
+    # Unabhaengig rollenbelegte Codes je exaktem Codestring, VOR jeder
+    # Mutation unten erfasst -- verhindert Verkettung (ein durch Verknuepfung
+    # "geretteter" Claim kann selbst nie als Rollenquelle fuer einen anderen
+    # Claim zaehlen, weil hier nur `generationsnummer_strukturell`/`rollenbeleg`
+    # (die LOKALEN Felder aus `_generationscodes()`) gelesen werden, nicht das
+    # unten gesetzte `rollenbeleg_verknuepft`).
+    rollenbelegte_domains_je_code: dict[str, set[str]] = {}
+    for c in gen:
+        if c.get("generationsnummer_strukturell") or c.get("rollenbeleg"):
+            rollenbelegte_domains_je_code.setdefault(str(c["wert"]), set()).add(c["domain"])
     for c in gen:
         if c.get("verworfen"):
             continue
@@ -2364,7 +2460,13 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
         if c["wert"] in aus - ein:
             c["verworfen"] = "baujahr_ausserhalb_andere_quelle"
         elif not (c.get("generationsnummer_strukturell") or c.get("rollenbeleg")):
-            c["verworfen"] = "ohne_generationskontext"
+            unabhaengig_rollenbelegt = bool(
+                rollenbelegte_domains_je_code.get(str(c["wert"])) and
+                rollenbelegte_domains_je_code[str(c["wert"])] - {c["domain"]})
+            if c.get("herstelleridentifikation") and unabhaengig_rollenbelegt:
+                c["rollenbeleg_verknuepft"] = True
+            else:
+                c["verworfen"] = "ohne_generationskontext"
 
 
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
