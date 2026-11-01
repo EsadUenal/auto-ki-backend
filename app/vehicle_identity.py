@@ -385,6 +385,15 @@ class VehicleIdentity:
                         neu["cluster"] = list(identitaet.generation_cluster)
                     if getattr(identitaet, "generation_nutzerabgleich", None):
                         neu["nutzerabgleich"] = identitaet.generation_nutzerabgleich
+                    # ENFAL-Folgeauftrag ("belegte Herstellerkennung gegenüber
+                    # abweichenden Drittbezeichnungen einordnen", 2026-11):
+                    # NUR additiv, NIE nach `cluster` übernommen (keine
+                    # Codegleichsetzung) -- reine Transparenz, welche
+                    # abweichende Drittbezeichnung bei einer über
+                    # "herstelleridentifikation" aufgelösten Generation
+                    # zusätzlich vorlag.
+                    if getattr(identitaet, "generation_abweichende_kennungen", None):
+                        neu["abweichende_kennungen"] = list(identitaet.generation_abweichende_kennungen)
                 self.field_evidence[feld] = neu
                 continue
             vorhanden = getattr(self, feld, None)

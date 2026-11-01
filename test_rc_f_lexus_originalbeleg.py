@@ -60,20 +60,34 @@ dieselbe Art Annahme, vor der Punkt 3 ausdruecklich warnt. Das bleibt eine
 offene Policy-Frage fuer den Nutzer (s. Abschlussbericht), keine in dieser
 Runde automatisch getroffene Entscheidung.
 
-Checks 2/3 zeigen die Konsequenz: weder allein noch zusammen mit dem
-bestehenden realen RC-F-Quellensatz (ADAC+carwiki.de+AMS) aendert das
-Original-Dokument das Ergebnis -- `generation` bleibt in allen Faellen
-unveraendert `None`. Keine Drittquelle wurde dafuer entfernt, keine
-Konfliktregel umgangen: der Lexus-Claim erreicht `konsens()` schlicht nie,
-weil er bereits vorher verworfen wird (Check 1 zeigt das direkt, nicht nur
-indirekt ueber das Gesamtergebnis).
+Checks 1 zeigt: der Lexus-Claim erreicht `konsens()` ALLEIN schlicht nie,
+weil er ohne unabhaengige Rollenstuetze bereits vorher verworfen wird.
+
+NACHTRAG (ENFAL-Folgeauftrag "belegte Herstellerkennung gegenueber
+abweichenden Drittbezeichnungen einordnen", 2026-11): Check 2 (voller
+RC-F-Quellensatz PLUS Original-Dokument) wurde HIER urspruenglich als
+"Ergebnis bleibt unveraendert, generation=None" dokumentiert. Das war zum
+damaligen Stand korrekt -- eine spaetere, separat autorisierte Runde hat
+_generation_herstelleridentifikation_vorrang() ergaenzt (s.
+app/technical_research.py, test_rc_f_herstelleridentifikation_konfliktvorrang.py
+fuer die volle Regression dieser Erweiterung). Seither LOEST der volle
+Quellensatz zugunsten von "UXC1" auf (Nachweisweg "herstelleridentifikation"),
+weil UXC1 sowohl durch die Lexus-Herstelleridentifikation ALS AUCH durch
+ADACs unabhaengigen Baureihenrollenbeleg gestuetzt wird und keine
+konkurrierende Herstellerquelle fuer "XC1" existiert. Check 2 ist unten
+entsprechend aktualisiert -- keine Codegleichsetzung UXC1/XC1, "XC1" bleibt
+als abweichende Drittbezeichnung mit Herkunft sichtbar
+(`generation_abweichende_kennungen`), nie in `generation_cluster`.
 
 Check 4 zeigt den tatsaechlichen Empfehlungsausgang (Auftrag Punkt 5, nicht
-nur die Identitaets-Struktur): mit `generation=None` greift der bestehende,
-unveraenderte `app/empfehlungs_policy.py`-Gate (Zeile ~107) unabhaengig von
-allem anderen -- die Identitaetsstufe bleibt PARTIAL, der Empfehlungszustand
-wird auf STATE_LIMITED gesenkt, eine milde Empfehlung ("kaufen_nach_
-besichtigung") wird auf "unbekannt" zurueckgenommen.
+nur die Identitaets-Struktur) fuer den hier konstruierten `_Identity`-Stub:
+OHNE eine passende Bestaetigung in `field_evidence["generation"]` bleibt das
+bestehende, unveraenderte `app/empfehlungs_policy.py`-Gate (Zeile ~107)
+unabhaengig vom blossen `identity.generation`-Wert blockiert -- ein Wert
+allein, ohne Evidenzstatus, reicht diesem Gate nie. Der volle End-to-End-
+Effekt der neuen Konfliktaufloesung auf die Empfehlung (inkl. korrekt
+gesetztem `field_evidence`) wird separat in
+test_rc_f_herstelleridentifikation_konfliktvorrang.py gezeigt.
 
     python scripts/test_isolated.py test_rc_f_lexus_originalbeleg.py
 """
@@ -157,17 +171,22 @@ check("1d) Originaldokument ALLEIN (ohne weitere Quelle) ergibt generation=None 
       f"cluster={ident_lexus_allein.generation_cluster!r}")
 
 # ── 2) Voller realer RC-F-Quellensatz PLUS Originaldokument ────────────────
+# NACHTRAG (s. Moduldocstring): seit der Konfliktaufloesungs-Erweiterung
+# loest dieser Quellensatz zugunsten von "UXC1" auf -- "XC1" bleibt als
+# abweichende Drittbezeichnung mit Herkunft sichtbar, nie im Cluster.
 ident_mit_lexus, _ = werte_identitaet_aus([ADAC, CARWIKI, AMS, LEXUS_PDF], z)
-check("2) ADAC+carwiki.de+AMS+Lexus-Original zusammen: Ergebnis bleibt "
-      "UNVERAENDERT gegenueber dem Quellensatz OHNE das Original-Dokument "
-      "(generation=None, cluster=[], nachweisweg=None) -- das Original-Dokument "
-      "aendert NICHTS, weil sein Claim schon vor konsens() verworfen wird, "
-      "nicht weil eine Drittquelle entfernt oder eine Konfliktregel umgangen wurde",
-      ident_mit_lexus.generation is None
-      and ident_mit_lexus.generation_cluster == []
-      and ident_mit_lexus.generation_nachweisweg is None,
+check("2) ADAC+carwiki.de+AMS+Lexus-Original zusammen: loest zugunsten der "
+      "belegten Herstellerkennung 'UXC1' auf (Nachweisweg "
+      "'herstelleridentifikation'), cluster bleibt auf ['UXC1'] begrenzt, "
+      "'XC1' bleibt als abweichende Drittbezeichnung mit Herkunft sichtbar",
+      ident_mit_lexus.generation == "UXC1"
+      and ident_mit_lexus.generation_cluster == ["UXC1"]
+      and ident_mit_lexus.generation_nachweisweg == "herstelleridentifikation"
+      and ident_mit_lexus.generation_abweichende_kennungen == [
+          {"code": "XC1", "domains": ["auto-motor-und-sport.de", "carwiki.de"]}],
       f"generation={ident_mit_lexus.generation!r} cluster={ident_mit_lexus.generation_cluster!r} "
-      f"nachweisweg={ident_mit_lexus.generation_nachweisweg!r}")
+      f"nachweisweg={ident_mit_lexus.generation_nachweisweg!r} "
+      f"abweichend={ident_mit_lexus.generation_abweichende_kennungen!r}")
 
 # ── 3) Keine Parseraenderung in dieser Runde -> keine Positiv-/Negativkontrollen
 #      noetig (Auftrag Punkt 5: nur "bei Parseraenderung"). Check 1c oben
@@ -196,13 +215,16 @@ def _fe(state: str, confirmed_by: tuple[str, ...] = ()) -> dict:
 
 
 ident_fuer_empfehlung = _Identity(
-    generation=ident_mit_lexus.generation,  # = None, real aus Check 2
+    generation=ident_mit_lexus.generation,  # = 'UXC1' seit dem Nachtrag, s. Check 2
     field_evidence={"make": _fe("user_confirmed"), "model": _fe("user_confirmed")})
 entscheidung = entscheide("kaufen_nach_besichtigung", ident_fuer_empfehlung)
-check("4) generation=None (realer Ausgang aus Check 2) senkt den "
-      "Empfehlungszustand unabhaengig von allem anderen auf STATE_LIMITED und "
-      "nimmt die milde Empfehlung zurueck ('unbekannt') -- 'Generation' ist "
-      "die blockierende Luecke",
+check("4) ein blosser generation-WERT ohne passende field_evidence["
+      "'generation']-Bestaetigung reicht dem Gate nie (unveraendert) -- "
+      "senkt weiterhin auf STATE_LIMITED, nimmt die milde Empfehlung zurueck "
+      "('unbekannt'); 'Generation' bleibt die blockierende Luecke, OBWOHL "
+      "identity.generation='UXC1' -- Wert und Evidenzstatus sind zwei "
+      "verschiedene Dinge (s. Moduldocstring-Nachtrag fuer den vollen "
+      "End-to-End-Effekt mit korrekt gesetztem field_evidence)",
       entscheidung.state == STATE_LIMITED and entscheidung.empfehlung == "unbekannt"
       and "Generation" in entscheidung.identitaet.fehlend,
       f"state={entscheidung.state!r} empfehlung={entscheidung.empfehlung!r} "

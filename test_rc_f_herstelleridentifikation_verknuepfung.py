@@ -241,15 +241,27 @@ check("7) GT3-Haertung bleibt unberuehrt: eine zweite, unabhaengige Quelle "
       ident_gt3.generation is None, f"generation={ident_gt3.generation!r}")
 
 # ── 8) Vollstaendiger RC-F-Replay mit ALLEN bisherigen Quellen ─────────────
+# NACHTRAG (ENFAL-Folgeauftrag "belegte Herstellerkennung gegenueber
+# abweichenden Drittbezeichnungen einordnen", 2026-11): als DIESE Datei
+# geschrieben wurde, blieb der volle Replay bei generation=None (echter,
+# transparenter Konflikt UXC1 vs. XC1, Gewicht 5 vs. 3 -- s. History).
+# Eine spaetere, separat autorisierte Runde hat genau diesen Konflikt-Fall
+# ZUGUNSTEN der belegten Herstellerkennung aufgeloest (s.
+# _generation_herstelleridentifikation_vorrang() in app/technical_research.py
+# und die volle Regression in
+# test_rc_f_herstelleridentifikation_konfliktvorrang.py). Check 8 ist hier
+# entsprechend aktualisiert, damit diese Datei nicht die ueberholte Aussage
+# weiter absichert.
 ident_voll, _ = werte_identitaet_aus([ADAC, CARWIKI, AMS, LEXUS_PDF], z)
-check("8) ADAC+carwiki.de+AMS+Lexus-Original zusammen: generation bleibt "
-      "None -- jetzt aber als ECHTER, transparenter Konflikt zwischen zwei "
-      "belastbar belegten Gruppen (UXC1: lexus.de Tier1 + adac.de Tier2 = "
-      "Gewicht 5; XC1: carwiki.de Tier3 + auto-motor-und-sport.de Tier2 = "
-      "Gewicht 3) statt eines zuvor stillschweigend verworfenen Hersteller-"
-      "belegs -- keine Drittquelle entfernt, keine Konfliktregel geaendert",
-      ident_voll.generation is None and ident_voll.generation_cluster == [],
-      f"generation={ident_voll.generation!r} cluster={ident_voll.generation_cluster!r}")
+check("8) ADAC+carwiki.de+AMS+Lexus-Original zusammen: loest zugunsten der "
+      "belegten Herstellerkennung 'UXC1' auf -- 'XC1' bleibt als abweichende "
+      "Drittbezeichnung mit Herkunft sichtbar, nie im Cluster (keine "
+      "Codegleichsetzung)",
+      ident_voll.generation == "UXC1" and ident_voll.generation_cluster == ["UXC1"]
+      and ident_voll.generation_nachweisweg == "herstelleridentifikation"
+      and {d["code"] for d in ident_voll.generation_abweichende_kennungen} == {"XC1"},
+      f"generation={ident_voll.generation!r} cluster={ident_voll.generation_cluster!r} "
+      f"abweichend={ident_voll.generation_abweichende_kennungen!r}")
 
 print()
 if _FEHLER:

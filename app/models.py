@@ -685,6 +685,16 @@ class WebVehicleIdentity(BaseModel):
     generation_cluster: list[str] = Field(default_factory=list)
     generation_nachweisweg: str | None = None
     generation_nutzerabgleich: str | None = None
+    # ENFAL-Folgeauftrag ("belegte Herstellerkennung gegenüber abweichenden
+    # Drittbezeichnungen einordnen", 2026-11): wenn `generation_nachweisweg`
+    # den neuen Wert "herstelleridentifikation" trägt (s.
+    # `_generation_herstelleridentifikation_vorrang()`), listet dieses Feld
+    # die exakt anderen, nicht gewählten Codestrings mit ihrer Herkunft
+    # (Domains) auf -- NIEMALS in `generation_cluster` übernommen (keine
+    # Codegleichsetzung). Reine Transparenz: welche abweichende
+    # Drittbezeichnung existiert, woher sie stammt -- nicht, dass sie falsch
+    # oder dasselbe Fahrzeug wäre.
+    generation_abweichende_kennungen: list[dict] = Field(default_factory=list)
     antrieb: str | None = None
     # Release-Hardening (Root Cause 5, Stufe 2): Elektrifizierungsgrad ("ICE" |
     # "MHEV" | "PHEV" | "BEV" | "HEV", app/kraftstoff_powertrain.py) — NUR aus

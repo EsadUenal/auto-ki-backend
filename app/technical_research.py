@@ -2469,6 +2469,73 @@ def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None)
                 c["verworfen"] = "ohne_generationskontext"
 
 
+# ENFAL-Folgeauftrag ("belegte Herstellerkennung gegenüber abweichenden
+# Drittbezeichnungen einordnen", 2026-11): eng auf das Feld "generation"
+# begrenzte Konfliktauflösung -- `konsens()` selbst bleibt UNVERÄNDERT und
+# gilt unverändert für alle anderen Felder. Real belegter Auslöser: der
+# volle RC-F-Quellensatz (ADAC+carwiki.de+AMS+Lexus-Original) blieb nach der
+# vorigen Runde bei `generation=None`, weil "UXC1" (Gewicht 5: lexus.de
+# Tier 1 + adac.de Tier 2) und "XC1" (Gewicht 3: carwiki.de Tier 3 +
+# auto-motor-und-sport.de Tier 2) für `konsens()`s eigene Schwelle
+# vergleichbar stark sind (3·2≥5).
+#
+# Reine Gewichtserhöhung für Tier 1 wäre die FALSCHE Lösung (Auftrag,
+# ausdrücklich verworfen: "nicht einfach Tier-1-Gewichte erhöhen oder jeden
+# Tier-1-Claim gewinnen lassen") -- das würde JEDE Tier-1-Quelle pauschal
+# bevorzugen, unabhängig davon, ob sie überhaupt eine Rolle belegt. Diese
+# Funktion prüft statt dessen eine QUALITATIVE, nicht quantitative
+# Bedingung: gibt es GENAU EINEN Codestring, der sowohl (a) durch eine
+# Quelle der eigenen Herstellerdomain (Tier 1) ALS AUCH (b) durch einen
+# eigenständigen Rollenbeleg/eine Generationszählung (lokal ODER über die
+# Verknüpfung aus `_generationen_pruefen()`) gestützt wird -- UND keine
+# andere Codegruppe ebenfalls eine solche Tier-1-Stütze trägt? Nur dann
+# gewinnt dieser Code, UND NUR, wenn er auch für sich allein (ohne die
+# konkurrierende Gruppe) `konsens()`s eigene, unveränderte Schwelle erreichen
+# würde (Wiederverwendung von `konsens()` auf die vorgefilterte Teilmenge --
+# keine doppelte Gewichtslogik).
+#
+# Schutzbedingungen (Auftrag §4), alle bereits durch bestehende,
+# UNVERÄNDERTE Mechanismen erfüllt, hier nur VORAUSGESETZT, nicht neu
+# gebaut:
+#   belastbare Herstellerherkunft       `_marke_eigene_domain()`/Tier 1
+#   eindeutige Zielzuordnung            Modell-Ankerung in `_generationscodes()`
+#   belegte Baureihen-/Generationsrolle `rollenbeleg`/`generationsnummer_strukturell`/
+#                                       `rollenbeleg_verknuepft`
+#   zeitliche Gültigkeit                `aus`/`ein`-Ausschluss VOR dieser Funktion
+#                                       (ein durchs eigene oder ein fremdes,
+#                                       unwiderlegtes Zeitfenster ausgeschlossener
+#                                       Claim erreicht `gen_claims` nie)
+#   keine konkurrierende Hersteller-/
+#   amtliche Evidenz                   `len(traeger) != 1` -> None (unverändert
+#                                       ungeklärt, s. "mehrdeutiger
+#                                       Dokumentkopf"-Fall)
+# Die unterlegene(n) Gruppe(n) werden NIE nach `generation_cluster`
+# übernommen (keine Codegleichsetzung) -- nur zur Transparenz als
+# `generation_abweichende_kennungen` mit Domain-Herkunft zurückgegeben
+# (s. Aufrufer).
+def _generation_herstelleridentifikation_vorrang(
+        gen_claims: list[dict]) -> tuple[str, dict, list[dict]] | None:
+    """Siehe Moduldocstring-Block oben. `gen_claims` sind bereits nicht-
+    verworfene Generation-Claims (wie an `konsens()` übergeben). Rückgabe
+    (Code, `konsens()`-Info, abweichende Kennungen) oder None."""
+    je_code: dict[str, list[dict]] = {}
+    for c in gen_claims:
+        je_code.setdefault(str(c["wert"]), []).append(c)
+    traeger = {code for code, cs in je_code.items()
+               if any(c.get("tier") == 1 and (c.get("rollenbeleg")
+                      or c.get("generationsnummer_strukturell")
+                      or c.get("rollenbeleg_verknuepft")) for c in cs)}
+    if len(traeger) != 1:
+        return None
+    (gewinner,) = traeger
+    ergebnis = konsens(je_code[gewinner], "generation")
+    if ergebnis is None:
+        return None
+    abweichend = [{"code": code, "domains": sorted({c["domain"] for c in cs})}
+                  for code, cs in sorted(je_code.items()) if code != gewinner]
+    return ergebnis[0], ergebnis[1], abweichend
+
+
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
@@ -2522,12 +2589,26 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     mit_jahr = [c for c in gen_claims if c.get("jahr_belegt")]
     # Nachweisweg C ("direkt durch Quellen belegt") -- UNVERÄNDERT, exakte
     # Zeichenkette, bevorzugt und zuerst versucht.
-    generation = uebernehme("generation", konsens(mit_jahr, "generation")
-                            or konsens(gen_claims, "generation"))
+    _gen_konsens = konsens(mit_jahr, "generation") or konsens(gen_claims, "generation")
+    generation_abweichende_kennungen: list[dict] = []
+    if _gen_konsens is not None:
+        generation = uebernehme("generation", _gen_konsens)
+        generation_nachweisweg = "quelle" if generation else None
+    else:
+        # Konsens blockiert (zwei exakt verschiedene, vergleichbar starke
+        # Codegruppen) -- eng begrenzte Konfliktauflösung NUR für dieses
+        # Feld, s. `_generation_herstelleridentifikation_vorrang()`-Docstring.
+        _vorrang = _generation_herstelleridentifikation_vorrang(gen_claims)
+        if _vorrang is not None:
+            code, info, generation_abweichende_kennungen = _vorrang
+            generation = uebernehme("generation", (code, info))
+            generation_nachweisweg = "herstelleridentifikation" if generation else None
+        else:
+            generation = None
+            generation_nachweisweg = None
     gen_nr = konsens([c for c in claims if c["feld"] == "generation_nummer"], "generation_nummer")
     if gen_nr and generation:
         feldwerte["generation"]["detail"] = gen_nr[0]
-    generation_nachweisweg = "quelle" if generation else None
     generation_cluster: list[str] = [generation] if generation else []
     # Nachweisweg B ("mehrere Codes als dieselbe Generation behandeln") wurde
     # entfernt -- s. Kommentarblock vor `_generationen_pruefen()`. Ohne
@@ -2623,6 +2704,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         generation_nummer=(gen_nr[0] if gen_nr else None),
         generation_cluster=generation_cluster, generation_nachweisweg=generation_nachweisweg,
         generation_nutzerabgleich=generation_nutzerabgleich,
+        generation_abweichende_kennungen=generation_abweichende_kennungen,
         motor=motor_bestaetigt, kraftstoff=kraftstoff, leistung_ps=leistung,
         antrieb=antrieb, powertrain=powertrain,
         getriebe=getriebe, getriebe_detail=getriebe_detail, motorcode=motorcode,
