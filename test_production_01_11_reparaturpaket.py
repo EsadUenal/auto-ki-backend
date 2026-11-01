@@ -187,15 +187,25 @@ check("L5d) gemischte Gruppe (series_only UND unclear zusammen): neutrale "
       satz_gemischt is not None and "unterschiedlicher Betroffenheitseinstufung" in satz_gemischt,
       f"satz={satz_gemischt!r}")
 
-# ── L1 (DIAGNOSTISCH, keine Loesung): tatsaechliche Live-Query-Konstruktion ─
-# Zeigt NUR die vom bestehenden Code tatsaechlich konstruierten Tavily-
-# Query-Strings fuer exakt die Production-Eingabe (kombiniertes Motor-/
-# Antriebsfeld "5.0 V8, Heckantrieb", mehrere gleichzeitig offene
-# Identitaetsfelder). KEIN Netzwerkzugriff (tavily_search gestubbt, liefert
-# nur Mindest-Treffer zur Phasen-Freischaltung). Beweist NICHT, warum die
-# echte Live-Suche diesmal keine Herstellerquelle fand -- das bleibt ohne
-# Rohantworten offen (s. Abschlussbericht) -- zeigt nur, dass die Query
-# selbst strukturell lang, mehrdeutig gebuendelt und kommabehaftet ist.
+# ── L1 (vormals DIAGNOSTISCH, jetzt FIX-Nachweis): tatsaechliche Live-Query-
+# Konstruktion ─────────────────────────────────────────────────────────────
+# Zeigt die vom Code tatsaechlich konstruierten Tavily-Query-Strings fuer
+# exakt die Production-Eingabe (kombiniertes Motor-/Antriebsfeld "5.0 V8,
+# Heckantrieb", mehrere gleichzeitig offene Identitaetsfelder). KEIN
+# Netzwerkzugriff (tavily_search gestubbt, liefert nur Mindest-Treffer zur
+# Phasen-Freischaltung). Beweist WEITERHIN NICHT, warum die echte Live-Suche
+# diesmal keine Herstellerquelle fand -- das bleibt ohne Rohantworten offen
+# (s. Abschlussbericht).
+#
+# NACHTRAG (ENFAL-Recherchepfad-Folgeauftrag, 2026-11, L1-Korrektur): die
+# ERSTE Fassung dieses Checks bewies NOCH die strukturelle Schwaeche selbst
+# ("buendelt ALLE offenen Felder PLUS das kommabehaftete Motorfeld in EINE
+# lange Query"). `_identity_spec_gap_queries()` (app/technical_research.py)
+# trennt Generation und Motorisierung jetzt in ZWEI eigene Query-Paare (s.
+# dort) -- dieser Check ist dementsprechend auf die NEUE, korrekte Aussage
+# umgestellt (§ AGENTS.md Testing: "wenn ein Test die falsche Aussage
+# sichert, wird er auf die richtige Aussage umgestellt, nicht entschaerft"),
+# nicht einfach entfernt.
 import asyncio
 
 import app.technical_research as tr
@@ -232,15 +242,32 @@ print("--- L1 DIAGNOSTISCH: tatsächlich konstruierte Tavily-Queries ---")
 for i, q in enumerate(_AUFGEZEICHNETE_QUERIES, 1):
     print(f"  [{i}] {q!r}")
 spec_gap_queries = [q for q in _AUFGEZEICHNETE_QUERIES if "Spezifikation" in q or "specifications" in q]
-check("L1-DIAGNOSE) die Round-2-Spec-Gap-Query buendelt bei mehreren offenen "
-      "Identitätsfeldern (hier: generation+fuel+drivetrain+transmission+"
-      "powertrain) ALLE davon PLUS das kommabehaftete Motorfeld in EINE "
-      "lange Query -- strukturell belegt, NICHT als bewiesene Ursache fuer "
-      "den konkreten Production-Lauf behauptet (dafuer fehlen die "
-      "Tavily-Rohantworten)",
-      bool(spec_gap_queries) and "," in spec_gap_queries[0]
-      and sum(1 for w in ("Generation", "Kraftstoff", "Antriebsart", "Getriebe")
-              if w in spec_gap_queries[0]) >= 3,
+_GENERATION_WORTE = ("Generation", "Modellcode", "generation", "model code")
+_MOTORISIERUNG_WORTE = ("Kraftstoff", "Antriebsart", "Radantrieb", "Getriebe",
+                       "Antriebstechnologie", "Motorisierung", "fuel type",
+                       "drivetrain", "transmission")
+check("L1-FIX) genau 4 Round-2-Spec-Gap-Queries (2 Achsen x DE+EN) statt der "
+      "vorher EINEN Sammelpaars -- die Aufspaltung selbst ist sichtbar, nicht "
+      "nur der Wortinhalt", len(spec_gap_queries) == 4, f"spec_gap_queries={spec_gap_queries!r}")
+check("L1-FIX) KEINE einzelne Query enthaelt Woerter aus BEIDEN Achsen gleichzeitig "
+      "(Generation-Achse und Motorisierungs-Achse) -- die vorher belegte 'eine "
+      "lange Sammelquery fuer alle offenen Felder' entfaellt",
+      bool(spec_gap_queries)
+      and all(not (any(w in q for w in _GENERATION_WORTE)
+                   and any(w in q for w in _MOTORISIERUNG_WORTE))
+              for q in spec_gap_queries),
+      f"spec_gap_queries={spec_gap_queries!r}")
+check("L1-FIX) Generation und Motorisierung laufen in GETRENNTEN Queries: "
+      "keine Query nennt beide Achsen gemeinsam ('Generation' zusammen mit "
+      "einem Motorisierungs-Wort)",
+      all(not ("Generation" in q and any(w in q for w in ("Kraftstoff", "Getriebe", "Radantrieb",
+                                                           "Antriebstechnologie")))
+          for q in spec_gap_queries),
+      f"spec_gap_queries={spec_gap_queries!r}")
+check("L1-FIX) das kommabehaftete Nutzer-Motorfeld ('5.0 V8, Heckantrieb') "
+      "bleibt weiterhin Teil der Motorisierungs-Query (das war nie das "
+      "Problem -- die VERMISCHUNG mit der Generation war es)",
+      any("5.0 V8, Heckantrieb" in q for q in spec_gap_queries),
       f"spec_gap_queries={spec_gap_queries!r}")
 
 print()

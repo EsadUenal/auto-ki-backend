@@ -70,7 +70,8 @@ from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
     _domain_von, _marke_eigene_domain, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
-    curate_results, ist_amtliche_quelle, registrable_domain, score_domain, tavily_search,
+    curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
+    registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -439,6 +440,76 @@ def _wartung_marktvorbehalt(treffer: list[dict]) -> tuple[str | None, str | None
         return None, None
     return ('Die Quelle schränkt sich selbst ein ("falls für Ihren Markt zutreffend")',
             "unresolved")
+
+
+# ── L3 (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): Volltext-Nachladung für ──
+# mehrseitige Wartungsdokumente.
+#
+# BEFUND (real belegt: Lexus-Schweiz-"Garantie- und Serviceheft", 24 Seiten,
+# tools.lexus.ch/fileadmin/pdf_new/lex-sw-00de.pdf -- s. `test_rc_f_lexus_
+# care_wartungsplan_real.py`): der Marktvorbehalt "falls für Ihren Markt
+# zutreffend" steht auf Seite 4, die konkreten Intervalle (Öl/Filter,
+# Automatikgetriebeöl, Ventilspiel) auf Seite 15/16. `_wartung_marktvorbehalt()`
+# oben liest ausschliesslich `title`+`content` der Suchtreffer -- bringt ein
+# Tavily-Suchtreffer nur ein kurzes Snippet rund um die TREFFERSTELLE mit (hier:
+# vermutlich die Intervalltabelle), geht der weit entfernte Vorbehalt verloren,
+# OHNE dass das von einem funktionierenden Parser zu unterscheiden wäre --
+# exakt der im Auftrag benannte Unterschied zwischen "Parser korrekt" und
+# "Dokumentkontext vorher verloren".
+#
+# FIX: der bereits BESTEHENDE Extract-Nachlade-Pfad (`hole_raw_content()`,
+# app/web_search.py -- bisher nur von app/marktrecherche.py genutzt) wird für
+# eine KLEINE, eng gegatete Menge an Wartungstreffern mitgenutzt, um den
+# TATSÄCHLICHEN Seiteninhalt statt nur das Suchsnippet zu lesen. KEINE neue
+# Crawler-/Worker-Infrastruktur -- derselbe Mechanismus, nur für eine weitere,
+# begrenzte Kategorie verdrahtet (Auftrag §4: "vorhandenen gezielten
+# Originalabruf nutzen bzw. begrenzt ergänzen").
+#
+# Gate bewusst eng, um Kosten/Umfang zu begrenzen (KEIN pauschales Nachladen
+# jedes Rohtreffers):
+#   * nur Treffer mit Domainqualität >= `MIN_SCORE_FAKT` (DIESELBE Schwelle
+#     wie die Hauptpfad-Faktenbildung -- kein neues, weicheres Kriterium),
+#   * nur Treffer, die noch KEINEN brauchbaren `raw_content` mitbringen
+#     (`hat_brauchbaren_raw_content()`, dieselbe Funktion/Schwelle wie im
+#     Marktpfad),
+#   * hart begrenzt auf `_WARTUNG_VOLLTEXT_NACHLADE_MAX` URLs je Lauf.
+# Schlägt das Nachladen fehl (Netzwerk, Teilausfall, gesperrte Domain), bleibt
+# der ursprüngliche Suchtreffer unverändert -- das ist laut `hole_raw_content()`
+# kein Fehler des Checks, nur ein nicht erreichter Zusatzgewinn.
+_WARTUNG_VOLLTEXT_NACHLADE_MAX = 3
+
+
+def _wartung_nachlade_kandidaten(treffer: list[dict],
+                                 *, limit: int = _WARTUNG_VOLLTEXT_NACHLADE_MAX) -> list[str]:
+    """Reine, isoliert testbare Auswahl -- s. Moduldocstring oben für das Gate.
+    Das eigentliche Nachladen (Netzwerk) bleibt in `recherchiere()`."""
+    kandidaten: list[str] = []
+    gesehen: set[str] = set()
+    for r in treffer:
+        url = r.get("url") or ""
+        if not url or url in gesehen or hat_brauchbaren_raw_content(r):
+            continue
+        if score_domain(url, KATEGORIE_WARTUNG) < MIN_SCORE_FAKT:
+            continue
+        gesehen.add(url)
+        kandidaten.append(url)
+        if len(kandidaten) >= limit:
+            break
+    return kandidaten
+
+
+def _wartung_treffer_mit_volltext(treffer: list[dict], voller_text: dict[str, str]) -> list[dict]:
+    """Merged nachgeladenen Volltext (von `hole_raw_content()`) in `content` --
+    reine, isoliert testbare Funktion, kein Netzwerk. Ein Treffer OHNE Eintrag
+    in `voller_text` (Nachladen nicht versucht, fehlgeschlagen oder zu kurz)
+    bleibt UNVERÄNDERT -- ein Fehlschlag des Originalabrufs erfindet nie eine
+    vollständige Dokumentprüfung (Auftrag §5: 'keine erfundene vollständige
+    Gültigkeitsprüfung')."""
+    ergebnis = []
+    for r in treffer:
+        text = voller_text.get(r.get("url") or "")
+        ergebnis.append({**r, "content": text} if text else r)
+    return ergebnis
 
 
 # Herstellervertrauen-Folgeauftrag (2026-11-01, dritte Korrekturrunde): die
@@ -5843,16 +5914,34 @@ def _ist_null_kandidaten_gap(fakten: list[WebFakt], fakten_stats: dict[str, dict
 # andere grundlegende Specs teilweise nicht. Statt den KOMPLETTEN
 # Identity-Prozess zu wiederholen ("Marke/Modell bereits stark bestätigt ->
 # keine unnötige Zusatzsuche", § Auftrag), zielt diese Runde NUR auf die
-# nach Runde 1 konkret OFFENEN, web-prinzipiell-belegbaren Felder -- und
-# bündelt sie in GENAU EINEM DE- und EINEM EN-Query-Paar, egal wie viele
-# Felder offen sind (§ Auftrag: "Queries sinnvoll bündeln, nicht 1 Call pro
-# Feld"). GENAU EINE Zusatzrunde, kein Mehrrunden-Loop wie bei Weakness/
-# Wartung -- Identity ist die Vorbedingung für alles Weitere, nicht selbst
-# ein Kandidat für mehrfaches Nachbohren.
+# nach Runde 1 konkret OFFENEN, web-prinzipiell-belegbaren Felder.
 #
+# L1-KORREKTUR (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): die vorige Fassung
+# bündelte ALLE offenen Felder (bis zu fünf: Generation, Kraftstoff, Antrieb,
+# Getriebe, Powertrain) IMMER in GENAU EINEM DE- und EINEM EN-Query-Paar. Beim
+# realen RC-F-Lauf blieben Generation UND Motorisierung gemeinsam offen -- das
+# Ergebnis war eine einzige, lange, thematisch gemischte Sammelquery (Befund
+# der Übergabe: ein 18-Wort-Beispiel inkl. der Nutzerangabe "5.0 V8,
+# Heckantrieb"). Das belegt KEINEN historischen Suchfehler ohne echte Live-
+# Daten -- rechtfertigt aber strukturell eine sauberere Aufteilung: eine
+# Generations-/Modellcode-Frage und eine Motorisierungs-Frage sind zwei
+# inhaltlich verschiedene Suchintents, keine Synonym-Variante derselben Frage.
+#
+# Jetzt: bis zu ZWEI getrennte DE/EN-Query-Paare -- eines für die Achse
+# "generation", eines für die Achse "motorisierung" (Kraftstoff/Antrieb/
+# Getriebe/Powertrain + die motorbezogenen Confirm-Felder) -- aber NUR, wenn
+# die jeweilige Achse tatsächlich offen ist. Ist nur EINE Achse offen (der
+# häufigere Fall), bleibt es bei genau 2 Queries wie bisher; nur wenn BEIDE
+# Achsen offen sind, werden es 4 -- bewusst weiterhin GENAU EINE zusätzliche
+# Runde (kein Mehrrunden-Loop wie bei Weakness/Wartung, kein Call pro
+# einzelnem Feld: "Queries sinnvoll bündeln" bleibt § Auftrag).
 _IDENTITY_SPEC_FELDER: tuple[tuple[str, str], ...] = (
     ("generation", "generation"), ("fuel", "kraftstoff"), ("drivetrain", "antrieb"),
     ("transmission", "getriebe"), ("powertrain", "powertrain"))
+_IDENTITY_SPEC_ACHSEN: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("generation", ("generation",)),
+    ("motorisierung", ("fuel", "drivetrain", "transmission", "powertrain")),
+)
 # Produktions-Forensik (Lexus-RC-F-PASS-GATE, §A Folgeauftrag, CONFIRMED Root
 # Cause): "Hybrid Elektrifizierung"/"hybrid powertrain" als Suchbegriff für das
 # OFFENE `powertrain`-Feld hat die Query selbst Richtung Hybrid-Inhalt
@@ -5930,27 +6019,39 @@ def _identity_confirm_claim_text(feld: str, ziel: dict) -> str | None:
 def _identity_spec_gap_queries(breit: str, jahr: str | None, offene_felder: list[str],
                                *, ziel: dict | None = None,
                                confirm_felder: list[str] | None = None) -> list[tuple[str, str]]:
-    """Baut GENAU EIN DE/EN-Query-Paar für ALLE offenen Identitätsfelder --
-    sowohl die web-eigenständig auffindbaren (`offene_felder`, s.
-    `_identity_spec_gaps`) als auch die Confirm-only-Felder mit vorhandenem
-    Nutzerwert (`confirm_felder`, s. `_identity_confirm_gaps`) -- NIE ein Call
-    pro Feld, egal wie viele Felder insgesamt offen sind (§ Auftrag:
-    "Queries sinnvoll bündeln")."""
+    """Baut je OFFENER Achse (`_IDENTITY_SPEC_ACHSEN` -- "generation" und
+    "motorisierung") ein eigenes DE/EN-Query-Paar -- NIE einen Call pro
+    einzelnem Feld (§ Auftrag: "Queries sinnvoll bündeln" bleibt innerhalb
+    einer Achse bestehen), aber auch NIE mehr Felder in einer Query vermischt,
+    als zu EINEM Suchintent gehören (L1-Korrektur, s. Moduldocstring oben).
+    Die motorbezogenen Confirm-Felder (`confirm_felder`, s.
+    `_identity_confirm_gaps`) gehören inhaltlich zur Motorisierungs-Achse und
+    laufen dort mit."""
     confirm_felder = confirm_felder or []
     if not offene_felder and not confirm_felder:
         return []
-    confirm_claims = [c for f in confirm_felder
-                      if (c := _identity_confirm_claim_text(f, ziel or {}))]
-    # Eigene Wortwahl ("Spezifikation(en)"), bewusst NICHT "technische Daten"
-    # -- das ist die Runde-1-Formulierung (`q_ident` oben); ein Test/Log, der
-    # Runde-1-Identitätsqueries an dieser Phrase erkennt, darf diese
-    # gebündelte Zusatzquery nicht fälschlich mitzählen.
-    de = " ".join(filter(None, [breit, jahr] + [_IDENTITY_SPEC_WORTE_DE[f] for f in offene_felder]
-                         + confirm_claims + ["Spezifikation"]))
-    en = " ".join(filter(None, [breit] + [_IDENTITY_SPEC_WORTE_EN[f] for f in offene_felder]
-                         + confirm_claims + ["engine specifications" if confirm_claims
-                                             else "specifications"]))
-    return [("identity_spec_gap_de", de), ("identity_spec_gap_en", en)]
+    intents: list[tuple[str, str]] = []
+    for achse, felder_der_achse in _IDENTITY_SPEC_ACHSEN:
+        eigene_offene = [f for f in offene_felder if f in felder_der_achse]
+        eigene_confirm = confirm_felder if achse == "motorisierung" else []
+        if not eigene_offene and not eigene_confirm:
+            continue
+        confirm_claims = [c for f in eigene_confirm
+                          if (c := _identity_confirm_claim_text(f, ziel or {}))]
+        # Eigene Wortwahl ("Spezifikation(en)"), bewusst NICHT "technische
+        # Daten" -- das ist die Runde-1-Formulierung (`q_ident` oben); ein
+        # Test/Log, der Runde-1-Identitätsqueries an dieser Phrase erkennt,
+        # darf diese gebündelte Zusatzquery nicht fälschlich mitzählen.
+        de = " ".join(filter(None, [breit, jahr]
+                             + [_IDENTITY_SPEC_WORTE_DE[f] for f in eigene_offene]
+                             + confirm_claims + ["Spezifikation"]))
+        en = " ".join(filter(None, [breit]
+                             + [_IDENTITY_SPEC_WORTE_EN[f] for f in eigene_offene]
+                             + confirm_claims + ["engine specifications" if confirm_claims
+                                                 else "specifications"]))
+        intents.append((f"identity_spec_gap_{achse}_de", de))
+        intents.append((f"identity_spec_gap_{achse}_en", en))
+    return intents
 
 
 # ── Tavily-Implementierung ───────────────────────────────────────────────────
@@ -6024,8 +6125,11 @@ class TavilyTechnicalResearchProvider:
         # belegt (sonst wären wir oben schon zurückgekehrt) -- jetzt NUR die
         # konkret offenen, web-belegbaren Felder PLUS die offenen Confirm-
         # only-Felder mit vorhandenem Nutzerwert (§2 Folgeauftrag) gezielt
-        # nachfragen, GENAU EINE gebündelte Zusatzrunde (2 Queries,
-        # unabhängig von der Gesamtzahl offener Felder).
+        # nachfragen, GENAU EINE zusätzliche Runde (L1-Korrektur, ENFAL-
+        # Recherchepfad-Folgeauftrag 2026-11: bis zu ZWEI eigene Query-Paare
+        # -- Generation und Motorisierung getrennt, s. `_identity_spec_gap_
+        # queries()` -- statt des vorigen einen Sammelpaars für alle Felder;
+        # unverändert: kein Mehrrunden-Loop, kein Call pro einzelnem Feld).
         offene_spec_felder = _identity_spec_gaps(identitaet)
         offene_confirm_felder = _identity_confirm_gaps(z, identitaet)
         if offene_spec_felder or offene_confirm_felder:
@@ -6034,6 +6138,16 @@ class TavilyTechnicalResearchProvider:
             spec_treffer_je_intent = await asyncio.gather(
                 *[suche(q, phase="identitaet") for _, q in spec_intents])
             neue_spec_treffer = [r for t in spec_treffer_je_intent for r in t]
+            # Diagnostik (L1 Auftrag §4): welche Domains die Zusatzrunde
+            # tatsächlich erreicht hat -- je Intent, damit sichtbar bleibt, ob
+            # z.B. die Generations-Achse überhaupt eine andere Domainmenge
+            # erreicht als die Motorisierungs-Achse (statt nur eine
+            # Gesamtzahl). Keine Query-Strings/Inseratstexte, nur Domains.
+            domains_je_intent = {
+                name: sorted({registrable_domain(r.get("url") or "") for r in treffer
+                             if r.get("url")})
+                for (name, _q), treffer in zip(spec_intents, spec_treffer_je_intent) if treffer
+            }
             if neue_spec_treffer:
                 ident_treffer = ident_treffer + neue_spec_treffer
                 identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
@@ -6055,9 +6169,12 @@ class TavilyTechnicalResearchProvider:
             else:
                 geloest = []
             log.info("research_phase=identity_specs round=2 gap=%s query_count=%d "
-                     "new_raw_results=%d fields_resolved=%s stop_reason=%s",
+                     "new_raw_results=%d domains_je_intent=%s fields_resolved=%s stop_reason=%s",
                      ",".join(offene_spec_felder + offene_confirm_felder), len(spec_intents),
-                     len(neue_spec_treffer), ",".join(geloest) or "none",
+                     len(neue_spec_treffer),
+                     "; ".join(f"{name}={','.join(doms) or '-'}"
+                              for name, doms in domains_je_intent.items()) or "-",
+                     ",".join(geloest) or "none",
                      "resolved" if geloest else "no_new_evidence")
 
         # Query-Anreicherung (Abschnitt 4 Auftrag): bestätigte Generation hat
@@ -6138,6 +6255,24 @@ class TavilyTechnicalResearchProvider:
                      intent, q, len(treffer), hoch)
         roh["schwachstelle"] = [r for treffer in sw_treffer_je_intent for r in treffer]
         roh["wartung"] = [r for treffer in wa_treffer_je_intent for r in treffer]
+
+        # L3 (s. Moduldocstring bei `_wartung_nachlade_kandidaten()`): Volltext
+        # statt nur Snippet für eine kleine, eng gegatete Menge an Wartungs-
+        # treffern -- VOR `phase_fakten()`, damit sowohl die Intervall-Extraktion
+        # als auch `_wartung_marktvorbehalt()` denselben, vollständigeren Text
+        # sehen. Betrifft NUR `content` (die ALLE nachfolgenden Textprüfungen
+        # lesen) -- kein neues Feld, keine Änderung an `_extrahiere_fakten()`
+        # oder `_wartung_marktvorbehalt()` selbst nötig.
+        wartung_nachlade_urls = _wartung_nachlade_kandidaten(roh["wartung"])
+        if wartung_nachlade_urls:
+            voller_text, nachlade_stats = await hole_raw_content(wartung_nachlade_urls)
+            roh["wartung"] = _wartung_treffer_mit_volltext(roh["wartung"], voller_text)
+            log.info("research_phase=wartung_volltext kandidaten=%d nachgeladen=%d "
+                     "aus_cache=%d fehler=%d domains=%s",
+                     len(wartung_nachlade_urls), len(voller_text),
+                     nachlade_stats["aus_cache"], nachlade_stats["fehler"],
+                     ",".join(sorted({registrable_domain(u) for u in wartung_nachlade_urls})) or "-")
+
         fakten_stats: dict[str, dict] = {}
         abgelehnt_vor_fakten = len(abgelehnt)
         fakten = phase_fakten(roh, z, identitaet, ("rueckruf", "schwachstelle", "wartung"),

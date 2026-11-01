@@ -333,6 +333,32 @@ _WEB_FEHLT_PHRASE = {
 }
 
 
+# L6-Korrektur (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): die bisherige
+# Formulierung "-- im Formular nicht nachtragbar" war schlicht falsch -- ein im
+# Modellfeld angehängter Generations-/Baureihencode (z.B. "RC F USC10") wird
+# von `parse_core_model()` (app/technical_research.py) als `auxiliary_code`
+# abgetrennt und reichert die Recherchequeries an (siehe dort). Dieser Weg
+# bestätigt die Generation aber NICHT von selbst -- ein reiner Stringvergleich
+# gegen eine bereits bestätigte Generation wäre keine unabhängige Evidenz und
+# würde fehlende Recherche nicht ersetzen (§ Auftrag: "keinen nutzlosen Weg als
+# Lösung verkaufen"). Für die Motorisierung gibt es keinen vergleichbaren,
+# strukturiert ausgewerteten Modellcode-Weg -- dort bleiben Fahrzeugschein/FIN
+# der Klärungsweg, ohne die falsche Nebenbehauptung.
+_GENERATION_MODELLFELD_HINWEIS = (
+    " Ein im Modellfeld ergänzter Generations- oder Baureihencode (z.B. "
+    "\"RC F USC10\") kann die Recherche gezielter machen, bestätigt die "
+    "Generation dadurch aber nicht von selbst."
+)
+
+
+def _klaerung_aktion(fehlt: str, *, satz_praefix: str, generation_betroffen: bool = False) -> str:
+    """Baut den `aktion`-Satz für die Identitäts-Gates einheitlich -- ohne die
+    nachgewiesen falsche Behauptung, eine Klärung sei "im Formular nicht
+    nachtragbar" (s. Moduldocstring oben)."""
+    hinweis = _GENERATION_MODELLFELD_HINWEIS if generation_betroffen else ""
+    return f"{satz_praefix} {fehlt} klären (z.B. über Fahrzeugschein oder FIN).{hinweis}"
+
+
 def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
                          identity=None) -> KeyFinding:
     """Unsichere Fahrzeugzuordnung sichtbar machen (Identity-Trust-Gate).
@@ -359,16 +385,16 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
         # ist danach nichts mehr offen, entfällt die Nachtrag-Aufforderung; ist
         # etwas offen, wird GENAU das genannt — nie mehr und nie weniger als das,
         # was die Empfehlung ebenfalls als offen behandelt.
-        # Package D6 (Forensik-Folgeauftrag): das ENFAL-Formular hat KEIN
-        # eigenes Generation-/Baureihencode-Feld — "bitte X nachtragen"
-        # forderte eine Eingabe, die der Nutzer im realen Formular gar nicht
-        # machen kann. "bitte X klären" (statt "nachtragen") hält exakt
-        # dieselbe Grammatik (X bleibt Akkusativobjekt, keine Wortlisten-
-        # Änderung nötig), verweist aber auf die tatsächlich verfügbaren
-        # Klärungswege (Fahrzeugschein/FIN) statt ein nicht existierendes
-        # Formularfeld zu suggerieren.
-        aktion = (f"Für eine gezielte Analyse bitte {fehlt} klären (z.B. über "
-                 f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar).")
+        # Package D6 (Forensik-Folgeauftrag): "bitte X nachtragen" suggerierte
+        # ein Formularfeld, das es so nicht gibt. "bitte X klären" (statt
+        # "nachtragen") hält exakt dieselbe Grammatik (X bleibt Akkusativ-
+        # objekt, keine Wortlisten-Änderung nötig), verweist aber auf die
+        # tatsächlich verfügbaren Klärungswege (Fahrzeugschein/FIN) --
+        # inzwischen OHNE die zusätzliche, nachgewiesen falsche Behauptung
+        # "im Formular nicht nachtragbar" (s. `_klaerung_aktion()`-Docstring:
+        # für die Generation existiert der Modellfeld-Weg sehr wohl).
+        aktion = _klaerung_aktion(fehlt, satz_praefix="Für eine gezielte Analyse bitte",
+                                  generation_betroffen="Generation" in fehlt)
         if identity is not None:
             from app.empfehlungs_policy import identitaet_aufloesen
             aufl = identitaet_aufloesen(identity)
@@ -377,8 +403,9 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
                           "ausreichend plausibilisiert; ein Nachtrag ist nicht nötig.")
             else:
                 noch_offen = " und ".join(_WEB_FEHLT_PHRASE.get(f, f.lower()) for f in aufl.fehlend)
-                aktion = (f"Für eine vollständig gesicherte Analyse bitte {noch_offen} klären "
-                         f"(z.B. über Fahrzeugschein oder FIN -- im Formular nicht nachtragbar).")
+                aktion = _klaerung_aktion(
+                    noch_offen, satz_praefix="Für eine vollständig gesicherte Analyse bitte",
+                    generation_betroffen="Generation" in aufl.fehlend)
         # Final-Stabilization (Cluster M): bei belegter Web-Identität stammen
         # fahrzeugspezifische Hinweise aus Webquellen — die Aussage "es werden
         # keine fahrzeugspezifischen … ausgegeben" wäre dann falsch.
@@ -397,8 +424,8 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
                      "Es werden deshalb keine fahrzeugspezifischen Schwachstellen, "
                      "Motorprobleme oder Rückrufe ausgegeben: die allgemeinen "
                      "Prüflisten gelten unverändert.",
-        aktion=(f"Für eine gezielte Analyse bitte {fehlt} klären (z.B. über "
-               f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar)."),
+        aktion=_klaerung_aktion(fehlt, satz_praefix="Für eine gezielte Analyse bitte",
+                               generation_betroffen="Generation" in fehlt),
         prioritaet=_P_IDENTITAET)
 
 
@@ -784,8 +811,8 @@ def _identitaets_finding_verkauf(fehlende_angabe: str | None) -> KeyFinding:
                      "sicher bestimmt werden. Fahrzeugspezifische Hinweise wurden deshalb "
                      "bewusst eingeschränkt. Inseratsanalyse, Verkaufstipps und die "
                      "Bewertung deiner Angaben gelten unverändert.",
-        aktion=(f"Für eine gezieltere Analyse bitte {fehlt} klären (z.B. über "
-               f"Fahrzeugschein oder FIN -- im Formular nicht nachtragbar)."),
+        aktion=_klaerung_aktion(fehlt, satz_praefix="Für eine gezieltere Analyse bitte",
+                               generation_betroffen="Generation" in fehlt),
         prioritaet=_P_IDENTITAET)
 
 

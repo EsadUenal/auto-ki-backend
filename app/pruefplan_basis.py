@@ -108,8 +108,11 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      ("starterbatterie",)),
     ("warnlampen", "Innen und Elektrik",
      "Warnleuchten beim Einschalten der Zündung beobachten",
-     "Alle Kontrollleuchten müssen kurz aufleuchten und danach erlöschen: auch Airbag, "
-     "ABS, Motor und Reifendruck.",
+     "Die Warnleuchten -- u.a. Airbag, ABS und Motor -- müssen kurz aufleuchten und dann "
+     "erlöschen; Zustandsanzeigen wie Handbremse oder Gurtwarnung leuchten dagegen nur "
+     "solange der jeweilige Zustand besteht. Wie lange z.B. die Reifendruckleuchte beim "
+     "Selbsttest leuchtet, ist von Fahrzeug zu Fahrzeug unterschiedlich -- maßgeblich ist "
+     "die Bedienungsanleitung.",
      "Eine Leuchte, die gar nicht erst angeht, kann bewusst entfernt worden sein.",
      ()),
     ("innenraum", "Innen und Elektrik",
@@ -158,8 +161,10 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
      None, ()),
     ("warnlampen", "Vor Fahrtbeginn",
      "Warnleuchten nach dem Start kontrollieren",
-     "Nach dem Anspringen darf keine Kontrollleuchte dauerhaft leuchten: besonders "
-     "Motor, ABS, Airbag und Ladekontrolle.",
+     "Nach dem Anspringen dürfen die Warnleuchten -- besonders Motor, ABS, Airbag und "
+     "Ladekontrolle -- nicht dauerhaft leuchten. Reine Zustandsanzeigen (z.B. angezogene "
+     "Handbremse) zählen nicht dazu; ob und wie lange z.B. die Reifendruckleuchte nach dem "
+     "Start noch leuchtet, regelt die Bedienungsanleitung des jeweiligen Fahrzeugs.",
      None, ()),
     ("leerlauf", "Vor Fahrtbeginn",
      "Leerlauf eine Minute beobachten",
