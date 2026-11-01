@@ -2216,114 +2216,38 @@ def _conf(info: dict) -> str:
     return "hoch" if info["gewicht"] >= 6 else "mittel" if info["gewicht"] >= 4 else "niedrig"
 
 
-# ENFAL-Folgeauftrag ("Generation über drei belastbare Nachweiswege
-# auflösen", 2026-11): Nachweisweg B -- "eine Generation eindeutig aus
-# belegten Zuordnungsdaten ableiten", getrennt vom bestehenden Nachweisweg C
-# (`konsens(gen_claims, "generation")` oben, exakte Zeichenkette, UNVERÄNDERT
-# weiterhin die bevorzugte, zuerst versuchte Auflösung).
+# ENFAL-Korrekturauftrag ("Ableitung braucht positive Zuordnung, nicht nur
+# fehlenden Widerspruch", 2026-11): der vormalige Nachweisweg B
+# (`_generation_cluster_ableiten()`, feat/79a0bea) wurde ENTFERNT.
 #
-# BEFUND (Lexus-RC-F-Identitätsvertrag, real belegt): ADAC nennt "UXC1",
-# carwiki.de/auto-motor-und-sport.de nennen "XC1" -- derselbe reale Wagen
-# könnte eine einzige Generation unter zwei Schreibweisen sein, oder es
-# könnten zwei echte Generationen sein. `konsens()` gruppiert ausschließlich
-# nach EXAKTER Zeichenkette und kann diese Fälle strukturell nicht
-# unterscheiden -- beide Gruppen bleiben für sich zu schwach (RC-F-Befund:
-# "uxc1" Gewicht 2, "xc1" Gewicht 2–4, je nach Tier des Fachmedien-Belegs,
-# beide unter/um `MIN_KONSENS_GEWICHT`).
+# Die entfernte Funktion führte unterschiedlich geschriebene Generations-
+# codes ("UXC1", "XC1") zu EINEM Cluster zusammen, sobald kein Beleg sie
+# zeitlich AUSSCHLOSS -- Abwesenheit eines Widerspruchs wurde damit wie ein
+# Beleg für Zugehörigkeit behandelt. Das ist fachlich nicht tragfähig:
+# fehlt bei einem Code jede Zeitangabe (RC-F-Befund: ADAC nennt "UXC1" ganz
+# ohne geparstes Zeitfenster), ist seine Zuordnung zum anderen Code
+# UNBEKANNT, nicht "verträglich". Auch ein identisches Zeitfenster bei
+# BEIDEN Codes würde nur zeitliche Koexistenz zeigen, keine Codeäquivalenz.
 #
-# Diese Funktion gruppiert stattdessen nach BELEGTER ZEITLICHER
-# VERTRÄGLICHKEIT: mehrere unterschiedlich geschriebene Codes gelten als
-# DIESELBE Generation, wenn KEIN Beleg sie zeitlich ausschließt -- nicht
-# weil sie gleich geschrieben sind, und nicht weil nur eine Schreibweise
-# gefunden wurde ("'Nur eine Generation gefunden' beweist nicht, dass es
-# nur eine gibt", Auftrag §3).
+# Zwei fachlich unterschiedliche Aufgaben bleiben getrennt:
+#   A) aus einem belegten, ausreichend abgegrenzten Generationsbestand
+#      genau eine passende Generation auswählen -- das leistet weiterhin
+#      `konsens()` (Nachweisweg C) über die bereits durch
+#      `_generationen_pruefen()` gefilterten `gen_claims`: bleibt nach
+#      diesem Filter nur EINE Code-Gruppe übrig, erreicht sie die
+#      bestehende Schwelle oder nicht -- keine zweite, großzügigere Chance.
+#   B) mehrere Codes als Bezeichnungen DERSELBEN Generation behandeln --
+#      das würde einen POSITIVEN Verknüpfungsbeleg aus der Quelle selbst
+#      voraussetzen (z.B. "UXC1, intern auch XC1 genannt"). Die bestehende
+#      Extraktion (`_generationscodes()`) erhebt kein solches Merkmal --
+#      ohne diese (bislang nicht vorhandene) Datengrundlage lässt sich
+#      Aufgabe B nicht belastbar automatisieren. Der Fall bleibt deshalb
+#      ungeklärt (`generation=None`), statt über Aufgabe A erzwungen zu
+#      werden.
 #
-# GEGENPRÜFUNG (reale Regression, `test_n_ueberlappende_jahresfenster_...`):
-# bloße NUMERISCHE Überschneidung zweier BELEGTER, aber UNTERSCHIEDLICHER
-# Zeitfenster genügt NICHT als Verträglichkeitsbeleg -- "UXC1 (2014-2022)"
-# und "UXC9 (2018-2025)" überschneiden sich zahlenmäßig (2018-2022), sind
-# aber im Quelltext ausdrücklich ZWEI SEPARATE, je EIGENständig datierte
-# Baureihen (Auftrag §3: "Bei überlappenden Produktionsjahren kann die
-# Jahreszahl allein unzureichend sein"). Entscheidend ist deshalb NICHT
-# Überschneidung, sondern ob es ÜBERHAUPT MEHR ALS EIN tatsächlich
-# belegtes, UNTERSCHIEDLICHES Zeitfenster unter den Kandidaten gibt: nennen
-# zwei Schreibweisen JEWEILS ein EIGENES (und sei es nur geringfügig
-# abweichendes) Fenster, ist das ein Signal, dass die Quellen sie als
-# ZEITLICH EIGENSTÄNDIG behandeln -- kein Verträglichkeitsbeleg, selbst bei
-# Überschneidung. NUR wenn höchstens EIN Kandidat überhaupt ein belegtes
-# Fenster trägt (die übrigen Schreibweisen sind zeitlich schlicht STUMM,
-# nicht abweichend), bleibt die zeitliche Grundlage eindeutig genug für
-# eine Ableitung -- exakt der real belegte RC-F-Fall (nur
-# auto-motor-und-sport.de nennt ein Fenster, ADAC/carwiki.de schweigen
-# dazu, widersprechen aber auch nicht).
-#
-# KEINE Absenkung der bestehenden Schwelle: das AGGREGIERTE Gewicht über
-# ALLE verträglichen Schreibweisen muss weiterhin `MIN_KONSENS_GEWICHT`
-# erreichen UND mindestens eine Quelle muss "stark" (Tier <=2) sein --
-# exakt dieselben Zahlen wie `konsens()`, nur über eine andere Gruppierung
-# aggregiert.
-#
-# "Nachvollziehbar abgegrenzter Kandidatenraum" (Auftrag §3): OHNE
-# mindestens EIN tatsächlich belegtes, das Zielbaujahr BESTÄTIGENDES
-# Zeitfenster (nicht nur "nicht ausgeschlossen") bleibt der Kandidatenraum
-# unbegrenzt -- dann wird NICHT abgeleitet (verhindert Scheineindeutigkeit
-# bei komplett fehlenden Zeitangaben).
-#
-# `gen_claims` sind bereits NUR die von `_generationen_pruefen()` NICHT
-# verworfenen Claims -- jeder trägt also schon `rollenbeleg` oder
-# `generationsnummer_strukturell` (eine echte Baureihen-/Generationsrolle,
-# kein Trimname); diese Funktion muss das nicht erneut prüfen.
-def _generation_cluster_ableiten(
-        gen_claims: list[dict], baujahr: int | None) -> tuple[str | None, list[str], dict]:
-    """(Anzeigewert, voller Code-Cluster, Info-Dict).
-
-    Der Anzeigewert -- falls gesetzt -- ist IMMER eine tatsächlich belegte
-    Code-Zeichenkette aus `gen_claims`, NIE eine Ordinalangabe ("1.
-    Generation") und NIE erfunden: nachgelagerte Verbraucher
-    (`_fremde_generation()`) erwarten chassiscode-förmige Werte. Das
-    Info-Dict trägt bei Erfolg `{"domains", "gewicht", "domain_namen"}`
-    (dieselbe Form wie `konsens()`s Rückgabe) und bei Nichtauflösung
-    `{"grund": ...}`."""
-    gruppen: dict[str, dict] = {}
-    for c in gen_claims:
-        key = str(c["wert"]).lower()
-        g = gruppen.setdefault(key, {"wert": c["wert"], "domains": {}, "zeitraum": None})
-        alt = g["domains"].get(c["domain"])
-        if alt is None or c["tier"] < alt:
-            g["domains"][c["domain"]] = c["tier"]
-        if g["zeitraum"] is None and c.get("zeitraum"):
-            g["zeitraum"] = c["zeitraum"]
-    if len(gruppen) < 2:
-        # Einzelgruppen-Fall deckt bereits Nachweisweg C (`konsens()`) ab --
-        # erreichte er die Schwelle nicht, tut es diese Funktion auch nicht
-        # (identische Schwelle, keine zweite Chance für dieselbe Gruppe).
-        return None, [], {"grund": "keine_alternative_gruppierung"}
-    einzelgruppen = list(gruppen.values())
-    cluster = sorted({g["wert"] for g in einzelgruppen})
-    belegte_fenster = {g["zeitraum"] for g in einzelgruppen if g["zeitraum"]}
-    if len(belegte_fenster) > 1:
-        # Mehr als EIN tatsächlich belegtes, unterschiedliches Zeitfenster --
-        # selbst bei numerischer Überschneidung ein Signal für zeitlich
-        # EIGENSTÄNDIGE Baureihen, kein Verträglichkeitsbeleg (s. Docstring
-        # oben, Gegenprüfung Fall N). Keine Ableitung.
-        return None, cluster, {"grund": "zeitfenster_widerspruch"}
-    if not belegte_fenster:
-        return None, cluster, {"grund": "kein_bestaetigtes_zeitfenster"}
-    anker_fenster = next(iter(belegte_fenster))
-    if _im_zeitraum(baujahr, anker_fenster) is not True:
-        return None, cluster, {"grund": "zeitfenster_deckt_baujahr_nicht"}
-    domains_gesamt: dict[str, int] = {}
-    for g in einzelgruppen:
-        for d, t in g["domains"].items():
-            domains_gesamt[d] = min(t, domains_gesamt.get(d, t))
-    gewicht = sum(_GEWICHT[t] for t in domains_gesamt.values())
-    stark = any(t <= 2 for t in domains_gesamt.values())
-    if not stark or gewicht < MIN_KONSENS_GEWICHT:
-        return None, cluster, {"grund": "gewicht_unzureichend"}
-    anker = [g for g in einzelgruppen if g["zeitraum"] == anker_fenster]
-    anker.sort(key=lambda g: -sum(_GEWICHT[t] for t in g["domains"].values()))
-    return anker[0]["wert"], cluster, {"domains": len(domains_gesamt), "gewicht": gewicht,
-                                       "domain_namen": set(domains_gesamt)}
+# `generation_cluster`/`generation_nachweisweg` (Feldnamen unverändert,
+# s. `models.py`) tragen seither nur noch den Nachweisweg-C/A-Fall: ein
+# einzelner belegter Code bzw. gar keiner -- nie mehr als ein Element.
 
 
 def _generationen_pruefen(claims: list[dict], bekannter_code: str | None = None) -> None:
@@ -2503,32 +2427,16 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         feldwerte["generation"]["detail"] = gen_nr[0]
     generation_nachweisweg = "quelle" if generation else None
     generation_cluster: list[str] = [generation] if generation else []
-    if not generation:
-        # Nachweisweg B ("eindeutig aus belegten Zuordnungsdaten abgeleitet",
-        # ENFAL-Folgeauftrag "...drei belastbare Nachweiswege", 2026-11):
-        # ersetzt den fruheren, gefaehrlichen Rueckfall "schreibe die
-        # Ordinalangabe ('1. Generation') direkt in dieses Feld" -- ein
-        # Wert hier muss chassiscode-foermig bleiben, weil
-        # `_fremde_generation()` nachgelagert exakt solche Werte erwartet
-        # (s. Funktionsdocstring dort). `_generation_cluster_ableiten()`
-        # liefert NIE eine Ordinalangabe als Anzeigewert.
-        abgeleitet, cluster, info = _generation_cluster_ableiten(gen_claims, ziel.get("baujahr"))
-        if abgeleitet:
-            generation = abgeleitet
-            generation_cluster = cluster
-            generation_nachweisweg = "abgeleitet"
-            feldwerte["generation"] = {
-                "value": abgeleitet, "confidence": _conf(info), "domains": info["domains"],
-                "detail": gen_nr[0] if gen_nr else None, "domain_namen": info["domain_namen"]}
-            akzeptiert.append({"feld": "generation", "wert": abgeleitet, "domains": info["domains"],
-                               "gewicht": info["gewicht"], "cluster": cluster})
-        elif cluster:
-            abgelehnt.append({"feld": "generation", "grund": info["grund"], "cluster": cluster})
+    # Nachweisweg B ("mehrere Codes als dieselbe Generation behandeln") wurde
+    # entfernt -- s. Kommentarblock vor `_generationen_pruefen()`. Ohne
+    # positiven Verknüpfungsbeleg bleibt ein Fall, in dem `konsens()` keine
+    # einzelne Code-Zeichenkette bestätigt, ungeklärt (`generation=None`),
+    # statt über fehlenden zeitlichen Widerspruch erzwungen zu werden.
     # Nachweisweg A ("eine vom Nutzer genannte Generation unabhängig
     # prüfen"): `auxiliary_code` (rein formbasiert aus dem Modellfeld
     # abgetrennt, s. `_ziel()`-Docstring) wird NIEMALS selbst zur Evidenz --
     # er fließt hier NUR als nachträglicher ABGLEICH gegen eine bereits
-    # UNABHÄNGIG (Nachweisweg B/C, ausschließlich aus Quellen) bestätigte
+    # UNABHÄNGIG (Nachweisweg C, ausschließlich aus Quellen) bestätigte
     # Generation ein. Ohne eine solche unabhängige Bestätigung bleibt der
     # Abgleich leer -- eine bloß übereinstimmende Nutzerangabe wertet sich
     # NIE selbst auf (Auftrag §3: "Nicht mehrere unbestätigte Nutzerangaben
@@ -3014,13 +2922,15 @@ def _fremde_generation(r: dict, modell: str | None, generation: str | None,
     """Nennt der TITEL eine andere Generation als die belegte, ist die Seite
     über ein anderes Fahrzeug (z.B. "MX-5 NC Gebrauchtwagen-Check" für ein ND).
 
-    `cluster` (ENFAL-Folgeauftrag "Generation über drei belastbare
-    Nachweiswege auflösen", 2026-11): ALLE als dieselbe Generation geltenden
-    Schreibweisen (`WebVehicleIdentity.generation_cluster`), falls
-    Nachweisweg B (`_generation_cluster_ableiten()`) griff -- eine Quelle,
-    die irgendeine dieser bereits als zugehörig bestätigten Schreibweisen
-    nennt, gilt weiterhin NICHT als fremd. Ohne Cluster unverändert nur
-    `generation` selbst (Nachweisweg C, Rückwärtskompatibilität)."""
+    `cluster` (`WebVehicleIdentity.generation_cluster`): ENFAL-Korrektur
+    ("Ableitung braucht positive Zuordnung, nicht nur fehlenden
+    Widerspruch", 2026-11) hat den Nachweisweg entfernt, der hier je mehrere
+    Schreibweisen eingetragen hätte (`_generation_cluster_ableiten()`, ohne
+    positiven Verknüpfungsbeleg nicht tragfähig) -- `cluster` trägt deshalb
+    nie mehr als das eine über Nachweisweg C belegte `generation` selbst.
+    Der Parameter bleibt (statt entfernt zu werden), damit ein künftiger,
+    auf echtem Verknüpfungsbeleg beruhender Nachweisweg hier andocken kann,
+    ohne Aufrufer erneut anzufassen."""
     akzeptabel = {str(v).upper() for v in ([generation] if generation else []) + list(cluster or [])}
     if not akzeptabel:
         return False
@@ -5402,12 +5312,12 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                  kategorie=_WEB_KATEGORIE[kategorie], max_results=8)
         if stats is not None:
             stats[kategorie] = {"roh": len(roh_kategorie), "curated": len(treffer)}
-        # ENFAL-Folgeauftrag ("Generation über drei belastbare Nachweiswege
-        # auflösen", 2026-11): `generation_cluster` begleitet `generation`
-        # überall dorthin, wo bisher nur die einzelne Zeichenkette floss --
-        # `_fremde_generation()` erkennt damit auch eine zeitlich verträglich
-        # abgeleitete Schreibweise (Nachweisweg B) als zugehörig, nicht nur
-        # die eine per Nachweisweg C gewählte.
+        # `generation_cluster` begleitet `generation` überall dorthin, wo
+        # bisher nur die einzelne Zeichenkette floss. Trägt seit der ENFAL-
+        # Korrektur ("Ableitung braucht positive Zuordnung, nicht nur
+        # fehlenden Widerspruch", 2026-11) nie mehr als das eine über
+        # Nachweisweg C belegte `generation` selbst (s. Docstring
+        # `_fremde_generation()`).
         gen_cluster = getattr(identitaet, "generation_cluster", None) or ziel.get("generation_cluster")
         fakten += _extrahiere_fakten(treffer, kategorie, marke=ziel.get("marke"),
                                      modell=ziel.get("modell"), baujahr=ziel.get("baujahr"),

@@ -662,23 +662,26 @@ class WebVehicleIdentity(BaseModel):
     # ── KaufCheck-Final-Stabilization: Identität aus Quellentexten ───────────
     # Generationsnummer ("4. Generation") getrennt vom Code ("ND").
     generation_nummer: str | None = None
-    # ENFAL-Folgeauftrag ("Generation über drei belastbare Nachweiswege
-    # auflösen", 2026-11): `generation` bleibt der EINE, chassiscode-förmige
-    # Anzeigewert, den bestehende Verbraucher (`_fremde_generation()`,
-    # `empfehlungs_policy.py`) erwarten -- NIE eine Ordinalangabe.
-    # `generation_cluster`: ALLE als dieselbe Generation geltenden
-    # Schreibweisen (z.B. ["UXC1", "XC1"]), wenn Nachweisweg B griff (sonst
-    # nur `[generation]`, wenn gesetzt) -- genutzt von `_fremde_generation()`,
-    # damit eine abweichend geschriebene, aber zugehörige Quelle nicht
-    # fälschlich als "fremde Generation" gilt.
-    # `generation_nachweisweg`: "quelle" (Nachweisweg C, exakte Zeichenkette)
-    # | "abgeleitet" (Nachweisweg B, zeitlich verträgliche Schreibweisen) |
-    # None (kein Nachweis).
+    # `generation` bleibt der EINE, chassiscode-förmige Anzeigewert, den
+    # bestehende Verbraucher (`_fremde_generation()`, `empfehlungs_policy.py`)
+    # erwarten -- NIE eine Ordinalangabe.
+    # `generation_cluster`/`generation_nachweisweg`: ein früherer
+    # Nachweisweg B (`_generation_cluster_ableiten()`) führte mehrere
+    # unterschiedlich geschriebene Codes ohne positiven Verknüpfungsbeleg zu
+    # EINEM Cluster zusammen, sobald kein Beleg sie zeitlich ausschloss --
+    # Abwesenheit eines Widerspruchs als Zugehörigkeitsbeleg behandelt. Per
+    # ENFAL-Korrektur ("Ableitung braucht positive Zuordnung, nicht nur
+    # fehlenden Widerspruch", 2026-11) ENTFERNT: `generation_cluster` trägt
+    # seither nie mehr als `[generation]` (wenn gesetzt) bzw. `[]`;
+    # `generation_nachweisweg` nie mehr als "quelle" (Nachweisweg C, exakte
+    # Zeichenkette) oder None. Beide Felder bleiben als Schnittstelle für
+    # `_fremde_generation()` erhalten, falls ein künftiger, auf echtem
+    # Verknüpfungsbeleg beruhender Nachweisweg entsteht.
     # `generation_nutzerabgleich`: NUR Transparenz, NIE Evidenz --
     # "uebereinstimmend" | "abweichend" | None, ob eine rein formbasiert aus
     # dem Modellfeld abgetrennte Nutzerangabe (`auxiliary_code`) zu einer
-    # bereits UNABHÄNGIG (B/C) bestätigten Generation passt. Eine bloß
-    # übereinstimmende Nutzerangabe bestätigt für sich allein NIE etwas.
+    # bereits UNABHÄNGIG (Nachweisweg C) bestätigten Generation passt. Eine
+    # bloß übereinstimmende Nutzerangabe bestätigt für sich allein NIE etwas.
     generation_cluster: list[str] = Field(default_factory=list)
     generation_nachweisweg: str | None = None
     generation_nutzerabgleich: str | None = None

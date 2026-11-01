@@ -143,21 +143,6 @@ def herkunft(fe: dict | None, feld: str | None = None) -> str:
         return f"aus ENFAL-Fahrzeugdaten{extra} (Referenz), am Fahrzeug nicht geprüft"
     if state == "plausible":
         return "aus ENFAL-Fahrzeugdaten plausibilisiert, nicht gesichert"
-    if state == "web_only" and feld == "generation" and fe.get("nachweisweg") == "abgeleitet":
-        # ENFAL-Folgeauftrag ("Generation über drei belastbare Nachweiswege
-        # auflösen", 2026-11): Nachweisweg B fasst mehrere, zeitlich NICHT
-        # widersprüchliche Schreibweisen zu EINEM Anzeigewert zusammen (s.
-        # `_generation_cluster_ableiten()`) -- die generische "über
-        # Webquellen plausibilisiert"-Formulierung würde das wie einen
-        # direkten Mehrquellen-Konsens auf GENAU diese eine Schreibweise
-        # aussehen lassen. Das bleibt erkennbar eine Ableitung, nicht ein
-        # direkter Beleg (Auftrag §4).
-        belege = fe.get("evidence")
-        cluster = fe.get("cluster") or []
-        schreibweisen = "/".join(sorted(set(cluster))) or wert(feld, fe.get("value"), fe)
-        return (f"abgeleitet aus zeitlich verträglichen Schreibweisen ({schreibweisen}) "
-                "unabhängiger Quellen" + (f" ({belege})" if belege else "")
-                + ", am Fahrzeug nicht geprüft")
     if state == "web_only":
         belege = fe.get("evidence")
         return ("über Webquellen plausibilisiert" + (f" ({belege})" if belege else "")
