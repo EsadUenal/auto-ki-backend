@@ -311,12 +311,101 @@ async def test_kosten_vollstaendig_verglichen():
                   for f in recherche.fakten))
 
 
+# ══ Grenzfall (ENFAL-Folgeauftrag, 2026-11, "vier Wartungsfehlschläge und ══
+#    Abrufgrenzen abschließend klären", Auftrag §5): mehrere geeignete
+#    Kandidaten UND eine über BEIDE Kategorien geteilte URL -> die globale
+#    Obergrenze bleibt erhalten, UND die tatsächlichen Provider-Aufrufe
+#    (nicht nur der eigene Implementierungszähler) werden erfasst. Patcht
+#    bewusst EINE Ebene tiefer als die übrigen Tests hier: `ws.tavily_extract`
+#    statt `hole_raw_content` -- damit der ECHTE `hole_raw_content()` inkl.
+#    seines eigenen, bereits bestehenden Caches (`app/web_search.py`,
+#    `_extract_cache`) läuft. Das beweist, dass eine über Identität UND
+#    Wartung geteilte Dokument-URL NICHT zweimal beim Provider abgerufen
+#    wird (Cache-Treffer beim zweiten Zugriff), nicht nur, dass der eigene
+#    Auswahl-Code sie nur einmal "anfordert".
+async def test_grenzfall_globale_abrufobergrenze():
+    ws._extract_cache.clear()
+    GEMEINSAME_URL = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+                      "fahrzeuginformationen/rettungsdatenblatt-geteilt.pdf")
+    # Die geteilte URL steht bewusst AN ERSTER STELLE in beiden Listen -- das
+    # Auswahl-Gate nimmt die ERSTEN `limit` Kandidaten (s. `_identitaet_
+    # nachlade_kandidaten()`/`_wartung_nachlade_kandidaten()`); stünde sie
+    # hinten, würde sie von der jeweiligen Obergrenze abgeschnitten, BEVOR
+    # der eigentlich zu prüfende Cache-Fall überhaupt entstehen könnte.
+    identitaets_kandidaten = [
+        treffer(GEMEINSAME_URL, "Lexus RC F Rettungsdatenblatt (geteilt)", "Lexus RC F Kurzinfo"),
+    ] + [
+        treffer(f"https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+                f"fahrzeuginformationen/rettungsdatenblatt-{i}.pdf",
+                "Lexus RC F Rettungsdatenblatt", "Lexus RC F Kurzinfo")
+        for i in range(4)
+    ]
+    wartungs_kandidaten = [
+        treffer(GEMEINSAME_URL, "Lexus RC F Rettungsdatenblatt (geteilt)", "Lexus RC F Kurzinfo"),
+    ] + [
+        treffer(f"https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+                f"wartungsdokument-{i}.pdf", "Lexus RC F Wartungsdokument", "Lexus RC F Wartungshinweis kurz")
+        for i in range(4)
+    ]
+    assert len(identitaets_kandidaten) > tr._IDENTITAET_VOLLTEXT_NACHLADE_MAX
+    assert len(wartungs_kandidaten) > tr._WARTUNG_VOLLTEXT_NACHLADE_MAX
+
+    tavily_extract_calls: list[list[str]] = []
+
+    async def fake_tavily_extract(urls, *, advanced=False):
+        tavily_extract_calls.append(list(urls))
+        return [{"url": u, "raw_content": "Voller Dokumenttext " * 100, "erfolg": True} for u in urls]
+
+    async def fake_search(query, *, count=8, exclude_domains=None, include_domains=None):
+        if "technische Daten" in query:
+            return [_ADAC]
+        if "Generation Baureihe Bauzeitraum" in query:
+            return identitaets_kandidaten
+        if "Wartungsintervall Serviceintervall" in query:
+            return wartungs_kandidaten
+        return []
+
+    ws.tavily_search = fake_search
+    tr.tavily_search = fake_search
+    tr.hole_raw_content = ws.hole_raw_content   # ECHTER Nachlade-Wrapper, inkl. Cache
+    ws.tavily_extract = fake_tavily_extract
+    provider = TavilyTechnicalResearchProvider()
+    recherche = await provider.recherchiere(marke="Lexus", modell="RC F", baujahr=2017,
+                                            motor="5.0 V8, Heckantrieb", ausgeloest_durch="db_miss")
+
+    alle_angefragten_urls = [u for batch in tavily_extract_calls for u in batch]
+    check("Grenzfall1) mehr geeignete Identitäts-Kandidaten als das Limit -- trotzdem "
+          f"bleibt die Anzahl TATSÄCHLICH beim Provider angefragter Identitäts-URLs bei "
+          f"<= {tr._IDENTITAET_VOLLTEXT_NACHLADE_MAX}",
+          sum(1 for u in alle_angefragten_urls if "rettungsdatenblatt" in u)
+          <= tr._IDENTITAET_VOLLTEXT_NACHLADE_MAX, f"angefragt={alle_angefragten_urls!r}")
+    check("Grenzfall2) mehr geeignete Wartungs-Kandidaten als das Limit -- trotzdem "
+          f"bleibt die Anzahl TATSÄCHLICH beim Provider angefragter Wartungs-URLs bei "
+          f"<= {tr._WARTUNG_VOLLTEXT_NACHLADE_MAX}",
+          sum(1 for u in alle_angefragten_urls if "wartungsdokument" in u or u == GEMEINSAME_URL)
+          <= tr._WARTUNG_VOLLTEXT_NACHLADE_MAX, f"angefragt={alle_angefragten_urls!r}")
+    check("Grenzfall3) GENAU 2 Extract-BATCH-Calls insgesamt (einer je Kategorie) -- "
+          "keine Vervielfachung durch adaptive Runden oder wiederholte Phasen",
+          len(tavily_extract_calls) == 2, f"tavily_extract_calls={tavily_extract_calls!r}")
+    check("Grenzfall4) die über beide Kategorien GETEILTE URL wird beim Provider "
+          "NUR EINMAL tatsächlich angefragt -- der zweite Zugriff (Wartung, nachdem "
+          "Identität sie bereits nachgeladen hat) ist ein Cache-Treffer, kein zweiter "
+          "echter Provider-Call",
+          alle_angefragten_urls.count(GEMEINSAME_URL) == 1, f"angefragt={alle_angefragten_urls!r}")
+    check("Grenzfall5) insgesamt bleiben es TATSÄCHLICH hoechstens 2+3-1=4 DISTINCTE "
+          "beim Provider angefragte URLs (die geteilte zaehlt dank Cache nur einmal)",
+          len(set(alle_angefragten_urls)) <= 4, f"angefragt={alle_angefragten_urls!r}")
+    check("Grenzfall6) kein Crash, Recherche liefert ein normales Ergebnis trotz der "
+          "vielen Kandidaten", recherche is not None)
+
+
 async def _run_all():
     await test_a_serviceheft_nachladung()
     await test_b_identitaet_nachladung()
     await test_c_fehlgeschlagener_abruf_identitaet()
     await test_c_fehlgeschlagener_abruf_wartung()
     await test_kosten_vollstaendig_verglichen()
+    await test_grenzfall_globale_abrufobergrenze()
 
 
 asyncio.run(_run_all())

@@ -119,15 +119,46 @@ check("B3 beleglage korrekt markiert", bool(fakten_b) and fakten_b[0].beleglage 
 check("B4 alle 3 Quellen im Fakt enthalten (eine Quelle je Family, dedupliziert)",
       bool(fakten_b) and len(fakten_b[0].quellen) == 3, str(fakten_b[0].quellen) if fakten_b else "")
 
-print("\n=== C) Nur 2 Families (unter der MULTI_SOURCE-Schwelle) -> bleibt "
-      "CORROBORATED-nicht-sichtbar, AUCH MIT erlaube_multi_source=True ===")
+print("\n=== C) Nur 2 Families (unter der MULTI_SOURCE-Schwelle) -> CORROBORATED, "
+      "sichtbar als EIGENER, niedrig-confidence Hinweis (AUCH schon OHNE "
+      "erlaube_multi_source=True) ===")
+# Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11, Klaerung der
+# vier Wartungsfehlschlaege): C1/C2 pruefen das Verhalten VOR der Produkt-
+# entscheidung "Gestuetzte Wartungshinweise sichtbar machen" (Fortsetzungs-
+# auftrag, s. test_wartung_corroborated_sichtbar.py) -- diese Entscheidung
+# ist bereits im veroeffentlichten Stand (5325722) enthalten, NUR diese
+# Testdatei (seit der urspruenglichen Adaptive-Evidence-Research-Einfuehrung
+# unveraendert) wurde nie darauf angepasst. CORROBORATED (>=2 unabhaengige,
+# nicht-UNKNOWN Secondary-Quellen, gleicher Wert, kein Primaer-/Herstellerbeleg)
+# wird seitdem IMMER als eigener, klar niedrig markierter Fakt sichtbar --
+# unabhaengig von `erlaube_multi_source` (das steuert ausschliesslich die
+# STRENGERE MULTI_SOURCE-Stufe ab 3 Families, s. Abschnitt A/B oben). Der
+# Ablehnungsgrund "wartung_corroborated_not_verified" existiert seit dieser
+# Entscheidung nicht mehr (s. test_wartung_evidence_candidate.py Zeile ~67/
+# 275f., test_wartung_motoroel_vokabular.py Zeile ~138 -- dort bereits
+# korrekt auf Abwesenheit dieses Strings geprueft). Veraltete Testerwartung,
+# kein Produktfehler: der Produktcode setzt bereits die bestehende, bewusste
+# Policy um; hier wird NUR die Testerwartung fachlich korrigiert, NICHT
+# irgendeine Schwelle gelockert.
 check(f"Schwelle ist {MIN_FAMILIES_MULTI_SOURCE} (Kontrolle)", MIN_FAMILIES_MULTI_SOURCE == 3)
 fakten_c, abgelehnt_c, eskalierbar_c = _wartung_candidate_fakten(
     [WA_FAMILIE_1, WA_FAMILIE_2], marke=ZIEL["marke"], modell=ZIEL["modell"],
     generation=ZIEL["generation"], motor=None, erlaube_multi_source=True)
-check("C1 kein sichtbarer Fakt bei nur 2 Families, obwohl erlaubt", fakten_c == [])
-check("C2 Grund bleibt das bestehende 'wartung_corroborated_not_verified' (unveraendert)",
-      any(a.get("grund") == "wartung_corroborated_not_verified" for a in abgelehnt_c), str(abgelehnt_c))
+check("C1 GENAU EIN sichtbarer Fakt bei 2 Families (CORROBORATED-Policy, nicht "
+      "erst MULTI_SOURCE) -- NICHT mehr unsichtbar",
+      len(fakten_c) == 1, str(fakten_c))
+check("C1b ehrliche Kennzeichnung: confidence bleibt 'niedrig' (NIE 'hoch'), "
+      "beleglage 'uebereinstimmend_unbestaetigt' -- KEINE Quellenaufwertung, "
+      "KEINE Konsenslockerung gegenüber der bestehenden Policy",
+      bool(fakten_c) and fakten_c[0].confidence == "niedrig"
+      and fakten_c[0].beleglage == "uebereinstimmend_unbestaetigt", str(fakten_c))
+check("C2 KEINE Ablehnung mehr fuer diese Gruppe -- 'wartung_corroborated_"
+      "not_verified' existiert seit der Produktentscheidung nicht mehr als "
+      "Ablehnungsgrund (abgelehnt_c bleibt leer, der Fakt ist sichtbar statt "
+      "verworfen)", abgelehnt_c == [], str(abgelehnt_c))
+check("C2b eskalierbar bleibt False -- ein bereits (wenn auch niedrig "
+      "confident) sichtbarer Fakt ist KEIN offener Gap, der eine Zusatzrunde "
+      "rechtfertigt", eskalierbar_c is False)
 
 print("\n=== D) 3 Families, aber EINE widerspricht im Wert -> CONFLICT, NIE "
       "MULTI_SOURCE (auch nicht mit erlaube_multi_source=True) ===")
@@ -442,16 +473,32 @@ async def test_i_eskalation_nur_fuer_schwachstelle():
           not _esk_calls(calls, "bestätigt Herstellerangabe", "confirmed specification"), str(calls))
 
 
-async def test_g_eskalation_nur_fuer_wartung():
+async def test_g_wartung_mit_nur_2_families_eskaliert_nicht_mehr():
+    # Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11):
+    # umbenannt und umgestellt -- s. Abschnitt C oben fuer die vollstaendige
+    # Begruendung. WA_FAMILIE_1/2 (2 Families) ergeben seit der "CORROBORATED
+    # sichtbar machen"-Produktentscheidung bereits in RUNDE 1 einen
+    # sichtbaren (niedrig-confidence) Fakt -- `eskalierbar` bleibt dafuer
+    # False (kein offener Gap mehr), die Wartungs-Eskalationsrunde entfaellt
+    # deshalb KORREKT, nicht fehlerhaft. Der alte Testname ("nur fuer
+    # Wartung") beschrieb das genaue GEGENTEIL des heutigen, bewusst
+    # korrekten Verhaltens.
     recherche, calls = await _recherchiere({
         "Wartungsintervall Serviceintervall": [WA_FAMILIE_1, WA_FAMILIE_2],
     })
-    esk_calls = _esk_calls(calls, "Betriebsanleitung Serviceheft Wartungsplan",
-                           "owner's manual service schedule")
-    check("G) genau 2 zusaetzliche Eskalations-Calls fuer Wartung", len(esk_calls) == 2, str(calls))
-    check("G) insgesamt 14 Calls (12 Basis + 2 Eskalation), Schwachstelle eskaliert NICHT mit",
-          len(calls) == 14, str(calls))
-    check("G) keine Schwachstelle-Eskalations-Achsen aufgerufen",
+    wa_fakten = [f for f in recherche.fakten if f.kategorie == "wartung"]
+    check("G) 2 Families ergeben BEREITS in Runde 1 einen sichtbaren, ehrlich "
+          "niedrig markierten Wartungs-Fakt (CORROBORATED-Policy)",
+          len(wa_fakten) == 1 and wa_fakten[0].confidence == "niedrig"
+          and wa_fakten[0].beleglage == "uebereinstimmend_unbestaetigt", str(wa_fakten))
+    check("G) KEINE Wartungs-Eskalationsrunde -- es gibt keinen offenen Gap mehr "
+          "(der bereits sichtbare, niedrig-confidence Fakt ist KEIN Gap)",
+          not _esk_calls(calls, "Betriebsanleitung Serviceheft Wartungsplan",
+                         "owner's manual service schedule"), str(calls))
+    check("G) insgesamt genau 12 Calls (reine Basis, keine Eskalation nötig)",
+          len(calls) == 12, str(calls))
+    check("G) keine Schwachstelle-Eskalations-Achsen aufgerufen (kein "
+          "Schwachstellen-Treffer in diesem Szenario)",
           not _esk_calls(calls, "Werkstattinformation", "technical service bulletin"))
 
 
@@ -473,11 +520,28 @@ async def test_j_eskalation_loest_den_gap_in_runde_2():
 
 
 async def test_k_wartung_und_schwachstelle_eskalieren_unabhaengig():
+    # Integrationsnachtrag (s. Abschnitt C/G oben): Wartung (2 Families)
+    # eskaliert seit der CORROBORATED-Policy NICHT mehr -- sie ist bereits in
+    # Runde 1 sichtbar. NUR Schwachstelle (ohne diese Policy, unverändert)
+    # eskaliert weiterhin. "beide eskalieren unabhängig" war die alte
+    # Annahme; die tatsächlich unabhängige Eigenschaft -- beide Kategorien
+    # werden GETRENNT, nicht gegenseitig beeinflusst beurteilt -- bleibt
+    # bestehen und wird unten weiterhin geprüft.
     recherche, calls = await _recherchiere({
         "bekannte Probleme Schwachstellen": [SW_FAMILIE_1, SW_FAMILIE_2],
         "Wartungsintervall Serviceintervall": [WA_FAMILIE_1, WA_FAMILIE_2],
     })
-    check("K) beide Kategorien eskalieren -> 12 Basis + 2 + 2 = 16 Calls", len(calls) == 16, str(calls))
+    wa_fakten = [f for f in recherche.fakten if f.kategorie == "wartung"]
+    check("K) Wartung ist bereits in Runde 1 sichtbar (CORROBORATED-Policy) -- "
+          "KEINE Wartungs-Eskalation", len(wa_fakten) == 1
+          and not _esk_calls(calls, "Betriebsanleitung Serviceheft Wartungsplan",
+                             "owner's manual service schedule"), str(calls))
+    check("K) Schwachstelle eskaliert unverändert eigenständig (2 zusätzliche Calls) -- "
+          "die beiden Kategorien beeinflussen sich auch hier nicht gegenseitig",
+          len(_esk_calls(calls, "Werkstattinformation", "technical service bulletin")) == 2,
+          str(calls))
+    check("K) insgesamt genau 14 Calls (12 Basis + 2 Schwachstelle-Eskalation, "
+          "KEINE Wartungs-Eskalation mehr)", len(calls) == 14, str(calls))
 
 
 # Zweite Seite DERSELBEN Family (kfzwissen-a.de) -- erhöht `n_kandidaten`
@@ -613,7 +677,7 @@ async def test_b2_null_kandidaten_ohne_recovery_stoppt_sauber():
 async def _run_all():
     await test_h_keine_eskalation_bei_sofortigem_high_trust()
     await test_i_eskalation_nur_fuer_schwachstelle()
-    await test_g_eskalation_nur_fuer_wartung()
+    await test_g_wartung_mit_nur_2_families_eskaliert_nicht_mehr()
     await test_j_eskalation_loest_den_gap_in_runde_2()
     await test_k_wartung_und_schwachstelle_eskalieren_unabhaengig()
     await test_c_und_e_runde3_bei_fortschritt_dann_endgueltiger_stop()
