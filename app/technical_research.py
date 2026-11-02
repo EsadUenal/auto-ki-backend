@@ -64,7 +64,11 @@ from typing import Protocol
 from urllib.parse import unquote
 
 from app.config import IDENTITY_DEBUG
-from app.kraftstoff_powertrain import powertrain_aus_freitext
+from app.kraftstoff_powertrain import (
+    FUEL_ELEKTRO, POWERTRAIN_BEV, fuel_aus_freitext, powertrain_aus_freitext,
+    scope_passt, scopes_passen,
+)
+from app.motor_applicability import _kraftstoffe as _technik_scope_begriffe
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
@@ -3308,27 +3312,56 @@ def _ist_modellcode_segment(segment: str) -> bool:
     return bool(_RE_MODELLCODE_SEGMENT.match(segment))
 
 
-def _zeilen_scope_passt(fenster: str, modell: str | None) -> bool | None:
+def _zeilen_scope_passt(fenster: str, modell: str | None, *,
+                        fuel_ziel: str | None = None,
+                        powertrains_ziel: frozenset | None = None) -> bool | None:
     """Siehe Moduldocstring oben. `True`/`False`, wenn eine erkennbare
     Modell-Scope-Klammer im Fenster das Zielmodell ein-/ausschließt; `None`,
     wenn keine solche Klammer gefunden wurde (keine Einschränkung AUS DIESER
-    ZEILE -- die bestehende dokumentweite Ausrichtung bleibt maßgeblich)."""
-    if not modell:
+    ZEILE -- die bestehende dokumentweite Ausrichtung bleibt maßgeblich).
+
+    ENFAL-Folgeauftrag ("technische Wartungsgültigkeit", 2026-11): dieselbe
+    Klammer kann statt einer Modellliste eine TECHNISCHE Bedingung tragen
+    ("nur Hybrid- und Hybrid Plug-in-Modelle", "außer ... Dieselmotoren").
+    Das ist KEINE Modellliste (`_ist_modellcode_segment` lehnt Prosawörter wie
+    "Hybrid"/"Modelle" ab) und wurde bisher deshalb NIE erkannt -- eine
+    Hybrid-/Plug-in-only-Zeile galt für jedes Zielfahrzeug als "ungeklärt,
+    bleibt zugelassen", auch an einem nachweislich nicht-hybriden Fahrzeug.
+    Erkennung über dieselbe, bereits produktiv genutzte Kraftstoff-/
+    Antriebsart-Wortliste wie beim DB-Applicability-Gate
+    (`app.motor_applicability._kraftstoffe`, hier als
+    `_technik_scope_begriffe` importiert) -- keine zweite Wortliste, keine
+    Lexus-/Bauteil-Sonderregel. Die Achsentrennung (Kraftstoff vs.
+    Antriebstyp/Elektrifizierung) und der Soll/Ist-Abgleich laufen über
+    `app.kraftstoff_powertrain.scopes_passen` -- dieselbe Funktion, die auch
+    `recall_filter`/`motor_applicability` dafür benutzen. Ohne bekannte
+    Zielachse (`fuel_ziel`/`powertrains_ziel` beide `None`/unresolved) bleibt
+    das Ergebnis `None` -- eine fehlende technische Bestätigung ist KEIN
+    Ausschlussgrund (nur ein nachgewiesener WIDERSPRUCH ist `False`)."""
+    if not modell and fuel_ziel is None and powertrains_ziel is None:
         return None
     fand_scope = False
     for klammer in _RE_KLAMMER.findall(fenster):
         ausschluss = bool(_SCOPE_AUSSCHLUSS_MARKER.match(klammer))
         rumpf = _SCOPE_AUSSCHLUSS_MARKER.sub("", klammer) if ausschluss else klammer
         segmente = [s.strip() for s in _RE_SCOPE_LISTEN_TRENNER.split(rumpf) if s.strip()]
-        modellartige = [s for s in segmente if _ist_modellcode_segment(s)]
-        if not modellartige:
-            continue
-        fand_scope = True
-        ziel_dabei = any(_satz_nennt_modell(s, modell) for s in modellartige)
-        if ausschluss and ziel_dabei:
-            return False
-        if not ausschluss and not ziel_dabei:
-            return False
+        if modell:
+            modellartige = [s for s in segmente if _ist_modellcode_segment(s)]
+            if modellartige:
+                fand_scope = True
+                ziel_dabei = any(_satz_nennt_modell(s, modell) for s in modellartige)
+                if ausschluss and ziel_dabei:
+                    return False
+                if not ausschluss and not ziel_dabei:
+                    return False
+        technik_begriffe = _technik_scope_begriffe(rumpf)
+        if technik_begriffe:
+            fand_scope = True
+            passt = scopes_passen(technik_begriffe, fuel_ziel, powertrains_ziel)
+            if ausschluss and passt is True:
+                return False
+            if not ausschluss and passt is False:
+                return False
     return True if fand_scope else None
 
 
@@ -4574,7 +4607,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        baujahr: int | None = None, generation: str | None = None,
                        generation_cluster: list[str] | None = None,
                        abgelehnt: list[dict] | None = None, hubraum=None,
-                       leistung_ps: int | None = None) -> list[WebFakt]:
+                       leistung_ps: int | None = None,
+                       fuel_ziel: str | None = None,
+                       powertrains_ziel: frozenset | None = None) -> list[WebFakt]:
     """Strukturierte Fakten aus Snippets — je Bauteil höchstens einer.
 
     Jeder Treffer muss das Zielfahrzeug betreffen (Entity-Alignment, inkl.
@@ -4765,7 +4800,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "no_maintenance_interval", "satz": claim[:120]})
                     continue
-                zeilen_scope = _zeilen_scope_passt(claim, modell) if kategorie == "wartung" else None
+                zeilen_scope = (_zeilen_scope_passt(claim, modell, fuel_ziel=fuel_ziel,
+                                                    powertrains_ziel=powertrains_ziel)
+                               if kategorie == "wartung" else None)
                 if zeilen_scope is False:
                     # N2/N3/N7-Nachtrag (ENFAL-Reparaturpaket, 2026-11): eine
                     # ZEILENEIGENE Modell-Scope-Klammer ("(LS 500, RX 300, ...)",
@@ -4775,8 +4812,22 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     # nicht freigeben (s. `_zeilen_scope_passt()`). Kein Fakt ohne
                     # passende Zuordnung — ungeklärte Zuordnung (keine erkennbare
                     # Scope-Klammer, `None`) bleibt dagegen unverändert zugelassen.
+                    #
+                    # ENFAL-Folgeauftrag ("technische Wartungsgültigkeit",
+                    # 2026-11): derselbe Scope-Mechanismus lehnt jetzt zusätzlich
+                    # eine Zeile mit NACHGEWIESEN widersprechender technischer
+                    # Bedingung ab ("nur Hybrid-Modelle" an einem belegt nicht-
+                    # hybriden Ziel) -- eigener, vom Modell-Grund unterschiedener
+                    # Diagnose-Code. Der erneute Aufruf OHNE `fuel_ziel`/
+                    # `powertrains_ziel` isoliert die reine Modell-Scope-Prüfung
+                    # (ohne Zielachse kann der technische Zweig nie `False`
+                    # liefern, s. `scopes_passen`) -- rein diagnostisch, ändert
+                    # nichts an der bereits getroffenen Ablehnung.
+                    grund = ("wartung_zeile_fremdes_modell"
+                            if _zeilen_scope_passt(claim, modell) is False
+                            else "wartung_zeile_technische_bedingung_widerspricht")
                     abgelehnt.append({"url": url, "kategorie": kategorie,
-                                      "grund": "wartung_zeile_fremdes_modell", "satz": claim[:120]})
+                                      "grund": grund, "satz": claim[:120]})
                     continue
                 z = zeitraum(claim) if kategorie != "wartung" else None
                 passt = _im_zeitraum(baujahr, z)
@@ -5949,6 +6000,28 @@ def phase_identitaet(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentit
     return werte_identitaet_aus(treffer, ziel)
 
 
+def _ziel_achsen(ziel: dict, identitaet: WebVehicleIdentity) -> tuple[str | None, frozenset | None]:
+    """Kraftstoff-/Antriebsart-Achse des Zielfahrzeugs für `_zeilen_scope_passt()`
+    (ENFAL-Folgeauftrag "technische Wartungsgültigkeit", 2026-11) -- dieselbe
+    Trennung (Kraftstoff vs. Elektrifizierungsgrad) wie beim DB-Applicability-
+    Gate (`app.motor_applicability`), hier aus bereits vorhandenen Signalen:
+    einer per Web-Konsens BESTÄTIGTEN Identität (bevorzugt, `identitaet.
+    kraftstoff`/`identitaet.powertrain` sind bereits kanonische
+    `kraftstoff_powertrain`-Werte, s. `_identitaets_claims()`), sonst der
+    Nutzerangabe selbst (Formularfeld `kraftstoff` + Motor-Freitext). Keine
+    Ableitung aus einer Motor-/Hubraumangabe allein ("V8" ist kein Beleg für
+    "kein Hybrid") -- ohne ausdrückliches Wort bleibt die Achse `None`
+    (ungeklärt), nie erfunden bestätigt."""
+    fuel = (getattr(identitaet, "kraftstoff", None)
+           or fuel_aus_freitext(ziel.get("kraftstoff"), ziel.get("motor")))
+    pt = (getattr(identitaet, "powertrain", None)
+         or powertrain_aus_freitext(ziel.get("motor"), ziel.get("kraftstoff")))
+    powertrains = frozenset({str(pt).upper()}) if pt else None
+    if powertrains is None and fuel == FUEL_ELEKTRO:
+        powertrains = frozenset({POWERTRAIN_BEV})
+    return fuel, powertrains
+
+
 def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleIdentity,
                  kategorien: tuple[str, ...], abgelehnt: list[dict],
                  *, stats: dict[str, dict] | None = None,
@@ -5980,12 +6053,14 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
         # Nachweisweg C belegte `generation` selbst (s. Docstring
         # `_fremde_generation()`).
         gen_cluster = getattr(identitaet, "generation_cluster", None) or ziel.get("generation_cluster")
+        fuel_ziel, powertrains_ziel = _ziel_achsen(ziel, identitaet)
         fakten += _extrahiere_fakten(treffer, kategorie, marke=ziel.get("marke"),
                                      modell=ziel.get("modell"), baujahr=ziel.get("baujahr"),
                                      generation=identitaet.generation or ziel.get("generation"),
                                      generation_cluster=gen_cluster,
                                      abgelehnt=abgelehnt, hubraum=ziel.get("hubraum"),
-                                     leistung_ps=ziel.get("leistung_ps"))
+                                     leistung_ps=ziel.get("leistung_ps"),
+                                     fuel_ziel=fuel_ziel, powertrains_ziel=powertrains_ziel)
         if kategorie == "wartung":
             # Source-Trust-Fix (Scope: NUR wartung) -- siehe Moduldocstring
             # oben. Rein additiv: verarbeitet ausschliesslich Treffer, die
