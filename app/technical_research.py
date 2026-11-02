@@ -2662,6 +2662,30 @@ def _generation_herstelleridentifikation_vorrang(
     return ergebnis[0], ergebnis[1], abweichend
 
 
+# N6-Fix (ENFAL-Reparaturpaket, 2026-11): eine Antriebsart-Angabe
+# ("Heckantrieb") in derselben Freitext-Nutzereingabe wie die Motorbezeichnung
+# ("5.0 V8, Heckantrieb") darf nicht automatisch als mitbestätigt gelten, nur
+# weil Motor UND Antriebsart in EINEM Feld standen und NUR der Motorteil
+# tatsächlich per Quellenabgleich (`_motor_quelle_passt` unten) geprüft wurde.
+# Die Antriebsart hat ihr eigenes, unverändertes Konsens-Feld (`drivetrain`,
+# s. `antrieb = uebernehme("drivetrain", ...)` unten) — hier wird für
+# `engine_name` nur die tatsächlich geprüfte Teilzeichenkette als bestätigter
+# Wert übernommen, nicht der volle Rohstring. Generisch (kein
+# Lexus-Spezialfall): jede Antriebsart-Phrase in jeder Motor-Freitextangabe,
+# unabhängig von Marke/Modell.
+_MOTOR_ANTRIEBS_ZUSATZ = re.compile(
+    r"[,/]?\s*\b(?:heck|front|allrad|hinterrad|vorderrad)?antrieb\b|\b(?:rwd|fwd|awd|4wd)\b",
+    re.IGNORECASE)
+
+
+def _motor_kern_bestaetigt(motor: str) -> str:
+    """Die Motorangabe OHNE eine darin enthaltene Antriebsart-Phrase — das ist
+    die Teilzeichenkette, die `_motor_quelle_passt()` tatsächlich gegen
+    Quellen prüft. Ohne erkennbare Antriebsart-Phrase unverändert `motor`."""
+    bereinigt = _MOTOR_ANTRIEBS_ZUSATZ.sub("", motor).strip(" ,/")
+    return bereinigt or motor
+
+
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
@@ -2814,8 +2838,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         if (kern or hub_norm) and (len(doms) >= 2 or any(
                 _tier_identitaet(r.get("url") or "", marke) == 1
                 for r in claim_quellen if _motor_quelle_passt(r))):
-            motor_bestaetigt = motor
-            feldwerte["engine_name"] = {"value": motor, "confidence": "mittel",
+            motor_bestaetigt = _motor_kern_bestaetigt(motor)
+            feldwerte["engine_name"] = {"value": motor_bestaetigt, "confidence": "mittel",
                                         "domains": len(doms) or 1, "domain_namen": doms}
 
     bester = max((score_domain(r.get("url") or "") for r in stuetzend), default=0)
@@ -3076,6 +3100,161 @@ def _segmentiere_claims(satz: str) -> list[str]:
     return segmente or [satz]
 
 
+# ── N2/N3/N7-Fix (ENFAL-Reparaturpaket, 2026-11): tabellenartige Wartungs-
+# blöcke ──────────────────────────────────────────────────────────────────
+#
+# BEFUND (realer Produktionslauf, Lexus-Serviceheft-PDF, Seiten 16/17): eine
+# aus einer PDF-Tabelle extrahierte Prüfplan-Seite ("Bremspedal und
+# Feststellbremse*1 I Bremsklötze ... ZUSÄTZLICHER TEILEAUSTAUSCH Luftfilter
+# Alle 60.000 km / 4 Jahre ...") hat WEDER reguläre Satzzeichen (Spalten-
+# Trenner statt Prosa) NOCH ein finites Verb (`_RE_FINITES_VERB_ANKER`
+# greift nie). `_segmentiere_claims()` liefert deshalb den GESAMTEN Block als
+# EIN Claim-Segment zurück (korrekt für Fließtext — Tabellen sind aber keine
+# Grammatik). `_wartung_merkmal_normalisiert()`/`_INTERVALL.search()` nehmen
+# dann die ERSTE im gesamten Block gefundene Intervallzahl, unabhängig davon,
+# zu welcher Zeile sie tatsächlich gehört — "Bremspedal" erhielt dadurch das
+# Intervall der völlig unabhängigen "Luftfilter"-Zeile.
+#
+# FIX: ein Claim, der (a) lang genug ist, (b) kein finites Verb trägt, UND
+# (c) mindestens ein generisches TABELLEN-Strukturmerkmal zeigt (Fußnoten-
+# definition "*1:", wiederholte einbuchstabige Spaltenmarkierungen "I"/"E"/
+# "F"/"N", oder eine GROSSBUCHSTABEN-Abschnittsüberschrift), wird NICHT als
+# ein Claim behandelt, sondern in EIN FENSTER PRO BAUTEIL-VORKOMMEN zerlegt:
+# von der Bauteil-Nennung bis zur NÄCHSTEN Bauteil-Nennung oder harten
+# Abschnittsgrenze — nie bis zum Blockende. Ein Intervall wird nur noch
+# gefunden, wenn es INNERHALB dieses Fensters steht; sonst bleibt die Zeile
+# ohne Intervall (und wird vom bestehenden `no_maintenance_interval`-/
+# `no_component`-Gate verworfen, S. unten — keine erfundene Zuordnung).
+#
+# Generisch: KEINE Marken-/Modell-/Bauteil-Sonderliste. Jeder normale, mit
+# finitem Verb geschriebene Satz (inkl. der bestehenden "Dieser Service..."-
+# Rückreferenz, F18) erreicht diesen Pfad gar nicht (kein Tabellensignal) und
+# bleibt exakt wie bisher UNVERÄNDERT EIN Claim.
+_TABELLEN_HARTE_GRENZE = re.compile(
+    r"[A-ZÄÖÜ]{3,}(?:[ -][A-ZÄÖÜ]{2,})+|\b[A-ZÄÖÜ]{7,}\b")
+_TABELLEN_STRUKTURSIGNAL = re.compile(
+    r"\*\d+\s*:|\b[IEFN]\b\s+\b[IEFN]\b|" + _TABELLEN_HARTE_GRENZE.pattern)
+_MIN_TABELLEN_LAENGE = 350
+_MAX_TABELLEN_FENSTER = 320
+
+# Rückfaltung der beiden einzigen `_norm()`-Transformationen, die für die
+# Positionssuche im ROHEN (nicht normalisierten) Text relevant sind:
+# Umlaut-Faltung (ä/ö/ü/ß -> ae/oe/ue/ss) und Nicht-Alphanumerisch -> Leer-
+# zeichen. Kein neues Vokabular — dieselben `_bauteil_vokabular()`/
+# `_wartung_vokabular()`-Muster, nur als Regex auf dem Originaltext.
+_UMLAUT_RUECKFALTUNG = (("ae", "(?:ae|ä)"), ("oe", "(?:oe|ö)"), ("ue", "(?:ue|ü)"), ("ss", "(?:ss|ß)"))
+
+
+def _muster_roh_pattern(muster: str) -> str:
+    teile: list[str] = []
+    i = 0
+    while i < len(muster):
+        for kurz, ersatz in _UMLAUT_RUECKFALTUNG:
+            if muster[i:i + len(kurz)] == kurz:
+                teile.append(ersatz)
+                i += len(kurz)
+                break
+        else:
+            if muster[i] == " ":
+                teile.append(r"[^a-zA-Z0-9äöüÄÖÜß]+")
+            else:
+                teile.append(re.escape(muster[i]))
+            i += 1
+    return "".join(teile)
+
+
+def _vokabular_positionen(text: str, vokabular: dict[str, str]) -> list[tuple[int, int, str, str]]:
+    """(start, ende, muster, schluessel) aller Vokabular-Treffer in
+    TEXTREIHENFOLGE, auf dem ROHEN Text — Positionen bleiben dadurch gültig
+    für direktes Slicing (kein Abgleich gegen normalisierten Text nötig)."""
+    eintraege = list(vokabular.items())
+    if not eintraege:
+        return []
+    gruppen = "|".join(f"(?P<g{i}>{_muster_roh_pattern(m)})" for i, (m, _) in enumerate(eintraege))
+    ergebnis = []
+    for match in re.finditer(gruppen, text, re.IGNORECASE):
+        idx = int(match.lastgroup[1:])
+        muster, schluessel = eintraege[idx]
+        ergebnis.append((match.start(), match.end(), muster, schluessel))
+    return ergebnis
+
+
+def _ist_tabellenartig(text: str, vokabular: dict[str, str]) -> bool:
+    """Generische Erkennung eines flach extrahierten Tabellenblocks statt
+    eines grammatischen Satzes — siehe Moduldocstring oben. Alle drei
+    Bedingungen müssen gelten, damit ein echter Fließtext-Satz (z.B. die
+    bestehende Lexus-Care-Rückreferenz, deutlich kürzer als die Schwelle)
+    NICHT versehentlich zerlegt wird."""
+    if len(text) < _MIN_TABELLEN_LAENGE:
+        return False
+    if _RE_FINITES_VERB_ANKER.search(text):
+        return False
+    if not _TABELLEN_STRUKTURSIGNAL.search(text):
+        return False
+    return len(_vokabular_positionen(text, vokabular)) >= 2
+
+
+_FUSSNOTE_REFERENZ = re.compile(r"\*(\d{1,2})\b")
+_WORTZEICHEN = re.compile(r"[\wÄÖÜäöüß-]")
+
+
+def _fussnoten_definition(text: str, nummer: str, grenzen: list[int]) -> str:
+    """Die EIGENE Definition der Fußnote `nummer` ("*1:  ...") irgendwo im
+    REST desselben Textes, begrenzt durch die nächste harte Abschnittsgrenze
+    oder die nächste Fußnoten-Definition — nie über die eigene Quelle hinaus,
+    und (da jeder Treffer separat verarbeitet wird) nie über ein anderes,
+    gleichnamiges Fußnotenzeichen eines anderen Dokumentabschnitts."""
+    m = re.search(rf"\*{re.escape(nummer)}\s*:", text)
+    if not m:
+        return ""
+    ende = min((g for g in grenzen if g > m.start()), default=len(text))
+    naechste = re.search(r"\*\d{1,2}\b", text[m.end():])
+    if naechste:
+        ende = min(ende, m.end() + naechste.start())
+    return text[m.start():ende].strip()
+
+
+def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str]:
+    """Zerlegt einen tabellenartigen Wartungsblock in EIN Fenster pro
+    Bauteil-Vorkommen, gebunden an die nächste harte Abschnittsgrenze oder
+    das nächste Vokabular-Vorkommen — nie an das Blockende. Kein
+    Tabellensignal erkannt -> `[text]` unverändert (Fließtext-Verhalten
+    bleibt exakt wie bisher).
+
+    Trägt das Fenster selbst kein Intervall, aber ENDET es auf eine
+    Fußnoten-Referenz ("Motoröl und -filter*1"), wird NUR dann die Definition
+    dieser EINEN Fußnote ergänzt, wenn SIE SELBST ein Intervall nennt — eine
+    reine Geltungsbereichs-Fußnote ("betrifft nur: ...") bleibt ohne
+    Intervall und das Fenster damit unauflösbar (kein erfundener Wert)."""
+    if not _ist_tabellenartig(text, vokabular):
+        return [text]
+    positionen = _vokabular_positionen(text, vokabular)
+    if len(positionen) < 2:
+        return [text]
+    grenzen = [m.start() for m in _TABELLEN_HARTE_GRENZE.finditer(text)]
+    segmente = []
+    for i, (roh_start, ende, _muster, _schluessel) in enumerate(positionen):
+        # Ein Vokabular-Muster kann MITTEN in einem längeren Kompositum treffen
+        # ("aggregat" in "Nebenaggregat-Antriebsriemen") -- das Fenster beginnt
+        # trotzdem am WORTANFANG, sonst verliert die Anzeige den Wortteil davor.
+        start = roh_start
+        while start > 0 and _WORTZEICHEN.match(text[start - 1]):
+            start -= 1
+        naechste_vok = positionen[i + 1][0] if i + 1 < len(positionen) else len(text)
+        naechste_grenze = min((g for g in grenzen if g > ende), default=len(text))
+        fenster_ende = min(naechste_vok, naechste_grenze, ende + _MAX_TABELLEN_FENSTER, len(text))
+        fenster = text[start:fenster_ende]
+        fussnote = _FUSSNOTE_REFERENZ.search(fenster)
+        if fussnote and not _INTERVALL.search(fenster):
+            zusatz = _fussnoten_definition(text, fussnote.group(1), grenzen)
+            if zusatz and _INTERVALL.search(zusatz):
+                fenster = f"{fenster.strip()} {zusatz}"
+        segment = fenster.strip()
+        if segment:
+            segmente.append(segment)
+    return segmente or [text]
+
+
 # Release-Review (Risiko 2): explizite ALLOWLIST statt `!= "rueckruf"`. Eine
 # Negativ-Prüfung hätte JEDE heutige oder künftige Kategorie außer "rueckruf"
 # automatisch in die neue Claim-Semantik gezogen, auch ohne bewussste
@@ -3088,7 +3267,7 @@ _CLAIM_SEGMENTIERUNG_KATEGORIEN = frozenset({"schwachstelle", "wartung"})
 
 
 _INTERVALL = re.compile(
-    r"(?:alle\s+)?(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*km"
+    r"(?:alle\s+)?(\d{1,3}(?:[.,\s]\d{3})+|\d{4,6})\s*km"
     r"|(?:alle\s+)?(\d{1,3})\s*(monate|jahre?)", re.IGNORECASE)
 # Satzgrenzen: Satzzeichen, Zeilenumbrüche und Markdown-Überschriften. Sonst
 # verschmolzen Navigations-/Überschriftenfragmente ("Mazda MX-5 Rückruf ###
@@ -4189,6 +4368,32 @@ def _objekt_stammformen(wort: str) -> set[str]:
     return formen
 
 
+# N4-Fix (ENFAL-Reparaturpaket, 2026-11, kausal verifiziert statt vermutet):
+# ein MEHRWORT-Synonym-Muster aus `_WARTUNG_VOKABULAR_ERWEITERUNG` (z.B.
+# "oel und filterwechsel" für "Öl- und Filterwechsel") kann in
+# `_anzeige_bauteil()` NIE über ein einzelnes Wort treffen — eine Mehrwort-
+# Phrase ist nie Teilstring EINES Wortes — und fällt deshalb strukturell auf
+# das Muster selbst als Anzeige zurück ("Oel und filterwechsel"). Das ist für
+# die ANZEIGE richtig (siehe `test_wartung_vorgangs_rueckreferenz.py` A1 --
+# "Öl- und Filterwechsel" soll genau SO lesbar bleiben, nicht umbenannt
+# werden), erzeugt aber eine von "Motoröl" abweichende `_norm(bauteil)`-
+# Mention für denselben `schluessel` ("motoroel") -- `_gleiches_objekt_
+# mention()` vergleicht genau diese Mention und führte die beiden
+# inhaltsgleichen Wartungsaussagen deshalb NIE zusammen, obwohl Intervall und
+# Tätigkeit übereinstimmen (offline mit dem echten Blocktext nachgewiesen:
+# beide ergeben `_wartung_aktion()=="ersetzen"`, `_wartung_regime()=="fest"`
+# -- die anfangs vermutete Regime-/Aktion-Abweichung besteht NICHT). Fix: NUR
+# für `schluessel`, die in `_WARTUNG_VOKABULAR_ERWEITERUNG` bewusst als
+# ECHTE Synonyme EINES Konzepts angelegt wurden (NICHT für grob
+# zusammenfassende Schlüssel wie "getriebe", die mehrere unterschiedliche
+# Objekte abdecken -- genau die Unterscheidung, die `_gleiches_objekt_
+# mention()` dort weiterhin braucht), wird die Objekt-Mention-Prüfung
+# übersprungen -- Intervall- und Token-Überlappungsprüfung bleiben
+# unverändert zuständig für die eigentliche Gleichheit.
+_WARTUNG_OBJEKT_SYNONYM_SCHLUESSEL = frozenset(
+    s for s in _WARTUNG_VOKABULAR_ERWEITERUNG.values())
+
+
 def _gleiches_objekt_mention(a: str | None, b: str | None) -> bool:
     if not a or not b:
         return True  # keine Mention auf einer Seite -> kein Widerspruch, nicht blockieren
@@ -4201,11 +4406,13 @@ def _gleiches_technisches_risiko(kandidat_tokens: set[str], andere_tokens: set[s
                                  kandidat_merkmal: str | None = None,
                                  andere_merkmal: str | None = None,
                                  kandidat_objekt: str | None = None,
-                                 andere_objekt: str | None = None) -> bool:
+                                 andere_objekt: str | None = None,
+                                 basis_schluessel: str | None = None) -> bool:
     if (kandidat_merkmal is not None and andere_merkmal is not None
             and kandidat_merkmal != andere_merkmal):
         return False
-    if not _gleiches_objekt_mention(kandidat_objekt, andere_objekt):
+    if (basis_schluessel not in _WARTUNG_OBJEKT_SYNONYM_SCHLUESSEL
+            and not _gleiches_objekt_mention(kandidat_objekt, andere_objekt)):
         return False
     kandidat_tokens = kandidat_tokens - _TECHNISCHE_DEDUPE_NIEDRIGINFO
     andere_tokens = andere_tokens - _TECHNISCHE_DEDUPE_NIEDRIGINFO
@@ -4274,7 +4481,8 @@ def _kandidat_schluessel_fuer_risiko(kandidaten: dict, basis_schluessel: str, cl
                                         kandidat_merkmal=kandidat_merkmal,
                                         andere_merkmal=bestehendes_merkmal,
                                         kandidat_objekt=kandidat_objekt,
-                                        andere_objekt=bestehendes_objekt):
+                                        andere_objekt=bestehendes_objekt,
+                                        basis_schluessel=basis_schluessel):
             return key
         i += 1
 
@@ -4435,6 +4643,15 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             claim_segmente = (_segmentiere_claims(satz)
                               if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN
                               else [satz])
+            # N2/N3/N7-Fix: NUR für "wartung" — ein tabellenartiges, von
+            # `_segmentiere_claims()` unverändert als EIN Claim belassenes
+            # Segment (kein finites Verb, kein Satzzeichen-Trenner) wird
+            # zusätzlich in Bauteil-Fenster zerlegt (s. Moduldocstring bei
+            # `_wartung_tabellen_segmente()`). Ohne Tabellensignal ändert
+            # sich nichts — jeder bestehende Fließtext-Claim bleibt EIN Claim.
+            if kategorie == "wartung":
+                claim_segmente = [fenster for seg in claim_segmente
+                                  for fenster in _wartung_tabellen_segmente(seg, vokabular)]
             for claim in claim_segmente:
                 if kategorie == "rueckruf":
                     fremde_marke = _fremde_marke_satz(claim, marke, modell)
@@ -4865,7 +5082,7 @@ def _wartung_aktion(claim: str) -> str:
 # NLP-Engine. "prüfen bei X" vs. "ersetzen bei X" bleiben über `_wartung_aktion`
 # (oben) getrennt, nicht über diese Funktion.
 _WARTUNG_INTERVALL_ZAHL = re.compile(
-    r"(\d{1,3}(?:[.\s]\d{3})*|\d{4,6})\s*(km|kilometer)"
+    r"(\d{1,3}(?:[.,\s]\d{3})*|\d{4,6})\s*(km|kilometer)"
     r"|(\d{1,3})\s*(monate?|jahre?)", re.IGNORECASE)
 
 
@@ -4880,7 +5097,7 @@ def _wartung_merkmal_normalisiert(claim: str) -> str | None:
     teile: list[str] = []
     for m in _WARTUNG_INTERVALL_ZAHL.finditer(claim or ""):
         if m.group(1):
-            zahl = re.sub(r"[.\s]", "", m.group(1))
+            zahl = re.sub(r"[.,\s]", "", m.group(1))
             teile.append(f"{zahl}km")
         else:
             einheit = "monate" if m.group(4).lower().startswith("monat") else "jahre"

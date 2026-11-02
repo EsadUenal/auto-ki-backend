@@ -419,6 +419,21 @@ class VehicleIdentity:
                     fe.update(_feld_eintrag(vorhanden, primary="user", confirmed_by=["web"],
                                             confidence="mittel", state="user_confirmed",
                                             raw_user=vorhanden))
+            elif _ist_teilbestaetigt(feld, vorhanden, wert) or _ist_teilbestaetigt(
+                    feld, fe.get("raw_user_value"), wert):
+                # N6-Fix (ENFAL-Reparaturpaket, 2026-11): `wert` deckt nur einen
+                # TEIL der zusammengesetzten Nutzerangabe ab (z.B. "5.0 V8"
+                # innerhalb von "5.0 V8, Heckantrieb") -- das ist weder volle
+                # Bestätigung (Invariante 1 würde sonst eine unbestätigte
+                # Zusatzangabe mit-bestätigen) noch ein Widerspruch
+                # (`web_conflict` würde fälschlich eine Abweichung behaupten).
+                # Der bestätigte Teil wird separat festgehalten; der Rest des
+                # Felds bleibt explizit unbestätigt (siehe `herkunft()`).
+                teile = fe.setdefault("bestaetigte_teile", [])
+                if wert not in teile:
+                    teile.append(wert)
+                if eintrag.get("domain_namen") and not fe.get("domain_namen"):
+                    fe["domain_namen"] = sorted(eintrag["domain_namen"])
             else:
                 fe["web_conflict"] = wert
             self.field_evidence[feld] = fe
@@ -747,6 +762,19 @@ def _norm_wert(feld: str, wert) -> str:
         from app.getriebe import normalisiere
         return normalisiere(t) or t
     return re.sub(r"[\s\-]+", "", t)
+
+
+def _ist_teilbestaetigt(feld: str, vorhanden, wert) -> bool:
+    """True, wenn der Web-Wert `wert` als eigenständiger Teil in der
+    zusammengesetzten Nutzerangabe `vorhanden` steckt, ohne das ganze Feld zu
+    decken (N6-Fix) -- rein normalisierter Teilstring-Test, kein Fahrzeug-
+    oder Feld-Sonderfall. Reine Gleichheit zählt hier NICHT (die behandelt
+    der bestehende Zweig oben bereits als volle Bestätigung)."""
+    v = _norm_wert(feld, vorhanden)
+    w = _norm_wert(feld, wert)
+    if not v or not w or v == w:
+        return False
+    return w in v
 
 
 def _vergleiche(feld: str, user, db, raw_user, evidence) -> tuple[object, dict]:

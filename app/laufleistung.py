@@ -333,12 +333,22 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
         # Funktion laut Docstring verboten ist. KEINE Ersatzrechnung (auch eine
         # Modulo-Rechnung kennt den letzten Service nicht) -- das Intervall bleibt
         # genannt, der Rückstand bleibt unberechnet.
-        kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) liegt bei "
-                f"dieser Laufleistung bereits hinter dem Fahrzeug. Ohne bekannten "
-                f"Bezug zur tatsächlichen Servicehistorie lässt sich daraus kein "
-                f"Rückstand in Kilometern berechnen. Nachweis über die Durchführung "
-                f"zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
-                f"vorliegenden Daten nicht hervor.")
+        #
+        # N5-Fix (ENFAL-Reparaturpaket, 2026-11): die Zahl war entfernt, aber
+        # "liegt ... bereits hinter dem Fahrzeug" benennt grammatisch weiterhin
+        # EINEN einzelnen, bereits vergangenen Termin -- bei einem wiederkehrenden
+        # Intervall (z.B. alle 15.000 km, hier 82.000 km Laufleistung) wäre der
+        # Punkt rechnerisch längst mehrfach erreicht worden, nicht einmalig
+        # "vorbei". "mindestens einmal erreicht" benennt nur die Tatsache (das
+        # Intervall liegt im/unter dem aktuellen Kilometerstand), ohne eine
+        # Anzahl, ein Datum oder eine Fälligkeit zu suggerieren -- weiterhin
+        # KEINE Ersatzrechnung, kein "fällig"/"überfällig"/"versäumt".
+        kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) wurde bei "
+                f"dieser Laufleistung rein rechnerisch mindestens einmal erreicht. Ohne "
+                f"bekannten Bezug zur tatsächlichen Servicehistorie lässt sich daraus "
+                f"weder eine Anzahl noch ein Rückstand in Kilometern ableiten. Nachweis "
+                f"über die Durchführung zeigen lassen: ob die Arbeit bereits erledigt "
+                f"ist, geht aus den vorliegenden Daten nicht hervor.")
     else:
         return ""
     return kern + zusatz

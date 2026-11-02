@@ -335,8 +335,8 @@ _WEB_FEHLT_PHRASE = {
 
 # L6-Korrektur (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): die bisherige
 # Formulierung "-- im Formular nicht nachtragbar" war schlicht falsch -- ein im
-# Modellfeld angehängter Generations-/Baureihencode (z.B. "RC F USC10") wird
-# von `parse_core_model()` (app/technical_research.py) als `auxiliary_code`
+# Modellfeld angehängter Generations-/Baureihencode wird von
+# `parse_core_model()` (app/technical_research.py) als `auxiliary_code`
 # abgetrennt und reichert die Recherchequeries an (siehe dort). Dieser Weg
 # bestätigt die Generation aber NICHT von selbst -- ein reiner Stringvergleich
 # gegen eine bereits bestätigte Generation wäre keine unabhängige Evidenz und
@@ -344,10 +344,19 @@ _WEB_FEHLT_PHRASE = {
 # Lösung verkaufen"). Für die Motorisierung gibt es keinen vergleichbaren,
 # strukturiert ausgewerteten Modellcode-Weg -- dort bleiben Fahrzeugschein/FIN
 # der Klärungsweg, ohne die falsche Nebenbehauptung.
+#
+# N8-Fix (ENFAL-Reparaturpaket, 2026-11): das vorige Codebeispiel ("RC F
+# USC10") war real, aber laut eigener Generationsauflösung (s.
+# app/technical_research.py, Generationscode-Rollenprüfung) selbst KEIN
+# gesicherter Generationscode -- der Hilfetext suggerierte damit ausgerechnet
+# an seinem eigenen Beispiel eine Generationsrolle, die die App andernorts
+# nicht akzeptieren würde. Kein Ersatzbeispiel (jedes konkrete Beispiel trägt
+# dasselbe Risiko) -- die Mechanik wird generisch benannt, ohne ein Fahrzeug,
+# einen Code oder einen bestimmten Fahrzeugschein-Eintrag zu unterstellen.
 _GENERATION_MODELLFELD_HINWEIS = (
-    " Ein im Modellfeld ergänzter Generations- oder Baureihencode (z.B. "
-    "\"RC F USC10\") kann die Recherche gezielter machen, bestätigt die "
-    "Generation dadurch aber nicht von selbst."
+    " Ein im Modellfeld ergänzter Generations- oder Baureihencode kann die "
+    "Recherche gezielter machen, bestätigt die Generation dadurch aber nicht "
+    "von selbst -- ein ergänzter Code bleibt Nutzerangabe, kein Nachweis."
 )
 
 

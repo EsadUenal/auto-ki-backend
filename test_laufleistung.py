@@ -560,7 +560,12 @@ check("P3 genau eine Wartungsaktion je Bereich (kein Duplikat durch P2-5)",
       len([a for a in _ak_p.verkaeuferfragen.fahrzeugspezifisch if a.kategorie == "wartung"]) == 1
       and len([a for a in _ak_p.dokumente.fahrzeugspezifisch if a.kategorie == "wartung"]) == 1)
 check("P4 der laufleistungsbezogene, konkretere Text gewinnt",
-      any("liegt bei dieser Laufleistung bereits hinter dem Fahrzeug" in a.aktion
+      # N5-Fix (ENFAL-Reparaturpaket, 2026-11): Wortlaut geändert -- benennt
+      # jetzt "mindestens einmal erreicht" statt "liegt ... hinter dem
+      # Fahrzeug" (vermeidet die Suggestion eines einzelnen vergangenen
+      # Termins bei einem wiederkehrenden Intervall). Veraltete
+      # Testerwartung, kein Produktfehler.
+      any("wurde bei dieser Laufleistung rein rechnerisch mindestens einmal erreicht" in a.aktion
           for a in _ak_p.dokumente.fahrzeugspezifisch))
 check("P5 keine Besichtigungs-/Probefahrtaktion aus einem Wartungspunkt",
       not [a for a in list(_ak_p.besichtigung.fahrzeugspezifisch)

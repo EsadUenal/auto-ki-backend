@@ -120,6 +120,16 @@ def herkunft(fe: dict | None, feld: str | None = None) -> str:
     bestaetigt = [_QUELLE[c] for c in fe.get("confirmed_by") or [] if c in _QUELLE]
     raw = fe.get("raw_user_value")
     if state == "user_only":
+        # N6-Fix (ENFAL-Reparaturpaket, 2026-11): Webquellen haben nur einen
+        # TEIL einer zusammengesetzten Angabe bestätigt (z.B. "5.0 V8"
+        # innerhalb von "5.0 V8, Heckantrieb", s. `_ist_teilbestaetigt()`) --
+        # das Feld bleibt `user_only` (keine Vollbestätigung), aber der
+        # bestätigte Teil wird genannt, statt das ganze Feld pauschal als
+        # unbestätigt ODER pauschal als bestätigt auszuweisen.
+        teile = fe.get("bestaetigte_teile")
+        if teile:
+            return ("laut Inserat/Nutzereingabe; „" + ", ".join(teile)
+                    + "“ durch Webquellen bestätigt, übrige Angabe nicht unabhängig geprüft")
         return "laut Inserat/Nutzereingabe, nicht unabhängig bestätigt"
     if state == "user_confirmed":
         return "laut Inserat/Nutzereingabe; bestätigt durch " + " und ".join(bestaetigt or ["ENFAL-Fahrzeugdaten"])
