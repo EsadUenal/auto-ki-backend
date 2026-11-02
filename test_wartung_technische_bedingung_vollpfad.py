@@ -37,28 +37,16 @@ FIX (app/technical_research.py):
     getrennt von `wartung_zeile_fremdes_modell` (Modell-Scope) -- Abschluss-
     bericht kann "aus welchem Grund" beantworten.
 
-NEUER FUND DIESER RUNDE (gemeldet, NICHT in diesem Paket behoben -- andere
-Ursache, anderer Scope, s. Auftrag "Nur die angeforderte Aufgabe"): §12 der
-Übergabe verlangte, zu prüfen, welche der beiden "Hinterachsdifferenzialöl"-
-Zeilen (Positivliste vs. "außer"-Liste) tatsächlich abgelehnt wird. Befund
-(verifiziert über `_wartung_tabellen_segmente()` direkt, s. Diagnose unten):
-"differenzial" (deutsche Schreibweise) steht NICHT im Bauteil-Vokabular
-(`app/kaufaktionen.py::_KOMPONENTEN` kennt nur "differential", die englische
-Schreibweise) -- deshalb beginnt an KEINEM der vier Differenzialöl-
-Vorkommen im Dokument ein eigenes Zeilenfenster. Jede vorangehende
-"Verteilergetriebeöl (...)"-Zeile verschmilzt stattdessen mit den direkt
-folgenden Differenzialöl-Zeilen zu EINEM gemeinsamen Fenster (zwei solche
-Fenster im Dokument); dessen ERSTE Klammer entscheidet über das ganze
-Fenster. Ergebnis: beide Hinterachsdifferenzialöl-Zeilen werden -- jeweils
-gemeinsam mit ihrem Verteilergetriebeöl-Nachbarn -- mit
-"wartung_zeile_fremdes_modell" abgelehnt. Für die zweite (Positivliste ohne
-RC F) ist das inhaltlich richtig; für die ERSTE geht dabei aber die
-eigentlich passende "Hinterachsdifferenzialöl (außer ES 300h, ...)"-Zeile
-(RC F steht NICHT in der Ausschlussliste) verloren, weil ihr eigener,
-richtiger Scope nie isoliert geprüft wird -- nicht falsch (kein erfundener
-Fakt), aber unvollständig. Das ist ein VOKABULAR-Lückenfund (Komponentenerkennung), keine
-Folge der Scope-/Applicability-Logik dieser Runde -- wird unten als
-Beobachtung VERIFIZIERT und dokumentiert, nicht "gefixt" (kein Scope Creep).
+N9 -- UPDATE (Folgerunde, "N9 Differenzial-Erkennung und Achsentrennung
+abschließen", 2026-11-02): der bei der Erstfassung dieses Tests gemeldete
+Fund ("differenzial" fehlte neben "differential" in `app.kaufaktionen.
+_KOMPONENTEN`, Zeile verschmilzt deshalb mit der vorangehenden
+Verteilergetriebeöl-Zeile zu einem Fenster) ist in dieser Folgerunde BEHOBEN
+-- siehe `test_n9_differenzial_und_achsentrennung.py` für den gezielten
+Nachweis (Vokabular-Äquivalenz, eigene Fenster, Dedupe, vollständiger
+Block). Test 1 und Test 4 unten sind entsprechend auf den jetzt
+FUNKTIONIERENDEN Stand aktualisiert (zuvor dokumentierten sie noch die
+Lücke); die ursprüngliche Analyse bleibt oben als Befundgeschichte stehen.
 
 TEIL A: isolierte `_extrahiere_fakten()`-Aufrufe (kein Netzwerk, keine DB).
 TEIL B: vollständiger `run_kaufcheck()`-Replay mit ECHTEM DB-Pfad, aber
@@ -158,9 +146,12 @@ check("1) die Zeile wird mit dem EIGENEN, von der Modell-Scope-Ablehnung "
           and "inverter" in (a.get("satz") or "").lower() for a in abgelehnt_1),
       str([a for a in abgelehnt_1 if "inverter" in (a.get("satz") or "").lower()]))
 check("1) der freigewordene Platz lässt einen zuvor durchs Limit verdrängten, "
-      "tatsächlich passenden Kandidaten ('Zündkerzen') jetzt durch -- echter "
-      "Produktnutzen des Fixes, nicht nur Ausschluss",
-      "Zündkerzen" in _bauteile_1, str(_bauteile_1))
+      "tatsächlich passenden Kandidaten ('Motorkühlmittel') jetzt durch -- "
+      "echter Produktnutzen des Fixes, nicht nur Ausschluss (seit der N9-"
+      "Folgerunde konkurriert zusätzlich 'Hinterachsdifferenzialöl' um die "
+      "fünf Plätze -- 'Zündkerzen' bleibt deshalb weiterhin durchs Limit "
+      "zurückgehalten, s. Test 4/6 unten)",
+      "Motorkühlmittel" in _bauteile_1, str(_bauteile_1))
 
 # ── Test 2: passendes Hybridziel -- die Zeile bleibt zugelassen ────────────
 abgelehnt_2: list[dict] = []
@@ -190,45 +181,44 @@ check("3) KEINE Ablehnung mit dem technischen Bedingungs-Grund, solange die "
       not any(a.get("grund") == "wartung_zeile_technische_bedingung_widerspricht"
               for a in abgelehnt_3), str(abgelehnt_3))
 
-# ── Test 4: Positivliste vs. "außer"-Liste -- NEUER VOKABULAR-FUND ─────────
-# Verifiziert (nicht angenommen), s. Moduldocstring: "differenzial" fehlt im
-# Bauteil-Vokabular (nur "differential" ist hinterlegt) -- deshalb bilden
-# Verteilergetriebeöl + beide Differenzialöl-Zeilen EIN gemeinsames
-# Zeilenfenster, dessen ERSTE Klammer (Positivliste ohne RC F) das gesamte
-# Fenster ablehnt. Kein erfundener Fakt (sicherer Ausgang), aber die separat
-# korrekte "außer"-Zeile geht verloren -- siehe Abschlussbericht, neuer
-# Befund (unten als "N9" bezeichnet), NICHT in diesem Paket behoben.
+# ── Test 4: Positivliste vs. "außer"-Liste -- N9 jetzt BEHOBEN ─────────────
+# Seit der N9-Folgerunde ("differenzial" ergänzt in
+# app.kaufaktionen._KOMPONENTEN) bekommt jedes Differenzialöl-Vorkommen eine
+# EIGENE Fenstergrenze -- Detailnachweis (Vokabular-Äquivalenz, Fenster-
+# trennung, Dedupe) in test_n9_differenzial_und_achsentrennung.py. Hier nur
+# die direkte Folge für DIESEN Block: die passende "außer"-Zeile erscheint
+# jetzt tatsächlich als eigener Fakt, die unpassende Positivliste bleibt
+# weiterhin (jetzt aus dem richtigen, isolierten Grund) ausgeschlossen.
 _voc = _wartung_vokabular()
 _fenster = _wartung_tabellen_segmente(_SICHERHEIT_BLOCK, _voc)
-_differenzial_fenster = [f for f in _fenster if "differenzial" in f.lower()]
-check("4) VERIFIZIERT (neuer Fund, nicht vermutet): 'differenzial' erzeugt "
-      "KEINE eigene Fenstergrenze -- in BEIDEN Vorkommen im Dokument "
-      "verschmilzt die vorangehende Verteilergetriebeöl-Zeile mit den "
-      "nachfolgenden Differenzialöl-Zeilen zu einem gemeinsamen Fenster "
-      "(kein eigenständiges Differenzialöl-Fenster existiert überhaupt)",
-      len(_differenzial_fenster) == 2
-      and all("verteilergetriebeöl" in f.lower() for f in _differenzial_fenster)
-      and not any(f.lower().startswith("hinterachsdifferenzialöl")
-                  or f.lower().startswith("vorderachsdifferenzialöl")
-                  for f in _fenster),
-      str(_differenzial_fenster))
+check("4) 'Hinterachsdifferenzialöl'/'Vorderachsdifferenzialöl' bekommen "
+      "jeweils EIGENE Fenster, getrennt von der vorangehenden "
+      "Verteilergetriebeöl-Zeile (keine Verschmelzung mehr)",
+      any(f.lower().startswith("hinterachsdifferenzialöl") for f in _fenster)
+      and any(f.lower().startswith("vorderachsdifferenzialöl") for f in _fenster))
 abgelehnt_4: list[dict] = []
 fakten_4 = _extrahiere_fakten([_SICHERHEIT_TREFFER], "wartung", marke="Lexus", modell="RC F",
                               baujahr=2017, abgelehnt=abgelehnt_4)
-check("4) Folge (bereits bestehende Modell-Scope-Logik, unverändert korrekt): "
-      "WEDER Vorderachs- NOCH Hinterachsdifferenzialöl erscheint als Fakt für "
-      "RC F -- kein erfundener Treffer, obwohl eine der beiden Hinterachs-"
-      "Zeilen ('außer ES 300h, ...', RC F nicht gelistet) für sich genommen "
-      "zutreffen würde",
-      not any("differenzial" in (b or "").lower() for b in [f.bauteil for f in fakten_4]))
-check("4) das gemeinsame Fenster wird mit dem MODELL-Grund abgelehnt (die "
-      "dominierende erste Klammer ist eine Positivliste ohne RC F) -- "
-      "bestätigt, dass die Ursache eine fehlende Fenstergrenze ist, keine "
-      "falsche Scope-Entscheidung dieser Runde",
+_bauteile_4 = [f.bauteil for f in fakten_4]
+_je_bauteil_4 = {f.bauteil: f for f in fakten_4}
+check("4) 'Hinterachsdifferenzialöl' ('außer ES 300h, ...', RC F NICHT "
+      "gelistet) erscheint jetzt als eigener, korrekt zugeordneter Fakt mit "
+      "seinem EIGENEN Intervall (30.000 km / 4 Jahre) -- vorher verloren",
+      "Hinterachsdifferenzialöl" in _je_bauteil_4
+      and "30.000" in _je_bauteil_4["Hinterachsdifferenzialöl"].aussage,
+      str(_je_bauteil_4.get("Hinterachsdifferenzialöl")))
+check("4) 'Vorderachsdifferenzialöl' erscheint WEITERHIN in KEINER der "
+      "beiden Varianten als Fakt -- beide sind Positivlisten ohne RC F, kein "
+      "erfundener Treffer",
+      "Vorderachsdifferenzialöl" not in _bauteile_4, str(_bauteile_4))
+check("4) die zweite Hinterachsdifferenzialöl-Zeile (Positivliste NX 350h/"
+      "RX 450h/..., RC F NICHT gelistet) wird weiterhin korrekt mit dem "
+      "MODELL-Grund abgelehnt -- jetzt ISOLIERT (ohne den vorangehenden "
+      "Verteilergetriebeöl-Satzteil mitzuschleppen)",
       any(a.get("grund") == "wartung_zeile_fremdes_modell"
-          and "verteilergetriebeöl" in (a.get("satz") or "").lower()
+          and (a.get("satz") or "").lower().startswith("hinterachsdifferenzialöl (nx 350h")
           for a in abgelehnt_4),
-      str([a for a in abgelehnt_4 if "verteilergetriebe" in (a.get("satz") or "").lower()]))
+      str([a for a in abgelehnt_4 if "hinterachsdifferenzial" in (a.get("satz") or "").lower()]))
 
 # ── Test 5: Tätigkeitsart und Marktvorbehalt bleiben erhalten ──────────────
 _je_bauteil_1 = {f.bauteil: f for f in fakten_1}

@@ -366,9 +366,20 @@ _KOMPONENTEN: tuple[dict, ...] = (
          sicherheit=False, besichtigung=None,
          probefahrt="Auf Rasseln im Leerlauf und beim Auskuppeln sowie auf Vibrationen beim "
                     "Anlassen und Abstellen des Motors achten."),
+    # ENFAL-Folgeauftrag (N9, 2026-11): "differenzial" (deutsche Schreibweise,
+    # z.B. "Vorderachsdifferenzialöl"/"Hinterachsdifferenzialöl", real in
+    # lex-sw-00de.pdf) fehlte neben "differential" -- dadurch erkannte
+    # `_vokabular_positionen()` (app/technical_research.py) an KEINEM
+    # Differenzialöl-Vorkommen eine eigene Fensterposition und verschmolz die
+    # Zeile mit der vorangehenden "Verteilergetriebeöl (...)"-Zeile zu einem
+    # gemeinsamen Fenster, dessen ERSTE Klammer über beide Zeilen entschied
+    # (s. test_wartung_technische_bedingung_vollpfad.py, Test 4 -- vorher als
+    # Fund dokumentiert, nicht behoben). Beide Schreibweisen zusammen
+    # behandeln, nicht ersetzen -- "differential" bleibt für bereits
+    # funktionierende Quellen unverändert.
     dict(schluessel="allradantrieb",
-         muster=("haldex", "allrad", "differential", "kardan", "antriebswelle", "verteilergetriebe",
-                 "achsgetriebe", "visko", "syncro"),
+         muster=("haldex", "allrad", "differential", "differenzial", "kardan", "antriebswelle",
+                 "verteilergetriebe", "achsgetriebe", "visko", "syncro"),
          sicherheit=False, besichtigung=None,
          probefahrt="Beim Rangieren mit vollem Lenkeinschlag auf Knacken und Rupfen im "
                     "Antriebsstrang achten."),
