@@ -3255,6 +3255,83 @@ def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str
     return segmente or [text]
 
 
+# ── Nachtrag N2/N3/N7 (ENFAL-Reparaturpaket, 2026-11): Fahrzeugzuordnung ────
+# INNERHALB einer Tabellenzeile ──────────────────────────────────────────────
+#
+# BEFUND: "Unterdruckpumpe für Bremskraftverstärker (LS 500, RX 300, RX 350,
+# RX 350L, UX 200) Alle 195,000 km" wird durch `_wartung_tabellen_segmente()`
+# korrekt bauteil- und intervallgebunden (das Fenster stimmt) -- die Zeile
+# ist aber ausdrücklich NUR für LS 500/RX 300/RX 350/RX 350L/UX 200 angegeben,
+# NICHT für RC F. "Intervall korrekt gelesen" ist NICHT dasselbe wie "für das
+# Zielfahrzeug gültig" -- die bisherige dokumentweite Ausrichtung (`ausgerichtet()`)
+# prüft nur, ob Marke/Modell IRGENDWO auf der Seite vorkommen (hier: im
+# Titel/an anderer Stelle), nicht, ob DIESE ZEILE sie nennt.
+#
+# FIX: `_zeilen_scope_passt()` liest eine Klammerliste INNERHALB des bereits
+# berechneten Zeilenfensters generisch als Modell-Scope:
+#   * Positivliste ("(LS 500, RX 300, ...)"): die Zeile gilt NUR für die
+#     genannten Modelle -- fehlt das Zielmodell darin, False (kein Fakt).
+#   * Ausschlussliste ("(außer ES 300h, ...)"): die Zeile gilt für ALLE
+#     Modelle AUSSER den genannten -- steht das Zielmodell darin, False.
+#   * Keine erkennbare Modell-Scope-Klammer (z.B. reine Zeit-/Fußnoten-
+#     Klammer "(zumindest alle 15.000 km / 1 Jahr)"): `None` -- ungeklärt
+#     bleibt ungeklärt, KEIN automatischer Ausschluss (Auftrag: "ungeklärte
+#     Zuordnung nicht als erwiesene Ungeeignetheit behandeln").
+# Nutzt `_satz_nennt_modell()` (bestehende, markenagnostische Modell-
+# Signaturprüfung, deckt "RC F"/"RC-F"/"RCF" ab) -- keine neue Modell-Matching-
+# Logik, keine Lexus-/Bauteil-Sonderliste.
+_SCOPE_AUSSCHLUSS_MARKER = re.compile(
+    r"^\s*(?:außer|ausser|ohne|except|nicht\s+f(?:ü|ue)r)\b", re.IGNORECASE)
+_RE_KLAMMER = re.compile(r"\(([^()]*)\)")
+_RE_SCOPE_LISTEN_TRENNER = re.compile(r",|\bund\b|\boder\b", re.IGNORECASE)
+# Generisches, geschlossenes Füllwort-Set für Klammerinhalte, die KEINE
+# Modell-Scope-Liste sind (Zeit-/Mengenangaben, Tätigkeitsbeschreibungen) --
+# verhindert, dass z.B. "(zumindest alle 15.000 km / 1 Jahr)" oder
+# "(Inspektion mit Messfühler)" fälschlich als Modellcode gelesen wird.
+_SCOPE_FUELLWORT = frozenset({
+    "mit", "und", "oder", "fuer", "fur", "für", "nur", "alle", "km", "kilometer",
+    "jahre", "jahr", "monate", "monat", "inspektion", "kontrolle", "pruefung",
+    "prufung", "prüfung", "messfuehler", "messfuhler", "messfühler", "danach",
+    "zumindest", "falls", "ihr", "land", "zutreffend",
+})
+_RE_MODELLCODE_SEGMENT = re.compile(
+    r"^[A-ZÄÖÜ][A-Za-zÄÖÜ0-9+]{0,8}(?:[ -][A-Za-zÄÖÜ0-9+]{1,8}){0,2}$")
+
+
+def _ist_modellcode_segment(segment: str) -> bool:
+    segment = segment.strip()
+    if not segment or len(segment) > 14:
+        return False
+    woerter = segment.lower().split()
+    if any(w in _SCOPE_FUELLWORT for w in woerter):
+        return False
+    return bool(_RE_MODELLCODE_SEGMENT.match(segment))
+
+
+def _zeilen_scope_passt(fenster: str, modell: str | None) -> bool | None:
+    """Siehe Moduldocstring oben. `True`/`False`, wenn eine erkennbare
+    Modell-Scope-Klammer im Fenster das Zielmodell ein-/ausschließt; `None`,
+    wenn keine solche Klammer gefunden wurde (keine Einschränkung AUS DIESER
+    ZEILE -- die bestehende dokumentweite Ausrichtung bleibt maßgeblich)."""
+    if not modell:
+        return None
+    fand_scope = False
+    for klammer in _RE_KLAMMER.findall(fenster):
+        ausschluss = bool(_SCOPE_AUSSCHLUSS_MARKER.match(klammer))
+        rumpf = _SCOPE_AUSSCHLUSS_MARKER.sub("", klammer) if ausschluss else klammer
+        segmente = [s.strip() for s in _RE_SCOPE_LISTEN_TRENNER.split(rumpf) if s.strip()]
+        modellartige = [s for s in segmente if _ist_modellcode_segment(s)]
+        if not modellartige:
+            continue
+        fand_scope = True
+        ziel_dabei = any(_satz_nennt_modell(s, modell) for s in modellartige)
+        if ausschluss and ziel_dabei:
+            return False
+        if not ausschluss and not ziel_dabei:
+            return False
+    return True if fand_scope else None
+
+
 # Release-Review (Risiko 2): explizite ALLOWLIST statt `!= "rueckruf"`. Eine
 # Negativ-Prüfung hätte JEDE heutige oder künftige Kategorie außer "rueckruf"
 # automatisch in die neue Claim-Semantik gezogen, auch ohne bewussste
@@ -4688,6 +4765,19 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "no_maintenance_interval", "satz": claim[:120]})
                     continue
+                zeilen_scope = _zeilen_scope_passt(claim, modell) if kategorie == "wartung" else None
+                if zeilen_scope is False:
+                    # N2/N3/N7-Nachtrag (ENFAL-Reparaturpaket, 2026-11): eine
+                    # ZEILENEIGENE Modell-Scope-Klammer ("(LS 500, RX 300, ...)",
+                    # "(außer ES 300h, ...)") schränkt NUR diese Zeile ein — eine
+                    # allgemeine Zielmodell-Nennung irgendwo auf derselben Seite
+                    # darf eine ausdrücklich auf andere Modelle beschränkte Zeile
+                    # nicht freigeben (s. `_zeilen_scope_passt()`). Kein Fakt ohne
+                    # passende Zuordnung — ungeklärte Zuordnung (keine erkennbare
+                    # Scope-Klammer, `None`) bleibt dagegen unverändert zugelassen.
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "wartung_zeile_fremdes_modell", "satz": claim[:120]})
+                    continue
                 z = zeitraum(claim) if kategorie != "wartung" else None
                 passt = _im_zeitraum(baujahr, z)
                 if passt is None and artikel_passt is True:
@@ -4750,7 +4840,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         kandidat_key, {"aussage": claim, "bauteil": bauteil_claim,
                                       "treffer": [], "ereignis_tokens": [], "referenzen": [],
                                       "bauteile": [bauteil_claim] if bauteil_claim else [],
-                                      "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None})
+                                      "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None,
+                                      "zeile_explizit_zugeordnet": False})
                     if kategorie == "rueckruf":
                         eintrag["ereignis_tokens"].append(ereignis_tokens)
                         if referenz:
@@ -4761,9 +4852,18 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         eintrag["treffer"].append(r)
                     if passt is True and eintrag["passt"] is not True:
                         eintrag.update(aussage=claim, zeitraum=z, passt=True, vage=None)
+                    if zeilen_scope is True:
+                        # §4-Umsetzung (Auswahl, ENFAL-Reparaturpaket 2026-11):
+                        # eine Zeile mit AUSDRÜCKLICHER Zielmodell-Nennung in
+                        # ihrer eigenen Scope-Klammer ist spezifischer belegt
+                        # als eine generisch/ungeklärt zugelassene Zeile --
+                        # generisches, markenunabhängiges Relevanzmerkmal für
+                        # die spätere Auswahl (s. unten), keine Bauteil-Liste.
+                        eintrag["zeile_explizit_zugeordnet"] = True
                     break
 
     fakten: list[WebFakt] = []
+    _wartung_explizit: list[bool] = []
     for schluessel, e in kandidaten.items():
         quellen = _quellen_aus(e["treffer"], marke=marke)
         if not quellen:
@@ -4835,6 +4935,40 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
             herkunftsregion=herkunftsregion, regionale_geltung=regionale_geltung,
         ))
+        if kategorie == "wartung":
+            _wartung_explizit.append(bool(e.get("zeile_explizit_zugeordnet")))
+
+    if kategorie == "wartung":
+        # §4-Umsetzung (Auswahl, ENFAL-Reparaturpaket 2026-11): ERST alle
+        # gültigen, korrekt zugeordneten (Zeilen-Scope bereits oben geprüft)
+        # und deduplizierten Fakten bilden -- DANACH begrenzen (nicht
+        # umgekehrt). Innerhalb derselben Confidence-Stufe hat eine Zeile mit
+        # AUSDRÜCKLICHER Zielmodell-Nennung in ihrer eigenen Scope-Klammer
+        # Vorrang vor einer nur generisch (ohne erkennbare Scope-Klammer)
+        # zugelassenen Zeile -- ein generisches, markenunabhängiges
+        # Relevanzmerkmal (keine feste Bauteil-/Lexus-Bevorzugung).
+        # Alphabetisch bleibt NUR der letzte, rein deterministische
+        # Gleichstand-Tiebreak. Diese Umordnung gilt ausdrücklich NUR für
+        # "wartung" -- "rueckruf"/"schwachstelle" behalten unverändert das
+        # bisherige Sortier-/Limit-Verhalten (eigener Zweig unten, Auftrag:
+        # "Recall-/Schwachstellenpolicy nicht nebenbei ändern").
+        geordnet = sorted(
+            zip(fakten, _wartung_explizit),
+            key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[0].confidence],
+                           0 if p[1] else 1, p[0].bauteil or ""))
+        fakten = [f for f, _ in geordnet]
+        behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
+        verworfen = fakten[MAX_FAKTEN_JE_KATEGORIE:]
+        for f in verworfen:
+            # Diagnostisch erhalten (Auftrag §4): ein durchs Auswahllimit
+            # zurückgehaltener, an sich gültiger Fakt wird NICHT
+            # stillschweigend verworfen, sondern mit Grund vermerkt -- und an
+            # keiner Stelle als "Dokument vollständig abgedeckt" behauptet.
+            abgelehnt.append({"url": (f.quellen[0].url if f.quellen else None),
+                              "kategorie": kategorie, "grund": "wartung_auswahllimit_erreicht",
+                              "satz": f.aussage[:120]})
+        return behalten
+
     fakten.sort(key=lambda f: ({"hoch": 0, "mittel": 1, "niedrig": 2}[f.confidence],
                                f.bauteil or ""))
     return fakten[:MAX_FAKTEN_JE_KATEGORIE]
