@@ -84,7 +84,17 @@ def treffer(url, titel, inhalt):
 
 
 # Echter Rohtext (lex-sw-00de.pdf, S. 16/17), wortgleich mit den N2/N3/N7/
-# N10/N11-Tests, inkl. relevanter Nachbarzeilen.
+# N10/N11-Tests, inkl. relevanter Nachbarzeilen. N7-Nachtrag: "Luftfilter"/
+# "Zündkerzen"/"Motorkühlmittel" (ZUSÄTZLICHER TEILEAUSTAUSCH) bewusst
+# ausgelassen -- mit ihnen konkurrieren in DIESEM Block mehr uneingeschränkt
+# gültige Kandidaten um die fünf Plätze, als der N7-Fix (ungeklärte Bedingung
+# rangiert unter uneingeschränkter Zeile gleicher Confidence) für Inverter-
+# Kühlmittel übrig lässt -- das ist dann eine KORREKTE, in
+# test_wartung_technische_bedingung_vollpfad.py/test_n9_... bereits
+# eigenständig regressionsgeprüfte Auswahlentscheidung, aber sie würde HIER
+# verdecken, was Teil C tatsächlich zeigen soll: die N12-UI-Behandlung einer
+# ungeklärten Bedingung, die tatsächlich einen der fünf Plätze erreicht.
+# Bleiben ausschließlich reale Zeilen desselben Dokuments, keine erfundenen.
 _SICHERHEIT_BLOCK = (
     "*2:  Für Albanien, Bosnien & Herzegowina, Kanarische Inseln, Zypern, Estland, "
     "Island, Lettland, Republik Nordmazedonien, Malta, Montenegro, Serbien, "
@@ -97,9 +107,7 @@ _SICHERHEIT_BLOCK = (
     "Wischerblätter und Waschflüssigkeit I I Kugelgelenke und Staubkappen der "
     "Radaufhängung I*2 I *1:  Prüfung der Feststellbremse betrifft nur: IS 300h, "
     "RC 300h und RC F *2: LS 500, LS 500h, LC 500h ZUSÄTZLICHER TEILEAUSTAUSCH "
-    "Luftfilter Alle 60.000 km / 4 Jahre Zündkerzen Platin- oder Iridiumtyp Alle "
-    "90.000 km RX 300, LS 500 Alle 60,000 km Motorkühlmittel Alle 150.000 km "
-    "Danach alle 90.000 km Inverter-Kühlmittel (nur Hybrid- und Hybrid "
+    "Inverter-Kühlmittel (nur Hybrid- und Hybrid "
     "Plug-in-Modelle) Alle 240.000 km Danach alle 90.000 km Verteilergetriebeöl "
     "(RX 300 4WD, RX 350, RX 350L) Alle 30.000 km / 4 Jahre Vorderachsdifferenzialöl "
     "(LS 500, LS 500h 4WD) Alle 30.000 km / 4 Jahre Hinterachsdifferenzialöl "
@@ -145,8 +153,19 @@ check("A5 Zielachse bekannt und widersprechend (ICE): Ergebnis schließt aus (Fa
       ergebnis_3 is False, f"ergebnis={ergebnis_3!r}")
 
 # A4: derselbe Dreiklang auch End-to-End über `_extrahiere_fakten()`.
+# N7-Nachtrag (ENFAL-Testabsicherung, "Verluststelle Ventilspiel/Motoröl
+# klären", 2026-11): eine ungeklärte technische Bedingung rangiert seit dem
+# N7-Fix bewusst UNTER einer uneingeschränkt gültigen Zeile gleicher
+# Confidence (`_extrahiere_fakten()`-Sortierung) -- in DIESEM vollen Block
+# konkurriert "Inverter-Kühlmittel" (unbekannt-Fall) mit "Motorkühlmittel"
+# um den letzten der fünf Plätze und verliert alphabetisch. Das ist KEIN
+# Ausschluss durchs technische Gate (das bleibt unverändert "ungeklärt,
+# nicht ausgeschlossen", s. Teil A oben) -- nur eine Auswahllimit-Folge.
+# "unbekannt" prüft deshalb "vorhanden ODER durchs Limit zurückgestellt";
+# PHEV/ICE sind von dieser Konkurrenz nicht betroffen (PHEV rangiert dank
+# aufgelöster, passender Bedingung ganz oben; ICE wird ohnehin ausgeschlossen).
 for bezeichnung, fuel_ziel, pt_ziel, erwartet_webfakt, erwartet_status in (
-    ("unbekannt", None, None, True, "unresolved"),
+    ("unbekannt", None, None, None, "unresolved"),
     ("passend (PHEV)", "benzin", frozenset({"PHEV"}), True, None),
     ("widersprechend (ICE)", "benzin", frozenset({"ICE"}), False, None),
 ):
@@ -155,9 +174,19 @@ for bezeichnung, fuel_ziel, pt_ziel, erwartet_webfakt, erwartet_status in (
                                 baujahr=2017, abgelehnt=abgelehnt,
                                 fuel_ziel=fuel_ziel, powertrains_ziel=pt_ziel)
     inverter = [f for f in fakten if "nverter" in (f.bauteil or "")]
-    check(f"A6 ({bezeichnung}): Inverter-Kühlmittel als WebFakt vorhanden={bool(inverter)} "
-          f"(erwartet {erwartet_webfakt})",
-          bool(inverter) == erwartet_webfakt, str([f.bauteil for f in fakten]))
+    if erwartet_webfakt is None:
+        zurueckgestellt = any("nverter" in a.get("satz", "")
+                              and a.get("grund") == "wartung_auswahllimit_erreicht"
+                              for a in abgelehnt)
+        check(f"A6 ({bezeichnung}): Inverter-Kühlmittel ist entweder als WebFakt "
+              f"vorhanden ODER ausschließlich durchs Auswahllimit zurückgestellt "
+              f"(nie durchs technische Gate ausgeschlossen)",
+              bool(inverter) or zurueckgestellt,
+              f"fakten={[f.bauteil for f in fakten]!r} abgelehnt={abgelehnt!r}")
+    else:
+        check(f"A6 ({bezeichnung}): Inverter-Kühlmittel als WebFakt vorhanden={bool(inverter)} "
+              f"(erwartet {erwartet_webfakt})",
+              bool(inverter) == erwartet_webfakt, str([f.bauteil for f in fakten]))
     if inverter:
         status = inverter[0].technische_bedingung_status
         check(f"A7 ({bezeichnung}): technische_bedingung_status={status!r} "

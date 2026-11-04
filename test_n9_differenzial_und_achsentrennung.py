@@ -229,11 +229,20 @@ check("5) 'scope_passt(\"phev\", fuel=\"benzin\", powertrains=None)' bleibt "
 abgelehnt_5: list[dict] = []
 fakten_5 = _extrahiere_fakten([_SICHERHEIT_TREFFER], "wartung", marke="Lexus", modell="RC F",
                               baujahr=2017, abgelehnt=abgelehnt_5, fuel_ziel=_fuel, powertrains_ziel=_pt)
-check("5) Folge am echten Block: 'Inverter-Kühlmittel' (Hybrid-only) bleibt "
-      "bei Benzin+unbekannter Elektrifizierung weiterhin zugelassen -- kein "
-      "unbegründeter Ausschluss",
-      any(f.bauteil == "Inverter-Kühlmittel" for f in fakten_5),
-      str([f.bauteil for f in fakten_5]))
+# N7-Nachtrag (ENFAL-Testabsicherung, 2026-11): eine ungeklärte technische
+# Bedingung rangiert seit diesem Fix bewusst unter einer uneingeschränkt
+# gültigen Zeile gleicher Confidence -- "Inverter-Kühlmittel" verliert in
+# DIESEM Block den letzten Platz an "Motorkühlmittel" (Auswahllimit, NICHT
+# das technische Gate). Entscheidend bleibt: kein unbegründeter AUSSCHLUSS
+# (das technische Gate lehnt die Zeile nicht ab).
+check("5) Folge am echten Block: 'Inverter-Kühlmittel' (Hybrid-only) wird "
+      "bei Benzin+unbekannter Elektrifizierung NICHT durch das technische "
+      "Gate ausgeschlossen -- bleibt entweder unter den ausgegebenen Fakten "
+      "ODER wird ausschließlich durchs Auswahllimit zurückgestellt",
+      any(f.bauteil == "Inverter-Kühlmittel" for f in fakten_5)
+      or any("inverter" in a.get("satz", "").lower()
+             and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt_5),
+      f"fakten={[f.bauteil for f in fakten_5]!r} abgelehnt={abgelehnt_5!r}")
 
 # ── 6) Benzin-Hybridziel vs. nachweislich nicht-hybrides Ziel ──────────────
 # Über die REALISTISCHE Quelle einer bestätigten Identität (nicht nur

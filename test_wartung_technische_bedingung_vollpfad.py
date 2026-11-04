@@ -172,10 +172,26 @@ abgelehnt_3: list[dict] = []
 fakten_3 = _extrahiere_fakten([_SICHERHEIT_TREFFER], "wartung", marke="Lexus", modell="RC F",
                               baujahr=2017, abgelehnt=abgelehnt_3)
 _bauteile_3 = [f.bauteil for f in fakten_3]
-check("3) ohne bekannte Kraftstoff-/Antriebsachse bleibt Inverter-Kühlmittel "
-      "weiterhin zugelassen (ungeklärt != ausgeschlossen -- keine erfundene "
-      "Bestätigung, aber auch kein unbegründeter Ausschluss)",
-      any("inverter" in (b or "").lower() for b in _bauteile_3), str(_bauteile_3))
+# N7-Nachtrag (ENFAL-Testabsicherung, "Verluststelle Ventilspiel/Motoröl
+# klären", 2026-11): eine ungeklärte technische Bedingung ist zwar weiterhin
+# NICHT ausgeschlossen (kein `wartung_zeile_technische_bedingung_
+# widerspricht`, s. unten), rangiert aber seit diesem Fix bewusst UNTER
+# einer uneingeschränkt gültigen Zeile gleicher Confidence-Stufe (s.
+# `_extrahiere_fakten()`-Sortierung) -- "ungeklärt" ist weniger sicher als
+# "gar keine Bedingung". In DIESEM Block konkurriert Inverter-Kühlmittel
+# dadurch mit "Motorkühlmittel" um den letzten der fünf Plätze und verliert
+# alphabetisch ("I" > "M") -- ein durchs Auswahllimit, NICHT durchs
+# technische Gate zurückgestellter Kandidat (die Unterscheidung ist genau
+# der Punkt dieses Tests). "Zugelassen, aber ggf. durchs Limit verdrängt"
+# ersetzt die vorige Erwartung "immer unter den ausgegebenen Fakten".
+check("3) ohne bekannte Kraftstoff-/Antriebsachse wird Inverter-Kühlmittel "
+      "NICHT durch das technische Gate ausgeschlossen -- bleibt entweder "
+      "unter den ausgegebenen Fakten ODER wird ausschließlich durchs "
+      "Auswahllimit zurückgestellt (nie durch 'widerspricht')",
+      any("inverter" in (b or "").lower() for b in _bauteile_3)
+      or any("inverter" in a.get("satz", "").lower()
+             and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt_3),
+      f"bauteile={_bauteile_3!r} abgelehnt={abgelehnt_3!r}")
 check("3) KEINE Ablehnung mit dem technischen Bedingungs-Grund, solange die "
       "Zielachse unbekannt ist",
       not any(a.get("grund") == "wartung_zeile_technische_bedingung_widerspricht"

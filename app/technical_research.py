@@ -5059,15 +5059,29 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # Vorrang vor einer nur generisch (ohne erkennbare Scope-Klammer)
         # zugelassenen Zeile -- ein generisches, markenunabhängiges
         # Relevanzmerkmal (keine feste Bauteil-/Lexus-Bevorzugung).
-        # Alphabetisch bleibt NUR der letzte, rein deterministische
-        # Gleichstand-Tiebreak. Diese Umordnung gilt ausdrücklich NUR für
-        # "wartung" -- "rueckruf"/"schwachstelle" behalten unverändert das
-        # bisherige Sortier-/Limit-Verhalten (eigener Zweig unten, Auftrag:
-        # "Recall-/Schwachstellenpolicy nicht nebenbei ändern").
+        #
+        # N7/N12-Nachtrag ("Verluststelle Ventilspiel/Motoröl klären",
+        # 2026-11): DRITTE Stufe zwischen "explizit zugeordnet" und
+        # "alphabetisch" -- eine Zeile mit NACHGEWIESEN UNGEKLÄRTER
+        # technischer Anwendbarkeit (`technische_bedingung_status ==
+        # "unresolved"`, N12-Fix) ist NICHT so sicher zugeordnet wie eine
+        # Zeile ohne jede Scope-Einschränkung. Offline reproduziert: ohne
+        # diese Stufe konkurrierte eine ungeklärte Hybrid-Bedingung
+        # ("Inverter-Kühlmittel") rein alphabetisch gleichrangig mit einer
+        # uneingeschränkt gültigen Zeile ("Motorkühlmittel") um einen der
+        # fünf Plätze -- und konnte diese allein durch den Bauteilnamen
+        # verdrängen. Eine ungeklärte Anwendbarkeit wird dadurch NICHT
+        # ausgeschlossen (weiterhin ein gültiger, nur zurückgestufter
+        # Kandidat) -- nur im Gleichstand mit einem uneingeschränkten
+        # Kandidaten verliert sie. Alphabetisch bleibt der letzte, rein
+        # deterministische Gleichstand-Tiebreak. Diese Umordnung gilt
+        # ausdrücklich NUR für "wartung" -- "rueckruf"/"schwachstelle"
+        # bleiben unverändert (eigener Zweig unten).
         geordnet = sorted(
             zip(fakten, _wartung_explizit),
             key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[0].confidence],
-                           0 if p[1] else 1, p[0].bauteil or ""))
+                           0 if p[1] else (2 if p[0].technische_bedingung_status == "unresolved" else 1),
+                           p[0].bauteil or ""))
         fakten = [f for f, _ in geordnet]
         behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
         verworfen = fakten[MAX_FAKTEN_JE_KATEGORIE:]
