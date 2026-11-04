@@ -463,6 +463,11 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             herkunft=herkunft,
             evidence_id=beleg_id,
             quellen=[EvidenceQuelle(**q.model_dump()) for q in i.quellen],
+            # N12/N13-Fix (ENFAL-Testabsicherung, 2026-11): unverändert von der
+            # Insight übernommen -- s. Insight-Felder gleichen Namens.
+            taetigkeit=getattr(i, "taetigkeit", None),
+            technische_bedingung=getattr(i, "technische_bedingung", None),
+            technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
         ))
 
     rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1}

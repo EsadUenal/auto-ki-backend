@@ -160,20 +160,20 @@ _OELKUEHLER_NBSP = _mit_nbsp(
     "RX 350L, UX 200) Alle 45 000 km / 3 Jahre", _NBSP)
 check("A5 Positivkontrolle: dieselbe NBSP-Klammer lässt ein TATSÄCHLICH "
       "gelistetes Modell ('LC 500') weiterhin zu (True, nicht nur 'nicht False')",
-      _zeilen_scope_passt(_OELKUEHLER_NBSP, "LC 500") is True)
+      _zeilen_scope_passt(_OELKUEHLER_NBSP, "LC 500")[0] is True)
 check("A6 Negativkontrolle bleibt bestehen: 'RC F' (nicht gelistet) wird "
       "mit NBSP korrekt ausgeschlossen (False)",
-      _zeilen_scope_passt(_OELKUEHLER_NBSP, "RC F") is False)
+      _zeilen_scope_passt(_OELKUEHLER_NBSP, "RC F")[0] is False)
 _DIFFERENZIAL_AUSSCHLUSS_NBSP = _mit_nbsp(
     "Hinterachsdifferenzialöl (außer ES 300h, NX 350h, NX 450h+, RX 300 2WD, "
     "RX 450h, RX 450hL, UX 200, UX 250h) Alle 30.000 km / 4 Jahre", _NBSP
 ).replace("ES 300h", "ES 300h")  # (bereits durch _mit_nbsp ersetzt)
 check("A7 Ausnahmeliste mit NBSP: 'RC F' (NICHT in der Ausschlussliste) "
       "bleibt zugelassen (True)",
-      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "RC F") is True)
+      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "RC F")[0] is True)
 check("A8 Ausnahmeliste mit NBSP: 'ES 300h' (IN der Ausschlussliste) wird "
       "korrekt ausgeschlossen (False)",
-      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "ES 300h") is False)
+      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "ES 300h")[0] is False)
 check("A9 '_ist_modellcode_segment()' erkennt 'LC 500' mit NBSP direkt als Modellcode",
       _ist_modellcode_segment(f"LC{_NBSP}500"))
 check("A10 '_ist_modellcode_segment()' erkennt 'RX 350L' mit schmalem NBSP direkt als Modellcode",

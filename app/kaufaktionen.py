@@ -101,6 +101,7 @@ from app.pruefplan_basis import (
     BASIS_BESICHTIGUNG, BASIS_PROBEFAHRT, BASIS_VERKAEUFERFRAGEN, BASIS_DOKUMENTE,
 )
 from app.recall_filter import _baujahr_passt
+from app.technical_research import _wartung_aktion, _wartung_merkmal_normalisiert
 from app.risikothemen import (
     WARTUNG_MODIFIKATION, WARTUNG_REGULAER, WARTUNG_VERSCHLEISS, WARTUNG_VORBEUGEND,
     WARTUNG_ZUSTAND, ist_bekannt, risikoarten,
@@ -730,17 +731,42 @@ def _schluessel(komp: dict | None, bauteil: str) -> str:
 # Jahre) sind zwei eigenständige, unterschiedlich befristete Nachweispflichten
 # -- keine gemeinsam prüfbare Symptomgruppe. Jedes bereits bei der
 # Fakten-Extraktion deduplizierte WebFakt/Insight (app.technical_research,
-# N4-Fix) trägt hier IMMER einen bauteilgenauen `bauteil`-Text; ein echtes
-# Duplikat derselben Aussage erreicht diese Funktion deshalb gar nicht erst
-# zweimal mit unterschiedlichem Bauteiltext. Deshalb gilt für Wartungs-
-# intervall-Aktionen IMMER die bauteilgenaue Variante -- unabhängig vom
-# `je_bauteil`-Flag der geteilten Prüfklassen-Tabelle, die weiterhin
-# ausschließlich für Besichtigung/Probefahrt/Schwachstelle gilt und von
-# dieser Funktion nicht verändert wird.
-def _schluessel_wartungsintervall(komp: dict | None, bauteil: str) -> str:
-    if not komp:
-        return _slug(bauteil)
-    return f"{komp['schluessel']}-{_slug(bauteil)}"
+# N4-Fix) trägt hier IMMER einen bauteilgenauen `bauteil`-Text, deshalb gilt
+# für Wartungsintervall-Aktionen IMMER die bauteilgenaue Variante --
+# unabhängig vom `je_bauteil`-Flag der geteilten Prüfklassen-Tabelle, die
+# weiterhin ausschließlich für Besichtigung/Probefahrt/Schwachstelle gilt und
+# von dieser Funktion nicht verändert wird.
+#
+# N12/N13-Nachtrag ("Wartungsbedingungen und Tätigkeit durchgängig erhalten",
+# 2026-11): zwei verschiedene, upstream NICHT zusammengeführte Wartungs-
+# aussagen können denselben `bauteil`-Anzeigetext tragen (z.B. zwei
+# Dokumentzeilen zu "Bremsflüssigkeit" mit unterschiedlichem Intervall/
+# Bedingung) -- reine Bauteilgleichheit allein würde sie hier fälschlich
+# wieder zusammenführen. `merkmal_text` (die volle Aussage/der Intervalltext
+# der Aktion) wird deshalb über die bestehende, bereits produktiv genutzte
+# Intervall-Normalisierung (`_wartung_merkmal_normalisiert()`,
+# app.technical_research -- dieselbe Funktion, die auch die Fakten-Extraktion
+# für den Dedupe/Nicht-Dedupe-Entscheid nutzt) in den Schlüssel aufgenommen.
+# Zwei Quellen derselben Aussage (identisches Intervall) ergeben weiterhin
+# denselben Schlüssel und werden zusammengeführt; unvereinbare Intervalle
+# desselben Bauteils bleiben getrennt. Ohne erkennbares Intervall im
+# `merkmal_text` (z.B. `None`) bleibt das Verhalten unverändert bauteilgenau.
+def _schluessel_wartungsintervall(komp: dict | None, bauteil: str,
+                                  merkmal_text: str | None = None) -> str:
+    basis = f"{komp['schluessel']}-{_slug(bauteil)}" if komp else _slug(bauteil)
+    if not merkmal_text:
+        return basis
+    merkmal = _wartung_merkmal_normalisiert(merkmal_text)
+    # N13-Nachtrag: dieselbe Textgrundlage belegt auch die Tätigkeit
+    # (ersetzen/pruefen, s. `_wartung_aktion()`) -- zwei Wartungen desselben
+    # Bauteils und Intervalls, aber mit NACHWEISLICH unterschiedlicher
+    # Tätigkeit (z.B. "prüfen" vs. "wechseln"), sind keine Duplikate und
+    # dürfen nicht allein über Bauteil+Intervall zusammenfallen. "unbestimmt"
+    # (aus dem Text nicht ableitbar) wird NICHT Teil des Schlüssels -- zwei
+    # Erwähnungen mit unbestimmter Tätigkeit bleiben zusammenführbar.
+    taetigkeit = _wartung_aktion(merkmal_text)
+    teile = [t for t in (merkmal, taetigkeit if taetigkeit != "unbestimmt" else None) if t]
+    return f"{basis}-{'-'.join(teile)}" if teile else basis
 
 
 def _besichtigung(komp: dict | None, bauteil: str) -> str | None:
@@ -1745,7 +1771,7 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
             continue
         bauteil = _bauteil_aus_wartung(i)
         komp = _komponente(bauteil)
-        schluessel = f"wartung-{_schluessel_wartungsintervall(komp, bauteil)}"
+        schluessel = f"wartung-{_schluessel_wartungsintervall(komp, bauteil, i.beschreibung)}"
         art = getattr(i, "wartungsart", None) or WARTUNG_REGULAER
         frage, nachfrage, dok_titel, dok_text, dok_gruppe = _WARTUNG_VORLAGEN.get(
             art, _WARTUNG_VORLAGEN[WARTUNG_REGULAER])
@@ -1774,6 +1800,55 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
 def _web_bauteil(i: Insight) -> str:
     """Bauteil-Label eines Web-Insights aus dem Titel ("Turbolader — Hinweis …")."""
     return titel_bauteil(i.titel).split("(")[0].strip() or "Fahrzeug"
+
+
+# N13-Fix (ENFAL-Testabsicherung, 2026-11): das aus der Quelle belegte Verb
+# für die Durchführungsfrage/den Dokumenttitel einer Wartungsintervall-
+# Aktion -- "ersetzen" (Wechsel/Austausch) bzw. "pruefen" (Kontrolle/
+# Inspektion), s. `app.technical_research._wartung_aktion()`. Bleibt die
+# Tätigkeit aus dem Quelltext unbestimmt (`None`), bleibt der bisherige,
+# ehrlich neutrale Wortlaut "gemacht"/"Wartungsnachweis" -- KEIN Rückschluss
+# aus dem Bauteilnamen ("Bremsen" ist weder automatisch ein Wechsel noch
+# automatisch eine Prüfung).
+_TAETIGKEIT_VERB = {"ersetzen": "gewechselt", "pruefen": "geprüft"}
+_TAETIGKEIT_DOK_TITEL = {"ersetzen": "Wechselnachweis", "pruefen": "Prüfnachweis"}
+
+
+def _taetigkeit_verb(taetigkeit: str | None) -> str:
+    return _TAETIGKEIT_VERB.get(taetigkeit, "gemacht")
+
+
+def _taetigkeit_dok_titel(taetigkeit: str | None) -> str:
+    return _TAETIGKEIT_DOK_TITEL.get(taetigkeit, "Wartungsnachweis")
+
+
+# N12-Fix (ENFAL-Testabsicherung, 2026-11): bleibt die technische Anwend-
+# barkeit einer Wartungsintervall-Zeile (Kraftstoff-/Elektrifizierungs-
+# Bedingung, z.B. "nur Hybrid- und Hybrid Plug-in-Modelle") ungeklärt, wird
+# NICHT unbedingt nach einer Durchführung gefragt ("Wurde X gemacht?"), als
+# wäre die Zugehörigkeit bereits bestätigt -- die Anwendbarkeit wird ZUERST
+# geklärt (Auftrag: "bei ungeklärter Voraussetzung zuerst Anwendbarkeit
+# klären"). Ein Warnsatz allein in der Insight-Beschreibung (s.
+# app/evidence.py `_web_beschreibung()`) reicht dafür nicht, weil
+# Verkäuferfrage/Dokument die tatsächlich gelesenen, handlungsleitenden
+# Texte sind.
+def _technik_anwendbarkeit_frage(bauteil: str, bedingung: str, verb: str) -> tuple[str, str]:
+    frage = (f"Trifft die Bedingung „{bedingung}“ auf dieses Fahrzeug zu? Falls ja: wann "
+            f"wurde „{bauteil}“ zuletzt {verb}, bei welchem Kilometerstand?")
+    hinweis = (f"Eine Webrecherche nennt für „{bauteil}“ ein Intervall, das laut Quelle nur "
+              f"unter dieser Bedingung gilt. Ob sie auf dieses Fahrzeug zutrifft, ist anhand "
+              f"der vorliegenden Angaben nicht geklärt: zuerst die technische Anwendbarkeit "
+              f"klären (z.B. über Fahrzeugschein oder FIN) -- erst danach sind Datum, "
+              f"Kilometerstand und Beleg zur Durchführung aussagekräftig.")
+    return frage, hinweis
+
+
+def _technik_anwendbarkeit_dokument(bauteil: str, bedingung: str) -> tuple[str, str]:
+    titel = f"Technische Anwendbarkeit „{bauteil}“ klären"
+    text = (f"Ob die Bedingung „{bedingung}“ auf dieses Fahrzeug zutrifft, ist anhand der "
+           f"vorliegenden Angaben nicht geklärt (z.B. über Fahrzeugschein oder FIN). Erst "
+           f"danach ist ein Beleg zur Durchführung an „{bauteil}“ aussagekräftig.")
+    return titel, text
 
 
 def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
@@ -1828,16 +1903,36 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             # dem Schlüssel entsprechen, den `_aus_laufleistung()` für
             # denselben "web_wartung"-Insight bildet, sonst entstünde ein
             # zweiter, fast gleichlautender Punkt statt eines geschärften.
-            wartung_schluessel = _schluessel_wartungsintervall(komp, bauteil)
+            wartung_schluessel = _schluessel_wartungsintervall(komp, bauteil, i.beschreibung)
+            bedingung = getattr(i, "technische_bedingung", None)
+            if getattr(i, "technische_bedingung_status", None) == "unresolved" and bedingung:
+                # N12-Fix: ungeklärte technische Anwendbarkeit zuerst klären,
+                # statt unbedingt nach einer Durchführung zu fragen.
+                frage, hinweis = _technik_anwendbarkeit_frage(
+                    bauteil, bedingung, _taetigkeit_verb(getattr(i, "taetigkeit", None)))
+                dok_titel, dok_text = _technik_anwendbarkeit_dokument(bauteil, bedingung)
+                s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}", falls + frage, hinweis,
+                      _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
+                      gruppe="Wartung und Technik", bauteil=bauteil)
+                s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", falls + dok_titel, dok_text,
+                      _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
+                      gruppe="Prüfungen und Wartung", bauteil=bauteil)
+                continue
+            # N13-Fix: belegtes Verb statt des tätigkeitsneutralen "gemacht",
+            # wenn die Quelle Kontrolle/Inspektion oder Wechsel/Austausch
+            # tatsächlich belegt (s. `_taetigkeit_verb()`) -- sonst bleibt
+            # der bisherige, ehrliche Default erhalten.
+            verb = _taetigkeit_verb(getattr(i, "taetigkeit", None))
+            dok_titel = _taetigkeit_dok_titel(getattr(i, "taetigkeit", None))
             s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}",
-                  f"{falls}Wann wurde „{bauteil}“ zuletzt gemacht: bei welchem Kilometerstand?",
+                  f"{falls}Wann wurde „{bauteil}“ zuletzt {verb}: bei welchem Kilometerstand?",
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Wartung und Technik", bauteil=bauteil)
             # Web-Wartungsfakten sind geprüfte Intervallangaben
             # (app/technical_research.py), also reguläre Wartung.
-            s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", f"{falls}Wartungsnachweis {bauteil}",
+            s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", f"{falls}{dok_titel} {bauteil}",
                   _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil),
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Prüfungen und Wartung", bauteil=bauteil)
@@ -1934,18 +2029,40 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
         # Derselbe Schlüssel wie `_aus_wartung`/`_aus_web_evidence`, sonst
         # entstünde ein zweiter Punkt statt eines geschärften (N11-Fix:
         # bauteilgenau über `_schluessel_wartungsintervall()`, s. dort).
-        basis = _schluessel_wartungsintervall(komp, w.bauteil)
+        basis = _schluessel_wartungsintervall(komp, w.bauteil, w.intervall_text)
         schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
         rang = (_R_WARTUNG_RELEVANT if w.status in ("im_bereich", "darueber")
                 else _R_WARTUNG)
 
+        bedingung = getattr(w, "technische_bedingung", None)
+        if getattr(w, "technische_bedingung_status", None) == "unresolved" and bedingung:
+            # N12-Fix: ungeklärte technische Anwendbarkeit zuerst klären --
+            # der laufleistungsbezogene Hinweis (`w.hinweis`) bleibt als
+            # Kontext erhalten, ersetzt aber nicht die vorrangige Frage nach
+            # der Anwendbarkeit selbst.
+            frage, hinweis = _technik_anwendbarkeit_frage(
+                w.bauteil, bedingung, _taetigkeit_verb(getattr(w, "taetigkeit", None)))
+            dok_titel, dok_text = _technik_anwendbarkeit_dokument(w.bauteil, bedingung)
+            s.add(VERKAEUFERFRAGEN, schluessel, frage, f"{w.hinweis} {hinweis}",
+                  rang, evidence_ids=[w.evidence_id], kategorie="wartung",
+                  gruppe="Wartung und Technik", bauteil=w.bauteil)
+            s.add(DOKUMENTE, schluessel, dok_titel, f"{w.hinweis} {dok_text}",
+                  rang, evidence_ids=[w.evidence_id], kategorie="wartung",
+                  gruppe="Prüfungen und Wartung", bauteil=w.bauteil)
+            continue
+
+        # N13-Fix: belegtes Verb statt des tätigkeitsneutralen "gemacht",
+        # wenn die Quelle Kontrolle/Inspektion oder Wechsel/Austausch
+        # tatsächlich belegt -- sonst bleibt der bisherige, ehrliche Default.
+        verb = _taetigkeit_verb(getattr(w, "taetigkeit", None))
+        dok_titel = _taetigkeit_dok_titel(getattr(w, "taetigkeit", None))
         s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wurde „{w.bauteil}“ bereits gemacht, und wenn ja, wann und bei welchem Kilometerstand?",
+              f"Wurde „{w.bauteil}“ bereits {verb}, und wenn ja, wann und bei welchem Kilometerstand?",
               f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
               gruppe="Wartung und Technik", bauteil=w.bauteil)
 
-        s.add(DOKUMENTE, schluessel, f"Wartungsnachweis {w.bauteil}",
+        s.add(DOKUMENTE, schluessel, f"{dok_titel} {w.bauteil}",
               f"{w.hinweis} Rechnung oder Eintrag im Serviceheft mit Datum und "
               f"Kilometerstand zeigen lassen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",

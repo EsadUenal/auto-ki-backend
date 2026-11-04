@@ -3328,10 +3328,12 @@ def _ist_modellcode_segment(segment: str) -> bool:
 
 def _zeilen_scope_passt(fenster: str, modell: str | None, *,
                         fuel_ziel: str | None = None,
-                        powertrains_ziel: frozenset | None = None) -> bool | None:
-    """Siehe Moduldocstring oben. `True`/`False`, wenn eine erkennbare
-    Modell-Scope-Klammer im Fenster das Zielmodell ein-/ausschließt; `None`,
-    wenn keine solche Klammer gefunden wurde (keine Einschränkung AUS DIESER
+                        powertrains_ziel: frozenset | None = None,
+                        ) -> tuple[bool | None, str | None]:
+    """Siehe Moduldocstring oben. `(True|False|None, ungeklaerte_technische_
+    bedingung)`. Erste Stelle: `True`/`False`, wenn eine erkennbare Modell-
+    Scope-Klammer im Fenster das Zielmodell ein-/ausschließt; `None`, wenn
+    keine solche Klammer gefunden wurde (keine Einschränkung AUS DIESER
     ZEILE -- die bestehende dokumentweite Ausrichtung bleibt maßgeblich).
 
     ENFAL-Folgeauftrag ("technische Wartungsgültigkeit", 2026-11): dieselbe
@@ -3351,10 +3353,28 @@ def _zeilen_scope_passt(fenster: str, modell: str | None, *,
     `recall_filter`/`motor_applicability` dafür benutzen. Ohne bekannte
     Zielachse (`fuel_ziel`/`powertrains_ziel` beide `None`/unresolved) bleibt
     das Ergebnis `None` -- eine fehlende technische Bestätigung ist KEIN
-    Ausschlussgrund (nur ein nachgewiesener WIDERSPRUCH ist `False`)."""
+    Ausschlussgrund (nur ein nachgewiesener WIDERSPRUCH ist `False`).
+
+    N12-Fix (ENFAL-Testabsicherung, 2026-11, Befund aus dem echten KaufCheck
+    04.11.2026): eine technische Bedingung, deren Zielachse UNBEKANNT bleibt
+    (`scopes_passen(...) is None`), zählte bisher trotzdem als `fand_scope =
+    True` -- das Ergebnis wurde dadurch `True` ("bestätigt zugeordnet"),
+    genau wie eine Zeile mit einer tatsächlich AUFGELÖSTEN, passenden
+    Bedingung. Eine UNGEKLÄRTE Anwendbarkeit ist aber nicht dasselbe wie eine
+    BESTÄTIGTE -- die erste Stelle wurde dadurch bei der späteren Auswahl
+    (`zeile_explizit_zugeordnet`, s. unten) fälschlich mit derselben hohen
+    Priorität behandelt wie ein echter Modell-/Technik-Treffer, und konnte
+    einen tatsächlich eindeutig zugeordneten Kandidaten aus dem Fünferlimit
+    verdrängen. Jetzt trägt NUR eine tatsächlich AUFGELÖSTE technische
+    Bedingung (`passt is not None`) zu `fand_scope` bei; eine ungeklärte
+    Bedingung wird separat als Klammertext zurückgegeben (zweite Stelle),
+    damit der Aufrufer (s. `_extrahiere_fakten()`) sie als eigene
+    Anwendbarkeits-Unsicherheit bis zum Bericht weiterreichen kann, statt sie
+    stillschweigend wie eine Bestätigung zu behandeln."""
     if not modell and fuel_ziel is None and powertrains_ziel is None:
-        return None
+        return None, None
     fand_scope = False
+    ungeklaerte_technik: str | None = None
     for klammer in _RE_KLAMMER.findall(fenster):
         ausschluss = bool(_SCOPE_AUSSCHLUSS_MARKER.match(klammer))
         rumpf = _SCOPE_AUSSCHLUSS_MARKER.sub("", klammer) if ausschluss else klammer
@@ -3365,18 +3385,21 @@ def _zeilen_scope_passt(fenster: str, modell: str | None, *,
                 fand_scope = True
                 ziel_dabei = any(_satz_nennt_modell(s, modell) for s in modellartige)
                 if ausschluss and ziel_dabei:
-                    return False
+                    return False, None
                 if not ausschluss and not ziel_dabei:
-                    return False
+                    return False, None
         technik_begriffe = _technik_scope_begriffe(rumpf)
         if technik_begriffe:
-            fand_scope = True
             passt = scopes_passen(technik_begriffe, fuel_ziel, powertrains_ziel)
             if ausschluss and passt is True:
-                return False
+                return False, None
             if not ausschluss and passt is False:
-                return False
-    return True if fand_scope else None
+                return False, None
+            if passt is None:
+                ungeklaerte_technik = ungeklaerte_technik or klammer.strip()
+            else:
+                fand_scope = True
+    return (True if fand_scope else None), ungeklaerte_technik
 
 
 # Release-Review (Risiko 2): explizite ALLOWLIST statt `!= "rueckruf"`. Eine
@@ -4814,9 +4837,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "no_maintenance_interval", "satz": claim[:120]})
                     continue
-                zeilen_scope = (_zeilen_scope_passt(claim, modell, fuel_ziel=fuel_ziel,
-                                                    powertrains_ziel=powertrains_ziel)
-                               if kategorie == "wartung" else None)
+                zeilen_scope, zeilen_technik_ungeklaert = (
+                    _zeilen_scope_passt(claim, modell, fuel_ziel=fuel_ziel,
+                                       powertrains_ziel=powertrains_ziel)
+                    if kategorie == "wartung" else (None, None))
                 if zeilen_scope is False:
                     # N2/N3/N7-Nachtrag (ENFAL-Reparaturpaket, 2026-11): eine
                     # ZEILENEIGENE Modell-Scope-Klammer ("(LS 500, RX 300, ...)",
@@ -4838,7 +4862,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     # liefern, s. `scopes_passen`) -- rein diagnostisch, ändert
                     # nichts an der bereits getroffenen Ablehnung.
                     grund = ("wartung_zeile_fremdes_modell"
-                            if _zeilen_scope_passt(claim, modell) is False
+                            if _zeilen_scope_passt(claim, modell)[0] is False
                             else "wartung_zeile_technische_bedingung_widerspricht")
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": grund, "satz": claim[:120]})
@@ -4906,7 +4930,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "treffer": [], "ereignis_tokens": [], "referenzen": [],
                                       "bauteile": [bauteil_claim] if bauteil_claim else [],
                                       "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None,
-                                      "zeile_explizit_zugeordnet": False})
+                                      "zeile_explizit_zugeordnet": False,
+                                      "technik_ungeklaert": None})
                     if kategorie == "rueckruf":
                         eintrag["ereignis_tokens"].append(ereignis_tokens)
                         if referenz:
@@ -4925,6 +4950,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         # generisches, markenunabhängiges Relevanzmerkmal für
                         # die spätere Auswahl (s. unten), keine Bauteil-Liste.
                         eintrag["zeile_explizit_zugeordnet"] = True
+                    if zeilen_technik_ungeklaert and not eintrag.get("technik_ungeklaert"):
+                        # N12-Fix: eine technische Bedingung, deren Zielachse
+                        # (Kraftstoff/Elektrifizierung) unbekannt bleibt, wird
+                        # festgehalten -- unabhängig vom Auswahlergebnis --
+                        # damit die Anwendbarkeits-Unsicherheit bis zum
+                        # WebFakt (unten) und von dort bis zum sichtbaren
+                        # Text transportiert werden kann.
+                        eintrag["technik_ungeklaert"] = zeilen_technik_ungeklaert
                     break
 
     fakten: list[WebFakt] = []
@@ -4994,11 +5027,25 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # Treffer dieser Gruppe), NICHT die Quell-URL.
         herkunftsregion, regionale_geltung = (
             _wartung_marktvorbehalt(e["treffer"]) if kategorie == "wartung" else (None, None))
+        # N12-Fix: s. Docstring `_zeilen_scope_passt()` -- eine technische
+        # Bedingung, deren Zielachse ungeklärt blieb, wird NICHT stillschweigend
+        # wie eine bestätigte Anwendbarkeit behandelt, sondern bis zum WebFakt
+        # (und von dort, unverändert via app/evidence.py, bis zum Insight)
+        # weitergereicht.
+        technik_bedingung = e.get("technik_ungeklaert") if kategorie == "wartung" else None
+        # N13-Fix: belegte Tätigkeit aus dem FINAL gewählten Aussagesatz --
+        # "unbestimmt" (aus dem Text nicht ableitbar) wird bewusst zu `None`,
+        # keine geratene Tätigkeit aus dem Bauteilnamen.
+        taetigkeit_roh = _wartung_aktion(e["aussage"]) if kategorie == "wartung" else None
+        taetigkeit = taetigkeit_roh if taetigkeit_roh in ("ersetzen", "pruefen") else None
         fakten.append(WebFakt(
             kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
             herkunftsregion=herkunftsregion, regionale_geltung=regionale_geltung,
+            technische_bedingung=technik_bedingung,
+            technische_bedingung_status="unresolved" if technik_bedingung else None,
+            taetigkeit=taetigkeit,
         ))
         if kategorie == "wartung":
             _wartung_explizit.append(bool(e.get("zeile_explizit_zugeordnet")))

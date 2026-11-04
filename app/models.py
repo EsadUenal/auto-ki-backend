@@ -497,6 +497,26 @@ class Insight(BaseModel):
     # begründet nach Auftragslage niemals Ungeeignetheit.
     herkunftsregion: str | None = None
     regionale_geltung: str | None = None
+    # N12-Fix (ENFAL-Testabsicherung, 2026-11): DRITTE, von Baujahr- und
+    # Regions-Geltung unabhängige Achse -- EINE im Dokumenttext selbst
+    # gefundene TECHNISCHE Bedingung ("nur Hybrid- und Hybrid Plug-in-
+    # Modelle", "außer ... Dieselmotoren"), deren Zutreffen auf dieses
+    # Fahrzeug NICHT aufgelöst werden konnte (Kraftstoff-/Elektrifizierungs-
+    # Zielachse unbekannt; s. `app.technical_research._zeilen_scope_passt()`).
+    # `technische_bedingung_status` ist bewusst NUR "unresolved" (ungeklärt,
+    # bleibt zugelassen) oder `None` (keine Bedingung bzw. bereits aufgelöst)
+    # -- ein nachgewiesener WIDERSPRUCH erzeugt gar keinen Fakt/Insight mehr
+    # (wird vorher abgelehnt) und braucht deshalb keinen dritten Wert hier.
+    technische_bedingung: str | None = None
+    technische_bedingung_status: str | None = None
+    # N13-Fix (ENFAL-Testabsicherung, 2026-11): belegte Tätigkeit laut
+    # Quelltext -- "ersetzen" (Wechsel/Austausch) | "pruefen" (Kontrolle/
+    # Inspektion) | `None` (aus dem Text nicht ableitbar; s.
+    # `app.technical_research._wartung_aktion()`). Bewusst KEIN Rückschluss
+    # aus dem Bauteilnamen allein ("Bremsen" ist weder automatisch ein
+    # Wechsel noch automatisch eine Prüfung) -- nur das, was der Quellsatz
+    # selbst durch ein Verb/eine Formulierung tatsächlich belegt.
+    taetigkeit: str | None = None
 
 
 Insight.model_rebuild()
@@ -765,6 +785,17 @@ class WebFakt(BaseModel):
     # an das Insight durchgereicht.
     herkunftsregion: str | None = None
     regionale_geltung: str | None = None
+    # N12-Fix: s. Insight-Feld gleichen Namens -- nur hier erstmals BEFÜLLT
+    # (app/technical_research.py `_extrahiere_fakten()`, ausschließlich
+    # kategorie=="wartung"), von app/evidence.py unverändert an das Insight
+    # durchgereicht.
+    technische_bedingung: str | None = None
+    technische_bedingung_status: str | None = None
+    # N13-Fix: s. Insight-Feld gleichen Namens -- nur hier erstmals BEFÜLLT
+    # (app/technical_research.py `_extrahiere_fakten()`, ausschließlich
+    # kategorie=="wartung"), von app/evidence.py unverändert an das Insight
+    # durchgereicht.
+    taetigkeit: str | None = None
 
 
 class TechnischeRecherche(BaseModel):
@@ -889,6 +920,15 @@ class Wartungshinweis(BaseModel):
     herkunft: str                      # "db_wartung" | "web_wartung"
     evidence_id: str                   # IMMER eine existierende Insight-ID (§12)
     quellen: list[EvidenceQuelle] = Field(default_factory=list)
+    # N12/N13-Fix (ENFAL-Testabsicherung, 2026-11): von der ursprünglichen
+    # Insight unverändert übernommen (s. Insight-Felder gleichen Namens) --
+    # dieselbe Tätigkeits-/Anwendbarkeits-Information, die `_aus_wartung()`/
+    # `_aus_web_evidence()` (app/kaufaktionen.py) direkt am Insight läsen,
+    # steht hier auch für den laufleistungsbezogenen Pfad zur Verfügung, der
+    # ausschließlich mit `Wartungshinweis`-Objekten arbeitet.
+    taetigkeit: str | None = None
+    technische_bedingung: str | None = None
+    technische_bedingung_status: str | None = None
 
 
 class Laufleistungskontext(BaseModel):

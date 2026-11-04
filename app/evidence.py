@@ -752,6 +752,9 @@ def build_insights(
                 geltung_fuer_fahrzeug=getattr(fakt, "geltung_fuer_fahrzeug", None),
                 herkunftsregion=getattr(fakt, "herkunftsregion", None),
                 regionale_geltung=getattr(fakt, "regionale_geltung", None),
+                technische_bedingung=getattr(fakt, "technische_bedingung", None),
+                technische_bedingung_status=getattr(fakt, "technische_bedingung_status", None),
+                taetigkeit=getattr(fakt, "taetigkeit", None),
                 # §11: Web-Evidence trägt eine echte Quellenlage (URL + Domain-
                 # Qualität + Anzahl unabhängiger Domains) und bekommt deshalb eine
                 # EIGENE Trust-Stufe — sie ist weder ein ungeprüfter DB-Satz noch
@@ -875,6 +878,20 @@ def _web_beschreibung(fakt, baujahr) -> str:
         text += (f" {herkunft}. " if herkunft else " ") + (
             "Ob das für Ihr Fahrzeug in Deutschland zutrifft, ist nicht bestätigt. "
             "Mit dem fahrzeugeigenen Wartungsplan oder einer Vertragswerkstatt abgleichen.")
+    # N12-Fix (ENFAL-Testabsicherung, 2026-11): DRITTE, eigenständige Achse
+    # neben Baujahr- und Regions-Geltung -- eine technische Bedingung
+    # ("nur Hybrid- und Hybrid Plug-in-Modelle"), deren Zutreffen auf dieses
+    # Fahrzeug ungeklärt bleibt (Elektrifizierung/Kraftstoff unbekannt).
+    # Anders als der Marktvorbehalt oben steht diese Bedingung bereits
+    # wörtlich in `text` (unverändertes Quellenzitat) -- der Zusatz macht nur
+    # explizit, DASS die Anwendbarkeit selbst offen ist, bevor nach der
+    # Durchführung gefragt wird (Auftrag: "bei ungeklärter Voraussetzung
+    # zuerst Anwendbarkeit klären").
+    if getattr(fakt, "technische_bedingung_status", None) == "unresolved":
+        text += (" Ob diese Bedingung auf dieses Fahrzeug zutrifft, ist anhand der "
+                "vorliegenden Angaben nicht geklärt: zuerst die technische "
+                "Anwendbarkeit klären (z.B. über Fahrzeugschein oder FIN), bevor "
+                "eine Durchführung erfragt wird.")
     return text
 
 

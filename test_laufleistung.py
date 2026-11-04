@@ -485,11 +485,17 @@ check("L3 die Aktion trägt die Web-Evidence-ID",
 # wartungsintervall()), nicht mehr über die grobe, geteilte Prüfklasse
 # allein -- der erwartete ID-String ändert sich dadurch von
 # "dokument-wartung-web-zahnriemen" zu "...-zahnriemen-zahnriemen"
-# (Prüfklassen-Schlüssel + Bauteil-Slug, hier zufällig identisch). Die
-# geprüfte Eigenschaft bleibt dieselbe: der Web-Schlüssel kollidiert
-# weiterhin nicht mit dem DB-Schlüssel für dasselbe Bauteil.
+# (Prüfklassen-Schlüssel + Bauteil-Slug, hier zufällig identisch).
+# N12/N13-Nachtrag: derselbe Schlüssel trägt jetzt zusätzlich die
+# normalisierte Intervall-Signatur UND die belegte Tätigkeit ("...-120000km-
+# ersetzen", s. `_wartung_merkmal_normalisiert()`/`_wartung_aktion()` --
+# "gewechselt" im Quelltext belegt "ersetzen"), damit zwei fachlich
+# unterschiedliche Wartungen am selben Bauteil nicht allein wegen des
+# Bauteilnamens verschmelzen (N11-Nachtrag). Die geprüfte Eigenschaft bleibt
+# dieselbe: der Web-Schlüssel kollidiert weiterhin nicht mit dem
+# DB-Schlüssel für dasselbe Bauteil.
 check("L4 der Web-Schlüssel kollidiert nicht mit dem DB-Schlüssel",
-      any(a.id == "dokument-wartung-web-zahnriemen-zahnriemen"
+      any(a.id == "dokument-wartung-web-zahnriemen-zahnriemen-120000km-ersetzen"
           for a in _ak_l.dokumente.fahrzeugspezifisch))
 
 # M) DB-Miss OHNE jede Wartungs-Evidence.
