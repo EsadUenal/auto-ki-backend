@@ -20,6 +20,15 @@ Mindest-Token-Überlappung). Weder "gleiche URL" noch "gleiches Bauteil"
 allein genügt; bei fehlender Überlappung bleibt es bei getrennten Fakten
 (Fall B unten) -- keine spekulative Zusammenführung.
 
+Testlücke geschlossen (ENFAL-Testabsicherung, 2026-11): Fall D (End-to-End
+über `run_kaufcheck`) stubbt `kc.find_baureihe_mit_vertrauen` jetzt
+kontrolliert auf einen DB-Miss (wortgleich mit test_n1_generation_spec_gap_
+run_kaufcheck.py) -- Fall D prüft ausdrücklich, ob der WEB-Rückruf-Fallback
+auslöst und dedupt, nicht die Fahrzeugdaten-Seed-DB. Ein DB-Treffer würde den
+Fallback-Trigger gar nicht erst auslösen und D1/D3/D4 stumm auf 0 statt auf 1
+fallen lassen. Fall A-C (direkter `_extrahiere_fakten()`-Aufruf) betreiben
+keine DB und sind unverändert.
+
     python scripts/test_isolated.py test_rueckruf_dedupe_webfallback.py
 """
 import asyncio
@@ -125,9 +134,21 @@ check("C1: zwei verschiedene Quell-URLs bündeln NICHT über diesen Pfad "
 # Verkäuferfragen und Dokumentenanforderungen bündeln sich mit der Aktion
 # selbst (ein WebFakt -> ein Insight -> je EINE Verkäuferfrage/Dokumenten-
 # anforderung aus app/kaufaktionen.py, nicht zwei).
+def _db_miss_stub(marke, modell, baujahr):
+    """DB-Miss NUR an der schmalen Katalog-Lookup-Funktion simuliert (wortgleich mit
+    test_n1_generation_spec_gap_run_kaufcheck.py) -- Fall D prüft ausdrücklich, ob der
+    WEB-Rückruf-Fallback ausgelöst wird und dedupt; ohne diesen Stub hinge das Auslösen
+    des Fallbacks am Zufall, ob die Fahrzeugdaten-Seed-DB "Lexus RC F" zu diesem Zeitpunkt
+    bereits kennt (ein DB-Treffer würde den Web-Fallback-Trigger gar nicht erst auslösen
+    und die beabsichtigte Dedupe-Prüfung D1/D3/D4 stumm auf 0 statt auf 1 fallen lassen)."""
+    return None, {"match_art": "no_match", "konfidenz": "niedrig", "belastbar": False,
+                  "fehlende_angabe": "simulierter DB-Miss, Testdouble"}
+
+
 async def _lauf(req: KaufCheckRequest, web_fixture: dict) -> KaufCheckResponse:
     orig = (kc.call_gemini_json, kc.recherchiere_technisch, kc.tavily_search_with_fallback,
-            kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche)
+            kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche,
+            kc.find_baureihe_mit_vertrauen)
 
     async def gemini(system, user):
         return {"bericht": "KAUFEN.", "empfehlung": "kaufen",
@@ -144,11 +165,13 @@ async def _lauf(req: KaufCheckRequest, web_fixture: dict) -> KaufCheckResponse:
     kc.call_gemini_json, kc.recherchiere_technisch = gemini, technik
     kc.tavily_search_with_fallback, kc.vertiefe_marktrecherche = verboten, verboten
     kc.marktpreis_recherche_moeglich = lambda *a: False
+    kc.find_baureihe_mit_vertrauen = _db_miss_stub
     try:
         return KaufCheckResponse(**await kc.run_kaufcheck(req))
     finally:
         (kc.call_gemini_json, kc.recherchiere_technisch, kc.tavily_search_with_fallback,
-         kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche) = orig
+         kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche,
+         kc.find_baureihe_mit_vertrauen) = orig
 
 
 _D_WEB = {

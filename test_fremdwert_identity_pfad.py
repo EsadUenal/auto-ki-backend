@@ -24,6 +24,14 @@ und Antrieb werden tatsaechlich sichtbar bestaetigt.
 Deterministisch (alle Provider gestubbt), kein Netzwerk/LLM/bezahlter
 Aufruf, isolierte DB.
 
+Testlücke geschlossen (ENFAL-Testabsicherung, 2026-11): `kc.find_baureihe_
+mit_vertrauen` wird jetzt kontrolliert auf einen DB-Miss gestubbt (wortgleich
+mit test_n1_generation_spec_gap_run_kaufcheck.py) -- dieser Test prüft
+ausdrücklich den WEB-Pfad, nicht die Fahrzeugdaten-Seed-DB. Ohne den Stub
+hing das Ergebnis am Zufall, ob die Seed-DB "Lexus RC F" zu diesem Zeitpunkt
+kennt (unter `scripts/test_isolated.py` nicht der Fall -- der Stub macht den
+Test aber zusätzlich unabhängig von künftigem Seed-Stand).
+
     python scripts/test_isolated.py test_fremdwert_identity_pfad.py
 """
 import asyncio
@@ -48,9 +56,22 @@ def t(url, titel, inhalt):
     return {"url": url, "title": titel, "content": inhalt}
 
 
+def _db_miss_stub(marke, modell, baujahr):
+    """DB-Miss NUR an der schmalen Katalog-Lookup-Funktion simuliert (wortgleich mit
+    test_n1_generation_spec_gap_run_kaufcheck.py) -- dieser Test prüft ausdrücklich den
+    WEB-Identitätspfad (reiner web_fixture, keine DB-Fixtures); ohne diesen Stub hängt das
+    Ergebnis am Zufall, ob die Fahrzeugdaten-Seed-DB "Lexus RC F" zu diesem Zeitpunkt bereits
+    kennt -- eine DB-Bestätigung (`confirmed_by=['enfal']`) würde sonst unbemerkt denselben
+    `verification_state` wie eine Web-Bestätigung erzeugen und die Prüfung der Herkunft (1c)
+    entwerten."""
+    return None, {"match_art": "no_match", "konfidenz": "niedrig", "belastbar": False,
+                  "fehlende_angabe": "simulierter DB-Miss, Testdouble"}
+
+
 async def _lauf(req, web_fixture):
     orig = (kc.call_gemini_json, kc.recherchiere_technisch, kc.tavily_search_with_fallback,
-            kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche)
+            kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche,
+            kc.find_baureihe_mit_vertrauen)
 
     async def gemini(system, user):
         return {"bericht": "KAUFEN NACH BESICHTIGUNG.", "empfehlung": "kaufen_nach_besichtigung",
@@ -67,11 +88,13 @@ async def _lauf(req, web_fixture):
     kc.call_gemini_json, kc.recherchiere_technisch = gemini, technik
     kc.tavily_search_with_fallback, kc.vertiefe_marktrecherche = verboten, verboten
     kc.marktpreis_recherche_moeglich = lambda *a: False
+    kc.find_baureihe_mit_vertrauen = _db_miss_stub
     try:
         return KaufCheckResponse(**await kc.run_kaufcheck(req))
     finally:
         (kc.call_gemini_json, kc.recherchiere_technisch, kc.tavily_search_with_fallback,
-         kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche) = orig
+         kc.marktpreis_recherche_moeglich, kc.vertiefe_marktrecherche,
+         kc.find_baureihe_mit_vertrauen) = orig
 
 
 REQ = dict(marke="Lexus", modell="RC F", baujahr=2017, kilometerstand=82000, motor="5.0 V8",
