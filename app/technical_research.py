@@ -3298,8 +3298,22 @@ _SCOPE_FUELLWORT = frozenset({
     "prufung", "prüfung", "messfuehler", "messfuhler", "messfühler", "danach",
     "zumindest", "falls", "ihr", "land", "zutreffend",
 })
+# N10-Fix (ENFAL-Testabsicherung, 2026-11): die Trenner-Zeichenklasse akzeptierte
+# bisher nur das normale Leerzeichen (" ") zwischen zwei Codeteilen ("LC 500"),
+# nicht aber ein geschütztes Leerzeichen (NBSP, U+00A0) oder ein schmales
+# geschütztes Leerzeichen (U+202F) -- beide sind generische, verbreitete
+# PDF-/Web-Extraktionsartefakte bei kurzen Modellcodes (verhindern dort einen
+# Zeilenumbruch mitten im Code) und keine Lexus-/Marken-Besonderheit. Fehlte der
+# Treffer dadurch, blieb die GESAMTE Klammer ohne erkannten Modellcode und
+# `_zeilen_scope_passt()` fiel auf `None` (ungeklärt) zurück, statt die Zeile
+# korrekt als `False` (fremdes Modell) auszuschließen -- offline reproduziert,
+# s. test_n10_n11_scope_dedup_absicherung.py. `\s` statt eines hartkodierten
+# NBSP-Zeichensatzes, damit auch künftige Whitespace-Varianten generisch
+# mitgelten; Komma-/Listentrennung (`_RE_SCOPE_LISTEN_TRENNER`) und
+# `str.strip()`/`str.split()` kannten NBSP bereits vorher (Python-Unicode-
+# Whitespace), nur diese eine Zeichenklasse nicht.
 _RE_MODELLCODE_SEGMENT = re.compile(
-    r"^[A-ZÄÖÜ][A-Za-zÄÖÜ0-9+]{0,8}(?:[ -][A-Za-zÄÖÜ0-9+]{1,8}){0,2}$")
+    r"^[A-ZÄÖÜ][A-Za-zÄÖÜ0-9+]{0,8}(?:[-\s][A-Za-zÄÖÜ0-9+]{1,8}){0,2}$")
 
 
 def _ist_modellcode_segment(segment: str) -> bool:

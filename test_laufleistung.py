@@ -480,8 +480,16 @@ check("L2 Alter und km/Jahr funktionieren ohne DB-Treffer",
 check("L3 die Aktion trägt die Web-Evidence-ID",
       any("web-wartung-1" in a.evidence_ids
           for a in _ak_l.dokumente.fahrzeugspezifisch))
+# N11-Fix (ENFAL-Testabsicherung, 2026-11): Wartungsintervall-Aktionen
+# schlüsseln jetzt IMMER bauteilgenau (app.kaufaktionen._schluessel_
+# wartungsintervall()), nicht mehr über die grobe, geteilte Prüfklasse
+# allein -- der erwartete ID-String ändert sich dadurch von
+# "dokument-wartung-web-zahnriemen" zu "...-zahnriemen-zahnriemen"
+# (Prüfklassen-Schlüssel + Bauteil-Slug, hier zufällig identisch). Die
+# geprüfte Eigenschaft bleibt dieselbe: der Web-Schlüssel kollidiert
+# weiterhin nicht mit dem DB-Schlüssel für dasselbe Bauteil.
 check("L4 der Web-Schlüssel kollidiert nicht mit dem DB-Schlüssel",
-      any(a.id == "dokument-wartung-web-zahnriemen"
+      any(a.id == "dokument-wartung-web-zahnriemen-zahnriemen"
           for a in _ak_l.dokumente.fahrzeugspezifisch))
 
 # M) DB-Miss OHNE jede Wartungs-Evidence.

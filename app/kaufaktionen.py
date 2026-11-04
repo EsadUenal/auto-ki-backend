@@ -719,6 +719,30 @@ def _schluessel(komp: dict | None, bauteil: str) -> str:
     return komp["schluessel"]
 
 
+# N11-Fix (ENFAL-Testabsicherung, 2026-11): `_schluessel()` fällt für Einträge
+# ohne `je_bauteil` (z.B. "automatikgetriebe") generisch auf die grobe
+# Prüfklasse zurück -- richtig für Besichtigung/Probefahrt/Schwachstelle, wo
+# mehrere benannte Bauteile EINE gemeinsame, sinnvolle Sicht-/Fahrprüfung
+# teilen ("Hinterachsträger-Buchse" + "EDC-Dämpfer" -> eine Fahrwerksprüfung).
+# Für eine konkrete WARTUNGSINTERVALL-Aussage (Verkäuferfrage/Dokument) ist
+# dieselbe Grobgranularität falsch: "Automatikgetriebeöl" (60.000 km/4 Jahre)
+# und "Automatikgetriebe-Ölkühlerschläuche und -anschlüsse" (45.000 km/3
+# Jahre) sind zwei eigenständige, unterschiedlich befristete Nachweispflichten
+# -- keine gemeinsam prüfbare Symptomgruppe. Jedes bereits bei der
+# Fakten-Extraktion deduplizierte WebFakt/Insight (app.technical_research,
+# N4-Fix) trägt hier IMMER einen bauteilgenauen `bauteil`-Text; ein echtes
+# Duplikat derselben Aussage erreicht diese Funktion deshalb gar nicht erst
+# zweimal mit unterschiedlichem Bauteiltext. Deshalb gilt für Wartungs-
+# intervall-Aktionen IMMER die bauteilgenaue Variante -- unabhängig vom
+# `je_bauteil`-Flag der geteilten Prüfklassen-Tabelle, die weiterhin
+# ausschließlich für Besichtigung/Probefahrt/Schwachstelle gilt und von
+# dieser Funktion nicht verändert wird.
+def _schluessel_wartungsintervall(komp: dict | None, bauteil: str) -> str:
+    if not komp:
+        return _slug(bauteil)
+    return f"{komp['schluessel']}-{_slug(bauteil)}"
+
+
 def _besichtigung(komp: dict | None, bauteil: str) -> str | None:
     """Besichtigungstext eines Bauteils — oder None, wenn keiner sinnvoll ist.
 
@@ -1721,7 +1745,7 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
             continue
         bauteil = _bauteil_aus_wartung(i)
         komp = _komponente(bauteil)
-        schluessel = f"wartung-{_schluessel(komp, bauteil)}"
+        schluessel = f"wartung-{_schluessel_wartungsintervall(komp, bauteil)}"
         art = getattr(i, "wartungsart", None) or WARTUNG_REGULAER
         frage, nachfrage, dok_titel, dok_text, dok_gruppe = _WARTUNG_VORLAGEN.get(
             art, _WARTUNG_VORLAGEN[WARTUNG_REGULAER])
@@ -1799,7 +1823,13 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             continue
 
         if art == "wartung":
-            s.add(VERKAEUFERFRAGEN, f"wartung-web-{schluessel}",
+            # N11-Fix: bauteilgenauer Schlüssel statt der geteilten, groben
+            # Prüfklasse (s. `_schluessel_wartungsintervall()`) -- muss exakt
+            # dem Schlüssel entsprechen, den `_aus_laufleistung()` für
+            # denselben "web_wartung"-Insight bildet, sonst entstünde ein
+            # zweiter, fast gleichlautender Punkt statt eines geschärften.
+            wartung_schluessel = _schluessel_wartungsintervall(komp, bauteil)
+            s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}",
                   f"{falls}Wann wurde „{bauteil}“ zuletzt gemacht: bei welchem Kilometerstand?",
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
@@ -1807,7 +1837,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   gruppe="Wartung und Technik", bauteil=bauteil)
             # Web-Wartungsfakten sind geprüfte Intervallangaben
             # (app/technical_research.py), also reguläre Wartung.
-            s.add(DOKUMENTE, f"wartung-web-{schluessel}", f"{falls}Wartungsnachweis {bauteil}",
+            s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", f"{falls}Wartungsnachweis {bauteil}",
                   _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil),
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Prüfungen und Wartung", bauteil=bauteil)
@@ -1901,8 +1931,10 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
         return
     for w in getattr(kontext, "wartungshinweise", None) or []:
         komp = _komponente(w.bauteil)
-        # Derselbe Schlüssel wie `_aus_wartung`, sonst entstünde ein zweiter Punkt.
-        basis = _schluessel(komp, w.bauteil)
+        # Derselbe Schlüssel wie `_aus_wartung`/`_aus_web_evidence`, sonst
+        # entstünde ein zweiter Punkt statt eines geschärften (N11-Fix:
+        # bauteilgenau über `_schluessel_wartungsintervall()`, s. dort).
+        basis = _schluessel_wartungsintervall(komp, w.bauteil)
         schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
         rang = (_R_WARTUNG_RELEVANT if w.status in ("im_bereich", "darueber")
                 else _R_WARTUNG)
