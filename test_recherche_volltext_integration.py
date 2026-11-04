@@ -230,6 +230,107 @@ async def test_b_identitaet_nachladung():
           f"nachweisweg={recherche.identitaet.generation_nachweisweg!r}")
 
 
+# ══ B2-B4) N1-Folgeauftrag ("Generationsrecherche bis zur tatsächlichen ══
+#      Blockade verfolgen", 2026-11): dieselbe Rettungskarte wie B, aber NUR
+#      über die Identity-Spec-Gap-Runde (Runde 2, Achse "generation") erreicht,
+#      NICHT schon über die Runde-1-Query "Generation Baureihe Bauzeitraum".
+#
+# BEFUND (Code-Audit, verifiziert vor dem Fix -- kein Live-Lauf nötig):
+# `_identitaet_nachlade_kandidaten()`/`_sicheres_nachladen()` liefen bisher
+# GENAU EINMAL, VOR der ersten `phase_identitaet()`-Berechnung (Runde 1).
+# Treffer, die ERST die Identity-Spec-Gap-Runde (Runde 2, `_identity_spec_
+# gap_queries()`, Achse "generation") neu fand, wurden NIE nachgeladen --
+# ein Herstellerdokument, das nur dort auftaucht, blieb strukturell auf das
+# rohe Suchsnippet beschränkt, selbst wenn es exakt dasselbe Dokumenttyp-Gate
+# erfüllt wie ein Runde-1-Treffer. FIX (app/technical_research.py,
+# `TavilyTechnicalResearchProvider.recherchiere()`): dieselbe Nachlade-Logik
+# läuft jetzt zusätzlich für NEU in Runde 2 gefundene Treffer -- mit dem
+# nach Runde 1 VERBLEIBENDEN Rest des GETEILTEN Budgets
+# (`_IDENTITAET_VOLLTEXT_NACHLADE_MAX`, unverändert insgesamt <= 2 über BEIDE
+# Runden, s. B4 unten).
+
+async def test_b2_identity_spec_gap_nachladung():
+    fake = _FakeProvider(
+        routing={
+            "technische Daten": [_ADAC],
+            "Generation Baureihe Bauzeitraum": [_AMS],   # kein Generations-Code stark genug (Gewicht 2 allein)
+            "Generation Modellcode": [treffer(
+                _RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte", _RETTUNGSKARTE_SNIPPET_DUENN)],
+        },
+        extract_text={_RETTUNGSKARTE_URL: _RETTUNGSKARTE_VOLLTEXT})
+    recherche = await _recherchiere(fake)
+    check("B2.1) Identität ist belegt (ADAC+AMS, zwei unabhängige Domains)",
+          recherche.identitaet.belegt)
+    check("B2.2) die Identity-Spec-Gap-Query für die Achse 'generation' wurde tatsächlich "
+          "ausgeführt (Generation blieb nach Runde 1 offen -- ADAC+AMS allein reichen nicht)",
+          any("Generation Modellcode" in q for q in fake.search_calls), str(fake.search_calls))
+    check("B2.3) das Nachladen traf GENAU die Rettungskarten-URL, OBWOHL sie erst in "
+          "Runde 2 (nicht schon Runde 1) gefunden wurde",
+          fake.extract_calls == [[_RETTUNGSKARTE_URL]], f"extract_calls={fake.extract_calls!r}")
+    check("B2.4) OHNE dieses Nachladen wäre 'UXC1' NICHT im Suchtext enthalten -- der "
+          "Beweis haengt am Runde-2-Nachladen, nicht an einem Zufallstreffer",
+          "UXC1" not in _RETTUNGSKARTE_SNIPPET_DUENN)
+    check("B2.5) nach dem Nachladen löst die BESTEHENDE, unveränderte Rollen-/"
+          "Konsensprüfung die Generation tatsächlich auf: generation='UXC1'",
+          recherche.identitaet.generation == "UXC1",
+          f"generation={recherche.identitaet.generation!r}")
+
+
+async def test_b3_identity_spec_gap_budget_bereits_erschoepft():
+    # Runde 1 verbraucht das GESAMTE Identitäts-Nachlade-Budget (2) bereits
+    # an zwei ANDEREN, ebenfalls gate-passenden Lexus-Dokumenten (dieselbe
+    # Dokumenttyp-Erkennung, irrelevanter Fülltext) -- die Rettungskarte
+    # selbst erscheint ERST in Runde 2.
+    _DUMMY_1 = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+               "fahrzeuginformationen/dummy-rettungskarte-1.pdf")
+    _DUMMY_2 = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+               "fahrzeuginformationen/dummy-rettungskarte-2.pdf")
+    fake = _FakeProvider(
+        routing={
+            "technische Daten": [_ADAC],
+            "Generation Baureihe Bauzeitraum": [
+                treffer(_DUMMY_1, "Lexus RC F Rettungskarte (1)", "Lexus RC F Kurzinfo A"),
+                treffer(_DUMMY_2, "Lexus RC F Rettungskarte (2)", "Lexus RC F Kurzinfo B"),
+                _AMS,
+            ],
+            "Generation Modellcode": [treffer(
+                _RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte", _RETTUNGSKARTE_SNIPPET_DUENN)],
+        },
+        extract_text={_DUMMY_1: "Lexus RC F Kurzinfo A (irrelevant, kein Code)",
+                     _DUMMY_2: "Lexus RC F Kurzinfo B (irrelevant, kein Code)",
+                     _RETTUNGSKARTE_URL: _RETTUNGSKARTE_VOLLTEXT})
+    recherche = await _recherchiere(fake)
+    check("B3.1) Runde 1 verbraucht bereits das volle Budget -- GENAU EIN Extract-Call "
+          f"mit den zwei Runde-1-Kandidaten (<= {tr._IDENTITAET_VOLLTEXT_NACHLADE_MAX})",
+          fake.extract_calls == [[_DUMMY_1, _DUMMY_2]], f"extract_calls={fake.extract_calls!r}")
+    check("B3.2) die Rettungskarte aus Runde 2 wird NICHT mehr nachgeladen -- das "
+          "GETEILTE Budget wird nie neu gewährt, nur bis zur Obergrenze ausgeschöpft "
+          "(§15 Auftrag: 'maximal 2 Identitäts-Originalabrufe' GESAMT, nicht pro Runde)",
+          len(fake.extract_calls) == 1, f"extract_calls={fake.extract_calls!r}")
+    check("B3.3) ohne Nachladen bleibt die Generation NACHVOLLZIEHBAR unbestätigt -- "
+          "kein erfundener Beleg aus dem dünnen Snippet allein",
+          recherche.identitaet.generation is None, f"generation={recherche.identitaet.generation!r}")
+
+
+async def test_b4_identity_spec_gap_abruf_fehlschlag():
+    fake = _FakeProvider(
+        routing={
+            "technische Daten": [_ADAC],
+            "Generation Baureihe Bauzeitraum": [_AMS],
+            "Generation Modellcode": [treffer(
+                _RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte", _RETTUNGSKARTE_SNIPPET_DUENN)],
+        },
+        extract_fehler=True)
+    recherche = await _recherchiere(fake)
+    check("B4.1) fehlgeschlagener Runde-2-Abruf -> KEIN Crash", recherche is not None)
+    check("B4.2) Identität bleibt belegt (ADAC+AMS), aber OHNE erfundene Generation",
+          recherche.identitaet.belegt and recherche.identitaet.generation is None,
+          f"belegt={recherche.identitaet.belegt!r} generation={recherche.identitaet.generation!r}")
+    check("B4.3) GENAU EIN Abrufversuch für die Rettungskarte -- keine unbegrenzte "
+          "Wiederholung nach dem Fehlschlag",
+          fake.extract_calls == [[_RETTUNGSKARTE_URL]], f"extract_calls={fake.extract_calls!r}")
+
+
 # ══ C) Abruf scheitert oder Budget erschöpft: kein erfundener Beleg, keine ══
 #      unbegrenzte Wiederholung ──────────────────────────────────────────────
 
@@ -402,6 +503,9 @@ async def test_grenzfall_globale_abrufobergrenze():
 async def _run_all():
     await test_a_serviceheft_nachladung()
     await test_b_identitaet_nachladung()
+    await test_b2_identity_spec_gap_nachladung()
+    await test_b3_identity_spec_gap_budget_bereits_erschoepft()
+    await test_b4_identity_spec_gap_abruf_fehlschlag()
     await test_c_fehlgeschlagener_abruf_identitaet()
     await test_c_fehlgeschlagener_abruf_wartung()
     await test_kosten_vollstaendig_verglichen()

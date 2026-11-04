@@ -6679,6 +6679,33 @@ class TavilyTechnicalResearchProvider:
                 for (name, _q), treffer in zip(spec_intents, spec_treffer_je_intent) if treffer
             }
             if neue_spec_treffer:
+                # ENFAL-Folgeauftrag (N1, "Generationsrecherche bis zur tatsaechlichen
+                # Blockade verfolgen", 2026-11): dieselbe Volltext-Nachladung wie
+                # Runde 1 (`_identitaet_nachlade_kandidaten()`/`_sicheres_nachladen()`,
+                # s. Kommentar dort -- "ein Snippet, das die Kopfzeile mit dem Code
+                # noch enthaelt, reicht ... Trifft das Suchsnippet dagegen einen
+                # ANDEREN Dokumentabschnitt, bleibt die Generation unbelegt") galt
+                # bisher NUR fuer Runde 1 -- ein Herstellerdokument, das ERST die
+                # Identity-Spec-Gap-Query dieser Runde erreicht (nicht schon Runde 1),
+                # bekam NIE die Chance auf Volltext und blieb strukturell auf das rohe
+                # Suchsnippet beschraenkt, selbst wenn es exakt dasselbe Dokumenttyp-
+                # Gate (`_herstelleridentifikationsdokument()`) erfuellt. Keine neue
+                # Heuristik, kein Mehrbudget: derselbe Gesamtrahmen
+                # `_IDENTITAET_VOLLTEXT_NACHLADE_MAX` gilt UEBER BEIDE Runden -- hier
+                # wird nur noch der nach Runde 1 verbleibende Rest ausgeschoepft, nie
+                # neu gewaehrt (§15 Auftrag: "maximal 2 Identitaets-Originalabrufe").
+                spec_nachlade_limit = max(0, _IDENTITAET_VOLLTEXT_NACHLADE_MAX - len(ident_nachlade_urls))
+                spec_nachlade_urls = (_identitaet_nachlade_kandidaten(
+                    neue_spec_treffer, marke=marke, limit=spec_nachlade_limit)
+                    if spec_nachlade_limit else [])
+                if spec_nachlade_urls:
+                    spec_voller_text, spec_nachlade_stats = await _sicheres_nachladen(spec_nachlade_urls)
+                    neue_spec_treffer = _treffer_mit_volltext(neue_spec_treffer, spec_voller_text)
+                    log.info("research_phase=identitaet_volltext round=2 kandidaten=%d "
+                             "nachgeladen=%d aus_cache=%d fehler=%d domains=%s",
+                             len(spec_nachlade_urls), len(spec_voller_text),
+                             spec_nachlade_stats["aus_cache"], spec_nachlade_stats["fehler"],
+                             ",".join(sorted({registrable_domain(u) for u in spec_nachlade_urls})) or "-")
                 ident_treffer = ident_treffer + neue_spec_treffer
                 identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
                 abgelehnt += abgelehnt_i2
