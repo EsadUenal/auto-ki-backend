@@ -391,6 +391,44 @@ def _identitaet_nachlade_kandidaten(treffer: list[dict], *, marke: str | None,
     return kandidaten
 
 
+# N1-Diagnostik (ENFAL-Folgeauftrag, 2026-11): das bestehende Log
+# (`research_phase=identitaet_volltext`, s. Aufrufer in `recherchiere()`)
+# feuert NUR, wenn `_identitaet_nachlade_kandidaten()` oben mindestens EINE
+# URL auswählt (`if ident_nachlade_urls:`). Bleibt die Liste leer, verschwindet
+# die Information spurlos -- ob, weil (a) kein Treffer überhaupt eine URL
+# trug, (b) ein Treffer bereits brauchbaren Volltext mitbrachte, oder (c) kein
+# Treffer das Dokumenttyp-Gate (`_herstelleridentifikationsdokument()`)
+# erfüllte, war bisher aus dem Log NICHT unterscheidbar (N1-Befund, s.
+# Auftrag: "fehlender Suchtreffer" vs. "abgelehnter Kandidat"). Dieselbe
+# Iterationsreihenfolge wie oben, rein additiv -- ändert NICHTS an der
+# Auswahl selbst, nur an der Sichtbarkeit, WARUM sie leer blieb.
+def _identitaet_nachlade_diagnose(treffer: list[dict], *, marke: str | None) -> dict:
+    """Reine Zähl-Hilfsfunktion, keine Auswahl -- s. Kommentar oben."""
+    ohne_url = 0
+    bereits_volltext = 0
+    falsche_dokumentart = 0
+    gesehen: set[str] = set()
+    doppelt = 0
+    for r in treffer:
+        url = r.get("url") or ""
+        if not url:
+            ohne_url += 1
+            continue
+        if url in gesehen:
+            doppelt += 1
+            continue
+        if hat_brauchbaren_raw_content(r):
+            bereits_volltext += 1
+            continue
+        if not _herstelleridentifikationsdokument(url, marke):
+            falsche_dokumentart += 1
+            continue
+        gesehen.add(url)
+    return {"treffer": len(treffer), "ohne_url": ohne_url, "doppelt": doppelt,
+            "bereits_volltext": bereits_volltext, "falsche_dokumentart": falsche_dokumentart,
+            "gate_erfuellt": len(gesehen)}
+
+
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
 # dem PSL-/Pressedomain-Fix in `score_domain()` bleibt für "schwachstelle"/
 # "wartung" eine Scoring-Asymmetrie bestehen -- `score_domain()` kennt den
@@ -2845,6 +2883,26 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
             motor_bestaetigt = _motor_kern_bestaetigt(motor)
             feldwerte["engine_name"] = {"value": motor_bestaetigt, "confidence": "mittel",
                                         "domains": len(doms) or 1, "domain_namen": doms}
+        # N6-Diagnostik (ENFAL-Folgeauftrag, 2026-11): bisher gab es KEINE
+        # Logzeile zur Motorkern-Prüfung -- ob `engine_name` unbestätigt
+        # blieb, weil (a) keine Quelle die Kern-Tokens/den Hubraum überhaupt
+        # nannte (`quellen_mit_kernbeleg=0`), (b) Kernbeleg vorhanden war,
+        # aber keine Quelle Tier <= 2 erreichte (`domains_tier<=2=0` trotz
+        # `quellen_mit_kernbeleg>0`), oder (c) nur EINE Tier<=2-Domain UND
+        # keine Tier-1-Quelle vorlag (Schwellenwert "len(doms) >= 2 ODER
+        # Tier 1" knapp verfehlt), war aus dem bestehenden Log NICHT
+        # unterscheidbar (N6-Befund). Reine Beobachtbarkeit -- ändert nichts
+        # an der Bestätigungsschwelle selbst.
+        anzahl_kernbeleg = sum(1 for r in claim_quellen if _motor_quelle_passt(r))
+        anzahl_tier1_kernbeleg = sum(
+            1 for r in claim_quellen
+            if _motor_quelle_passt(r) and _tier_identitaet(r.get("url") or "", marke) == 1)
+        log.info(
+            "Motorkern-Prüfung: nutzerwert=%r kern=%s hubraum_erforderlich=%s "
+            "quellen_mit_kernbeleg=%d domains_tier<=2=%d davon_tier1=%d bestaetigt=%s",
+            motor, sorted(kern) or "-", hub_norm or "-",
+            anzahl_kernbeleg, len(doms), anzahl_tier1_kernbeleg, motor_bestaetigt is not None,
+        )
 
     bester = max((score_domain(r.get("url") or "") for r in stuetzend), default=0)
     conf = _confidence_aus_domains(domains, bester)
@@ -6701,6 +6759,17 @@ class TavilyTechnicalResearchProvider:
         # schon in Runde 1 wirkt (und die Identity-Spec-Gap-Runde seltener
         # noetig wird, statt zusaetzliche Suchkosten zu erzeugen).
         ident_nachlade_urls = _identitaet_nachlade_kandidaten(ident_treffer, marke=marke)
+        # N1-Diagnostik (s. `_identitaet_nachlade_diagnose()`-Docstring): diese
+        # Zeile feuert IMMER, auch wenn `ident_nachlade_urls` leer bleibt --
+        # anders als das nachfolgende `identitaet_volltext`-Log (nur bei
+        # tatsächlichem Abruf), damit "kein Kandidat ausgewählt" nicht mehr
+        # spurlos von "kein Treffer" ununterscheidbar ist.
+        _ident_nachlade_diag = _identitaet_nachlade_diagnose(ident_treffer, marke=marke)
+        log.info("research_phase=identitaet_volltext_kandidaten round=1 treffer=%d ohne_url=%d "
+                 "bereits_volltext=%d falsche_dokumentart=%d gate_erfuellt=%d ausgewaehlt=%d",
+                 _ident_nachlade_diag["treffer"], _ident_nachlade_diag["ohne_url"],
+                 _ident_nachlade_diag["bereits_volltext"], _ident_nachlade_diag["falsche_dokumentart"],
+                 _ident_nachlade_diag["gate_erfuellt"], len(ident_nachlade_urls))
         if ident_nachlade_urls:
             ident_voller_text, ident_nachlade_stats = await _sicheres_nachladen(ident_nachlade_urls)
             ident_treffer = _treffer_mit_volltext(ident_treffer, ident_voller_text)
@@ -6770,9 +6839,28 @@ class TavilyTechnicalResearchProvider:
                 # wird nur noch der nach Runde 1 verbleibende Rest ausgeschoepft, nie
                 # neu gewaehrt (§15 Auftrag: "maximal 2 Identitaets-Originalabrufe").
                 spec_nachlade_limit = max(0, _IDENTITAET_VOLLTEXT_NACHLADE_MAX - len(ident_nachlade_urls))
-                spec_nachlade_urls = (_identitaet_nachlade_kandidaten(
-                    neue_spec_treffer, marke=marke, limit=spec_nachlade_limit)
-                    if spec_nachlade_limit else [])
+                # N1-Diagnostik: ein vierter, bisher unsichtbarer Grund für
+                # eine leere Nachlade-Liste -- das Kontingent
+                # (`_IDENTITAET_VOLLTEXT_NACHLADE_MAX`, über beide Runden
+                # geteilt) ist bereits durch Runde 1 erschöpft, der
+                # Kandidaten-Check läuft dann gar nicht erst ("übersprungener
+                # Abruf" statt "kein Kandidat qualifiziert", s. Auftrag).
+                if spec_nachlade_limit == 0:
+                    log.info("research_phase=identitaet_volltext_kandidaten round=2 "
+                             "uebersprungen_grund=kontingent_erschoepft round1_genutzt=%d max=%d",
+                             len(ident_nachlade_urls), _IDENTITAET_VOLLTEXT_NACHLADE_MAX)
+                    spec_nachlade_urls = []
+                else:
+                    spec_nachlade_urls = _identitaet_nachlade_kandidaten(
+                        neue_spec_treffer, marke=marke, limit=spec_nachlade_limit)
+                    _spec_nachlade_diag = _identitaet_nachlade_diagnose(neue_spec_treffer, marke=marke)
+                    log.info("research_phase=identitaet_volltext_kandidaten round=2 treffer=%d "
+                             "ohne_url=%d bereits_volltext=%d falsche_dokumentart=%d gate_erfuellt=%d "
+                             "ausgewaehlt=%d",
+                             _spec_nachlade_diag["treffer"], _spec_nachlade_diag["ohne_url"],
+                             _spec_nachlade_diag["bereits_volltext"],
+                             _spec_nachlade_diag["falsche_dokumentart"],
+                             _spec_nachlade_diag["gate_erfuellt"], len(spec_nachlade_urls))
                 if spec_nachlade_urls:
                     spec_voller_text, spec_nachlade_stats = await _sicheres_nachladen(spec_nachlade_urls)
                     neue_spec_treffer = _treffer_mit_volltext(neue_spec_treffer, spec_voller_text)
@@ -6800,14 +6888,35 @@ class TavilyTechnicalResearchProvider:
                                                   anfragen_fehlgeschlagen=anf_fehler["identitaet"])
             else:
                 geloest = []
+            # N1-Diagnostik: `stop_reason=resolved` galt bisher für die RUNDE
+            # als Ganzes, sobald IRGENDEIN angefragtes Feld gelöst wurde --
+            # unterschied NICHT zwischen "alle offenen Felder gelöst" und
+            # "nur eines von mehreren", und verdeckte dadurch z.B., dass
+            # "generation" trotz `stop_reason=resolved` weiterhin offen blieb
+            # (N1-Befund: "ob stop_reason=resolved ... ein vorzeitiges Ende
+            # verdeckt"). Verhalten unverändert (keine weitere Runde folgt
+            # ohnehin, § Auftrag "GENAU EINE zusätzliche Runde") -- nur das
+            # Label wird präzisiert, plus ein explizites `fields_still_open`,
+            # damit ein offenes `generation` nicht erst aus der Differenz
+            # von `gap` und `fields_resolved` erschlossen werden muss.
+            alle_angefragten_felder = offene_spec_felder + offene_confirm_felder
+            noch_offene_felder = [f for f in alle_angefragten_felder if f not in geloest]
+            if not geloest:
+                _stop_reason = "no_new_evidence"
+            elif noch_offene_felder:
+                _stop_reason = "teilweise_resolved"
+            else:
+                _stop_reason = "resolved"
             log.info("research_phase=identity_specs round=2 gap=%s query_count=%d "
-                     "new_raw_results=%d domains_je_intent=%s fields_resolved=%s stop_reason=%s",
-                     ",".join(offene_spec_felder + offene_confirm_felder), len(spec_intents),
+                     "new_raw_results=%d domains_je_intent=%s fields_resolved=%s "
+                     "fields_still_open=%s stop_reason=%s",
+                     ",".join(alle_angefragten_felder), len(spec_intents),
                      len(neue_spec_treffer),
                      "; ".join(f"{name}={','.join(doms) or '-'}"
                               for name, doms in domains_je_intent.items()) or "-",
                      ",".join(geloest) or "none",
-                     "resolved" if geloest else "no_new_evidence")
+                     ",".join(noch_offene_felder) or "none",
+                     _stop_reason)
 
         # Query-Anreicherung (Abschnitt 4 Auftrag): bestätigte Generation hat
         # Vorrang; ohne sie darf der rein formbasierte Auxiliary-Kandidat die
