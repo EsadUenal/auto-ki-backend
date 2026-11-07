@@ -499,11 +499,25 @@ def _identitaet_nachlade_diagnose(treffer: list[dict], *, marke: str | None) -> 
 # bleibt unverändert auf der geflatteten Liste unverändert bestehen.
 def _identitaet_nachlade_diagnose_je_intent(
         intents: list[tuple[str, str]], treffer_je_intent: list[list[dict]], *,
-        marke: str | None) -> dict[str, dict]:
+        marke: str | None, ausgewaehlt: list[str] | None = None) -> dict[str, dict]:
     """JE Suchintent dieselbe Zählung wie `_identitaet_nachlade_diagnose()`,
-    mit intent-übergreifender Mehrfachfund-Erkennung -- s. Kommentar oben."""
+    mit intent-übergreifender Mehrfachfund-Erkennung -- s. Kommentar oben.
+
+    N1-Nachtrag ("Nachladeauswahl pro Suchintent belegen", 2026-11): `gate_
+    erfuellt` oben beantwortet nur "erfüllt diese Zeile das Dokumenttyp-
+    Gate?" -- NICHT "wurde sie wegen des geteilten, über beide Runden
+    gültigen Abrufbudgets (`_IDENTITAET_VOLLTEXT_NACHLADE_MAX`) tatsächlich
+    nachgeladen?". Übergibt der Aufrufer die bereits berechnete, ECHTE
+    Auswahl (`_identitaet_nachlade_kandidaten()` auf der vollen, geflatteten
+    Liste -- dieselbe Funktion, kein zweiter Abruf, keine zweite Regel),
+    bekommt jedes Intent zusätzlich `ausgewaehlt`: wie viele seiner EIGENEN,
+    gate-erfüllenden Kandidaten tatsächlich in dieser echten Auswahl stehen.
+    Ein geteilter Treffer zählt dabei -- wie bei `gate_erfuellt` -- nur beim
+    Intent, der ihn zuerst sieht; ein späterer Intent zeigt ihn weiterhin nur
+    als `mehrfach`, nie als eigenen zweiten Auswahltreffer."""
     ergebnis: dict[str, dict] = {}
     global_gesehen: set[str] = set()
+    ausgewaehlt_menge = set(ausgewaehlt or [])
     for (name, _query), treffer in zip(intents, treffer_je_intent):
         frisch = []
         mehrfach = 0
@@ -515,6 +529,19 @@ def _identitaet_nachlade_diagnose_je_intent(
             frisch.append(r)
         diag = _identitaet_nachlade_diagnose(frisch, marke=marke)
         diag["mehrfach"] = mehrfach
+        # "treffer" zeigt die ROH-Antwortgröße dieses Intents (inkl. der
+        # bereits anderswo gezählten Mehrfachfunde) -- sonst würde ein
+        # Intent, dessen EINZIGER Treffer ein Mehrfachfund war, fälschlich
+        # wie "keine Antwort erhalten" aussehen (treffer=0 trotz mehrfach=1).
+        diag["treffer"] = len(treffer)
+        if ausgewaehlt is not None:
+            # Dieselbe, bereits bestehende Gate-Funktion -- nur ohne Limit,
+            # um ALLE eigenen Kandidaten dieses Intents zu sehen (die echte,
+            # budgetierte Auswahl wurde bereits anderswo einmal berechnet
+            # und hier nur per Schnittmenge übernommen).
+            eigene_kandidaten = set(_identitaet_nachlade_kandidaten(
+                frisch, marke=marke, limit=max(len(frisch), 1)))
+            diag["ausgewaehlt"] = len(eigene_kandidaten & ausgewaehlt_menge)
         ergebnis[name] = diag
         global_gesehen.update(r.get("url") for r in treffer if r.get("url"))
     return ergebnis
@@ -7060,15 +7087,23 @@ class TavilyTechnicalResearchProvider:
                     # als die Motorisierungs-Query, statt nur eine
                     # Gesamtzahl über alle acht Intents. Nur Intent-Namen,
                     # Zähler und Gründe -- keine URLs/Suchtexte/Rohinhalte.
+                    #
+                    # N1-Nachtrag ("Nachladeauswahl pro Suchintent belegen"):
+                    # `spec_nachlade_urls` (oben, bereits berechnet, EINE
+                    # echte Auswahl -- kein zweiter Abruf) wird mitgegeben,
+                    # damit `ausgewaehlt` je Intent zeigt, ob ein gate-
+                    # erfüllender Kandidat auch tatsächlich ins Budget
+                    # gepasst hat -- getrennt von der reinen Gate-Freigabe.
                     _je_intent_diag = _identitaet_nachlade_diagnose_je_intent(
-                        spec_intents, spec_treffer_je_intent, marke=marke)
+                        spec_intents, spec_treffer_je_intent, marke=marke,
+                        ausgewaehlt=spec_nachlade_urls)
                     log.info(
                         "research_phase=identitaet_volltext_kandidaten_je_intent round=2 %s",
                         "; ".join(
                             f"{name}: treffer={d['treffer']} mehrfach={d['mehrfach']} "
                             f"fremde_domain={d['fremde_domain']} kein_pdf={d['kein_pdf']} "
                             f"falsches_pfadwort={d['falsches_pfadwort']} "
-                            f"gate_erfuellt={d['gate_erfuellt']}"
+                            f"gate_erfuellt={d['gate_erfuellt']} ausgewaehlt={d['ausgewaehlt']}"
                             for name, d in _je_intent_diag.items() if d["treffer"]))
                 if spec_nachlade_urls:
                     spec_voller_text, spec_nachlade_stats = await _sicheres_nachladen(spec_nachlade_urls)

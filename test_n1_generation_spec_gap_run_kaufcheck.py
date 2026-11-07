@@ -269,6 +269,119 @@ async def main_b() -> None:
     print("\nTEIL B GRUEN")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# TEIL C -- ENFAL-Folgeauftrag ("Nachladeauswahl pro Suchintent belegen",
+# 2026-11): derselbe echte `run_kaufcheck()`-Pfad, aber mit Routing auf den
+# TATSÄCHLICHEN Wortlaut der Dokumenttyp-Query (`_IDENTITY_DOKUMENTTYP_
+# WORTE_DE = "Rettungskarte Rettungsdatenblatt Fahrzeuginformationen"`) --
+# Teil A routet die Rettungskarte über die generische "Generation Modellcode"-
+# Achse, nicht über den eigentlichen Dokumenttyp-Intent. Hier zusätzlich ein
+# fremder Domain-Treffer IN DERSELBEN Dokumenttyp-Antwort UND ein mit der
+# Motorisierungs-Query GETEILTER Treffer (dieselbe URL) -- per Log-Capture
+# wird die neue Je-Intent-Logzeile direkt aus dem echten Lauf gelesen.
+# ══════════════════════════════════════════════════════════════════════════
+import logging
+
+
+class _LogCatcher(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[str] = []
+
+    def emit(self, record):
+        self.records.append(record.getMessage())
+
+
+_FREMDE_DOKUMENTTYP_TREFFER = treffer(
+    "https://www.carwiki.de/lexus-rc/rettungskarte.pdf",
+    "Lexus RC Rettungskarte (Drittanbieter-Kopie)", "kurz")
+
+
+async def main_c() -> None:
+    print("\n" + "=" * 78)
+    print("TEIL C) echte Dokumenttyp-Query (Wortlaut) + geteilter Treffer mit "
+          "Motorisierungs-Query, über den echten run_kaufcheck()-Pfad")
+    print("=" * 78)
+
+    # Reihenfolge wichtig: `_FakeSearchExtract.search()` nimmt den ERSTEN
+    # passenden Substring-Treffer -- die spezifischere "technische Daten
+    # Herstellerangabe"-Query (Motorisierungs-Fachquelle) muss VOR der
+    # kürzeren, generischen "technische Daten"-Query (Runde 1) stehen,
+    # sonst matcht Runde 1 versehentlich auch die Fachquellen-Query.
+    fake = _FakeSearchExtract(
+        routing={
+            # Der tatsächliche Wortlaut der Dokumenttyp-Query (DE) --
+            # NICHT die generische Generations-Achse wie in Teil A.
+            "Rettungskarte Rettungsdatenblatt Fahrzeuginformationen": [
+                _FREMDE_DOKUMENTTYP_TREFFER,
+                treffer(_RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte",
+                       _RETTUNGSKARTE_SNIPPET_DUENN)],
+            # Motorisierungs-Fachquellen-Query (DE) -- findet DENSELBEN
+            # Rettungskarten-Treffer wie die Dokumenttyp-Query oben
+            # (realistisch: beide Suchen können dasselbe Dokument liefern).
+            "technische Daten Herstellerangabe": [
+                treffer(_RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte",
+                       _RETTUNGSKARTE_SNIPPET_DUENN)],
+            "technische Daten": [_ADAC],
+            "Generation Baureihe Bauzeitraum": [_AMS],
+        },
+        extract_text={_RETTUNGSKARTE_URL: _RETTUNGSKARTE_VOLLTEXT})
+
+    catcher = _LogCatcher()
+    logger = logging.getLogger("app.technical_research")
+    alt_level = logger.level
+    logger.addHandler(catcher)
+    logger.setLevel(logging.INFO)
+    try:
+        req = KaufCheckRequest(marke="Lexus", modell="RC F", baujahr=2017, kilometerstand=82000,
+                               motor="5.0 V8", kraftstoff="Benzin", leistung_ps=477,
+                               getriebe="Automatik", antrieb="Heck", ausstattung=[])
+        r = await _lauf(req, fake)
+    finally:
+        logger.removeHandler(catcher)
+        logger.setLevel(alt_level)
+
+    je_intent_zeile = next(
+        (z for z in catcher.records
+         if z.startswith("research_phase=identitaet_volltext_kandidaten_je_intent")), None)
+    print(f"  Je-Intent-Logzeile: {je_intent_zeile!r}")
+    print(f"  generation: {r.vehicle_identity.get('generation')!r}")
+
+    check("C1) die Je-Intent-Logzeile erscheint tatsächlich im echten Lauf",
+          je_intent_zeile is not None, str(je_intent_zeile))
+    if je_intent_zeile:
+        check("C2) der Dokumenttyp-Intent (DE) zeigt SEINEN eigenen "
+              "fremde_domain-Treffer UND gate_erfuellt=1 für die Rettungskarte",
+              "identity_spec_gap_dokumenttyp_de: treffer=2" in je_intent_zeile
+              and "fremde_domain=1" in je_intent_zeile.split(
+                  "identity_spec_gap_dokumenttyp_de:")[1].split(";")[0]
+              and "gate_erfuellt=1" in je_intent_zeile.split(
+                  "identity_spec_gap_dokumenttyp_de:")[1].split(";")[0],
+              je_intent_zeile)
+        check("C3) der Motorisierungs-Fachquellen-Intent (DE) erhielt den "
+              "geteilten Treffer (treffer=1), zeigt ihn aber ausdrücklich als "
+              "mehrfach=1, NICHT als eigenen gate_erfuellt-Kandidaten",
+              "identity_spec_gap_motor_fachquelle_de: treffer=1 mehrfach=1 "
+              "fremde_domain=0 kein_pdf=0 falsches_pfadwort=0 gate_erfuellt=0"
+              in je_intent_zeile, je_intent_zeile)
+        check("C4) keine vollständige URL/kein Suchtext in der Logzeile -- "
+              "nur Intent-Kennungen und Zählwerte",
+              "https://" not in je_intent_zeile and "Rettungskarte Rettungsdatenblatt"
+              not in je_intent_zeile, je_intent_zeile)
+    check("C5) Generation wird trotz des fremden Zusatztreffers und des "
+          "geteilten Treffers weiterhin korrekt zu 'UXC1' aufgelöst",
+          r.vehicle_identity.get("generation") == "UXC1",
+          f"generation={r.vehicle_identity.get('generation')!r}")
+
+    if _FEHLER:
+        print(f"\n{len(_FEHLER)} FEHLER (Teil C):")
+        for f in _FEHLER[-10:]:
+            print(f"  - {f}")
+        raise SystemExit(1)
+    print("\nTEIL C GRUEN")
+
+
 asyncio.run(main())
 asyncio.run(main_b())
-print("\nALLE TESTS GRUEN (Teil A + Teil B)")
+asyncio.run(main_c())
+print("\nALLE TESTS GRUEN (Teil A + Teil B + Teil C)")

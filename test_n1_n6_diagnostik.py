@@ -201,6 +201,54 @@ check("N1e5) die tatsächliche Auswahl bleibt unverändert: der geteilte "
       ) == [_DOK_URL])
 
 
+# ── N1: f) Nachladeauswahl pro Suchintent -- Fortsetzung ("Nachladeauswahl
+# pro Suchintent belegen", 2026-11): `gate_erfuellt` oben beantwortet nur
+# "erfüllt die Zeile das Dokumenttyp-Gate?", NICHT "wurde sie wegen des
+# geteilten Abrufbudgets (`_IDENTITAET_VOLLTEXT_NACHLADE_MAX`) tatsächlich
+# nachgeladen?". Dieser Fall prüft genau die im Auftrag verlangte
+# Konstellation: der Dokumenttyp-Intent hat ZWEI eigene, gate-erfüllende
+# Kandidaten, das Budget lässt aber nur EINEN durch -- UND einer der beiden
+# ist zugleich der gemeinsame Treffer eines zweiten Intents (Motorisierung).
+_DOK_URL_GEMEINSAM = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/"
+                     "lexus-besitzer/fahrzeuginformationen/geteilt.pdf")
+_DOK_URL_EIGEN = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/"
+                 "lexus-besitzer/fahrzeuginformationen/eigen.pdf")
+treffer_dokumenttyp_f = [{"url": _DOK_URL_GEMEINSAM}, {"url": _DOK_URL_EIGEN}]
+treffer_motorisierung_f = [{"url": _DOK_URL_GEMEINSAM}]  # derselbe Treffer wie oben
+
+# Die ECHTE Auswahl wird GENAU EINMAL berechnet (dieselbe, unveränderte
+# Funktion, limit=1 simuliert ein bereits knappes Restbudget) -- kein
+# zweiter Abruf, keine zweite Regel.
+echte_auswahl_f = _identitaet_nachlade_kandidaten(
+    treffer_dokumenttyp_f + treffer_motorisierung_f, marke="Lexus", limit=1)
+check("N1f0) Vorbedingung: das Budget lässt genau EINEN der beiden "
+      "gate-erfüllenden Kandidaten durch",
+      len(echte_auswahl_f) == 1, str(echte_auswahl_f))
+
+intents_f = [("identity_spec_gap_dokumenttyp_de", "..."),
+            ("identity_spec_gap_motorisierung_de", "...")]
+diag_f = _identitaet_nachlade_diagnose_je_intent(
+    intents_f, [treffer_dokumenttyp_f, treffer_motorisierung_f], marke="Lexus",
+    ausgewaehlt=echte_auswahl_f)
+dok_f = diag_f["identity_spec_gap_dokumenttyp_de"]
+mot_f = diag_f["identity_spec_gap_motorisierung_de"]
+
+check("N1f1) Dokumenttyp-Intent: BEIDE eigenen Kandidaten erfüllen das Gate "
+      "(gate_erfuellt=2), aber NUR EINER wird tatsächlich ausgewählt "
+      "(ausgewaehlt=1) -- die Budgetgrenze ist getrennt von der reinen "
+      "Gate-Freigabe sichtbar",
+      dok_f["gate_erfuellt"] == 2 and dok_f["ausgewaehlt"] == 1, str(dok_f))
+check("N1f2) Motorisierungs-Intent: sein einziger Treffer ist der geteilte -- "
+      "erscheint hier NUR als 'mehrfach' (bereits dem Dokumenttyp-Intent "
+      "zugeschlagen), weder gate_erfuellt NOCH ausgewaehlt wird für diesen "
+      "Intent ein zweites Mal gezählt (kein zweiter Abruf)",
+      mot_f["mehrfach"] == 1 and mot_f["gate_erfuellt"] == 0
+      and mot_f["ausgewaehlt"] == 0, str(mot_f))
+check("N1f3) die Summe 'ausgewaehlt' über beide Intents entspricht GENAU der "
+      "echten, einmal berechneten Auswahl -- keine Verdopplung",
+      dok_f["ausgewaehlt"] + mot_f["ausgewaehlt"] == len(echte_auswahl_f))
+
+
 # ── N6: Motorkern-Prüfung -- Logdiagnostik unterscheidet "kein Kernbeleg"
 # von "Kernbeleg vorhanden, aber Schwelle verfehlt", OHNE das Ergebnis
 # (`engine_name` bleibt in beiden Fällen unbestätigt) zu verändern.
