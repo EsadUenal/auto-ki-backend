@@ -27,33 +27,54 @@ Auswahlgrenze -> WebFakt -> Insight):
   saetze()` (bereits seit F10/2026-11-02 vorhanden, VOR diesem Paket) bindet
   sie zu einem Kandidaten. Dieser Kandidat wird NACHWEISLICH korrekt
   extrahiert (Bauteil, Intervall, Tätigkeit) und NICHT durch das Modell-/
-  Technik-Scope-Gate abgelehnt -- er verliert ausschließlich gegen andere,
-  ebenfalls gültige Kandidaten ums Fünferlimit (`wartung_auswahllimit_
-  erreicht`). Das ist eine fachlich begründete Auswahl, KEIN Parserfehler
-  und KEIN Informationsverlust auf Extraktionsebene.
+  Technik-Scope-Gate abgelehnt.
+  N7-NACHTRAG (Fortsetzung, "Verluststelle Motoröl geklärt", 2026-11): in
+  DIESEM vollen Wettbewerb verlor er bis dahin TROTZDEM -- nicht gegen einen
+  fachlich besser belegten Kandidaten, sondern rein alphabetisch gegen zwei
+  Zeilen OHNE jede aus dem Quelltext belegte Tätigkeit ("Automatikgetriebeöl",
+  "Motorkühlmittel"), bei identischer Confidence und identischem Explizit-
+  Rang. Das war KEIN fachlich begründeter Vorrang, sondern ein Nebenkriterium
+  (Alphabet), das einen KONKRETER belegten Punkt (Tätigkeit "ersetzen" direkt
+  aus dem Wortlaut "Filterwechsel") gegenüber zwei weniger konkret belegten
+  Punkten verdrängte. FIX: eine vierte Prioritätsstufe (nach Confidence,
+  Explizit-Rang und ungeklärter Bedingung, vor dem alphabetischen Tiebreak)
+  bevorzugt eine Zeile mit belegter Tätigkeit -- generisch, nicht auf
+  "Motoröl" oder Lexus beschränkt. "Öl- und Filterwechsel" gewinnt dadurch
+  jetzt korrekt einen der fünf Plätze; "Hinterachsdifferenzialöl" und
+  "Nebenaggregat-Antriebsriemen" bleiben unberührt (höhere Stufe: explizit
+  zugeordnet), "Motorkühlmittel" verliert jetzt seinerseits gegen den
+  konkreter belegten Punkt und fällt aus den fünf Plätzen heraus.
 
   Ventilspiel: eigene Fenstergrenze, eigenes Intervall, eigene Klammer mit
   explizit genanntem "RC F" -- löst `_zeilen_scope_passt()` zu `True`
   (explizit zugeordnet, höchste Auswahlstufe) auf und übersteht die
   Fünferlimit-Konkurrenz in diesem vollständigen, realen Dokument.
 
-N7-FIX (app/technical_research.py, `_extrahiere_fakten()`-Sortierung):
-offline nachgewiesen (s. test_wartung_technische_bedingung_vollpfad.py Test
-3, test_n9_differenzial_und_achsentrennung.py Test 5), dass eine Zeile mit
-NACHGEWIESEN UNGEKLÄRTER technischer Bedingung ("Inverter-Kühlmittel",
-Elektrifizierung unbekannt) VOR diesem Fix bei der Auswahl gleichrangig mit
-einer uneingeschränkt gültigen Zeile ("Motorkühlmittel") konkurrierte und
-diese rein alphabetisch verdrängen konnte. Fix: eine dritte Prioritätsstufe
-stuft eine ungeklärte Bedingung UNTER eine uneingeschränkte Zeile gleicher
-Confidence zurück (weiterhin NICHT ausgeschlossen -- nur zurückgestuft).
+N7-FIX, TEIL 1 (app/technical_research.py, `_extrahiere_fakten()`-
+Sortierung): offline nachgewiesen (s. test_wartung_technische_bedingung_
+vollpfad.py Test 3, test_n9_differenzial_und_achsentrennung.py Test 5), dass
+eine Zeile mit NACHGEWIESEN UNGEKLÄRTER technischer Bedingung ("Inverter-
+Kühlmittel", Elektrifizierung unbekannt) VOR diesem Fix bei der Auswahl
+gleichrangig mit einer uneingeschränkt gültigen Zeile ("Motorkühlmittel")
+konkurrierte und diese rein alphabetisch verdrängen konnte. Fix: eine dritte
+Prioritätsstufe stuft eine ungeklärte Bedingung UNTER eine uneingeschränkte
+Zeile gleicher Confidence zurück (weiterhin NICHT ausgeschlossen -- nur
+zurückgestuft).
+
+N7-FIX, TEIL 2 (Fortsetzung, s.o.): vierte Prioritätsstufe -- Tätigkeit aus
+dem Quelltext belegt schlägt bei Gleichstand (Confidence, Explizit-Rang)
+eine Zeile ohne belegte Tätigkeit. Betrifft NUR den reinen Gleichstandsfall;
+eine Zeile ohne belegte Tätigkeit bleibt weiterhin ein gültiger, nur
+zurückgestufter Kandidat.
 
 NACHWEISGRENZE (ausdrücklich, keine Live-Abnahme): ob der ECHTE Live-Abruf
 vom 04.11.2026 exakt diese beiden Textausschnitte in exakt dieser Form und
 Kombination zurückgeliefert hat, ist ohne den damaligen Rohtext NICHT
 nachweisbar -- dieser Test belegt die PIPELINE-Korrektheit am bestverfügbaren
-realen Material, nicht den historischen Produktionsablauf. Insbesondere
-beweist das Verschwinden von "Motoröl" aus dem sichtbaren Bericht NICHT,
-dass die Quelle ungeeignet war oder etwas verworfen statt entschieden wurde.
+realen Material, nicht den historischen Produktionsablauf. Mit N7-FIX TEIL 2
+erscheint "Motoröl" in DIESEM Nachbau jetzt im sichtbaren Bericht -- das
+beweist NICHT, dass der echte Lauf vom 04.11.2026 (anderer, unbekannter
+Rohtext) denselben Ausgang gehabt hätte.
 
 Deterministisch (alle Provider gestubbt), kein Netzwerk/LLM/bezahlter
 Aufruf, isolierte DB (DB-Miss nur am bestehenden Lookup simuliert).
@@ -223,17 +244,40 @@ print("\n" + "=" * 78)
 print("TEIL D) N7-Fix: ungeklärte Bedingung rangiert unter uneingeschränkter Zeile")
 print("=" * 78)
 
-check("D1) 'Inverter-Kühlmittel' (Elektrifizierung unbekannt) verliert in "
-      "DIESEM vollen Wettbewerb korrekt gegen die uneingeschränkte Zeile "
-      "'Motorkühlmittel' -- Folge des N7-Fixes (dritte Prioritätsstufe), "
-      "nicht Zufall",
-      "Motorkühlmittel" in bauteile and "Inverter-Kühlmittel" not in bauteile,
-      str(bauteile))
+# N7-Nachtrag (Fortsetzung, "Verluststelle Motoröl geklärt", 2026-11): seit
+# der vierten Prioritätsstufe (Tätigkeit aus dem Quelltext belegt?) gewinnt
+# "Öl- und Filterwechsel" (Tätigkeit 'ersetzen') in DIESEM vollen Wettbewerb
+# zusätzlich einen der fünf Plätze und verdrängt jetzt auch "Motorkühlmittel"
+# (keine belegte Tätigkeit) aus den finalen 5 -- NICHT mehr Teil der
+# ursprünglichen D1-Aussage ("Motorkühlmittel" in bauteile). Das ist die
+# BEABSICHTIGTE Folge des neuen, generischen Kriteriums, kein Rückfall.
+# Die eigentliche N7/N12-Invariante bleibt aber unverändert bestehen und wird
+# hier direkt geprüft: unter den durchs Limit zurückgestellten Zeilen rangiert
+# "Motorkühlmittel" WEITERHIN vor "Inverter-Kühlmittel" (Reihenfolge in
+# `abgelehnt` entspricht der Sortierreihenfolge, s. `_extrahiere_fakten()`).
+_zurueckgestellt_saetze = [a["satz"] for a in abgelehnt
+                          if a.get("grund") == "wartung_auswahllimit_erreicht"]
+_idx_kuehlmittel = next((i for i, s in enumerate(_zurueckgestellt_saetze)
+                        if s.lower().startswith("motorkühlmittel")), None)
+_idx_inverter = next((i for i, s in enumerate(_zurueckgestellt_saetze)
+                     if s.lower().startswith("inverter")), None)
+check("D1) 'Inverter-Kühlmittel' (Elektrifizierung unbekannt) rangiert "
+      "weiterhin NACH der uneingeschränkten Zeile 'Motorkühlmittel' -- Folge "
+      "des N7-Fixes (dritte Prioritätsstufe), nicht Zufall -- beide verlieren "
+      "jetzt zusätzlich gegen die konkreter belegte Zeile 'Öl- und "
+      "Filterwechsel' (vierte Prioritätsstufe, s.o.)",
+      _idx_kuehlmittel is not None and _idx_inverter is not None
+      and _idx_kuehlmittel < _idx_inverter,
+      f"zurückgestellt={_zurueckgestellt_saetze!r} bauteile={bauteile!r}")
 check("D2) ... aber NICHT durch das technische Gate ausgeschlossen -- nur "
       "durchs Auswahllimit zurückgestellt",
       any("inverter" in a.get("satz", "").lower()
           and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt),
       str([a for a in abgelehnt if "inverter" in a.get("satz", "").lower()]))
+check("D3) 'Öl- und Filterwechsel' erscheint jetzt unter den ausgewählten 5 "
+      "Fakten (N7-Nachtrag: konkreter belegte Tätigkeit schlägt den reinen "
+      "alphabetischen Tiebreak)",
+      any("filterwechsel" in (b or "").lower() for b in bauteile), str(bauteile))
 
 if _FEHLER:
     print(f"\n{len(_FEHLER)} FEHLER (Teil A-D):")
@@ -341,15 +385,17 @@ async def _teil_e() -> None:
           powertrain is None, f"powertrain={powertrain!r}")
     check("E1) 'Ventilspiel' erscheint im sichtbaren Bericht",
           any("entilspiel" in t for t in titel_liste), str(titel_liste))
-    check("E2) 'Öl- und Filterwechsel' erscheint NICHT im sichtbaren Bericht -- "
-          "konsistent mit Teil A (durchs Auswahllimit zurückgestellt, nicht "
-          "verloren)",
-          not any("filterwechsel" in t.lower() for t in titel_liste), str(titel_liste))
+    check("E2) 'Öl- und Filterwechsel' erscheint JETZT im sichtbaren Bericht -- "
+          "N7-Fix Teil 2: konkret belegte Tätigkeit ('ersetzen') schlägt den "
+          "reinen alphabetischen Tiebreak (konsistent mit Teil A/D3)",
+          any("filterwechsel" in t.lower() for t in titel_liste), str(titel_liste))
     check("E3) 'Inverter-Kühlmittel' erscheint NICHT im sichtbaren Bericht -- "
-          "konsistent mit Teil D (N7-Fix, verliert gegen 'Motorkühlmittel')",
+          "konsistent mit Teil D (N7-Fix Teil 1, verliert gegen 'Motorkühlmittel')",
           not any("nverter" in t for t in titel_liste), str(titel_liste))
-    check("E4) 'Motorkühlmittel' erscheint stattdessen im sichtbaren Bericht",
-          any("otorkühlmittel" in t for t in titel_liste), str(titel_liste))
+    check("E4) 'Motorkühlmittel' erscheint JETZT NICHT mehr im sichtbaren "
+          "Bericht -- es verliert seinerseits gegen den konkreter belegten "
+          "Punkt 'Öl- und Filterwechsel' (N7-Fix Teil 2, konsistent mit Teil D1)",
+          not any("otorkühlmittel" in t for t in titel_liste), str(titel_liste))
     check("E5) der Bericht behauptet an keiner Stelle, das Dokument sei "
           "vollständig/vollumfänglich ausgewertet",
           "vollständig ausgewertet" not in r.bericht.lower()

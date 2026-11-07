@@ -5135,10 +5135,29 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # deterministische Gleichstand-Tiebreak. Diese Umordnung gilt
         # ausdrücklich NUR für "wartung" -- "rueckruf"/"schwachstelle"
         # bleiben unverändert (eigener Zweig unten).
+        #
+        # N7-Nachtrag, Fortsetzung ("Verluststelle Motoröl geklärt", 2026-11):
+        # VIERTE Stufe zwischen "ungeklärte Bedingung" und "alphabetisch" --
+        # eine Zeile mit einer aus dem EIGENEN Aussagesatz belegten Tätigkeit
+        # (`taetigkeit` in ("ersetzen", "pruefen"), N13-Fix: NIE aus dem
+        # Bauteilnamen geraten) ist konkreter belegt als eine Zeile, aus deren
+        # Text keine Tätigkeit hervorgeht. Offline reproduziert (echtes Lexus-
+        # Dokument, s. test_n7_ventilspiel_motoroel_verluststelle.py): "Öl- und
+        # Filterwechsel" (Tätigkeit "ersetzen" direkt aus dem Wortlaut) verlor
+        # rein alphabetisch ("A"/"M" vor "O") gegen "Automatikgetriebeöl" und
+        # "Motorkühlmittel" -- zwei Zeilen OHNE jede belegte Tätigkeit, aus
+        # derselben Quelle, derselben Confidence, demselben Explizit-Rang.
+        # Kein Bauteil-/Modell-Sonderfall: das Kriterium ist "Tätigkeit aus
+        # dem Quelltext bekannt?", nicht "ist Motoröl". Eine Zeile ohne
+        # belegte Tätigkeit wird dadurch NICHT ausgeschlossen -- nur im
+        # Gleichstand (gleiche Confidence, gleicher Explizit-Rang) verliert
+        # sie gegen eine konkreter belegte Zeile. Alphabetisch bleibt
+        # unverändert der letzte, rein deterministische Gleichstand-Tiebreak.
         geordnet = sorted(
             zip(fakten, _wartung_explizit),
             key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[0].confidence],
                            0 if p[1] else (2 if p[0].technische_bedingung_status == "unresolved" else 1),
+                           0 if p[0].taetigkeit else 1,
                            p[0].bauteil or ""))
         fakten = [f for f, _ in geordnet]
         behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
