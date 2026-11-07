@@ -30,6 +30,7 @@ from app.evidence import build_insights
 from app.kaufaktionen import build_kaufaktionen
 from app.laufleistung import (
     build_laufleistungskontext, parse_wartungspunkt, parse_zeitalternative, prompt_block,
+    status_zu_punkt, STATUS_ENTFERNT,
 )
 from app.models import TechnischeRecherche
 
@@ -373,5 +374,106 @@ if _FEHLER:
         print(f"  - {f}")
     raise SystemExit(1)
 print("\nTEIL F GRUEN")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEIL G -- N14-Restlücke: km-Status 'entfernt', aber Fahrzeugalter (aus dem
+# Baujahr) erreicht/übersteigt die im selben Satz genannte Zeitalternative.
+# BEFUND vor dem Fix: `_wartungshinweise()` verwarf den gesamten Hinweis bei
+# 'entfernt' ohne jede Prüfung der Zeitalternative (app/laufleistung.py,
+# ehem. Zeile 500f. "if status == STATUS_ENTFERNT: continue"). Ein 2017er
+# Fahrzeug mit nur 20.000 km und demselben Punkt "90.000 km / 6 Jahre" ist
+# 2026 rechnerisch 9 Jahre alt -- die 6-Jahres-Alternative ist dann
+# unabhängig vom (weit entfernten) Kilometerstand bereits erreichbar, der
+# Hinweis verschwand bisher trotzdem vollständig.
+# ══════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 78)
+print("TEIL G) N14-Restlücke -- 'entfernt' per km, aber Zeitalternative längst erreichbar")
+print("=" * 78)
+
+check("G0) Vorbedingung: der km-Status allein wäre 'entfernt' (20.000 km vs. 90.000 km)",
+      status_zu_punkt(20_000, 90_000, None) == STATUS_ENTFERNT)
+
+if ventilspiel_c:
+    req_g = Req(marke="Lexus", modell="RC F", baujahr=2017, kilometerstand=20_000,
+               kraftstoff="Benzin", scheckheftgepflegt=None)
+    insights_g = insights_aus_fakten([ventilspiel_c], req_g)
+    ctx_g = build_laufleistungskontext(req_g, insights_g, heute_jahr=2026)
+    hinweis_g = next((w for w in (ctx_g.wartungshinweise if ctx_g else [])
+                      if w.bauteil == "Ventilspiel"), None)
+    check("G1) Trotz km-seitig 'entfernt' entsteht JETZT ein Wartungshinweis für Ventilspiel "
+          "(vorher: VERSCHWAND vollständig)", hinweis_g is not None,
+          str([w.bauteil for w in (ctx_g.wartungshinweise if ctx_g else [])]))
+    if hinweis_g:
+        check("G2) Status bleibt ehrlich 'entfernt' (km-seitig stimmt das weiterhin)",
+              hinweis_g.status == STATUS_ENTFERNT, hinweis_g.status)
+        check("G3) Die zeitliche Alternative ('6 Jahre') steht im sichtbaren Hinweistext",
+              "6 Jahre" in hinweis_g.hinweis, hinweis_g.hinweis)
+        check("G4) Der Text sagt ausdrücklich, dass der Kilometeranteil NICHT einschlägig ist",
+              "nicht einschlägig" in hinweis_g.hinweis, hinweis_g.hinweis)
+        check("G5) Die zeitliche Bewertung bleibt ausdrücklich OFFEN ('nicht ausschließen')",
+              "nicht ausschließen" in hinweis_g.hinweis, hinweis_g.hinweis)
+        check("G6) Der genannte Grund für die Offenheit ist der Startpunkt/die Servicehistorie",
+              "Erstzulassungsmonat" in hinweis_g.hinweis
+              and "Servicehistorie" in hinweis_g.hinweis, hinweis_g.hinweis)
+        check("G7) KEINE Fälligkeits-/Entwarnungs-/Versäumnis-Begriffe",
+              not any(w in hinweis_g.hinweis.lower()
+                     for w in ("fällig", "überfällig", "versäumt", "nicht durchgeführt", "fehlt")),
+              hinweis_g.hinweis)
+
+    block_g = prompt_block(ctx_g)
+    check("G8) prompt_block() (LLM-facing Text) enthält denselben Zeithinweis",
+          "6 Jahre" in block_g and "nicht einschlägig" in block_g, block_g[:400])
+
+if _FEHLER:
+    print(f"\n{len(_FEHLER)} FEHLER (Teil G):")
+    for f in _FEHLER[-10:]:
+        print(f"  - {f}")
+    raise SystemExit(1)
+print("\nTEIL G GRUEN")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEIL H -- Gegenprobe: junges Fahrzeug, derselbe weit entfernte km-Stand und
+# dieselbe Zeitalternative -- hier darf NICHTS erscheinen, weil selbst mit
+# einem Jahr Toleranz (unbekannter Erstzulassungsmonat) die 6-Jahres-Schwelle
+# nicht erreichbar ist. Ohne diese Gegenprobe wäre nicht geprüft, ob Teil G
+# nur "immer anzeigen" statt "gezielt anzeigen" bewirkt.
+# ══════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 78)
+print("TEIL H) Gegenprobe -- junges Fahrzeug: Zeitalternative bleibt unerreichbar, kein Hinweis")
+print("=" * 78)
+
+if ventilspiel_c:
+    req_h = Req(marke="Lexus", modell="RC F", baujahr=2024, kilometerstand=20_000,
+               kraftstoff="Benzin", scheckheftgepflegt=None)
+    insights_h = insights_aus_fakten([ventilspiel_c], req_h)
+    ctx_h = build_laufleistungskontext(req_h, insights_h, heute_jahr=2026)
+    hinweis_h = next((w for w in (ctx_h.wartungshinweise if ctx_h else [])
+                      if w.bauteil == "Ventilspiel"), None)
+    check("H1) Bei einem 2 Jahre alten Fahrzeug (2024, heute 2026) bleibt der Hinweis "
+          "weiterhin verborgen -- kein Überschwappen des G-Fixes auf echte Nicht-Fälle",
+          hinweis_h is None,
+          str([w.bauteil for w in (ctx_h.wartungshinweise if ctx_h else [])]))
+
+# H2: dieselbe Gegenprobe auch direkt an der Entscheidungsfunktion, unabhängig
+# vom vollen Insight-Aufbau -- isoliert die Schwellenlogik selbst.
+from app.laufleistung import _zeitalternative_trotz_entfernt_moeglich
+check("H2) Entscheidungsfunktion: 2 Jahre altes Fahrzeug erreicht die "
+      "6-Jahres-Schwelle auch mit einem Jahr Toleranz nicht",
+      _zeitalternative_trotz_entfernt_moeglich(2, (6, "Jahre")) is False)
+check("H3) Entscheidungsfunktion: 5 Jahre altes Fahrzeug erreicht die "
+      "6-Jahres-Schwelle MIT einem Jahr Toleranz (konservativ, wegen "
+      "unbekanntem Erstzulassungsmonat)",
+      _zeitalternative_trotz_entfernt_moeglich(5, (6, "Jahre")) is True)
+check("H4) Unbekanntes Baujahr gilt als ungeklärt, nicht als unauffällig",
+      _zeitalternative_trotz_entfernt_moeglich(None, (6, "Jahre")) is True)
+
+if _FEHLER:
+    print(f"\n{len(_FEHLER)} FEHLER (Teil H):")
+    for f in _FEHLER[-10:]:
+        print(f"  - {f}")
+    raise SystemExit(1)
+print("\nTEIL H GRUEN")
 
 print("\nALLE N13/N14-TESTS GRUEN")

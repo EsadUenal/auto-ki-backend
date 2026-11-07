@@ -257,6 +257,36 @@ def parse_zeitalternative(text: str | None) -> tuple[int, str] | None:
     return int(m.group(1)), einheit
 
 
+# N14-Fix, Fortsetzung (ENFAL-Reparaturpaket, 07.11.2026, Restlücke): die
+# obige Teilfassung machte eine Zeitalternative nur SICHTBAR, wenn der
+# km-Status bereits `naehert_sich`/`im_bereich`/`darueber` war. Bei
+# `entfernt` (Kilometerstand weit unter dem Punkt) verschluckte
+# `_wartungshinweise()` den gesamten Hinweis -- auch dann, wenn das
+# Fahrzeug nach dem Baujahr längst älter ist als die genannte zeitliche
+# Alternative. Ein 2017er Fahrzeug mit 20.000 km und einem Punkt
+# "90.000 km / 6 Jahre" ist 2026 rechnerisch 9 Jahre alt: die 6-Jahres-
+# Alternative ist dann unabhängig vom (niedrigen) Kilometerstand bereits
+# erreichbar -- der km-Status allein darf das nicht verschlucken.
+#
+# Diese Funktion entscheidet NUR, ob die Zeitalternative trotz entferntem
+# km-Status erwähnt werden MUSS (relevant oder ungeklärt), nicht ob sie
+# ERREICHT ist -- dieselbe Fälligkeitsenthaltung wie im gesamten Modul.
+# `alter_jahre` stammt aus dem Baujahr (`fahrzeugalter()`) und ist deshalb
+# selbst nur eine Näherung ohne den Erstzulassungsmonat; ein zusätzliches
+# Jahr Toleranz verhindert, dass ein Fahrzeug, das erst spät im
+# Geburtsjahr zugelassen wurde, fälschlich als "noch nicht so alt"
+# durchgeht. Ist das Baujahr gar nicht bekannt, lässt sich die
+# Alternative ebenfalls nicht ausschließen -- auch dann gilt sie als
+# ungeklärt, nicht als unauffällig.
+def _zeitalternative_trotz_entfernt_moeglich(alter_jahre: int | None,
+                                              zeitalternative: tuple[int, str]) -> bool:
+    zahl, einheit = zeitalternative
+    schwelle_jahre = zahl if einheit == "Jahre" else zahl / 12.0
+    if alter_jahre is None:
+        return True            # Baujahr unbekannt: nicht ausschliessbar
+    return (alter_jahre + 1) >= schwelle_jahre
+
+
 # ── Alter / km pro Jahr (§4, §5) ──────────────────────────────────────────────
 
 def fahrzeugalter(baujahr: int | None, *, heute_jahr: int | None = None) -> int | None:
@@ -337,7 +367,8 @@ _HERKUNFT_ZUSATZ = {
 
 def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 von_km: int, bis_km: int | None, herkunft: str,
-                zeitalternative: tuple[int, str] | None = None) -> str:
+                zeitalternative: tuple[int, str] | None = None,
+                zeit_offen_trotz_entfernt: bool = False) -> str:
     """Der ausformulierte Hinweis.
 
     Jede Variante ist bewusst so gebaut, dass sie eine ZUSTANDSFRAGE stellt statt
@@ -351,9 +382,29 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
     `fahrzeugalter()`) -- der km-Status bleibt ausdrücklich NUR ein
     Kilometerstatus, die zeitliche Frage bleibt ausdrücklich offen genannt.
     Kein Rückschluss aus Baujahr/Kilometerstand/Marktvorbehalt.
+
+    N14-Fix, Fortsetzung: `zeit_offen_trotz_entfernt` (s.
+    `_zeitalternative_trotz_entfernt_moeglich()`) behandelt den Fall, dass der
+    km-Status selbst `entfernt` ist, die zeitliche Alternative aber trotzdem
+    relevant oder ungeklärt bleibt -- hier bekommt der Hinweis einen eigenen
+    Wortlaut, der ausdrücklich sagt, dass der Kilometeranteil NICHT einschlägig
+    ist, statt (wie in den anderen Zweigen) einen Kilometerstatus zu behaupten,
+    der hier gar nicht vorliegt.
     """
     punkt = _punkt_text(von_km, bis_km)
     zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
+    if zeit_offen_trotz_entfernt and zeitalternative:
+        zahl, einheit = zeitalternative
+        kern = (
+            f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine "
+            f"zeitliche Alternative hinterlegt (oder {zahl} {einheit}). Der aktuelle "
+            f"Kilometerstand liegt weit von {punkt} entfernt -- der Kilometeranteil "
+            f"dieses Wartungspunkts ist damit nicht einschlägig. Ohne den genauen "
+            f"Erstzulassungsmonat und ohne bekannte Servicehistorie lässt sich aber "
+            f"nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist. "
+            f"Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den "
+            f"Beleg dazu ansehen.")
+        return kern + zusatz
     zeit_zusatz = ""
     if zeitalternative:
         zahl, einheit = zeitalternative
@@ -468,7 +519,8 @@ def _intervall_text(i: Insight, herkunft: str) -> str | None:
     return text
 
 
-def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wartungshinweis]:
+def _wartungshinweise(insights: list[Insight], kilometerstand: int,
+                      alter_jahre: int | None = None) -> list[Wartungshinweis]:
     """Wartungshinweise aus vorhandener Evidence — nie aus dem Nichts.
 
     Deduplizierung über das Bauteil: nennt sowohl die Fahrzeugdatenbank als auch
@@ -476,8 +528,15 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
     (sie wird zuerst eingetragen). Dieselbe Regel wie in den Kaufaktionen.
 
     Sortierung: der bereits passierte Punkt zuerst, dann der erreichte, dann der
-    nahende — innerhalb einer Stufe der mit dem größten Abstand. Bei Gleichstand
-    nach Bauteilname, damit die Ausgabe deterministisch bleibt.
+    nahende, zuletzt (falls vorhanden) der km-seitig entfernte Punkt mit
+    trotzdem relevanter/ungeklärter Zeitalternative — innerhalb einer Stufe der
+    mit dem größten Abstand. Bei Gleichstand nach Bauteilname, damit die
+    Ausgabe deterministisch bleibt.
+
+    `alter_jahre` (N14-Fix, Fortsetzung): einzig dafür gebraucht, einen km-seitig
+    `entfernten` Punkt NICHT zu verschlucken, wenn dieselbe Quelle eine
+    zeitliche Alternative nennt, die das Fahrzeug nach dem Baujahr bereits
+    erreicht haben könnte — s. `_zeitalternative_trotz_entfernt_moeglich()`.
     """
     gesehen: set[str] = set()
     out: list[Wartungshinweis] = []
@@ -497,16 +556,20 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             continue           # zeit-/zustandsbezogen: keine Kilometerrechnung
         von_km, bis_km = punkt
         status = status_zu_punkt(kilometerstand, von_km, bis_km)
-        if status == STATUS_ENTFERNT:
+        # N14-Fix: s. `parse_zeitalternative()`-Docstring -- eine im selben
+        # Text genannte Zeitalternative wird sichtbar gemacht, nicht berechnet.
+        zeitalternative = parse_zeitalternative(roh)
+        zeit_offen_trotz_entfernt = (
+            status == STATUS_ENTFERNT and zeitalternative is not None
+            and _zeitalternative_trotz_entfernt_moeglich(alter_jahre, zeitalternative)
+        )
+        if status == STATUS_ENTFERNT and not zeit_offen_trotz_entfernt:
             continue           # §G: kein Anlass, also keine Warnung
         bauteil = _bauteil(i)
         schluessel = norm_bauteil(bauteil)
         if schluessel in gesehen:
             continue
         gesehen.add(schluessel)
-        # N14-Fix: s. `parse_zeitalternative()`-Docstring -- eine im selben
-        # Text genannte Zeitalternative wird sichtbar gemacht, nicht berechnet.
-        zeitalternative = parse_zeitalternative(roh)
         out.append(Wartungshinweis(
             bauteil=bauteil,
             status=status,
@@ -515,7 +578,8 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             differenz_km=kilometerstand - von_km,
             intervall_text=(roh or "").strip(),
             hinweis=_formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft,
-                                zeitalternative),
+                                zeitalternative,
+                                zeit_offen_trotz_entfernt=zeit_offen_trotz_entfernt),
             herkunft=herkunft,
             evidence_id=beleg_id,
             quellen=[EvidenceQuelle(**q.model_dump()) for q in i.quellen],
@@ -526,7 +590,11 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
         ))
 
-    rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1}
+    # STATUS_ENTFERNT taucht hier nur noch in genau einem Fall auf: km-seitig
+    # entfernt, aber mit relevanter/ungeklärter Zeitalternative (s. oben) --
+    # rangiert bewusst zuletzt, denn der km-Anteil ist nachweislich nicht
+    # einschlägig und nur die Zeitfrage bleibt offen.
+    rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1, STATUS_ENTFERNT: 0}
     out.sort(key=lambda w: (-rang[w.status], -abs(w.differenz_km), w.bauteil))
     return out[:MAX_HINWEISE]
 
@@ -568,7 +636,7 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
 
     alter = fahrzeugalter(getattr(req, "baujahr", None), heute_jahr=heute_jahr)
     pro_jahr = km_pro_jahr(km, alter)
-    hinweise = _wartungshinweise(insights or [], km) if km else []
+    hinweise = _wartungshinweise(insights or [], km, alter) if km else []
 
     ctx = Laufleistungskontext(
         kilometerstand=km,
