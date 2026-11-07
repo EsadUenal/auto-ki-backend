@@ -28,6 +28,7 @@ import logging
 
 from app.technical_research import (
     _identitaet_nachlade_diagnose,
+    _identitaet_nachlade_diagnose_je_intent,
     _identitaet_nachlade_kandidaten,
     _ziel,
     werte_identitaet_aus,
@@ -146,6 +147,58 @@ check("N1) a/b/c sind an unterschiedlichen Zählern unterscheidbar, nicht an der
       {k: v for k, v in diag_a.items() if k != "treffer" and v}
       != {k: v for k, v in diag_b.items() if k != "treffer" and v}
       != {k: v for k, v in diag_c.items() if k != "treffer" and v})
+
+
+# ── N1: e) Je-Intent-Zuordnung -- Fortsetzung ("Treffer der Dokumenttyp-Suche
+# bis zum Gate zuordnen", 2026-11): die bestehenden Zähler oben sind pro
+# RUNDE aggregiert (alle acht Identity-Spec-Gap-Intents zusammen). Dieser
+# Fall stellt genau die im Auftrag verlangte Konstellation nach: Dokumenttyp-
+# und Motorisierungs-Intent mit UNTERSCHIEDLICHEN Ablehnungsgründen UND einem
+# GEMEINSAMEN Treffer (dieselbe URL erscheint in beiden Suchantworten).
+_DOK_URL = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
+           "fahrzeuginformationen/RCF.pdf")
+treffer_dokumenttyp_intent = [
+    {"url": "https://www.carwiki.de/lexus-rc/rettungskarte.pdf"},  # fremde_domain
+    {"url": _DOK_URL},                                             # qualifiziert
+]
+treffer_motorisierung_intent = [
+    {"url": "https://www.lexus.de/presse/rc-f-motorisierung"},  # kein_pdf
+    {"url": _DOK_URL},                                          # derselbe Treffer wie oben
+]
+intents_e = [("identity_spec_gap_dokumenttyp_de", "..."),
+            ("identity_spec_gap_motorisierung_de", "...")]
+diag_je_intent = _identitaet_nachlade_diagnose_je_intent(
+    intents_e, [treffer_dokumenttyp_intent, treffer_motorisierung_intent], marke="Lexus")
+dok_diag = diag_je_intent["identity_spec_gap_dokumenttyp_de"]
+mot_diag = diag_je_intent["identity_spec_gap_motorisierung_de"]
+
+check("N1e1) Dokumenttyp-Intent zeigt seinen EIGENEN Ablehnungsgrund "
+      "(fremde_domain=1) und den qualifizierenden Kandidaten (gate_erfuellt=1)",
+      dok_diag["fremde_domain"] == 1 and dok_diag["gate_erfuellt"] == 1
+      and dok_diag["mehrfach"] == 0, str(dok_diag))
+check("N1e2) Motorisierungs-Intent zeigt einen ANDEREN Ablehnungsgrund "
+      "(kein_pdf=1) -- NICHT denselben wie der Dokumenttyp-Intent",
+      mot_diag["kein_pdf"] == 1 and dok_diag["kein_pdf"] == 0
+      and mot_diag["fremde_domain"] == 0, str(mot_diag))
+check("N1e3) der gemeinsame Treffer wird im SPÄTEREN Intent (Motorisierung) "
+      "ausdrücklich als 'mehrfach' erkannt, statt dort als zweiter eigener "
+      "Kandidat gezählt zu werden (gate_erfuellt bleibt dort 0)",
+      mot_diag["mehrfach"] == 1 and mot_diag["gate_erfuellt"] == 0, str(mot_diag))
+check("N1e4) die aggregierte, bestehende Rundendiagnose auf der geflatteten "
+      "Liste bleibt dabei UNVERÄNDERT (dieselbe Funktion, derselbe Aufruf wie "
+      "vor dieser Erweiterung) -- die geteilte URL erscheint dort weiterhin "
+      "als 'doppelt', nicht als eigener Fall",
+      _identitaet_nachlade_diagnose(
+          treffer_dokumenttyp_intent + treffer_motorisierung_intent, marke="Lexus"
+      ) == {"treffer": 4, "ohne_url": 0, "doppelt": 1, "bereits_volltext": 0,
+            "falsche_dokumentart": 2, "fremde_domain": 1, "kein_pdf": 1,
+            "falsches_pfadwort": 0, "gate_erfuellt": 1})
+check("N1e5) die tatsächliche Auswahl bleibt unverändert: der geteilte "
+      "Kandidat wird GENAU EINMAL ausgewählt, keine Verdopplung durch die "
+      "feinere Je-Intent-Diagnose",
+      _identitaet_nachlade_kandidaten(
+          treffer_dokumenttyp_intent + treffer_motorisierung_intent, marke="Lexus"
+      ) == [_DOK_URL])
 
 
 # ── N6: Motorkern-Prüfung -- Logdiagnostik unterscheidet "kein Kernbeleg"

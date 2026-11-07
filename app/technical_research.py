@@ -478,6 +478,48 @@ def _identitaet_nachlade_diagnose(treffer: list[dict], *, marke: str | None) -> 
             "gate_erfuellt": len(gesehen)}
 
 
+# N1-Diagnostik, dritte Fortsetzung (ENFAL-Folgeauftrag, "Treffer der
+# Dokumenttyp-Suche bis zum Gate zuordnen", 2026-11): `_identitaet_nachlade_
+# diagnose()` oben zählt bereits fremde_domain/kein_pdf/falsches_pfadwort --
+# aber NUR aufsummiert über ALLE Intents einer Runde zusammen
+# (`neue_spec_treffer` bündelt Generation-DE/EN, Dokumenttyp-DE/EN,
+# Motorisierung-DE/EN und Motor-Fachquelle-DE/EN VOR dem Diagnose-Aufruf).
+# Welche dieser acht Suchanfragen tatsächlich für einen abgelehnten oder
+# ausgewählten Kandidaten verantwortlich war, ging dabei verloren -- exakt
+# dieselbe Zusammenführungsstelle, die `domains_je_intent` (s. Aufrufer)
+# bereits für die Domainliste umgeht, indem sie VOR dem Flatten auf
+# `spec_treffer_je_intent` arbeitet. Diese Funktion macht dasselbe für die
+# Ablehnungsgründe: JE Intent dieselbe, bereits bestehende Zählung
+# (`_identitaet_nachlade_diagnose()`, keine zweite abweichende Prüfregel),
+# mit einer ÜBER ALLE Intents GETEILTEN "bereits gesehen"-Menge -- ein Treffer
+# (dieselbe URL), der bereits in einem früheren Intent gezählt wurde, taucht
+# in einem späteren Intent ausdrücklich als "mehrfach" auf, statt dort ein
+# zweites Mal als eigener Kandidat gezählt zu werden. Rein additiv/
+# beobachtend: `_identitaet_nachlade_kandidaten()` (die tatsächliche Auswahl)
+# bleibt unverändert auf der geflatteten Liste unverändert bestehen.
+def _identitaet_nachlade_diagnose_je_intent(
+        intents: list[tuple[str, str]], treffer_je_intent: list[list[dict]], *,
+        marke: str | None) -> dict[str, dict]:
+    """JE Suchintent dieselbe Zählung wie `_identitaet_nachlade_diagnose()`,
+    mit intent-übergreifender Mehrfachfund-Erkennung -- s. Kommentar oben."""
+    ergebnis: dict[str, dict] = {}
+    global_gesehen: set[str] = set()
+    for (name, _query), treffer in zip(intents, treffer_je_intent):
+        frisch = []
+        mehrfach = 0
+        for r in treffer:
+            url = r.get("url") or ""
+            if url and url in global_gesehen:
+                mehrfach += 1
+                continue
+            frisch.append(r)
+        diag = _identitaet_nachlade_diagnose(frisch, marke=marke)
+        diag["mehrfach"] = mehrfach
+        ergebnis[name] = diag
+        global_gesehen.update(r.get("url") for r in treffer if r.get("url"))
+    return ergebnis
+
+
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
 # dem PSL-/Pressedomain-Fix in `score_domain()` bleibt für "schwachstelle"/
 # "wartung" eine Scoring-Asymmetrie bestehen -- `score_domain()` kennt den
@@ -7011,6 +7053,23 @@ class TavilyTechnicalResearchProvider:
                              _spec_nachlade_diag["fremde_domain"], _spec_nachlade_diag["kein_pdf"],
                              _spec_nachlade_diag["falsches_pfadwort"],
                              _spec_nachlade_diag["gate_erfuellt"], len(spec_nachlade_urls))
+                    # N1-Diagnostik, dritte Fortsetzung: dieselben Zähler JE
+                    # Intent (s. `_identitaet_nachlade_diagnose_je_intent()`-
+                    # Docstring) -- macht sichtbar, ob z.B. gerade die
+                    # Dokumenttyp-Query einen anderen Ablehnungsgrund zeigt
+                    # als die Motorisierungs-Query, statt nur eine
+                    # Gesamtzahl über alle acht Intents. Nur Intent-Namen,
+                    # Zähler und Gründe -- keine URLs/Suchtexte/Rohinhalte.
+                    _je_intent_diag = _identitaet_nachlade_diagnose_je_intent(
+                        spec_intents, spec_treffer_je_intent, marke=marke)
+                    log.info(
+                        "research_phase=identitaet_volltext_kandidaten_je_intent round=2 %s",
+                        "; ".join(
+                            f"{name}: treffer={d['treffer']} mehrfach={d['mehrfach']} "
+                            f"fremde_domain={d['fremde_domain']} kein_pdf={d['kein_pdf']} "
+                            f"falsches_pfadwort={d['falsches_pfadwort']} "
+                            f"gate_erfuellt={d['gate_erfuellt']}"
+                            for name, d in _je_intent_diag.items() if d["treffer"]))
                 if spec_nachlade_urls:
                     spec_voller_text, spec_nachlade_stats = await _sicheres_nachladen(spec_nachlade_urls)
                     neue_spec_treffer = _treffer_mit_volltext(neue_spec_treffer, spec_voller_text)
