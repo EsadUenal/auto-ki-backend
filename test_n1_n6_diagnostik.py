@@ -69,6 +69,54 @@ diag_c = _identitaet_nachlade_diagnose(treffer_falsche_dokumentart, marke="Lexus
 check("N1c) Treffer mit falschem Dokumenttyp -> falsche_dokumentart=1, gate_erfuellt=0",
       diag_c["falsche_dokumentart"] == 1 and diag_c["gate_erfuellt"] == 0, str(diag_c))
 
+# ── N1: c2/c3/c4 -- Fortsetzung ("Ablehnungsgrund und Generationssperre
+# eindeutig nachweisen", 2026-11): der Sammelgrund "falsche_dokumentart"
+# selbst war bisher nicht weiter aufgeschlüsselt -- ein echter Live-Lauf
+# (07.11.2026) zeigte 64 Treffer in genau diesem einen Topf, ohne erkennbar
+# zu machen, ob es fremde Domains, fehlende PDFs oder fehlende Pfadwörter
+# waren. Drei gezielte Fälle, jeweils GENAU EINE der drei Teilursachen:
+treffer_fremde_domain = [{
+    "url": "https://www.carwiki.de/lexus-rc/rettungskarte.pdf", "content": "kurz"}]
+diag_c2 = _identitaet_nachlade_diagnose(treffer_fremde_domain, marke="Lexus")
+check("N1c2) fremde Domain (kein Lexus-eigenes carwiki.de) -> fremde_domain=1, "
+      "kein_pdf=0, falsches_pfadwort=0",
+      diag_c2["fremde_domain"] == 1 and diag_c2["kein_pdf"] == 0
+      and diag_c2["falsches_pfadwort"] == 0 and diag_c2["gate_erfuellt"] == 0, str(diag_c2))
+
+treffer_kein_pdf = [{
+    "url": "https://www.lexus.de/presse/rc-f-modellseite", "content": "kurz"}]
+diag_c3 = _identitaet_nachlade_diagnose(treffer_kein_pdf, marke="Lexus")
+check("N1c3) eigene Domain, aber kein PDF -> kein_pdf=1, fremde_domain=0, "
+      "falsches_pfadwort=0",
+      diag_c3["kein_pdf"] == 1 and diag_c3["fremde_domain"] == 0
+      and diag_c3["falsches_pfadwort"] == 0 and diag_c3["gate_erfuellt"] == 0, str(diag_c3))
+
+treffer_falsches_pfadwort = [{
+    "url": "https://www.lexus.de/content/dam/lexus/preisliste-2024.pdf", "content": "kurz"}]
+diag_c4 = _identitaet_nachlade_diagnose(treffer_falsches_pfadwort, marke="Lexus")
+check("N1c4) eigene Domain, PDF, aber kein Rettungsdatenblatt/-karte/-leitfaden/"
+      "Fahrzeuginformationen im Pfad -> falsches_pfadwort=1, fremde_domain=0, kein_pdf=0",
+      diag_c4["falsches_pfadwort"] == 1 and diag_c4["fremde_domain"] == 0
+      and diag_c4["kein_pdf"] == 0 and diag_c4["gate_erfuellt"] == 0, str(diag_c4))
+
+check("N1c5) falsche_dokumentart bleibt in allen drei Fällen die SUMME der "
+      "Teilgründe (Rückwärtskompatibilität des Log-Formats)",
+      diag_c2["falsche_dokumentart"] == 1 and diag_c3["falsche_dokumentart"] == 1
+      and diag_c4["falsche_dokumentart"] == 1)
+check("N1c6) alle drei Teilgründe sind PAARWEISE unterschiedlich benannt -- "
+      "kein Sammeltopf mehr für c2/c3/c4",
+      len({k for k, v in diag_c2.items() if k in ("fremde_domain", "kein_pdf", "falsches_pfadwort") and v}
+          | {k for k, v in diag_c3.items() if k in ("fremde_domain", "kein_pdf", "falsches_pfadwort") and v}
+          | {k for k, v in diag_c4.items() if k in ("fremde_domain", "kein_pdf", "falsches_pfadwort") and v}) == 3)
+
+# N1c7: die Auswahl selbst (`_identitaet_nachlade_kandidaten()`) bleibt durch
+# die feinere Diagnose UNVERÄNDERT -- keine der drei Ablehnungsformen wird
+# plötzlich ausgewählt (§4 Auftrag: "ändert nichts an der Auswahl").
+check("N1c7) keiner der drei gezielt ablehnenden Treffer wird ausgewählt",
+      _identitaet_nachlade_kandidaten(treffer_fremde_domain, marke="Lexus") == []
+      and _identitaet_nachlade_kandidaten(treffer_kein_pdf, marke="Lexus") == []
+      and _identitaet_nachlade_kandidaten(treffer_falsches_pfadwort, marke="Lexus") == [])
+
 # ── N1: d) ein echter Kandidat erfüllt das Gate -> gate_erfuellt=1, und die
 # Auswahl (unverändertes Verhalten) wählt ihn tatsächlich aus.
 treffer_kandidat = [{
@@ -81,6 +129,16 @@ check("N1d) echter Kandidat -> gate_erfuellt=1",
 check("N1d) Auswahl (unverändert) wählt denselben Kandidaten",
       _identitaet_nachlade_kandidaten(treffer_kandidat, marke="Lexus") ==
       ["https://www.lexus.de/rettungsdatenblatt-rc.pdf"])
+
+# N1c8: ein echter Rettungsdatenblatt-Treffer wird weiterhin UNVERÄNDERT
+# ausgewählt, auch zusammen mit allen drei Ablehnungsfällen im selben
+# Treffer-Set -- die feinere Diagnose ändert nichts an Reihenfolge/Auswahl.
+check("N1c8) ein echter Rettungsdatenblatt-Treffer wird weiterhin UNVERÄNDERT "
+      "ausgewählt, auch zusammen mit allen drei Ablehnungsfällen im selben "
+      "Treffer-Set",
+      _identitaet_nachlade_kandidaten(
+          treffer_fremde_domain + treffer_kein_pdf + treffer_falsches_pfadwort
+          + treffer_kandidat, marke="Lexus") == [treffer_kandidat[0]["url"]])
 
 # Die drei leeren Fälle (a/b/c) sind jetzt an UNTERSCHIEDLICHEN Zählern
 # erkennbar, nicht mehr an derselben, nicht aussagekräftigen "leer"-Lücke.

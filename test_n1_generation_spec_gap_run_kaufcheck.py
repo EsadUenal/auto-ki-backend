@@ -177,7 +177,98 @@ async def main() -> None:
         for f in _FEHLER:
             print(f"  - {f}")
         raise SystemExit(1)
-    print("\nALLE TESTS GRUEN")
+    print("\nTEIL A GRUEN")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEIL B -- ENFAL-Folgeauftrag ("Ablehnungsgrund und Generationssperre
+# eindeutig nachweisen", 2026-11): ZWEI Läufe mit IDENTISCHER Motor-Evidenz
+# (nur `_ADAC`, EINE Domain -- Motorisierung bleibt dadurch in BEIDEN Läufen
+# unbestätigt), einmal OHNE und einmal MIT ausreichendem Generationsbeleg
+# (Rettungskarte). Beweist am echten `run_kaufcheck()`-Pfad:
+#   * genau die Generationssperre fällt weg (verschwindet aus
+#     "Blockierende Identitätslücke: ..."), wenn die Generation ausreichend
+#     belegt wird,
+#   * eine ANDERE, berechtigte Sperre (Motorisierung, N6-Thema, hier bewusst
+#     NICHT behoben) bleibt davon unberührt bestehen -- die beiden Gates
+#     sind nachweislich unabhängig voneinander.
+# `_AMS` trägt bewusst zusätzlich eine "XC1"-Nennung (nicht-amtliche Quelle,
+# kein Rollenbeleg) -- der Gegenfall "unpassende/schwache Kennung reicht
+# NICHT" ist damit in Lauf 1 (ohne Rettungskarte) mitbelegt: trotz "XC1" im
+# Treffer-Set bleibt Generation dort unbestätigt.
+# ══════════════════════════════════════════════════════════════════════════
+
+async def _lauf_b(req: KaufCheckRequest, fake: _FakeSearchExtract) -> KaufCheckResponse:
+    return await _lauf(req, fake)
+
+
+async def main_b() -> None:
+    print("\n" + "=" * 78)
+    print("TEIL B) Zwei Läufe, identische Motor-Evidenz: nur die Generationssperre fällt weg")
+    print("=" * 78)
+
+    req = KaufCheckRequest(marke="Lexus", modell="RC F", baujahr=2017, kilometerstand=82000,
+                           motor="5.0 V8", kraftstoff="Benzin", leistung_ps=477,
+                           getriebe="Automatik", antrieb="Heck", ausstattung=[])
+
+    # LAUF 1 -- OHNE ausreichenden Generationsbeleg. Motor-Evidenz: NUR _ADAC
+    # (eine Domain) -> Motorisierung bleibt unbestätigt (identisch zu Lauf 2).
+    fake1 = _FakeSearchExtract(routing={
+        "technische Daten": [_ADAC],
+        "Generation Baureihe Bauzeitraum": [_AMS],
+    })
+    r1 = await _lauf_b(req, fake1)
+    hinweis1 = r1.bericht[r1.bericht.find("Blockierende Identitätslücke"):][:120]
+    print(f"  Lauf 1 -- generation={r1.vehicle_identity.get('generation')!r} "
+          f"state={r1.recommendation_state!r}")
+    print(f"           Hinweis: {hinweis1!r}")
+
+    check("5) Lauf 1 (ohne Rettungskarte, trotz 'XC1' im Treffer-Set): Generation "
+          "bleibt UNBESTÄTIGT -- eine nicht-amtliche Kennung allein reicht nicht",
+          r1.vehicle_identity.get("generation") is None,
+          f"generation={r1.vehicle_identity.get('generation')!r}")
+    check("6) Lauf 1: BEIDE Sperren stehen in der Blockade-Meldung -- Generation UND "
+          "Motorisierung, identische Motor-Evidenz wie Lauf 2",
+          "Generation" in hinweis1 and "Motorisierung" in hinweis1, hinweis1)
+
+    # LAUF 2 -- MIT ausreichendem Generationsbeleg (Rettungskarte zusätzlich).
+    # IDENTISCHE Motor-Evidenz wie Lauf 1 (weiterhin nur _ADAC).
+    fake2 = _FakeSearchExtract(
+        routing={
+            "technische Daten": [_ADAC],
+            "Generation Baureihe Bauzeitraum": [_AMS],
+            "Generation Modellcode": [treffer(
+                _RETTUNGSKARTE_URL, "Lexus RC F Rettungskarte", _RETTUNGSKARTE_SNIPPET_DUENN)],
+        },
+        extract_text={_RETTUNGSKARTE_URL: _RETTUNGSKARTE_VOLLTEXT})
+    r2 = await _lauf_b(req, fake2)
+    hinweis2 = r2.bericht[r2.bericht.find("Blockierende Identitätslücke"):][:120]
+    print(f"  Lauf 2 -- generation={r2.vehicle_identity.get('generation')!r} "
+          f"state={r2.recommendation_state!r}")
+    print(f"           Hinweis: {hinweis2!r}")
+
+    check("7) Lauf 2 (mit Rettungskarte): Generation wird bestätigt ('UXC1') -- über "
+          "denselben echten Produktpfad, identische Motor-Evidenz wie Lauf 1",
+          r2.vehicle_identity.get("generation") == "UXC1",
+          f"generation={r2.vehicle_identity.get('generation')!r}")
+    check("8) Lauf 2: GENAU die Generationssperre ist aus der Blockade-Meldung "
+          "verschwunden -- 'Motorisierung' bleibt separat, unverändert stehen",
+          "Generation" not in hinweis2 and "Motorisierung" in hinweis2, hinweis2)
+    check("9) recommendation_state bleibt in BEIDEN Läufen identisch "
+          "(LIMITED_ANALYSIS) -- die Motorisierungssperre hält den Zustand "
+          "unabhängig von der Generationsklärung, kein Nebeneffekt der N1-Fix "
+          "auf die separate N6-Sperre",
+          r1.recommendation_state == r2.recommendation_state == "LIMITED_ANALYSIS",
+          f"{r1.recommendation_state!r} vs {r2.recommendation_state!r}")
+
+    if _FEHLER:
+        print(f"\n{len(_FEHLER)} FEHLER (Teil B):")
+        for f in _FEHLER[-10:]:
+            print(f"  - {f}")
+        raise SystemExit(1)
+    print("\nTEIL B GRUEN")
 
 
 asyncio.run(main())
+asyncio.run(main_b())
+print("\nALLE TESTS GRUEN (Teil A + Teil B)")

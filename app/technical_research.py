@@ -328,15 +328,40 @@ _HERSTELLERIDENTIFIKATION_PFADWOERTER = (
 _UMLAUT_FALTUNG = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss"})
 
 
+# N1-Diagnostik, Fortsetzung (ENFAL-Folgeauftrag, 2026-11): "falsche_dokumentart"
+# im Log (s. `_identitaet_nachlade_diagnose()`) war bisher EIN Sammelgrund für
+# drei verschiedene, im Code längst unterscheidbare Fälle -- fremde Domain,
+# fehlendes PDF-Merkmal, fehlendes Pfadwort. `_herstelleridentifikationsdokument_
+# grund()` ist die EINE Quelle für die Gate-Entscheidung UND die Diagnose:
+# `_herstelleridentifikationsdokument()` bleibt die bestehende Bool-Schnittstelle
+# (unverändertes Verhalten, keine zweite abweichende Prüfregel), die Diagnose
+# liest denselben Grund zusätzlich aus. Reine Zähl-/Beobachtungsfunktion --
+# ändert NICHTS an der Auswahl selbst (§4 Auftrag).
+_GRUND_FREMDE_DOMAIN = "fremde_domain"
+_GRUND_KEIN_PDF = "kein_pdf"
+_GRUND_FALSCHES_PFADWORT = "falsches_pfadwort"
+
+
+def _herstelleridentifikationsdokument_grund(url: str, marke: str | None) -> str | None:
+    """Der konkrete Ablehnungsgrund für `url` -- oder `None`, wenn sie das
+    Dokumenttyp-Gate erfüllt. Einzige Quelle für Gate-Entscheidung und
+    Diagnose, s. Kommentar oben."""
+    if not _marke_eigene_domain(url, marke):
+        return _GRUND_FREMDE_DOMAIN
+    pfad = unquote(url or "").lower().translate(_UMLAUT_FALTUNG)
+    if not pfad.endswith(".pdf"):
+        return _GRUND_KEIN_PDF
+    if not any(wort in pfad for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER):
+        return _GRUND_FALSCHES_PFADWORT
+    return None
+
+
 def _herstelleridentifikationsdokument(url: str, marke: str | None) -> bool:
     """True, wenn `url` ein PDF-Rettungsdatenblatt/eine Rettungskarte der
     EIGENEN Herstellerdomain ist (s. Kommentar oben) -- reine
     Dokumenttyp-Erkennung, KEINE Rollenaussage über einen darin gefundenen
     Code."""
-    if not _marke_eigene_domain(url, marke):
-        return False
-    pfad = unquote(url or "").lower().translate(_UMLAUT_FALTUNG)
-    return pfad.endswith(".pdf") and any(wort in pfad for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER)
+    return _herstelleridentifikationsdokument_grund(url, marke) is None
 
 
 # ── L1-Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11): ──
@@ -402,11 +427,25 @@ def _identitaet_nachlade_kandidaten(treffer: list[dict], *, marke: str | None,
 # Auftrag: "fehlender Suchtreffer" vs. "abgelehnter Kandidat"). Dieselbe
 # Iterationsreihenfolge wie oben, rein additiv -- ändert NICHTS an der
 # Auswahl selbst, nur an der Sichtbarkeit, WARUM sie leer blieb.
+#
+# N1-Diagnostik, Fortsetzung (ENFAL-Folgeauftrag, "Ablehnungsgrund und
+# Generationssperre eindeutig nachweisen", 2026-11): der Sammelgrund
+# "falsche_dokumentart" blieb seinerseits unscharf -- ein echter Live-Lauf
+# (07.11.2026) zeigte 64 Treffer, davon alle 64 in diesem einen Topf, ohne
+# erkennbar zu machen, ob es fremde Domains, fehlende PDFs oder fehlende
+# Pfadwörter waren. `falsche_dokumentart` bleibt als SUMME erhalten
+# (Rückwärtskompatibilität des Log-Formats), zusätzlich jetzt in die drei
+# Fälle aufgeschlüsselt, die `_herstelleridentifikationsdokument_grund()`
+# ohnehin schon unterscheidet -- keine zweite, abweichende Prüfregel, nur
+# derselbe Grund zusätzlich gezählt. Keine URLs/Suchtexte/Rohinhalte, nur
+# Zählwerte (§4 Auftrag).
 def _identitaet_nachlade_diagnose(treffer: list[dict], *, marke: str | None) -> dict:
     """Reine Zähl-Hilfsfunktion, keine Auswahl -- s. Kommentar oben."""
     ohne_url = 0
     bereits_volltext = 0
-    falsche_dokumentart = 0
+    fremde_domain = 0
+    kein_pdf = 0
+    falsches_pfadwort = 0
     gesehen: set[str] = set()
     doppelt = 0
     for r in treffer:
@@ -420,12 +459,22 @@ def _identitaet_nachlade_diagnose(treffer: list[dict], *, marke: str | None) -> 
         if hat_brauchbaren_raw_content(r):
             bereits_volltext += 1
             continue
-        if not _herstelleridentifikationsdokument(url, marke):
-            falsche_dokumentart += 1
+        grund = _herstelleridentifikationsdokument_grund(url, marke)
+        if grund == _GRUND_FREMDE_DOMAIN:
+            fremde_domain += 1
+            continue
+        if grund == _GRUND_KEIN_PDF:
+            kein_pdf += 1
+            continue
+        if grund == _GRUND_FALSCHES_PFADWORT:
+            falsches_pfadwort += 1
             continue
         gesehen.add(url)
     return {"treffer": len(treffer), "ohne_url": ohne_url, "doppelt": doppelt,
-            "bereits_volltext": bereits_volltext, "falsche_dokumentart": falsche_dokumentart,
+            "bereits_volltext": bereits_volltext,
+            "falsche_dokumentart": fremde_domain + kein_pdf + falsches_pfadwort,
+            "fremde_domain": fremde_domain, "kein_pdf": kein_pdf,
+            "falsches_pfadwort": falsches_pfadwort,
             "gate_erfuellt": len(gesehen)}
 
 
@@ -6862,9 +6911,12 @@ class TavilyTechnicalResearchProvider:
         # spurlos von "kein Treffer" ununterscheidbar ist.
         _ident_nachlade_diag = _identitaet_nachlade_diagnose(ident_treffer, marke=marke)
         log.info("research_phase=identitaet_volltext_kandidaten round=1 treffer=%d ohne_url=%d "
-                 "bereits_volltext=%d falsche_dokumentart=%d gate_erfuellt=%d ausgewaehlt=%d",
+                 "bereits_volltext=%d falsche_dokumentart=%d (fremde_domain=%d kein_pdf=%d "
+                 "falsches_pfadwort=%d) gate_erfuellt=%d ausgewaehlt=%d",
                  _ident_nachlade_diag["treffer"], _ident_nachlade_diag["ohne_url"],
                  _ident_nachlade_diag["bereits_volltext"], _ident_nachlade_diag["falsche_dokumentart"],
+                 _ident_nachlade_diag["fremde_domain"], _ident_nachlade_diag["kein_pdf"],
+                 _ident_nachlade_diag["falsches_pfadwort"],
                  _ident_nachlade_diag["gate_erfuellt"], len(ident_nachlade_urls))
         if ident_nachlade_urls:
             ident_voller_text, ident_nachlade_stats = await _sicheres_nachladen(ident_nachlade_urls)
@@ -6951,11 +7003,13 @@ class TavilyTechnicalResearchProvider:
                         neue_spec_treffer, marke=marke, limit=spec_nachlade_limit)
                     _spec_nachlade_diag = _identitaet_nachlade_diagnose(neue_spec_treffer, marke=marke)
                     log.info("research_phase=identitaet_volltext_kandidaten round=2 treffer=%d "
-                             "ohne_url=%d bereits_volltext=%d falsche_dokumentart=%d gate_erfuellt=%d "
-                             "ausgewaehlt=%d",
+                             "ohne_url=%d bereits_volltext=%d falsche_dokumentart=%d (fremde_domain=%d "
+                             "kein_pdf=%d falsches_pfadwort=%d) gate_erfuellt=%d ausgewaehlt=%d",
                              _spec_nachlade_diag["treffer"], _spec_nachlade_diag["ohne_url"],
                              _spec_nachlade_diag["bereits_volltext"],
                              _spec_nachlade_diag["falsche_dokumentart"],
+                             _spec_nachlade_diag["fremde_domain"], _spec_nachlade_diag["kein_pdf"],
+                             _spec_nachlade_diag["falsches_pfadwort"],
                              _spec_nachlade_diag["gate_erfuellt"], len(spec_nachlade_urls))
                 if spec_nachlade_urls:
                     spec_voller_text, spec_nachlade_stats = await _sicheres_nachladen(spec_nachlade_urls)
