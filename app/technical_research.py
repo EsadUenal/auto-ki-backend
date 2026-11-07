@@ -6577,6 +6577,16 @@ def _ist_null_kandidaten_gap(fakten: list[WebFakt], fakten_stats: dict[str, dict
 # Achsen offen sind, werden es 4 -- bewusst weiterhin GENAU EINE zusätzliche
 # Runde (kein Mehrrunden-Loop wie bei Weakness/Wartung, kein Call pro
 # einzelnem Feld: "Queries sinnvoll bündeln" bleibt § Auftrag).
+#
+# N1/N6-Nachtrag (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): je EIN
+# weiteres, GEZIELTES DE/EN-Query-Paar je weiterhin offener Teillücke --
+# "generation" (Dokumenttyp-Signal, s. `_IDENTITY_DOKUMENTTYP_WORTE_DE`) und
+# "engine_name" (Hersteller-/Fachquelle zum Motorkern, s. `_IDENTITY_MOTOR_
+# FACHQUELLE_WORTE_DE`). Beide bewusst NUR additiv zur jeweiligen Achsen-
+# Query, nie als Ersatz -- maximal 8 Queries insgesamt (vorher 4), nur wenn
+# ALLE vier Teillücken gleichzeitig offen sind; der häufigere Fall (eine
+# Achse, eine Teillücke) bleibt bei 2-4 Queries. Weiterhin GENAU EINE
+# zusätzliche Runde, kein neuer Mehrrunden-Loop.
 _IDENTITY_SPEC_FELDER: tuple[tuple[str, str], ...] = (
     ("generation", "generation"), ("fuel", "kraftstoff"), ("drivetrain", "antrieb"),
     ("transmission", "getriebe"), ("powertrain", "powertrain"))
@@ -6600,6 +6610,40 @@ _IDENTITY_SPEC_WORTE_DE = {
 _IDENTITY_SPEC_WORTE_EN = {
     "generation": "generation model code", "fuel": "fuel type", "drivetrain": "drivetrain",
     "transmission": "transmission", "powertrain": "drivetrain technology"}
+
+# N1-Nachtrag (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): Befund -- keine
+# bestehende Identity-Spec-Gap-Query fragt JEMALS nach dem Dokument-TYP, den
+# `_herstelleridentifikationsdokument()`/`_identitaet_nachlade_kandidaten()`
+# ohnehin schon für das Nachladen verlangt (PDF-Rettungsdatenblatt/-karte/
+# -leitfaden/Fahrzeuginformationen auf der Herstellerdomain). Die bisherigen
+# Generation-Queries fragen nur nach "Generation Modellcode"/"Baureihe
+# Bauzeitraum" -- allgemeine Spezifikationsseiten, kein Dokumenttyp-Signal.
+# Direkt dieselben Wörter wie das Gate selbst (`_HERSTELLERIDENTIFIKATION_
+# PFADWOERTER`), damit ein Treffer, der die Suche erreicht, auch tatsächlich
+# das Gate erfüllen kann -- keine neue Heuristik, kein Katalog. NUR bei
+# weiterhin offener Generation (dieselbe Bedingung wie die bestehende
+# Generation-Achsen-Query) -- kein unbedingter Zusatzaufruf.
+_IDENTITY_DOKUMENTTYP_WORTE_DE = "Rettungskarte Rettungsdatenblatt Fahrzeuginformationen"
+_IDENTITY_DOKUMENTTYP_WORTE_EN = "rescue card owner's manual"
+
+# N6-Nachtrag (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): Befund -- die
+# bestehende Motorisierungs-Query bündelt bereits den rohen Nutzer-Motortext
+# (`ziel["motor"]`, über `confirm_claims`) mit den übrigen offenen
+# Motorisierungs-Feldern (Kraftstoff/Antrieb/Getriebe/Powertrain) -- das
+# bringt reale Kernbeleg-Treffer (im Lauf: 10), aber keine, die
+# `_tier_identitaet()` als Tier <=2 einordnet (alle Tier 3). KEIN
+# Katalog/Worker, KEINE Absenkung der Tier-/Domainzahl-Schwelle (unverändert
+# in `werte_identitaet_aus()`) -- NUR eine zusätzliche, gezielt auf
+# Hersteller-/Fachpresse-Inhalt formulierte Query, NUR solange `engine_name`
+# tatsächlich noch unbestätigt ist (dieselbe Bedingung wie die bestehende
+# Confirm-Query). "technische Daten Herstellerangabe" ist dieselbe Wortwahl
+# wie die bereits bestehende Eskalationsquery für Schwachstelle/Wartung
+# (`_eskalations_queries()`, "source_upgrade_official") -- kein neues Muster.
+# Motorcode bleibt bewusst AUSSERHALB dieser Query -- `ziel["motor"]` ist der
+# freie Nutzertext (Hubraum/Zylinderbauart wie "5.0 V8"), nie der
+# strukturierte Motorcode (eigenes, unverändertes `engine_code`-Konsensfeld).
+_IDENTITY_MOTOR_FACHQUELLE_WORTE_DE = "technische Daten Herstellerangabe"
+_IDENTITY_MOTOR_FACHQUELLE_WORTE_EN = "manufacturer specification"
 
 
 def _identity_spec_gaps(identitaet: WebVehicleIdentity) -> list[str]:
@@ -6693,6 +6737,27 @@ def _identity_spec_gap_queries(breit: str, jahr: str | None, offene_felder: list
                                                  else "specifications"]))
         intents.append((f"identity_spec_gap_{achse}_de", de))
         intents.append((f"identity_spec_gap_{achse}_en", en))
+        # N1-Nachtrag: zusätzliches, GEZIELT auf den Nachlade-Dokumenttyp
+        # formuliertes Query-Paar -- NUR wenn "generation" selbst noch offen
+        # ist (dieselbe Bedingung wie oben, kein unbedingter Zusatzaufruf).
+        if achse == "generation" and "generation" in eigene_offene:
+            dok_de = " ".join(filter(None, [breit, jahr, _IDENTITY_DOKUMENTTYP_WORTE_DE]))
+            dok_en = " ".join(filter(None, [breit, _IDENTITY_DOKUMENTTYP_WORTE_EN]))
+            intents.append(("identity_spec_gap_dokumenttyp_de", dok_de))
+            intents.append(("identity_spec_gap_dokumenttyp_en", dok_en))
+        # N6-Nachtrag: zusätzliches, auf Hersteller-/Fachpresse-Inhalt zum
+        # Motorkern formuliertes Query-Paar -- NUR solange `engine_name`
+        # tatsächlich noch unbestätigt ist (dieselbe Bedingung wie der
+        # bestehende Confirm-Claim oben, kein unbedingter Zusatzaufruf).
+        # Motorcode bleibt außen vor (s. Konstanten-Docstring oben).
+        if achse == "motorisierung" and "engine_name" in eigene_confirm:
+            motor_claim = _identity_confirm_claim_text("engine_name", ziel or {})
+            motor_de = " ".join(filter(
+                None, [breit, jahr, motor_claim, _IDENTITY_MOTOR_FACHQUELLE_WORTE_DE]))
+            motor_en = " ".join(filter(
+                None, [breit, motor_claim, _IDENTITY_MOTOR_FACHQUELLE_WORTE_EN]))
+            intents.append(("identity_spec_gap_motor_fachquelle_de", motor_de))
+            intents.append(("identity_spec_gap_motor_fachquelle_en", motor_en))
     return intents
 
 
