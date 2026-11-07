@@ -223,6 +223,40 @@ def _plausibel(km: int) -> bool:
     return _MIN_PUNKT_KM <= km <= _MAX_PUNKT_KM
 
 
+# N14-Fix (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): eine im selben
+# Quelltext direkt an den km-Wert angehängte ZEITLICHE Alternative ("alle
+# 90.000 km ODER 6 Jahre", real im Lexus-Serviceheft auch mit "/" statt
+# "oder" formuliert: "Alle 90.000 km / 6 Jahre") ging bisher vollständig
+# verloren -- weder in der Statusberechnung noch im sichtbaren Wortlaut
+# (`_formuliere()` kannte nur `von_km`/`bis_km`). Das ist NICHT dasselbe wie
+# die oben beschriebene reine Zeitangabe ("Alle 2 Jahre", ohne km-Anteil) --
+# jene bleibt bewusst unverändert außerhalb jeder km-Rechnung. Hier geht es
+# um den Fall, dass BEIDE Kriterien im selben Satz als Alternative stehen.
+# Bewusst NUR Texterkennung, direkt an den (bereits von `parse_wartungspunkt`
+# gewählten) ERSTEN km-Wert gebunden -- kein Treffer auf ein nachfolgendes
+# "Danach alle X km / jährlich"-Folgeintervall (das trägt keine Zahl vor
+# "jährlich" und matcht deshalb nicht). KEINE neue Fälligkeitsberechnung:
+# der Erstzulassungsmonat ist nirgends erfasst (s. `fahrzeugalter()`), eine
+# zeitliche Fälligkeit bleibt deshalb grundsätzlich unbestimmbar -- diese
+# Funktion macht die Alternative nur SICHTBAR, statt sie stillschweigend zu
+# verschlucken.
+_ZEITALTERNATIVE = re.compile(
+    rf"(?:{_ZAHL})\s*(?:tkm|km)\s*(?:oder|/)\s*(\d{{1,2}})\s*(jahre?|monate?)\b",
+    re.IGNORECASE)
+
+
+def parse_zeitalternative(text: str | None) -> tuple[int, str] | None:
+    """Zeitliche Alternative direkt neben dem ERSTEN km-Wert im Text -- oder
+    None. Rückgabe `(zahl, "Jahre"|"Monate")`."""
+    if not text:
+        return None
+    m = _ZEITALTERNATIVE.search(text)
+    if not m:
+        return None
+    einheit = "Jahre" if m.group(2).lower().startswith("jahr") else "Monate"
+    return int(m.group(1)), einheit
+
+
 # ── Alter / km pro Jahr (§4, §5) ──────────────────────────────────────────────
 
 def fahrzeugalter(baujahr: int | None, *, heute_jahr: int | None = None) -> int | None:
@@ -302,15 +336,33 @@ _HERKUNFT_ZUSATZ = {
 
 
 def _formuliere(bauteil: str, status: str, kilometerstand: int,
-                von_km: int, bis_km: int | None, herkunft: str) -> str:
+                von_km: int, bis_km: int | None, herkunft: str,
+                zeitalternative: tuple[int, str] | None = None) -> str:
     """Der ausformulierte Hinweis.
 
     Jede Variante ist bewusst so gebaut, dass sie eine ZUSTANDSFRAGE stellt statt
     einer Zustandsbehauptung. Verboten und in keinem dieser Texte enthalten:
     "fällig", "überfällig", "versäumt", "nicht durchgeführt", "fehlt".
+
+    N14-Fix (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): `zeitalternative`
+    (s. `parse_zeitalternative()`) macht eine im Quelltext mitgenannte
+    zeitliche Alternative ("oder 6 Jahre") sichtbar, OHNE eine zeitliche
+    Fälligkeit zu berechnen (Erstzulassungsmonat nirgends erfasst, s.
+    `fahrzeugalter()`) -- der km-Status bleibt ausdrücklich NUR ein
+    Kilometerstatus, die zeitliche Frage bleibt ausdrücklich offen genannt.
+    Kein Rückschluss aus Baujahr/Kilometerstand/Marktvorbehalt.
     """
     punkt = _punkt_text(von_km, bis_km)
     zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
+    zeit_zusatz = ""
+    if zeitalternative:
+        zahl, einheit = zeitalternative
+        zeit_zusatz = (
+            f" Die Quelle nennt für diesen Wartungspunkt zusätzlich eine zeitliche "
+            f"Alternative (oder {zahl} {einheit}): der oben genannte Stand bezieht "
+            f"sich ausschließlich auf den Kilometerstand -- ob die zeitliche "
+            f"Alternative bereits erreicht ist, lässt sich ohne den genauen "
+            f"Erstzulassungsmonat nicht bestimmen und bleibt deshalb offen.")
     if status == STATUS_NAEHERT_SICH:
         rest = _km(von_km - kilometerstand)
         kern = (f"Für „{bauteil}“ ist ein Wartungspunkt bei {punkt} hinterlegt: rund "
@@ -351,7 +403,7 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 f"ist, geht aus den vorliegenden Daten nicht hervor.")
     else:
         return ""
-    return kern + zusatz
+    return kern + zeit_zusatz + zusatz
 
 
 # ── Evidence -> Wartungshinweise ──────────────────────────────────────────────
@@ -452,6 +504,9 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
         if schluessel in gesehen:
             continue
         gesehen.add(schluessel)
+        # N14-Fix: s. `parse_zeitalternative()`-Docstring -- eine im selben
+        # Text genannte Zeitalternative wird sichtbar gemacht, nicht berechnet.
+        zeitalternative = parse_zeitalternative(roh)
         out.append(Wartungshinweis(
             bauteil=bauteil,
             status=status,
@@ -459,7 +514,8 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int) -> list[Wart
             punkt_bis_km=bis_km,
             differenz_km=kilometerstand - von_km,
             intervall_text=(roh or "").strip(),
-            hinweis=_formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft),
+            hinweis=_formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft,
+                                zeitalternative),
             herkunft=herkunft,
             evidence_id=beleg_id,
             quellen=[EvidenceQuelle(**q.model_dump()) for q in i.quellen],

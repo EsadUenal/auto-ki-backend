@@ -5376,7 +5376,19 @@ def _ist_us_markt_claim(claim: str) -> bool:
 # ohne Erkennung bleibt "fest"/"unbestimmt" der neutrale Default.
 _WARTUNG_REGIME_LONGLIFE = re.compile(r"long\s*life|flexibel|flexible", re.IGNORECASE)
 _WARTUNG_AKTION_ERSETZEN = re.compile(r"wechsel|ersetz|tausch|erneuer", re.IGNORECASE)
-_WARTUNG_AKTION_PRUEFEN = re.compile(r"pr(?:ü|ue)f|kontroll|inspizier|sichtpr(?:ü|ue)f", re.IGNORECASE)
+# N13-Nachtrag (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): "insp(?:izier|
+# ektion)" erkennt NEBEN der bisherigen Verbform ("inspizieren") jetzt auch
+# die Substantivform ("Inspektion"/"Inspektionen") -- real im Lexus-
+# Serviceheft so formuliert ("Ventilspiel (Inspektion mit Messfühler, ...)").
+# Kein neuer Kontext-Check nötig: `_wartung_aktion()` erhält ausschließlich
+# `e["aussage"]`, den bereits durch `_wartung_tabellen_segmente()`/die
+# Fliesstext-Satzgrenze auf GENAU dieses Bauteil zugeschnittenen Aussagesatz
+# (s. Aufrufer in `_extrahiere_fakten()`) -- ein Abschnitts-Kopfwort wie
+# "ZUSÄTZLICHE INSPEKTIONEN" bleibt dadurch bereits strukturell außerhalb
+# des Fensters anderer Bauteile (verifiziert: "Automatikgetriebeöl"s eigenes
+# Fenster enthält "Inspektionen" aus der vorangehenden Kopfzeile NICHT).
+_WARTUNG_AKTION_PRUEFEN = re.compile(
+    r"pr(?:ü|ue)f|kontroll|insp(?:izier|ektion)|sichtpr(?:ü|ue)f", re.IGNORECASE)
 
 
 def _wartung_regime(claim: str) -> str:
