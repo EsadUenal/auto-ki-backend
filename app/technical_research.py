@@ -7553,9 +7553,16 @@ class TavilyTechnicalResearchProvider:
         # Entscheidung: kein Coverage-Score, kein Early-Exit — Q1 und Q2 sind
         # zwei Basis-Suchzugänge zum selben Wartungsraum, nicht Primary+Fallback.
         # Qualität geht vor einem gesparten Tavily-Call.
+        # N7 (A/B-Befund 08.11.2026, zwei echte Suchen): die bestätigte Generation
+        # (z. B. "UXC1") in der Wartungsanfrage verengt die Suche auf Katalog-/
+        # Teileseiten, die den Code nennen, und verdrängt das Herstellerservice-
+        # heft (ohne Code Platz 1, mit Code nicht in den Top 8). Wartungsintervalle
+        # sind markenweit ausgeschrieben; die Generation wirkt weiter in der
+        # fachlichen Prüfung (`phase_fakten`/Anwendbarkeit), nicht in der Anfrage.
+        # Beide Wartungsanfragen sind daher unabhängig von der Generation.
         wa_intents = (
             ("service_interval",
-             " ".join(filter(None, [basis, "Wartungsintervall Serviceintervall"]))),
+             " ".join(filter(None, [breit, "Wartungsintervall Serviceintervall"]))),
             ("inspection_interval", f"{breit} Inspektionsintervall"),
         )
         technik_intents = sw_intents + wa_intents
