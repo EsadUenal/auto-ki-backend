@@ -43,7 +43,24 @@ REC = json.loads((Path(__file__).parent / "tests" / "fixtures"
 OHNE = [treffer(h["url"], h["title"], h["content"] or "") for h in REC["ohne UXC1"]]
 MIT = [treffer(h["url"], h["title"], h["content"] or "") for h in REC["mit UXC1"]]
 SERVICEHEFT = LEXUS_CH_MODELLUEBERSICHT["url"].split("#")[0]
-SERVICEHEFT_TEXT = LEXUS_CH_MODELLUEBERSICHT["content"]
+SERVICEHEFT_TEXT = LEXUS_CH_MODELLUEBERSICHT["content"]   # bisheriger Abruftext (Seite 4, 15/16; ~1.000 Zeichen)
+
+
+def _rohtext_bloecke():
+    """Die echten Rohtext-Blöcke FITNESS und SICHERHEIT (lex-sw-00de.pdf, Seite 16/17) aus dem bestehenden
+    Test, per ast gelesen (kein Import-Seiteneffekt). Wortgleich in test_n2_n3_n7/test_n9/test_n10."""
+    import ast
+    quelle = (Path(__file__).parent / "test_n2_n3_n7_wartung_tabellenblock.py").read_text(encoding="utf-8")
+    werte = {}
+    for n in ast.parse(quelle).body:
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("_FITNESS_BLOCK", "_SICHERHEIT_BLOCK"):
+            werte[n.targets[0].id] = ast.literal_eval(n.value)
+    return werte["_FITNESS_BLOCK"], werte["_SICHERHEIT_BLOCK"]
+
+
+_FITNESS, _SICHERHEIT = _rohtext_bloecke()
+# Volltext = bisheriger Abruftext + die beiden Wartungstabellen (Seite 16/17) desselben Dokuments
+SERVICEHEFT_VOLLTEXT = SERVICEHEFT_TEXT + "\n\n" + _FITNESS + "\n\n" + _SICHERHEIT
 SERVICE_SEITE = "https://www.lexus.de/lexus-besitzer/service-wartung"
 
 _RK_URL = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/lexus-besitzer/"
@@ -98,7 +115,7 @@ def db_miss(marke, modell, baujahr):
                   "fehlende_angabe": "simulierter DB-Miss, Testdouble"}
 
 
-async def lauf(generation_bestaetigt: bool, wartung_routing=True):
+async def lauf(generation_bestaetigt: bool, wartung_routing=True, serviceheft_text=None):
     routing = {
         # Wartung: "UXC1 Wartungsintervall" ZUERST -- würde die Anfrage den Code tragen,
         # bekäme sie die aufgezeichneten, verdrängenden Treffer.
@@ -110,7 +127,7 @@ async def lauf(generation_bestaetigt: bool, wartung_routing=True):
         **({"Generation Modellcode": [treffer(_RK_URL, "Lexus RC F Rettungskarte", _RK_DUENN)]}
            if generation_bestaetigt else {}),
     }
-    fake = Fake(routing, {_RK_URL: _RK_VOLL, SERVICEHEFT: SERVICEHEFT_TEXT})
+    fake = Fake(routing, {_RK_URL: _RK_VOLL, SERVICEHEFT: serviceheft_text or SERVICEHEFT_TEXT})
     orig = (kc.call_gemini_json, kc.tavily_search_with_fallback, kc.marktpreis_recherche_moeglich,
             kc.vertiefe_marktrecherche, kc.find_baureihe_mit_vertrauen, tr.tavily_search, tr.hole_raw_content)
 
@@ -226,6 +243,60 @@ async def main():
                   if x not in a_mit["verkaeuferfragen"] + a_mit["dokumente"]]
     print(f"   BEOBACHTUNG (kein Prüfpunkt): durch den bestehenden Deckel MAX_SPEZIFISCH_PRO_BEREICH "
           f"fallen {len(verdraengt)} fahrzeugspezifische Einträge heraus: {[v[:40] for v in verdraengt]}")
+
+    print("\n--- 5) Abnahme mit dem Volltext desselben Servicehefts (nur der Quelltext getauscht) ---")
+    f_voll, r_voll = await lauf(True, serviceheft_text=SERVICEHEFT_VOLLTEXT)
+    ins_v, a_v = wartung_insights(r_voll), aktionen(r_voll)
+    print(f"   Abruftext: Auszug {len(SERVICEHEFT_TEXT)} Zeichen -> Volltext {len(SERVICEHEFT_VOLLTEXT)} Zeichen")
+    print(f"   Hinweise Auszug: {sorted(i.titel.split(':')[0] for i in ins)}")
+    print(f"   Hinweise Volltext: {sorted(i.titel.split(':')[0] for i in ins_v)}")
+    for i in ins_v:
+        print(f"   [Volltext] {i.titel.split(':')[0]} | {i.beschreibung[:230]}")
+    for n in ("verkaeuferfragen", "dokumente"):
+        print(f"   {n} Volltext neu gg. Auszug:",
+              [x.split("titel=")[1].split(" aktion=")[0][:70] for x in a_v[n] if x not in a_mit[n] and "wartung-web" in x])
+    check("E0) Treffer, Eingaben und Generation gleich: UXC1 bestätigt, dieselben Wartungsanfragen",
+          r_voll.vehicle_identity.get("generation") == "UXC1" and wartung_qs(f_voll) == wartung_qs(f_mit))
+    # Hinweise des Auszugs, die im Volltext fehlen: nur wegen des bestehenden Auswahllimits (kein Datenverlust
+    # durch die Anfrage); der Grund steht in der Ablehnungsliste der unveränderten Extraktion.
+    abgelehnt_v: list[dict] = []
+    fakten_v = tr._extrahiere_fakten([treffer(SERVICEHEFT, "Lexus Garantie- und Serviceheft", SERVICEHEFT_VOLLTEXT)],
+                                     "wartung", marke="Lexus ", modell="RC F", baujahr=2017, abgelehnt=abgelehnt_v)
+    limit_sätze = [a["satz"] for a in abgelehnt_v if a["grund"] == "wartung_auswahllimit_erreicht"]
+    fehlend = sorted({i.titel.split(":")[0] for i in ins} - {i.titel.split(":")[0] for i in ins_v})
+    print(f"   im Volltext fehlend gg. Auszug: {fehlend}; durch Auswahllimit zurückgehalten: {[x[:40] for x in limit_sätze]}")
+    check("E1) jeder im Volltext fehlende Auszug-Hinweis ist durch das bestehende Auswahllimit "
+          f"(MAX_FAKTEN_JE_KATEGORIE={tr.MAX_FAKTEN_JE_KATEGORIE}) zurückgehalten, nicht verworfen",
+          len(fakten_v) == tr.MAX_FAKTEN_JE_KATEGORIE
+          and all(any(f.lower() in sz.lower() for sz in limit_sätze) for f in fehlend), str(fehlend))
+    check("E2) jeder Hinweis behält Markt-Selbsteinschränkung der Quelle und 'nicht bestätigt'",
+          bool(ins_v) and all("nicht bestätigt" in i.beschreibung for i in ins_v), "")
+    d = next((i for i in ins_v if i.titel.startswith("Hinterachsdifferenzialöl")), None)
+    rm = next((i for i in ins_v if i.titel.startswith("Nebenaggregat-Antriebsriemen")), None)
+    check("E3) Differenzialöl (Hinterachse) kommt an: 30.000 km / 4 Jahre, Ausschlussliste der Quelle erhalten (RC F nicht darin)",
+          d is not None and "Alle 30.000 km / 4 Jahre" in d.beschreibung and "außer ES 300h" in d.beschreibung
+          and "RC F" not in d.beschreibung.split("außer")[1].split(")")[0],
+          d.beschreibung[:200] if d else "kein Hinweis")
+    check("E4) Nebenaggregat-Antriebsriemen kommt an: 105.000 km / 6 Jahre, Folgeintervall und Ausschlussliste erhalten",
+          rm is not None and "Alle 105.000 km / 6 Jahre" in rm.beschreibung
+          and "Danach alle 15.000 km / jährlich" in rm.beschreibung and "außer ES 300h" in rm.beschreibung,
+          rm.beschreibung[:200] if rm else "kein Hinweis")
+    neu_v = {n: [x for x in a_v[n] if x not in a_nur[n]] for n in ("verkaeuferfragen", "dokumente")}
+    for stichwort in ("Hinterachsdifferenzialöl", "Nebenaggregat-Antriebsriemen"):
+        check(f"E5) {stichwort}: Verkäuferfrage und Nachweisdokument vorhanden, mit Datenbank-Vorbehalt",
+              all(any(stichwort in x and "nicht aus der geprüften Fahrzeugdatenbank" in x for x in neu_v[n])
+                  for n in neu_v), "")
+    ids = lambda liste: {a.id for a in liste}
+    kv, k0 = r_voll.kaufaktionen, r_nur_mit.kaufaktionen
+    check("E6) Fahrzeugangaben unverändert (477 PS, 2017, keine 464 PS); keine Basisfrage/-dokument geht verloren",
+          r_voll.vehicle_identity.get("horsepower") == 477 and r_voll.vehicle_identity.get("year") == 2017
+          and not any(x in r_voll.bericht for x in ("464", "Ultimate Edition"))
+          and ids(k0.verkaeuferfragen.basis) <= ids(kv.verkaeuferfragen.basis)
+          and ids(k0.dokumente.basis) <= ids(kv.dokumente.basis), "")
+    weg = sorted(ids(k0.verkaeuferfragen.fahrzeugspezifisch) - ids(kv.verkaeuferfragen.fahrzeugspezifisch))
+    print(f"   BEOBACHTUNG (kein Prüfpunkt): bei fünf Wartungspunkten verdrängt der Deckel "
+          f"(MAX_SPEZIFISCH_PRO_BEREICH=6) fahrzeugspezifische Verkäuferfragen: {weg}; "
+          f"als Basisfrage bleiben davon: {sorted(ids(kv.verkaeuferfragen.basis) - ids(k0.verkaeuferfragen.basis))}")
 
     if _FEHLER:
         print(f"\n{len(_FEHLER)} FEHLER:")
