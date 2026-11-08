@@ -249,6 +249,74 @@ check("N1f3) die Summe 'ausgewaehlt' über beide Intents entspricht GENAU der "
       dok_f["ausgewaehlt"] + mot_f["ausgewaehlt"] == len(echte_auswahl_f))
 
 
+# ── N1: g) umgekehrte Reihenfolge -- ENFAL-Freigabeauftrag 2026-11-08
+# ("Dokumenttyp-Query findet gemeinsame URL später"): Fall e)/f) oben haben
+# den Dokumenttyp-Intent stets ALS ERSTEN der beiden gesehen. Dieser Fall
+# prüft die umgekehrte Reihenfolge -- Generations-Query ZUERST, Dokumenttyp-
+# Query SPÄTER mit demselben Treffer als ihrem EINZIGEN Fund -- und belegt,
+# dass `mehrfach=1 gate_erfuellt=0 ausgewaehlt=0` am Dokumenttyp-Intent
+# ALLEIN nicht zeigt, ob der geteilte Treffer tatsächlich nachgeladen wurde:
+# derselbe Log-Ausschnitt entsteht unabhängig davon, ob die echte Auswahl
+# (`_identitaet_nachlade_kandidaten()`, einmal berechnet) ihn enthält oder
+# nicht. `mehrfach_ausgewaehlt` schließt genau diese Lücke, rein additiv.
+_GEMEINSAM_G = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/"
+               "lexus-besitzer/fahrzeuginformationen/geteilt_g.pdf")
+_EIGEN_GEN_G = ("https://www.lexus.de/content/dam/lexus/nmsc/germany/"
+               "lexus-besitzer/fahrzeuginformationen/generation_eigen_g.pdf")
+treffer_generation_g = [{"url": _EIGEN_GEN_G}, {"url": _GEMEINSAM_G}]
+treffer_dokumenttyp_g = [{"url": _GEMEINSAM_G}]  # einziger Fund der Dokumenttyp-Query
+intents_g = [("identity_spec_gap_generation_de", "..."),
+            ("identity_spec_gap_dokumenttyp_de", "...")]
+
+# Fall A: Budget reicht für beide gate-erfüllenden Kandidaten -- der
+# geteilte Treffer WIRD ausgewählt (über die Generation-Query, die ihn
+# zuerst sieht).
+auswahl_g_a = _identitaet_nachlade_kandidaten(
+    treffer_generation_g + treffer_dokumenttyp_g, marke="Lexus", limit=2)
+diag_g_a = _identitaet_nachlade_diagnose_je_intent(
+    intents_g, [treffer_generation_g, treffer_dokumenttyp_g], marke="Lexus",
+    ausgewaehlt=auswahl_g_a)
+dok_g_a = diag_g_a["identity_spec_gap_dokumenttyp_de"]
+
+# Fall B: Budget reicht nur für EINEN Kandidaten -- der Generation-eigene
+# Treffer gewinnt zuerst, der geteilte Treffer wird NICHT ausgewählt.
+auswahl_g_b = _identitaet_nachlade_kandidaten(
+    treffer_generation_g + treffer_dokumenttyp_g, marke="Lexus", limit=1)
+diag_g_b = _identitaet_nachlade_diagnose_je_intent(
+    intents_g, [treffer_generation_g, treffer_dokumenttyp_g], marke="Lexus",
+    ausgewaehlt=auswahl_g_b)
+dok_g_b = diag_g_b["identity_spec_gap_dokumenttyp_de"]
+
+check("N1g0) Vorbedingung: Fall A waehlt beide, Fall B nur einen Kandidaten",
+      len(auswahl_g_a) == 2 and len(auswahl_g_b) == 1,
+      f"A={auswahl_g_a} B={auswahl_g_b}")
+check("N1g1) ohne den neuen Zaehler sind Fall A und Fall B am Dokumenttyp-"
+      "Intent NICHT unterscheidbar (die urspruengliche Luecke aus dem "
+      "Auftrag) -- mehrfach=1, gate_erfuellt=0, ausgewaehlt=0 in BEIDEN",
+      {k: v for k, v in dok_g_a.items() if k != "mehrfach_ausgewaehlt"}
+      == {k: v for k, v in dok_g_b.items() if k != "mehrfach_ausgewaehlt"}
+      and dok_g_a["mehrfach"] == 1 and dok_g_a["gate_erfuellt"] == 0
+      and dok_g_a["ausgewaehlt"] == 0,
+      f"A={dok_g_a} B={dok_g_b}")
+check("N1g2) 'mehrfach_ausgewaehlt' schliesst die Luecke: zeigt 1, wenn der "
+      "geteilte Treffer tatsaechlich ausgewaehlt wurde (Fall A) ...",
+      dok_g_a["mehrfach_ausgewaehlt"] == 1, str(dok_g_a))
+check("N1g3) ... und 0, wenn er es nicht wurde (Fall B) -- derselbe Treffer, "
+      "derselbe Intent, nur die echte (einmal berechnete) Auswahl ändert sich",
+      dok_g_b["mehrfach_ausgewaehlt"] == 0, str(dok_g_b))
+check("N1g4) die aggregierte Rundendiagnose auf der geflatteten Liste bleibt "
+      "unveraendert (dieselbe Funktion, kein zweiter Abruf, keine zweite Regel)",
+      _identitaet_nachlade_diagnose(
+          treffer_generation_g + treffer_dokumenttyp_g, marke="Lexus"
+      )["doppelt"] == 1)
+check("N1g5) 'ausgewaehlt' je Intent bleibt unveraendert in der Summe gleich "
+      "der echten Auswahl -- der neue Zaehler verdoppelt nichts",
+      diag_g_a["identity_spec_gap_generation_de"]["ausgewaehlt"]
+      + dok_g_a["ausgewaehlt"] == len(auswahl_g_a)
+      and diag_g_b["identity_spec_gap_generation_de"]["ausgewaehlt"]
+      + dok_g_b["ausgewaehlt"] == len(auswahl_g_b))
+
+
 # ── N6: Motorkern-Prüfung -- Logdiagnostik unterscheidet "kein Kernbeleg"
 # von "Kernbeleg vorhanden, aber Schwelle verfehlt", OHNE das Ergebnis
 # (`engine_name` bleibt in beiden Fällen unbestätigt) zu verändern.

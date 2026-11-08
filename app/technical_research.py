@@ -514,21 +514,38 @@ def _identitaet_nachlade_diagnose_je_intent(
     gate-erfüllenden Kandidaten tatsächlich in dieser echten Auswahl stehen.
     Ein geteilter Treffer zählt dabei -- wie bei `gate_erfuellt` -- nur beim
     Intent, der ihn zuerst sieht; ein späterer Intent zeigt ihn weiterhin nur
-    als `mehrfach`, nie als eigenen zweiten Auswahltreffer."""
+    als `mehrfach`, nie als eigenen zweiten Auswahltreffer.
+
+    N1-Nachtrag ("Dokumenttyp-Query findet gemeinsame URL später",
+    2026-11-08): `mehrfach` allein beantwortet NICHT, ob der geteilte
+    Treffer tatsächlich nachgeladen wurde -- ein Intent, dessen EINZIGER
+    Fund ein Mehrfachfund ist, zeigt `mehrfach=1 ausgewaehlt=0`
+    UNABHÄNGIG davon, ob dieser Treffer (beim erstsehenden Intent) in die
+    echte Auswahl kam oder nicht; beide Fälle sehen am Log dieses Intents
+    sonst identisch aus. `mehrfach_ausgewaehlt` zählt daher zusätzlich, rein
+    beobachtend, wie viele der Mehrfachfunde DIESES Intents in der echten
+    Auswahl stehen -- ohne `ausgewaehlt` zu verändern (bleibt weiterhin nur
+    über die eigenen, erstsehenden Kandidaten gezählt, s. N1f3: keine
+    Verdopplung in der Summe über alle Intents)."""
     ergebnis: dict[str, dict] = {}
     global_gesehen: set[str] = set()
     ausgewaehlt_menge = set(ausgewaehlt or [])
     for (name, _query), treffer in zip(intents, treffer_je_intent):
         frisch = []
         mehrfach = 0
+        mehrfach_ausgewaehlt = 0
         for r in treffer:
             url = r.get("url") or ""
             if url and url in global_gesehen:
                 mehrfach += 1
+                if url in ausgewaehlt_menge:
+                    mehrfach_ausgewaehlt += 1
                 continue
             frisch.append(r)
         diag = _identitaet_nachlade_diagnose(frisch, marke=marke)
         diag["mehrfach"] = mehrfach
+        if ausgewaehlt is not None:
+            diag["mehrfach_ausgewaehlt"] = mehrfach_ausgewaehlt
         # "treffer" zeigt die ROH-Antwortgröße dieses Intents (inkl. der
         # bereits anderswo gezählten Mehrfachfunde) -- sonst würde ein
         # Intent, dessen EINZIGER Treffer ein Mehrfachfund war, fälschlich
@@ -7101,6 +7118,7 @@ class TavilyTechnicalResearchProvider:
                         "research_phase=identitaet_volltext_kandidaten_je_intent round=2 %s",
                         "; ".join(
                             f"{name}: treffer={d['treffer']} mehrfach={d['mehrfach']} "
+                            f"mehrfach_ausgewaehlt={d['mehrfach_ausgewaehlt']} "
                             f"fremde_domain={d['fremde_domain']} kein_pdf={d['kein_pdf']} "
                             f"falsches_pfadwort={d['falsches_pfadwort']} "
                             f"gate_erfuellt={d['gate_erfuellt']} ausgewaehlt={d['ausgewaehlt']}"
