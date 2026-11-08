@@ -225,9 +225,9 @@ def bereinige_bericht(bericht: str, b: HuBewertung | None) -> str:
     return "\n".join(zeilen_neu)
 
 
-# ── Widerspruch Formularfeld vs. Inseratstext (N14) ──────────────────────────
+# ── Widerspruch Formularfeld vs. Inserattext (N14) ──────────────────────────
 #
-# Nur eine AUSDRÜCKLICH als HU/TÜV benannte Terminangabe im Inseratstext zählt
+# Nur eine AUSDRÜCKLICH als HU/TÜV benannte Terminangabe im Inserattext zählt
 # ("HU bis August 2027", "TÜV: 08/2027"). Andere Datumsangaben (Erstzulassung,
 # Wartung, Inserat vom ...) werden nie als HU gelesen. Nennt der Text mehrere
 # verschiedene HU-Termine, ist er unklar und erzeugt keinen Konflikt.
@@ -288,7 +288,10 @@ def konflikt_aus_request(req) -> HuKonflikt | None:
     return hu_konflikt(getattr(req, "tuev_bis", None), request_text(req))
 
 
+def konflikt_hinweis(k: HuKonflikt) -> str:
+    return (f"Im Formular steht {k.formular}, im Inserattext {k.inserat}. "
+            "Welcher Termin gilt, bitte im HU-Bericht prüfen.")
+
+
 def konflikt_satz(k: HuKonflikt) -> str:
-    return (f"Formular: HU bis {k.formular} · Inseratstext: „{k.inserat_roh}“ ({k.inserat}). "
-            "Beide Angaben stammen vom Verkäufer bzw. aus dem Inserat und sind nicht "
-            "belegt; keine davon gilt als bestätigt.")
+    return (konflikt_hinweis(k) + " Beide Angaben sind unbelegt; keine davon gilt als bestätigt.")

@@ -95,6 +95,29 @@ neu, _ = bereinige_bericht("Bis wann läuft die HU?", aus_request(orig))
 check("1h) Netz für Modelltext ersetzt Frage ohne einen Termin zu bestätigen",
       "09/2027" in neu and "08/2027" in neu and "laut Inserat bis" not in neu, neu)
 
+from app.empfehlung_gruende import baue_empfehlung_gruende  # noqa: E402
+from app.hu_termin import konflikt_hinweis, konflikt_satz  # noqa: E402
+
+SATZ = "Im Formular steht 09/2027, im Inserattext 08/2027. Welcher Termin gilt, bitte im HU-Bericht prüfen."
+check("1i) Kernsatz mit Herkunft beider Termine", konflikt_hinweis(k) == SATZ, konflikt_hinweis(k))
+alle = " ".join([fs[0].beschreibung, md, bt[0], bt[1], doks[0][0], doks[0][1], konflikt_satz(k)])
+check("1j) nirgends 'Inseratstext'/'laut Inserat' für den Formulartermin",
+      "Inseratstext" not in alle and "laut Inserat" not in alle, alle)
+check("1k) Verkäuferfrage, Nachweis und Übersicht nennen Formular UND Inserattext",
+      all("Formular" in t and "Inserattext" in t for t in (fs[0].beschreibung, bt[1], doks[0][1])))
+hu_o = bewerte_hu(orig.tuev_bis, heute=HEUTE, baujahr=orig.baujahr)
+gruende = baue_empfehlung_gruende(orig, None, None, [], [], "kaufen_nach_besichtigung",
+                                  False, None, hu=hu_o)
+hu_g = [x for x in gruende if "HU" in x]
+print("Empfehlungsgrund:", hu_g)
+check("1l) Empfehlungsgrund: genau eine HU-Aussage, Konfliktwortlaut, kein 'laut Inserat gültig'",
+      hu_g == [SATZ], str(hu_g))
+gl = baue_empfehlung_gruende(gleich_r := req("09/2027", "HU bis September 2027."), None, None, [], [],
+                             "kaufen_nach_besichtigung", False, None,
+                             hu=bewerte_hu("09/2027", heute=HEUTE, baujahr=2017))
+check("1m) übereinstimmend: bisheriger Grund unverändert",
+      any("HU laut Inserat gültig bis 09/2027" in x for x in gl), str(gl))
+
 # ── 2) zwei übereinstimmende Angaben ─────────────────────────────────────────
 gleich = req("09/2027", "HU bis September 2027.")
 check("2a) kein Konflikt bei gleichem Termin", hu_konflikt(gleich.tuev_bis, gleich.beschreibung) is None)

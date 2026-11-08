@@ -60,7 +60,7 @@ from app.preisurteil import (
 )
 from app.kaufaktionen import build_kaufaktionen
 from app.kba_canonical_lookup import get_rueckrufe_fuer_identity
-from app.hu_termin import konflikt_aus_request, bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
+from app.hu_termin import konflikt_aus_request, konflikt_satz, bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
 from app.markt_quellen import geeignete_marktquellen
 from app.empfehlung_gruende import baue_empfehlung_gruende
 from app.fahrzeugkontext import generationslabel
@@ -643,7 +643,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "empfehlung_gruende":      empfehlung_gruende,
         "hu_pruefung":             (None if hu is None else {
             "angabe": hu.anzeige, "status": hu.status,
-            "monate_bis_faellig": hu.monate_bis_faellig, "hinweis": hu.hinweis,
+            "monate_bis_faellig": hu.monate_bis_faellig,
+            "hinweis": (hu.hinweis if hu_konflikt is None else konflikt_satz(hu_konflikt)),
             "konflikt": (None if hu_konflikt is None else {
                 "formular": hu_konflikt.formular, "inserat": hu_konflikt.inserat})}),
         "preis_evidence_ids":      preis_evidence_ids,

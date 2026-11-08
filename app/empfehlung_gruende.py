@@ -223,7 +223,11 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     elif _sh == SH_UMFANG_UNKLAR:
         gruende.append(servicehistorie_satz(_sh) + " Welche Unterlagen vorliegen, "
                        "bleibt zu erfragen.")
-    if hu is not None and getattr(hu, "status", None) == "plausibel":
+    from app.hu_termin import konflikt_aus_request, konflikt_hinweis
+    _hu_k = konflikt_aus_request(req)
+    if _hu_k is not None:
+        gruende.append(konflikt_hinweis(_hu_k))
+    elif hu is not None and getattr(hu, "status", None) == "plausibel":
         gruende.append(f"HU laut Inserat gültig bis {hu.anzeige}. Prüfbericht ansehen.")
 
     # 5) Warum "nach Besichtigung"

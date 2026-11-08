@@ -639,11 +639,11 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
     if hu_k is not None:
         out.append(KeyFinding(
             id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
-            titel="HU-Termin im Formular und im Inseratstext unterschiedlich",
-            beschreibung=f"Im Formular steht HU bis {hu_k.formular}, im Inseratstext "
-                         f"„{hu_k.inserat_roh}“ ({hu_k.inserat}). Beide sind Angaben des "
-                         f"Verkäufers, keine ist bestätigt.",
-            wert=f"Formular: {hu_k.formular} · Inseratstext: {hu_k.inserat}",
+            titel="HU-Termin im Formular und im Inserattext unterschiedlich",
+            beschreibung=f"Im Formular steht {hu_k.formular}, im Inserattext {hu_k.inserat} "
+                         f"(„{hu_k.inserat_roh}“). Welcher Termin gilt, bitte im HU-Bericht "
+                         f"prüfen. Beide sind Angaben, keine ist bestätigt.",
+            wert=f"Formular: {hu_k.formular} · Inserattext: {hu_k.inserat}",
             aktion="Den tatsächlichen Termin im HU-Bericht und auf der Plakette klären.",
             prioritaet=_P_WIDERSPRUCH + 5))
 

@@ -166,9 +166,9 @@ def basistexte(f: BekannteFakten) -> dict[tuple[str, str], tuple[str | None, str
         k = f.hu_konflikt
         texte[("verkaeuferfragen", "hu")] = (
             f"Welcher HU-Termin gilt: {k.formular} oder {k.inserat}? Was steht im Prüfbericht?",
-            f"Formular und Inseratstext nennen unterschiedliche HU-Termine ({k.formular} "
-            f"und {k.inserat}). Beide sind Angaben, keine ist belegt. Den HU-Bericht und die "
-            f"Plakette am Fahrzeug zeigen lassen und den tatsächlichen Termin dort ablesen.")
+            f"Im Formular steht {k.formular}, im Inserattext {k.inserat}. Welcher Termin gilt, "
+            f"bitte im HU-Bericht prüfen. Beide sind Angaben, keine ist belegt; Bericht und "
+            f"Plakette am Fahrzeug zeigen lassen.")
     elif f.hu_bis:
         texte[("verkaeuferfragen", "hu")] = (
             "Was stand im Prüfbericht der letzten Hauptuntersuchung?",
