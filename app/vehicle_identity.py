@@ -394,6 +394,8 @@ class VehicleIdentity:
                     # zusätzlich vorlag.
                     if getattr(identitaet, "generation_abweichende_kennungen", None):
                         neu["abweichende_kennungen"] = list(identitaet.generation_abweichende_kennungen)
+                    if getattr(identitaet, "generation_belege", None):
+                        neu["belege"] = list(identitaet.generation_belege)
                 self.field_evidence[feld] = neu
                 continue
             vorhanden = getattr(self, feld, None)

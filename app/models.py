@@ -715,6 +715,10 @@ class WebVehicleIdentity(BaseModel):
     # Drittbezeichnung existiert, woher sie stammt -- nicht, dass sie falsch
     # oder dasselbe Fahrzeug wäre.
     generation_abweichende_kennungen: list[dict] = Field(default_factory=list)
+    # N16: nur bei Herstellerdokument + unabhängigem Rollenbeleg. Je Eintrag
+    # {"rolle": "kennung_herstellerdokument" | "baureihe_rollenbeleg", "domain", "url"}.
+    # Ältere gespeicherte Ergebnisse haben das Feld nicht (Default leer).
+    generation_belege: list[dict] = Field(default_factory=list)
     antrieb: str | None = None
     # Release-Hardening (Root Cause 5, Stufe 2): Elektrifizierungsgrad ("ICE" |
     # "MHEV" | "PHEV" | "BEV" | "HEV", app/kraftstoff_powertrain.py) — NUR aus

@@ -3081,6 +3081,36 @@ def _generation_herstelleridentifikation_vorrang(
     return ergebnis[0], ergebnis[1], abweichend
 
 
+# N16: bei einer Generation, deren Kennung nur über die Verknüpfung
+# "Herstelleridentifikationsdokument + unabhängiger Rollenbeleg für EXAKT
+# denselben Code" gilt (`rollenbeleg_verknuepft`), zählt `konsens()` (bevorzugt
+# `mit_jahr`) nur das Dokument -- der Rollenbeleg trägt kein Jahresfenster und
+# fiel deshalb aus `domain_namen`. Diese Funktion macht beide tatsächlich
+# verwendeten Belege getrennt sichtbar; sie liest nur vorhandene Claims und
+# ändert keine Entscheidung.
+def _generation_belege(gen_claims: list[dict], code: object) -> list[dict]:
+    if not isinstance(code, str):
+        return []
+    cs = [c for c in gen_claims if str(c["wert"]) == code and not c.get("verworfen")]
+    kennung = [c for c in cs if c.get("herstelleridentifikation") and c.get("rollenbeleg_verknuepft")]
+    if not kennung:
+        return []
+    dok_domains = {c["domain"] for c in kennung}
+    rolle = [c for c in cs if (c.get("rollenbeleg") or c.get("generationsnummer_strukturell"))
+             and c["domain"] not in dok_domains]
+    if not rolle:
+        return []
+    out: list[dict] = []
+    gesehen: set[tuple[str, str]] = set()
+    for art, liste in (("kennung_herstellerdokument", kennung), ("baureihe_rollenbeleg", rolle)):
+        for c in liste:
+            if (art, c["domain"]) in gesehen:
+                continue
+            gesehen.add((art, c["domain"]))
+            out.append({"rolle": art, "domain": c["domain"], "url": c.get("url")})
+    return out
+
+
 # N6-Fix (ENFAL-Reparaturpaket, 2026-11): eine Antriebsart-Angabe
 # ("Heckantrieb") in derselben Freitext-Nutzereingabe wie die Motorbezeichnung
 # ("5.0 V8, Heckantrieb") darf nicht automatisch als mitbestätigt gelten, nur
@@ -3235,6 +3265,11 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         else:
             generation = None
             generation_nachweisweg = None
+    generation_belege = _generation_belege(gen_claims, generation)
+    if generation_belege and "generation" in feldwerte:
+        belege_domains = {b["domain"] for b in generation_belege}
+        feldwerte["generation"]["domain_namen"] = belege_domains
+        feldwerte["generation"]["domains"] = len(belege_domains)
     log.info(_generation_diagnose_zeile(treffer, claims, gen_claims, marke=marke, modell=modell,
                                         generation=generation if isinstance(generation, str) else None,
                                         nachweisweg=generation_nachweisweg))
@@ -3363,6 +3398,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         generation_cluster=generation_cluster, generation_nachweisweg=generation_nachweisweg,
         generation_nutzerabgleich=generation_nutzerabgleich,
         generation_abweichende_kennungen=generation_abweichende_kennungen,
+        generation_belege=generation_belege,
         motor=motor_bestaetigt, kraftstoff=kraftstoff, leistung_ps=leistung,
         antrieb=antrieb, powertrain=powertrain,
         getriebe=getriebe, getriebe_detail=getriebe_detail, motorcode=motorcode,

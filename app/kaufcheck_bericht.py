@@ -329,6 +329,15 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
         # erfinden, wenn keine Domainnamen hinterlegt sind (dann bleibt nur
         # die bestehende Zähler-Darstellung in `feldzeile()` stehen).
         domain_namen = (fe or {}).get("domain_namen")
+        belege = (fe or {}).get("belege") if name == "generation" else None
+        if belege:
+            kennung = sorted({b["domain"] for b in belege if b.get("rolle") == "kennung_herstellerdokument"})
+            rolle = sorted({b["domain"] for b in belege if b.get("rolle") == "baureihe_rollenbeleg"})
+            if kennung and rolle:
+                lines.append(f"  Belege: Kennung {identity.generation} im Herstellerdokument "
+                             f"({', '.join(kennung)}); Rolle als Baureihe durch unabhängige "
+                             f"Quelle belegt ({', '.join(rolle)}).")
+                continue
         if domain_namen:
             lines.append("  Quellen: " + ", ".join(domain_namen) + ".")
     if req.ausstattung:
