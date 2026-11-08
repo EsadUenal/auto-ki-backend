@@ -152,9 +152,16 @@ async def download_tests():
 
 
 # ── Vollpfad ─────────────────────────────────────────────────────────────────
+_ADAC_OHNE_ROLLE = treffer(
+    _ADAC["url"], _ADAC["title"],
+    "Marke Lexus Modell RC F Typ Ultimate Edition Automatik Motorcode 2UR-GSE "
+    "Leistung maximal in PS 464 Antriebsart Hinterrad Getriebeart Automatikgetriebe")
+
+
 def routing(pdf_text_vorhanden=True, mit_adac=True):
+    """mit_adac: True (Rollenbeleg UXC1), False (keine Zweitquelle), 'ohne_rolle' (Zweitquelle ohne UXC1)."""
     return {
-        "technische Daten": [_ADAC] if mit_adac else [],
+        "technische Daten": ([_ADAC_OHNE_ROLLE] if mit_adac == "ohne_rolle" else [_ADAC] if mit_adac else []),
         "Generation Baureihe Bauzeitraum": [_AMS],
         "Rettungskarte Rettungsdatenblatt": [
             treffer(UEBERSICHT, "Rettungsdatenblätter | Lexus", "Alle Rettungsdatenblätter auf einen Blick."),
@@ -232,9 +239,10 @@ async def main():
     fake, r = await lauf({UEBERSICHT: UEBERSICHT_TEXT}, pdf={PDF: (200, {}, b"%PDF-1.4 kaputt")})
     check("G5) PDF mit unlesbarem Inhalt: keine Generation", r.vehicle_identity.get("generation") is None)
 
-    fake, r = await lauf({UEBERSICHT: UEBERSICHT_TEXT}, mit_adac=False)
-    check("G6) echte PDF, aber ohne unabhängigen Rollenbeleg: keine Generation",
-          r.vehicle_identity.get("generation") is None, str(r.vehicle_identity.get("generation")))
+    fake, r = await lauf({UEBERSICHT: UEBERSICHT_TEXT}, mit_adac="ohne_rolle")
+    check("G6) echte PDF wurde geladen, aber ohne unabhängigen Rollenbeleg: keine Generation",
+          ANFRAGEN == [PDF] and r.vehicle_identity.get("generation") is None,
+          f"{ANFRAGEN} / {r.vehicle_identity.get('generation')!r}")
 
     fake, r = await lauf({UEBERSICHT: "Seite ohne Links."})
     check("G7) Übersicht ohne passenden Link: kein Download, keine Generation",

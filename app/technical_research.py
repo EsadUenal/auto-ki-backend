@@ -3048,6 +3048,66 @@ def _motor_kern_bestaetigt(motor: str) -> str:
     return bereinigt or motor
 
 
+# N1-Diagnostik (Generationsentscheidung): reine Beobachtung, ändert keine
+# Bestätigungsregel. Macht je Lauf sichtbar, an welcher Stufe ein Hersteller-
+# Identifikationsdokument (direkter Treffer oder Übersichts-Fallback) verloren
+# ging: Alignment -> Domainscore -> Kennung gefunden -> Rollenbeleg/Jahr ->
+# Konsens. Nur Zähler, registrierbare Domainnamen und die kurze Kennung --
+# keine URLs, Texte oder Nutzerdaten.
+def _sauber(wert: object, n: int = 16) -> str:
+    return re.sub(r"[^\w.\-]", "", str(wert))[:n] or "-"
+
+
+def _generation_diagnose_zeile(treffer: list[dict], claims: list[dict], gen_claims: list[dict],
+                               *, marke: str | None, modell: str | None,
+                               generation: str | None, nachweisweg: str | None) -> str:
+    dok = [r for r in treffer if r.get("verlinkt_von_herstellerseite")
+           or _herstelleridentifikationsdokument(r.get("url") or "", marke)]
+    verlinkt = sum(1 for r in dok if r.get("verlinkt_von_herstellerseite"))
+    ausgerichtet_n, nicht = 0, {}
+    for r in dok:
+        ok, grund = ausgerichtet(r, marke, modell)
+        if ok and score_domain(r.get("url") or "") >= 0:
+            ausgerichtet_n += 1
+        else:
+            kat = "domainscore" if ok else (grund or "unbekannt").split(":", 1)[0]
+            nicht[kat] = nicht.get(kat, 0) + 1
+    alle = [c for c in claims if c["feld"] == "generation"]
+    dok_claims = sum(1 for c in alle if c.get("herstelleridentifikation"))
+    codes: dict[str, list[dict]] = {}
+    for c in alle:
+        codes.setdefault(str(c["wert"]), []).append(c)
+    teile = []
+    for code, cs in sorted(codes.items()):
+        dok_doms = {c["domain"] for c in cs if c.get("herstelleridentifikation")}
+        rolle_doms = {c["domain"] for c in cs if c.get("generationsnummer_strukturell") or c.get("rollenbeleg")}
+        verworfen: dict[str, int] = {}
+        for c in cs:
+            if c.get("verworfen"):
+                verworfen[c["verworfen"]] = verworfen.get(c["verworfen"], 0) + 1
+        teile.append(
+            f"{_sauber(code)}[claims={len(cs)} dok_domains={','.join(sorted(dok_doms)) or '-'} "
+            f"rollenbeleg_domains={','.join(sorted(rolle_doms)) or '-'} "
+            f"unabhaengiger_rollenbeleg={bool(rolle_doms - dok_doms) if dok_doms else '-'} "
+            f"verknuepft={sum(1 for c in cs if c.get('rollenbeleg_verknuepft'))} "
+            f"verworfen={','.join(f'{k}={v}' for k, v in sorted(verworfen.items())) or '-'}]")
+    if generation:
+        ergebnis = f"bestaetigt code={_sauber(generation)} weg={nachweisweg or '-'}"
+    elif not alle:
+        ergebnis = "offen grund=kein_generationsclaim_in_ausgerichteten_quellen"
+    elif not gen_claims:
+        ergebnis = "offen grund=alle_claims_verworfen"
+    elif len({str(c['wert']) for c in gen_claims}) > 1:
+        ergebnis = "offen grund=mehrere_codes_ohne_vorrang"
+    else:
+        ergebnis = "offen grund=konsensschwelle_nicht_erreicht"
+    return ("research_phase=generation_entscheidung treffer=%d dok_treffer=%d (davon_verlinkt=%d) "
+            "dok_ausgerichtet=%d dok_verloren=%s dok_generationsclaims=%d codes=%s %s") % (
+        len(treffer), len(dok), verlinkt, ausgerichtet_n,
+        ",".join(f"{k}={v}" for k, v in sorted(nicht.items())) or "-",
+        dok_claims, " ".join(teile) or "-", ergebnis)
+
+
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
@@ -3118,6 +3178,9 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         else:
             generation = None
             generation_nachweisweg = None
+    log.info(_generation_diagnose_zeile(treffer, claims, gen_claims, marke=marke, modell=modell,
+                                        generation=generation if isinstance(generation, str) else None,
+                                        nachweisweg=generation_nachweisweg))
     gen_nr = konsens([c for c in claims if c["feld"] == "generation_nummer"], "generation_nummer")
     if gen_nr and generation:
         feldwerte["generation"]["detail"] = gen_nr[0]
