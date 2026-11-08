@@ -135,6 +135,32 @@ def identitaet_aufloesen(identity) -> IdentitaetsAufloesung:
                                  tuple(quellen))
 
 
+def motorisierung_beleg_text(identity) -> str:
+    """Benennt, WAS die Motorisierungsprüfung von `identitaet_aufloesen` trägt
+    (reine Anzeige, gleiche Bedingung wie dort; ändert keine Stufe)."""
+    fe = identity.field_evidence if identity is not None else {}
+
+    def belegt(feld: str) -> bool:
+        eintrag = fe.get(feld) or {}
+        return bool(getattr(identity, feld, None)) and _bestaetigt(eintrag) \
+            and eintrag.get("verification_state") != "user_only"
+
+    code = identity.engine_code if belegt("engine_code") else None
+    name = identity.engine_name if belegt("engine_name") else None
+    if code and name:
+        return f"Motorcode {code} und Motorbezeichnung „{name}“ belegt"
+    if name:
+        return f"Motorbezeichnung „{name}“ belegt, Motorcode nicht belegt"
+    if code:
+        teile = (fe.get("engine_name") or {}).get("bestaetigte_teile")
+        if teile:
+            return (f"Motorcode {code} belegt; von der Motorangabe nur „"
+                    + ", ".join(teile) + "“ bestätigt, übrige Angabe nicht geprüft")
+        return (f"nur über den Motorcode {code} belegt; die angegebene "
+                "Motorbezeichnung (Hubraum, Bauart) ist dadurch nicht bestätigt")
+    return ""
+
+
 @dataclass(frozen=True)
 class Empfehlungsentscheidung:
     empfehlung: str

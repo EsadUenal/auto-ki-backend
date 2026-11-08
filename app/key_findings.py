@@ -405,11 +405,14 @@ def _identitaets_finding(fehlende_angabe: str | None, web_belegt: bool = False,
         aktion = _klaerung_aktion(fehlt, satz_praefix="Für eine gezielte Analyse bitte",
                                   generation_betroffen="Generation" in fehlt)
         if identity is not None:
-            from app.empfehlungs_policy import identitaet_aufloesen
+            from app.empfehlungs_policy import identitaet_aufloesen, motorisierung_beleg_text
             aufl = identitaet_aufloesen(identity)
             if not aufl.fehlend:
+                beleg = motorisierung_beleg_text(identity)
                 aktion = ("Generation und Motorisierung wurden über Webquellen "
-                          "ausreichend plausibilisiert; ein Nachtrag ist nicht nötig.")
+                          "ausreichend plausibilisiert"
+                          + (f" (Motorisierung: {beleg})" if beleg else "")
+                          + "; ein Nachtrag ist nicht nötig.")
             else:
                 noch_offen = " und ".join(_WEB_FEHLT_PHRASE.get(f, f.lower()) for f in aufl.fehlend)
                 aktion = _klaerung_aktion(
