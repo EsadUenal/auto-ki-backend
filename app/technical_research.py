@@ -3805,7 +3805,12 @@ def _wartung_tabellen_fenster(text: str, vokabular: dict[str, str]) -> list[tupl
         if fussnote and not _INTERVALL.search(fenster):
             zusatz = _fussnoten_definition(text, fussnote.group(1), grenzen)
             if zusatz and _INTERVALL.search(zusatz):
-                fenster = f"{fenster.strip()} {zusatz}"
+                # Tabellenmarker gehören nicht in die sichtbare Aussage: die Fußnotenreferenz samt
+                # nachfolgender Spaltenmarker ("*1 E E") und das Definitionskürzel ("*1:") entfallen.
+                # Die Bedingung der Fußnote ("Bei Fahrzeugen mit ...") bleibt wörtlich erhalten.
+                kopf = re.sub(r"\*\d{1,2}\b(?:\s+[IEFN]\b)*\s*$", "", fenster.strip()).rstrip()
+                definition = re.sub(r"^\*\d{1,2}\s*:\s*", "", zusatz.strip())
+                fenster = re.sub(r"\s+", " ", f"{kopf}: {definition}")
         haupt, unterzeile = _modell_unterzeile_trennen(fenster.strip())
         taetigkeit = _abschnitt_taetigkeit(text, start)
         if haupt:

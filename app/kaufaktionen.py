@@ -1963,8 +1963,12 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   gruppe="Wartung und Technik", bauteil=bauteil)
             # Web-Wartungsfakten sind geprüfte Intervallangaben
             # (app/technical_research.py), also reguläre Wartung.
+            # Herkunft IMMER nennen -- auch wenn die Kilometerschwelle noch nicht erreicht ist und
+            # deshalb der laufleistungsbezogene Text (der sie enthält) fehlt.
             s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", f"{falls}{dok_titel} {bauteil}",
-                  _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil),
+                  _WARTUNG_VORLAGEN[WARTUNG_REGULAER][3].format(b=bauteil)
+                  + " Die Intervallangabe stammt aus der Webrecherche, nicht aus der geprüften "
+                    "Fahrzeugdatenbank.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
                   gruppe="Prüfungen und Wartung", bauteil=bauteil)
             continue

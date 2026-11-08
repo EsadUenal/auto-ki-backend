@@ -281,6 +281,42 @@ async def main():
           bool(ins_v) and all('falls für Ihren Markt zutreffend' in i.beschreibung
                               and "nicht bestätigt" in i.beschreibung for i in ins_v))
 
+    # ── Ausgabe: Tabellenreste und Herkunft im Nachweis ─────────────────────────
+    if oel_v:
+        b = oel_v[0].beschreibung
+        print("   ÖLHINWEIS:", b)
+        check("D9) keine Tabellenmarker im sichtbaren Ölhinweis ('*1', Spaltenmarker 'E E', Definitionskürzel '*1:')",
+              "*" not in b and " E E" not in b and "*1:" not in b, b[:200])
+        check("D10) Fußnotenbedingung, Tätigkeit, Intervall und Marktvorbehalt bleiben: 'Bei Fahrzeugen mit "
+              "Ölwechsel-Managementsystem', 'wechseln', 'zumindest alle 15.000 km / 1 Jahr', 'falls für Ihr Land "
+              "zutreffend', 'falls für Ihren Markt zutreffend'",
+              all(x in b for x in ("Motoröl und -filter: Bei Fahrzeugen mit Ölwechsel-Managementsystem",
+                                   "wechseln", "zumindest alle 15.000 km / 1 Jahr", "falls für Ihr Land zutreffend",
+                                   "falls für Ihren Markt zutreffend")), b[:400])
+    check("D11) in keinem Wartungshinweis steht ein Tabellenmarker ('*1', ' E E', ' I I')",
+          not any("*" in i.beschreibung or " E E" in i.beschreibung or " I I" in i.beschreibung for i in ins_v))
+    dok_v = r_voll.kaufaktionen.dokumente
+    herkunft = "Die Intervallangabe stammt aus der Webrecherche, nicht aus der geprüften Fahrzeugdatenbank."
+    check("D12) JEDER Web-Wartungsnachweis nennt die Herkunft -- auch wenn die Kilometerschwelle (bei 82.000 km) "
+          "noch nicht erreicht ist",
+          bool([a for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id])
+          and all(herkunft in a.aktion for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id),
+          str([a.id for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id and herkunft not in a.aktion]))
+    kuehl = [a for a in dok_v.fahrzeugspezifisch if "motorkuehlmittel" in a.id]
+    for a in kuehl:
+        print("   NACHWEIS Motorkühlmittel:", a.titel, "|", a.aktion)
+    check("D13) Motorkühlmittel (150.000 km, bei 82.000 km nicht erreicht): Nachweis mit Herkunft und der "
+          "unveränderten Vorlage (Rechnung/Serviceheft, Datum, Kilometerstand)",
+          len(kuehl) == 1 and herkunft in kuehl[0].aktion and "Datum und Kilometerstand" in kuehl[0].aktion
+          and "Kilometerstand der letzten Ausführung" in kuehl[0].aktion, str([a.aktion for a in kuehl]))
+    fr_oel = [a for a in r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch if "motoroel" in a.id]
+    dk_oel = [a for a in dok_v.fahrzeugspezifisch if "motoroel" in a.id]
+    for a in fr_oel + dk_oel:
+        print("   ÖL", a.bereich, "|", a.titel, "|", a.aktion)
+    check("D14) Ölfrage und Ölnachweis ohne Tabellenmarker",
+          len(fr_oel) == 1 and len(dk_oel) == 1
+          and not any("*" in a.titel + a.aktion or " E E" in a.titel + a.aktion for a in fr_oel + dk_oel))
+
     print("\n--- 5) ALLE gültigen Kandidaten (Fünferlimit nur im Testprozess aufgehoben) ---")
     f_alle, r_alle = await lauf_alle_kandidaten(True, SERVICEHEFT_VOLLTEXT)
     ins_a = wartung_insights(r_alle)
