@@ -777,7 +777,8 @@ def _rollenbeleg_kandidat(treffer: list[dict], *, ziel: dict) -> tuple[str | Non
         return None, {"kandidaten": 0, "hosts": [], "grund": "rollenbeleg_vorhanden_oder_anderer_grund"}
     mit_claim = {c["url"] for c in gen}
     dok_hosts = {c["domain"] for c in dok}
-    gerankt, gesehen = [], set()
+    modell_woerter = _modell_woerter(modell)
+    gerankt, gesehen, nur_familie = [], set(), 0
     for i, r in enumerate(quellen):
         url = r.get("url") or ""
         if (not url or url in gesehen or url in mit_claim or r.get("verlinkt_von_herstellerseite")
@@ -785,12 +786,21 @@ def _rollenbeleg_kandidat(treffer: list[dict], *, ziel: dict) -> tuple[str | Non
                 or _marke_eigene_domain(url, marke) or _domain_von(url) in dok_hosts
                 or _tier_identitaet(url, marke) > 2):
             continue
+        # Genaues Zielmodell schon VOR dem Abruf belegt: die Modellwörter stehen im TITEL als
+        # zusammenhängende Folge. Nur die Modellfamilie ("RC 200t F Sport", Snippet nennt den
+        # Zielwagen bloß als Schwestermodell) genügt nicht.
+        titel_woerter = _modell_woerter(r.get("title"))
+        if not (_enthaelt_folge(titel_woerter, modell_woerter)
+                or _enthaelt_folge(titel_woerter, ["".join(modell_woerter)])):
+            nur_familie += 1
+            continue
         gesehen.add(url)
         gerankt.append((-score_domain(url, KATEGORIE_TECHNISCHE_DATEN), _tier_identitaet(url, marke), i, url))
     gerankt.sort()
     hosts = sorted({registrable_domain(u) for *_, u in gerankt})
     if not gerankt:
-        return None, {"kandidaten": 0, "hosts": [], "grund": "kein_geeigneter_treffer"}
+        return None, {"kandidaten": 0, "hosts": [],
+                      "grund": "nur_modellfamilie" if nur_familie else "kein_geeigneter_treffer"}
     return gerankt[0][3], {"kandidaten": len(gerankt), "hosts": hosts, "grund": "ausgewaehlt"}
 
 
