@@ -2509,7 +2509,14 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # unten unveraendert wirksam -- siehe deren Aufruf von `add()` ohne
     # `tier_override`.
     tier_vor_schwach_abwertung = tier
+    # N18: die volle Bezeichnung des Ziels. `_ziel()` trennt eine Zusatzkennung
+    # ab ("RC 300h" -> Kern "RC" + "300h"); am Kern allein gilt jeder Satz mit
+    # "RC F" als Zielnennung. Sätze, die ein anderes Modell derselben Familie
+    # nennen (s. `_geschwistermodell_lokal`), tragen keine Zielangaben.
+    voll_modell = " ".join(filter(None, [ziel.get("modell"), ziel.get("auxiliary_code")]))
     _, grund = ausgerichtet(r, ziel.get("marke"), ziel.get("modell"))
+    if grund is None and _geschwistermodell_lokal(r.get("title") or "", voll_modell):
+        grund = "schwach"
     if grund == "schwach":
         # Nur Sätze, die das Modell nennen; niedrigste Stufe -- AUSSER die
         # Quelle ist die bestaetigte eigene Domain des Herstellers
@@ -2527,7 +2534,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # zweier Geschwistermodelle keines davon im Titel nennt.
         tier = tier if _marke_eigene_domain(url, ziel.get("marke")) else 3
         text = " ".join(s for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
-                        if _satz_nennt_modell(s, ziel.get("modell")))
+                        if _satz_nennt_modell(s, ziel.get("modell"))
+                        and not _geschwistermodell_lokal(s, voll_modell))
     else:
         # Claim-Level Vehicle Binding (Forensik-Folgeauftrag, Package A,
         # CONFIRMED Root Cause): ein Treffer, dessen TITEL das Zielmodell
@@ -2565,6 +2573,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             [s for s, _ in satz_mit_grenze], marke=ziel.get("marke"), modell=ziel.get("modell"),
             titel_stark=True, segment_marker=[g for _, g in satz_mit_grenze],
             url=url, kategorie="identitaet")
+        lokale_saetze = [s for s in lokale_saetze if not _geschwistermodell_lokal(s, voll_modell)]
         # Herstellervertrauen-Folgeauftrag (2026-11-01): `lokale_saetze` ist
         # eine gefilterte Teilfolge von `satz_mit_grenze` ohne eigene
         # Grenzinformation -- fuer `_fremdmarkt_spannen()` (satzuebergreifende
@@ -2637,6 +2646,11 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     herstelleridentifikation = (bool(r.get("verlinkt_von_herstellerseite"))
                                 or _herstelleridentifikationsdokument(url, ziel.get("marke")))
     for g in _generationscodes(r, ziel.get("modell")) if grund != "schwach" else []:
+        # N18: "RC F" ist bei Ziel "RC 200t" ein Geschwistermodell, kein
+        # Generationscode "F" des Kernmodells "RC".
+        if (g["code"].isalpha() and voll_modell != ziel.get("modell")
+                and _geschwistermodell_lokal(f"{ziel.get('modell')} {g['code']}", voll_modell)):
+            continue
         passt = _im_zeitraum(baujahr, g["zeitraum"])
         if passt is False:
             add("generation", g["code"], verworfen="baujahr_ausserhalb", zeitraum=g["zeitraum"])
@@ -4689,6 +4703,36 @@ def _fremdfahrzeug_explizit_lokal(satz: str, marke: str | None,
     anderes = _anderes_fahrzeug_lokal(satz, modell)
     if anderes:
         return f"anderes_fahrzeug_lokal:{anderes}"
+    return None
+
+
+# N18: ein Satz, der ein ANDERES Modell derselben Modellfamilie ausdrücklich nennt
+# ("im RC F mit V8-Motor und 477 PS" auf einer RC-200t-Seite) und das Zielmodell
+# selbst nicht, beschreibt dieses andere Modell -- ein passender Seitentitel darf
+# ihm keinen Zielkontext leihen. Familie = erstes Wort des mehrteiligen
+# Zielmodells ("RC" bei "RC F"/"RC 300h"); Modellbezeichnung = das direkt
+# folgende Kürzel mit Ziffer oder aus 1-3 Großbuchstaben. Jahreszahlen und
+# römische Generationszählungen ("Golf VII") gelten nicht als Modell.
+_RE_JAHR_TOKEN = re.compile(r"(?:19|20)\d{2}")
+_RE_ROEMISCH_TOKEN = re.compile(r"[IVX]{1,4}")
+
+
+def _geschwistermodell_lokal(satz: str, modell: str | None) -> str | None:
+    roh = _norm(modell).split()
+    if len(roh) < 2 or _satz_nennt_modell(satz, modell):
+        return None
+    ziel = [t for tok in roh for t in _fein_zerlegt(tok)]
+    stamm = roh[0]
+    muster = r"\b" + re.escape(stamm) + r"[\s-]+([A-Za-z]*\d\w*|[A-Za-z]{1,3})\b"
+    for m in re.finditer(muster, satz, re.IGNORECASE):
+        kuerzel = m.group(1)
+        if _RE_JAHR_TOKEN.fullmatch(kuerzel) or _RE_ROEMISCH_TOKEN.fullmatch(kuerzel):
+            continue
+        if not any(c.isdigit() for c in kuerzel) and not kuerzel.isupper():
+            continue
+        kandidat = _fein_zerlegt(stamm) + _fein_zerlegt(_norm(kuerzel).replace(" ", ""))
+        if ziel[:len(kandidat)] != kandidat:
+            return m.group(0).strip()
     return None
 
 
