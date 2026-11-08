@@ -2606,7 +2606,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             herstelleridentifikation=herstelleridentifikation)
         if g["nummer"]:
             add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
-                jahr_belegt=passt is True)
+                jahr_belegt=passt is True, code=g["code"])
     # Familien-Zugehoerigkeitsbeleg (s. Moduldocstring-Block bei
     # `_modellfamilie_praefixe()`/`_modellfamilie_zugehoerigkeit_belegt()`):
     # zusaetzlich zum exakten Core-Model-Anker oben auch auf einem Modell-
@@ -2652,7 +2652,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                 tier_override=tier_vor_schwach_abwertung)
             if g["nummer"]:
                 add("generation_nummer", f"{g['nummer']}. Generation", zeitraum=g["zeitraum"],
-                    jahr_belegt=passt is True, tier_override=tier_vor_schwach_abwertung)
+                    jahr_belegt=passt is True, tier_override=tier_vor_schwach_abwertung,
+                    code=g["code"])
     for m in _RE_GEN_NUMMER.finditer(text):
         nr = m.group(1) or _ORDINAL.get(_norm(m.group(2)).replace(" ", ""))
         if nr:
@@ -3237,7 +3238,13 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     log.info(_generation_diagnose_zeile(treffer, claims, gen_claims, marke=marke, modell=modell,
                                         generation=generation if isinstance(generation, str) else None,
                                         nachweisweg=generation_nachweisweg))
-    gen_nr = konsens([c for c in claims if c["feld"] == "generation_nummer"], "generation_nummer")
+    # N15: eine Generationsnummer wird nur ausgegeben, wenn sie in derselben
+    # Fundstelle strukturell an GENAU den belegten Code gebunden ist
+    # (`code=`). Eine frei im Text stehende "N. Generation" (ohne Bindung an
+    # den Code) belegt die Nummer dieser Kennung nicht und kann zu einem
+    # anderen Fahrzeug der Modellfamilie gehören.
+    gen_nr = konsens([c for c in claims if c["feld"] == "generation_nummer"
+                      and generation and c.get("code") == generation], "generation_nummer")
     if gen_nr and generation:
         feldwerte["generation"]["detail"] = gen_nr[0]
     generation_cluster: list[str] = [generation] if generation else []
