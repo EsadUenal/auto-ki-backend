@@ -360,9 +360,14 @@ async def main_c() -> None:
               je_intent_zeile)
         check("C3) der Motorisierungs-Fachquellen-Intent (DE) erhielt den "
               "geteilten Treffer (treffer=1), zeigt ihn aber ausdrücklich als "
-              "mehrfach=1, NICHT als eigenen gate_erfuellt-Kandidaten",
+              "mehrfach=1, NICHT als eigenen gate_erfuellt-Kandidaten -- UND "
+              "(N1-Nachtrag 'Dokumenttyp-Query findet gemeinsame URL "
+              "später') mehrfach_ausgewaehlt=1, weil genau dieser geteilte "
+              "Treffer über den Dokumenttyp-Intent tatsächlich ausgewählt "
+              "wurde (ausgewaehlt=1 dort, s. C2)",
               "identity_spec_gap_motor_fachquelle_de: treffer=1 mehrfach=1 "
-              "fremde_domain=0 kein_pdf=0 falsches_pfadwort=0 gate_erfuellt=0"
+              "mehrfach_ausgewaehlt=1 fremde_domain=0 kein_pdf=0 "
+              "falsches_pfadwort=0 gate_erfuellt=0"
               in je_intent_zeile, je_intent_zeile)
         check("C4) keine vollständige URL/kein Suchtext in der Logzeile -- "
               "nur Intent-Kennungen und Zählwerte",
