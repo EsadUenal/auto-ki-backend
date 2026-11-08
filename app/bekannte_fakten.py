@@ -81,6 +81,7 @@ class BekannteFakten:
     letzte_wartung: Wartungsangabe | None = None
     kilometerstand: int | None = None
     hu_bis: str | None = None
+    hu_konflikt: object | None = None   # app.hu_termin.HuKonflikt
     unfall: str = UNKNOWN
     vorbesitzer: int | None = None
     servicehistorie: str | None = None
@@ -94,6 +95,11 @@ class BekannteFakten:
         return widerspruch_km(self.letzte_wartung, self.kilometerstand)
 
 
+def _hu_konflikt(req):
+    from app.hu_termin import konflikt_aus_request
+    return konflikt_aus_request(req)
+
+
 def aus_request(req) -> BekannteFakten:
     km = getattr(req, "kilometerstand", None)
     unfall = unfall_status(req)
@@ -102,6 +108,7 @@ def aus_request(req) -> BekannteFakten:
         letzte_wartung=wartungsangabe_aus_request(req),
         kilometerstand=km if isinstance(km, int) else None,
         hu_bis=(getattr(req, "tuev_bis", None) or "").strip() or None,
+        hu_konflikt=_hu_konflikt(req),
         unfall=unfall,
         vorbesitzer=getattr(req, "vorbesitzer", None),
         servicehistorie=servicehistorie_status(req),
@@ -155,7 +162,14 @@ def basistexte(f: BekannteFakten) -> dict[tuple[str, str], tuple[str | None, str
                 f"{f.letzte_wartung.anzeige()}: die Angabe allein belegt nicht, dass die "
                 f"Arbeiten ausgeführt wurden."))
 
-    if f.hu_bis:
+    if f.hu_konflikt is not None:
+        k = f.hu_konflikt
+        texte[("verkaeuferfragen", "hu")] = (
+            f"Welcher HU-Termin gilt: {k.formular} oder {k.inserat}? Was steht im Prüfbericht?",
+            f"Formular und Inseratstext nennen unterschiedliche HU-Termine ({k.formular} "
+            f"und {k.inserat}). Beide sind Angaben, keine ist belegt. Den HU-Bericht und die "
+            f"Plakette am Fahrzeug zeigen lassen und den tatsächlichen Termin dort ablesen.")
+    elif f.hu_bis:
         texte[("verkaeuferfragen", "hu")] = (
             "Was stand im Prüfbericht der letzten Hauptuntersuchung?",
             f"Laut Inserat läuft die HU bis {f.hu_bis}. Den Bericht zeigen lassen: dort "
@@ -258,6 +272,9 @@ def bereinige_bericht(bericht: str, f: BekannteFakten) -> tuple[str, list[str]]:
     if f.hu_bis:
         def _hu(m: re.Match) -> str:
             ersetzt.append(m.group(0))
+            if f.hu_konflikt is not None:
+                return (f"Welcher HU-Termin gilt: {f.hu_konflikt.formular} oder "
+                        f"{f.hu_konflikt.inserat}? Was steht im Prüfbericht?")
             return (f"Was stand im Prüfbericht der letzten Hauptuntersuchung (HU laut Inserat "
                     f"bis {f.hu_bis})?")
         text = _FRAGE_HU.sub(_hu, text)

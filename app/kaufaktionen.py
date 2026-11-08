@@ -2192,7 +2192,17 @@ def _aus_inserat(s: _Sammler, req) -> None:
                   gruppe="Angaben aus dem Inserat")
 
     tuev = (getattr(req, "tuev_bis", None) or "").strip()
-    if tuev:
+    from app.hu_termin import konflikt_aus_request
+    hu_k = konflikt_aus_request(req)
+    if hu_k is not None:
+        s.add(DOKUMENTE, "hu-bericht",
+              f"HU-Bericht prüfen: Termin {hu_k.formular} oder {hu_k.inserat}?",
+              f"Formular ({hu_k.formular}) und Inseratstext ({hu_k.inserat}) nennen "
+              "unterschiedliche HU-Termine, keiner ist belegt. Den letzten Prüfbericht und die "
+              "Plakette zeigen lassen und den Termin dort ablesen; die vermerkten Mängel und der "
+              "Kilometerstand zeigen, was zuletzt beanstandet wurde.",
+              _R_DOKUMENT_KERN, kategorie="inserat", gruppe="Angaben aus dem Inserat")
+    elif tuev:
         s.add(DOKUMENTE, "hu-bericht", f"HU-Bericht zum angegebenen Termin ({tuev}) ansehen",
               "Den letzten Prüfbericht der Hauptuntersuchung zeigen lassen: die dort vermerkten "
               "Mängel und der Kilometerstand zeigen, was zuletzt beanstandet wurde.",

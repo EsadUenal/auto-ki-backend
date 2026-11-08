@@ -60,7 +60,7 @@ from app.preisurteil import (
 )
 from app.kaufaktionen import build_kaufaktionen
 from app.kba_canonical_lookup import get_rueckrufe_fuer_identity
-from app.hu_termin import bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
+from app.hu_termin import konflikt_aus_request, bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
 from app.markt_quellen import geeignete_marktquellen
 from app.empfehlung_gruende import baue_empfehlung_gruende
 from app.fahrzeugkontext import generationslabel
@@ -309,6 +309,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # RC1: HU-Termin deterministisch gegen HEUTE bewerten (nie im Modell).
     heute = _heute()
     hu = bewerte_hu(req.tuev_bis, heute=heute, baujahr=req.baujahr)
+    hu_konflikt = konflikt_aus_request(req)
 
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
@@ -448,7 +449,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         preis_block = ""
     datum_zeile = f"HEUTIGES DATUM: {heute.month:02d}/{heute.year}"
     user_msg = "\n\n".join(filter(None, [datum_zeile, _format_inserat(req),
-                                         hu_prompt_zeile(hu, heute), motor_status, db_ctx, web_ctx,
+                                         hu_prompt_zeile(hu, heute, hu_konflikt), motor_status, db_ctx, web_ctx,
                                          laufleistung_block, markt_block,
                                          preis_block, evidence_block]))
     # Absichtlich KEIN try/except um Gemini-Totalausfälle (RateLimitExhausted,
@@ -642,7 +643,9 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "empfehlung_gruende":      empfehlung_gruende,
         "hu_pruefung":             (None if hu is None else {
             "angabe": hu.anzeige, "status": hu.status,
-            "monate_bis_faellig": hu.monate_bis_faellig, "hinweis": hu.hinweis}),
+            "monate_bis_faellig": hu.monate_bis_faellig, "hinweis": hu.hinweis,
+            "konflikt": (None if hu_konflikt is None else {
+                "formular": hu_konflikt.formular, "inserat": hu_konflikt.inserat})}),
         "preis_evidence_ids":      preis_evidence_ids,
         "risiko_evidence_ids":     risiko_evidence_ids,
         "key_findings":            key_findings,

@@ -347,7 +347,13 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                                       NICHT_BEWERTBAR))
 
     # HU gegen die gesetzliche Regel und das heutige Datum.
-    if hu is not None:
+    hu_k = getattr(fakten, "hu_konflikt", None) if fakten is not None else None
+    if hu_k is not None:
+        zeilen.append(Vergleichszeile(
+            "HU", f"Formular bis {hu_k.formular} · Inseratstext bis {hu_k.inserat}",
+            None, HERKUNFT_KEINE, WIDERSPRUCH,
+            ohne_referenz="beide Angaben unbelegt: HU-Bericht klären"))
+    elif hu is not None:
         status = getattr(hu, "status", None)
         einordnung = {PLAUSIBEL: PASST, ABGELAUFEN: "⚠ abgelaufen",
                       UNGEWOEHNLICH_WEIT: "⚠ ungewöhnlich weit: im Fahrzeugschein prüfen"

@@ -143,11 +143,16 @@ def bewerte_hu(roh: str | None, heute: dt.date | None = None,
                        monate_bis_faellig=diff, anzeige=anzeige, hinweis=hinweis)
 
 
-def prompt_zeile(b: HuBewertung | None, heute: dt.date | None = None) -> str:
+def prompt_zeile(b: HuBewertung | None, heute: dt.date | None = None,
+                konflikt: "HuKonflikt | None" = None) -> str:
     """Fester Fakt fürs LLM-Prompt: Datum, Bewertung und das Verbot, neu zu urteilen."""
     if b is None:
         return ""
     heute = heute or dt.date.today()
+    if konflikt is not None:
+        return (f"HU-/TÜV-PRÜFUNG (deterministisch, Stand {heute.month:02d}/{heute.year}): "
+                f"WIDERSPRUCH. {konflikt_satz(konflikt)} Nenne keinen der Termine als "
+                "gesichert, bewerte den HU-Stand nicht als plausibel und verweise auf den HU-Bericht.")
     return (
         f"HU-/TÜV-PRÜFUNG (deterministisch, Stand {heute.month:02d}/{heute.year}): "
         f"Angabe {b.anzeige}. Bewertung: {b.status}. {b.hinweis}\n"
@@ -218,3 +223,72 @@ def bereinige_bericht(bericht: str, b: HuBewertung | None) -> str:
         zeilen_neu.append(rest if not zeile.startswith((" ", "-", "*")) else
                           re.match(r"^\s*", zeile).group(0) + rest)
     return "\n".join(zeilen_neu)
+
+
+# ── Widerspruch Formularfeld vs. Inseratstext (N14) ──────────────────────────
+#
+# Nur eine AUSDRÜCKLICH als HU/TÜV benannte Terminangabe im Inseratstext zählt
+# ("HU bis August 2027", "TÜV: 08/2027"). Andere Datumsangaben (Erstzulassung,
+# Wartung, Inserat vom ...) werden nie als HU gelesen. Nennt der Text mehrere
+# verschiedene HU-Termine, ist er unklar und erzeugt keinen Konflikt.
+
+_MONATE = {
+    "januar": 1, "jan": 1, "februar": 2, "feb": 2, "märz": 3, "maerz": 3, "mär": 3,
+    "april": 4, "apr": 4, "mai": 5, "juni": 6, "jun": 6, "juli": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "oktober": 10, "okt": 10,
+    "november": 11, "nov": 11, "dezember": 12, "dez": 12,
+}
+_HU_TEXT = re.compile(
+    r"\b(?:HU|T[ÜU]V|Hauptuntersuchung)(?:\s*/\s*(?:AU|HU|T[ÜU]V))?\s*(?:neu\s*)?"
+    r"(?:g[üu]ltig\s+)?(?:bis(?:\s+(?:zum|einschlie(?:ß|ss)lich|Ende))?|:)\s*"
+    r"(?:(0?[1-9]|1[0-2])\s*[/.]\s*(20\d{2})"
+    r"|([A-Za-zäöüÄÖÜ]{3,9})\.?\s+(20\d{2}))",
+    re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class HuKonflikt:
+    formular: str          # "09/2027"
+    inserat: str           # "08/2027"
+    inserat_roh: str       # Fundstelle im Text, z.B. "HU bis August 2027"
+
+
+def hu_aus_text(text: str | None) -> tuple[tuple[int, int], str] | None:
+    """((Monat, Jahr), Fundstelle) für einen eindeutigen, ausdrücklich als HU/TÜV
+    benannten Termin im Text, sonst None."""
+    funde: dict[tuple[int, int], str] = {}
+    for m in _HU_TEXT.finditer(text or ""):
+        if m.group(1):
+            termin = (int(m.group(1)), int(m.group(2)))
+        else:
+            monat = _MONATE.get(m.group(3).lower())
+            if monat is None:
+                continue
+            termin = (monat, int(m.group(4)))
+        funde.setdefault(termin, m.group(0).strip())
+    if len(funde) != 1:
+        return None
+    termin, roh = next(iter(funde.items()))
+    return termin, roh
+
+
+def hu_konflikt(formular_roh: str | None, text: str | None) -> HuKonflikt | None:
+    """Zwei eindeutig gelesene, unterschiedliche HU-Termine, sonst None."""
+    form = parse_hu(formular_roh)
+    gefunden = hu_aus_text(text)
+    if form is None or gefunden is None or gefunden[0] == form:
+        return None
+    (m_t, j_t), roh = gefunden
+    return HuKonflikt(formular=f"{form[0]:02d}/{form[1]}", inserat=f"{m_t:02d}/{j_t}",
+                      inserat_roh=roh)
+
+
+def konflikt_aus_request(req) -> HuKonflikt | None:
+    from app.tristate import request_text
+    return hu_konflikt(getattr(req, "tuev_bis", None), request_text(req))
+
+
+def konflikt_satz(k: HuKonflikt) -> str:
+    return (f"Formular: HU bis {k.formular} · Inseratstext: „{k.inserat_roh}“ ({k.inserat}). "
+            "Beide Angaben stammen vom Verkäufer bzw. aus dem Inserat und sind nicht "
+            "belegt; keine davon gilt als bestätigt.")

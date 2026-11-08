@@ -634,6 +634,18 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
     out: list[KeyFinding] = []
     out += _strukturiert_vs_inserat(req)
     out += _getriebe_widerspruch(req, motor_match)
+    from app.hu_termin import konflikt_aus_request
+    hu_k = konflikt_aus_request(req)
+    if hu_k is not None:
+        out.append(KeyFinding(
+            id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
+            titel="HU-Termin im Formular und im Inseratstext unterschiedlich",
+            beschreibung=f"Im Formular steht HU bis {hu_k.formular}, im Inseratstext "
+                         f"„{hu_k.inserat_roh}“ ({hu_k.inserat}). Beide sind Angaben des "
+                         f"Verkäufers, keine ist bestätigt.",
+            wert=f"Formular: {hu_k.formular} · Inseratstext: {hu_k.inserat}",
+            aktion="Den tatsächlichen Termin im HU-Bericht und auf der Plakette klären.",
+            prioritaet=_P_WIDERSPRUCH + 5))
 
     # Kraftstoff-Widerspruch: Inserat-Kraftstoff vs. erkannte Motorisierung.
     # Kraftstoffart (Benzin/Diesel/Elektro) und Antriebsart (ICE/MHEV/PHEV/BEV)
