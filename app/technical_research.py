@@ -1542,6 +1542,27 @@ _RE_ANTRIEBSART_FELD = re.compile(
 _RE_KRAFTSTOFFART_FELD = re.compile(
     r"\bKraftstoffart\s*[:\|]?\s*(Super\s*Plus|Super|Normal|E10|Diesel)\b", re.I)
 
+# N17: zwei Wortarten, die `powertrain_aus_freitext()` (`verbrenn\w*`,
+# `elektro\w*`) als Antriebsaussage liest, sagen nichts über die
+# Elektrifizierung DIESES Fahrzeugs:
+#   * ein Bauteilname als Beschriftungs-Qualifier in Klammern
+#     ("Motorbauart (Verbrennungsmotor)", "Leistung (Elektromotor)") --
+#     Hybrid-Datenblätter tragen dieselben Beschriftungen;
+#   * Themen-/Navigationsbegriffe und "elektron-" ("Elektromobilität",
+#     "Elektronik", "elektronisch").
+# Beide werden NUR für die Elektrifizierungs-Claims der Identitätsquelle
+# neutralisiert; Werte und Fließtextaussagen ("Motorart: Elektro",
+# "Vollhybrid", "reiner Verbrenner") bleiben erkannt.
+_ELEKTRIFIZIERUNG_BAUTEIL_QUALIFIER = re.compile(
+    r"\(\s*(?:verbrennungs|elektro)motor(?:en|s)?\s*\)", re.IGNORECASE)
+_ELEKTRIFIZIERUNG_THEMENWORT = re.compile(
+    r"\belektro(?:mobilit\w*|n\w*)", re.IGNORECASE)
+
+
+def _ohne_elektrifizierungs_fehlausloeser(text: str) -> str:
+    text = _ELEKTRIFIZIERUNG_BAUTEIL_QUALIFIER.sub(" ", text or "")
+    return _ELEKTRIFIZIERUNG_THEMENWORT.sub(" ", text)
+
 # Zielgueltigkeits-Folgeauftrag (29.10.2026, CONFIRMED am realen ADAC-
 # Datenblatt): ein Datenblatt wie ADAC fuehrt NEBEN der groben Baureihenspanne
 # ("Baureihe RC (UXC1) (12/14 - 06/25)") ein EIGENES, engeres Feldpaar
@@ -2710,7 +2731,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # erfunden. "Benzin"/"Diesel" allein lösen hier bewusst NICHTS aus (siehe
     # `powertrain_aus_freitext`-Docstring): der Kraftstoff-Claim oben ist eine
     # ANDERE Achse und impliziert nie die Elektrifizierung.
-    pt = powertrain_aus_freitext(text)
+    pt = powertrain_aus_freitext(_ohne_elektrifizierungs_fehlausloeser(text))
     if pt:
         add("powertrain", pt)
     for m in _RE_GETRIEBE_MANUELL.finditer(text):
