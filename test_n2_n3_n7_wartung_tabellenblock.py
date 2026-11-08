@@ -202,17 +202,17 @@ check("Mehrdeutige/fremde Zeilen werden tatsächlich mit Grund abgelehnt, nicht 
       "stillschweigend verworfen",
       {"no_maintenance_interval", "wartung_zeile_fremdes_modell"} <= _gruende_s,
       str(sorted(_gruende_s)))
-check("Auswahl, bereits am SOLO-Block) dieser einzelne Treffer liefert bereits "
-      "SIEBEN gültige, korrekt zugeordnete Kandidaten (u.a. 'Zündkerzen', "
-      "generisch über Vokabular 'zuendkerz' erkannt; seit der N9-Folgerunde "
-      "(app/kaufaktionen.py, 'differenzial' ergänzt) zusätzlich "
-      "'Hinterachsdifferenzialöl', vorher durch die fehlende Fenstergrenze "
-      "nie erreichbar) gegen MAX_FAKTEN_JE_KATEGORIE=5 -- die zwei "
-      "überzähligen (Motorkühlmittel, Zündkerzen) werden deshalb "
-      "erwartungsgemäß diagnostisch zurückgehalten, nicht stillschweigend "
-      "verworfen",
+check("Auswahl, bereits am SOLO-Block) dieser einzelne Treffer liefert SECHS gültige, korrekt "
+      "zugeordnete Kandidaten (Ventilspiel, Automatikgetriebeöl, Hinterachsdifferenzialöl, "
+      "Motorkühlmittel, Nebenaggregat-Antriebsriemen, Zündkerzen) gegen "
+      "MAX_FAKTEN_JE_KATEGORIE=5 -- der überzählige (Zündkerzen) wird deshalb "
+      "erwartungsgemäß diagnostisch zurückgehalten, nicht stillschweigend verworfen. "
+      "(N7-Wartungsauswahl: 'Inverter-Kühlmittel' ist KEIN Kandidat mehr -- sein Hybrid-"
+      "Vorbehalt bleibt bei unbekannter Elektrifizierung offen, Grund "
+      "'wartung_technische_bedingung_offen'.)",
       "wartung_auswahllimit_erreicht" in _gruende_s
-      and sum(1 for a in abgelehnt_s if a.get("grund") == "wartung_auswahllimit_erreicht") == 2,
+      and sum(1 for a in abgelehnt_s if a.get("grund") == "wartung_auswahllimit_erreicht") == 1
+      and "wartung_technische_bedingung_offen" in _gruende_s,
       str([a.get("satz") for a in abgelehnt_s if a.get("grund") == "wartung_auswahllimit_erreicht"]))
 
 
@@ -237,9 +237,8 @@ check("Fußnoten-Fall) 'Motoröl' erhält über die EIGENE, per *1 verknüpfte "
 
 # ── 3) BEIDE Blöcke zusammen: mehr gültige Kandidaten als das Limit ─────────
 # Realistisches Szenario: zwei Seiten desselben Dokuments als zwei Treffer in
-# EINEM Recherchedurchlauf -- 7 (SICHERHEIT) + 1 (FITNESS) = 8 gültige,
-# korrekt zugeordnete Kandidaten gegen MAX_FAKTEN_JE_KATEGORIE=5 (seit der
-# N9-Folgerunde zählt 'Hinterachsdifferenzialöl' zusätzlich mit).
+# EINEM Recherchedurchlauf -- 6 (SICHERHEIT) + 1 (FITNESS) = 7 gültige,
+# korrekt zugeordnete Kandidaten gegen MAX_FAKTEN_JE_KATEGORIE=5.
 abgelehnt_c: list[dict] = []
 fakten_c = _extrahiere_fakten([_SICHERHEIT_TREFFER, _FITNESS_TREFFER], "wartung",
                               marke="Lexus", modell="RC F", baujahr=2017, abgelehnt=abgelehnt_c)
@@ -260,11 +259,10 @@ check("Auswahl) genau MAX_FAKTEN_JE_KATEGORIE (5) Fakten werden tatsächlich "
       "angezeigt, nicht mehr und nicht weniger",
       len(fakten_c) == 5, str(_bauteile_c))
 check("Auswahl) die über das Limit hinausgehenden, an sich gültigen und "
-      "korrekt zugeordneten Kandidaten (hier drei: 'Motoröl' aus dem "
-      "FITNESS-Treffer, 'Motorkühlmittel' und 'Zündkerzen' aus dem "
-      "SICHERHEIT-Treffer) werden NICHT stillschweigend verworfen, sondern "
-      "mit Grund 'wartung_auswahllimit_erreicht' diagnostisch festgehalten",
-      len(_limit_gruende_c) == 3, str(_limit_gruende_c))
+      "korrekt zugeordneten Kandidaten (hier zwei: 'Nebenaggregat-Antriebsriemen' und "
+      "'Zündkerzen' aus dem SICHERHEIT-Treffer) werden NICHT stillschweigend verworfen, "
+      "sondern mit Grund 'wartung_auswahllimit_erreicht' diagnostisch festgehalten",
+      len(_limit_gruende_c) == 2, str(_limit_gruende_c))
 check("Auswahl) 'Ventilspiel' (ausdrücklich für RC F zugeordnet) wird NICHT "
       "durchs Limit verdrängt -- eine explizite Zuordnung hat Vorrang vor rein "
       "alphabetischer Auswahl",

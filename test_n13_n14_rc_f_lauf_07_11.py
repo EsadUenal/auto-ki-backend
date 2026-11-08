@@ -121,10 +121,17 @@ if ventilspiel:
           ventilspiel.aussage)
     check("A3) Ventilspiel wird jetzt als 'pruefen' klassifiziert (vorher 'unbestimmt')",
           ventilspiel.taetigkeit == "pruefen", f"taetigkeit={ventilspiel.taetigkeit!r}")
-check("A4) Automatikgetriebeöl (kein Aktionswort im Text) bleibt bewusst 'unbestimmt' "
-      "-- kein Rückschluss aus dem Bauteilnamen, Regression gegen Überreparatur",
-      automatikgetriebeoel is not None and automatikgetriebeoel.taetigkeit is None,
+# N7-Wartungsauswahl (Folgepaket): die Zeile selbst nennt keine Tätigkeit -- sie steht im Abschnitt
+# "ZUSÄTZLICHE INSPEKTIONEN" des echten Blocks, daraus folgt "prüfen" (nie aus dem Bauteilnamen).
+check("A4) Automatikgetriebeöl: Tätigkeit 'pruefen' aus dem Abschnittskopf 'ZUSÄTZLICHE INSPEKTIONEN'",
+      automatikgetriebeoel is not None and automatikgetriebeoel.taetigkeit == "pruefen",
       f"taetigkeit={getattr(automatikgetriebeoel, 'taetigkeit', 'FEHLT')!r}")
+_ohne_kopf = extrahiere(_SICHERHEIT_BLOCK.replace("ZUSÄTZLICHE INSPEKTIONEN", "WEITERE ZEILEN"))
+_agoel_ohne = next((f for f in _ohne_kopf if "Automatikgetriebe" in (f.bauteil or "")), None)
+check("A4b) derselbe Wortlaut OHNE Abschnittskopf mit Tätigkeitswort bleibt 'unbestimmt' "
+      "-- kein Rückschluss aus dem Bauteilnamen (Regression gegen Überreparatur)",
+      _agoel_ohne is not None and _agoel_ohne.taetigkeit is None,
+      f"taetigkeit={getattr(_agoel_ohne, 'taetigkeit', 'FEHLT')!r}")
 
 if ventilspiel:
     insights_a = insights_aus_fakten([ventilspiel], REQ)

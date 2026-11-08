@@ -1032,6 +1032,13 @@ class _Sammler:
             out.append(a)
         return out
 
+    def gekappt(self, bereich: str) -> list[Kaufaktion]:
+        """Fahrzeugspezifische Aktionen, die `MAX_SPEZIFISCH_PRO_BEREICH` aus der
+        Ausgabe drängt (höchster Rang zuerst)."""
+        ausgegeben = {a.id for a in self.liste(bereich)}
+        return [a for a in sorted(self._pro_bereich[bereich].values(), key=lambda a: (-a.rang, a.id))
+                if a.id not in ausgegeben]
+
     def schluessel(self, bereich: str) -> set[str]:
         """Themen-/Bauteilschlüssel, die in diesem Bereich fahrzeugspezifisch belegt
         sind — Grundlage für die Basis-Dedup (§18).
@@ -1212,6 +1219,24 @@ def _inserat_basistexte(req) -> dict[tuple[str, str], tuple[str | None, str]]:
     return bekannte_fakten_basistexte(bekannte_fakten_aus_request(req))
 
 
+# Spezifische Verkäuferfragen zu fehlenden Inserat-Angaben, die als Basisfrage bestehen
+# bleiben, wenn der Deckel sie verdrängt -> (Schlüssel, Anker-Katalogeintrag davor).
+_GEKAPPT_ALS_BASIS = {"scheckheft": "wartung", "vorbesitzer": "finanzierung"}
+
+
+def _katalog_mit_gekappten_fragen(katalog, gekappt: list[Kaufaktion]):
+    ergebnis = list(katalog)
+    for a in gekappt:
+        schluessel = a.id.split("-", 1)[1]
+        anker = _GEKAPPT_ALS_BASIS.get(schluessel)
+        if anker is None or any(e[0] == schluessel for e in ergebnis):
+            continue
+        eintrag = (schluessel, a.gruppe, a.titel, a.aktion, None, (schluessel,))
+        pos = next((i + 1 for i, e in enumerate(ergebnis) if e[0] == anker), len(ergebnis))
+        ergebnis.insert(pos, eintrag)
+    return tuple(ergebnis)
+
+
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
                  fahrzeug: str | None, getriebe: str | None = None,
                  verkaeufer: str | None = None,
@@ -1324,6 +1349,12 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
         DOKUMENTE:        BASIS_DOKUMENTE,
     }
     listen = {}
+    # N7-Wartungsauswahl: fehlt eine Inserat-Angabe (Servicehistorie, Vorbesitzer) und
+    # verdrängt der Deckel die dazugehörige spezifische Frage, bleibt die Frage als
+    # Basisfrage erhalten (wie "Unfall" über den Katalog). Wird die spezifische Frage
+    # ausgegeben, entsteht keine zweite.
+    kataloge[VERKAEUFERFRAGEN] = _katalog_mit_gekappten_fragen(
+        kataloge[VERKAEUFERFRAGEN], s.gekappt(VERKAEUFERFRAGEN))
     for bereich, katalog in kataloge.items():
         spezifisch = s.liste(bereich)
         listen[bereich] = Pruefliste(

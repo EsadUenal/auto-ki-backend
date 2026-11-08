@@ -235,13 +235,15 @@ fakten_5 = _extrahiere_fakten([_SICHERHEIT_TREFFER], "wartung", marke="Lexus", m
 # DIESEM Block den letzten Platz an "Motorkühlmittel" (Auswahllimit, NICHT
 # das technische Gate). Entscheidend bleibt: kein unbegründeter AUSSCHLUSS
 # (das technische Gate lehnt die Zeile nicht ab).
-check("5) Folge am echten Block: 'Inverter-Kühlmittel' (Hybrid-only) wird "
-      "bei Benzin+unbekannter Elektrifizierung NICHT durch das technische "
-      "Gate ausgeschlossen -- bleibt entweder unter den ausgegebenen Fakten "
-      "ODER wird ausschließlich durchs Auswahllimit zurückgestellt",
-      any(f.bauteil == "Inverter-Kühlmittel" for f in fakten_5)
-      or any("inverter" in a.get("satz", "").lower()
-             and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt_5),
+check("5) Folge am echten Block: 'Inverter-Kühlmittel' (Hybrid-only) erzeugt bei "
+      "Benzin+unbekannter Elektrifizierung KEINEN Wartungspunkt (N7-Wartungsauswahl: "
+      "unbekannt gilt nicht als bestätigt) -- Grund 'wartung_technische_bedingung_offen', "
+      "NICHT 'widerspricht' (nicht widerlegt)",
+      not any(f.bauteil == "Inverter-Kühlmittel" for f in fakten_5)
+      and any("inverter" in a.get("satz", "").lower()
+              and a.get("grund") == "wartung_technische_bedingung_offen" for a in abgelehnt_5)
+      and not any(a.get("grund") == "wartung_zeile_technische_bedingung_widerspricht"
+                  for a in abgelehnt_5),
       f"fakten={[f.bauteil for f in fakten_5]!r} abgelehnt={abgelehnt_5!r}")
 
 # ── 6) Benzin-Hybridziel vs. nachweislich nicht-hybrides Ziel ──────────────

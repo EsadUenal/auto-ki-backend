@@ -43,7 +43,10 @@ REC = json.loads((Path(__file__).parent / "tests" / "fixtures"
 OHNE = [treffer(h["url"], h["title"], h["content"] or "") for h in REC["ohne UXC1"]]
 MIT = [treffer(h["url"], h["title"], h["content"] or "") for h in REC["mit UXC1"]]
 SERVICEHEFT = LEXUS_CH_MODELLUEBERSICHT["url"].split("#")[0]
-SERVICEHEFT_TEXT = LEXUS_CH_MODELLUEBERSICHT["content"]   # bisheriger Abruftext (Seite 4, 15/16; ~1.000 Zeichen)
+# Abruftext: NUR die beiden echten Absätze (Seite 4 "Betroffene Modelle", Seite 15 Care-Wartungsplan). Der dritte Absatz
+# der alten Fixture ("Lexus RC F zusätzliche Inspektionen laut Lexus Care-Wartungsplan: Ventilspiel ... Automatikgetriebeöl ...")
+# ist KEIN Originalwortlaut und wird nicht mehr verwendet -- die Originalzeilen stehen in den Tabellenblöcken (Seite 16/17).
+SERVICEHEFT_TEXT = "\n\n".join(LEXUS_CH_MODELLUEBERSICHT["content"].split("\n\n")[:2])
 
 
 def _rohtext_bloecke():
@@ -167,6 +170,25 @@ def wartung_insights(r):
     return [i for i in r.insights if i.kategorie == "web_wartung"]
 
 
+async def lauf_alle_kandidaten(generation_bestaetigt: bool, serviceheft_text):
+    """DIAGNOSE: dasselbe, aber das Fünferlimit der Wartungsfakten nur IM TESTPROZESS aufgehoben, um
+    alle gültigen Kandidaten zu sehen. Das Produktlimit bleibt unverändert (wird sofort zurückgesetzt)."""
+    alt = tr.MAX_FAKTEN_JE_KATEGORIE
+    tr.MAX_FAKTEN_JE_KATEGORIE = 99
+    try:
+        return await lauf(generation_bestaetigt, serviceheft_text=serviceheft_text)
+    finally:
+        tr.MAX_FAKTEN_JE_KATEGORIE = alt
+
+
+def titel_liste(insights):
+    return [i.titel.split(":")[0] for i in insights]
+
+
+def ids(liste):
+    return [a.id for a in liste]
+
+
 async def main():
     print("--- 1) Anfragen: mit und ohne bestätigte Generation identisch ---")
     f_mit, r_mit = await lauf(True)
@@ -188,115 +210,204 @@ async def main():
     check("A4) ohne bestätigte Generation steht in KEINER Folgeanfrage ein Code",
           not any("UXC1" in q for q in f_ohne.search_calls))
 
-    print("\n--- 2) Replay mit aufgezeichneten Treffern: Serviceheft kommt an, UXC1 bleibt ---")
+    print("\n--- 2) Replay mit dem Abruftext (Seite 4 + Care-Plan; ohne den früheren erfundenen Satz) ---")
+    check("B0) der Abruftext enthält den früher erfundenen Ventilspiel-Satz NICHT mehr",
+          "zusätzliche Inspektionen laut Lexus Care-Wartungsplan" not in SERVICEHEFT_TEXT
+          and "Ventilspiel" not in SERVICEHEFT_TEXT)
     check("B1) UXC1 bleibt im Bericht bestätigt", gen_mit == "UXC1", str(gen_mit))
     check("B2) das Serviceheft (Lexus Schweiz) wurde für die Wartung nachgeladen",
           any(SERVICEHEFT in c for c in f_mit.extract_calls), str(f_mit.extract_calls))
     ins = wartung_insights(r_mit)
     for i in ins:
         print(f"   [{i.kategorie}] trust={i.trust} | {i.titel} | {i.beschreibung[:140]}")
-    check("B3) mindestens ein Wartungshinweis steht im Bericht", len(ins) >= 1, f"{len(ins)} Hinweise")
-    text_ins = " ".join(f"{i.titel} {i.beschreibung}" for i in ins)
-    check("B4) die Hinweise stammen aus dem Serviceheft (15.000 km bzw. 30.000 km / 90.000 km / 60.000 km)",
-          any(x in text_ins.replace(".", "") for x in ("15000", "30000", "90000", "60000")), text_ins[:200])
-    check("B5) Markt-/Geltungsvorbehalt bleibt erhalten: Hinweis jedes Punktes nennt die Selbsteinschränkung "
-          "der Quelle und dass die Geltung in Deutschland nicht bestätigt ist",
-          bool(ins) and all('falls für Ihren Markt zutreffend' in i.beschreibung
-                            and "nicht bestätigt" in i.beschreibung for i in ins), text_ins[:300])
-    check("B6) Bedingungen bleiben erhalten: 'je nachdem, was zuerst eintritt' (Zwischenservice), "
-          "'oder 6 Jahre' (Ventilspiel), 'oder 4 Jahre' (Getriebeöl)",
-          all(w in text_ins for w in ("je nachdem, was zuerst eintritt", "oder 6 Jahre", "oder 4 Jahre")), "")
+    check("B3) der Care-Zwischenservice (Öl- und Filterwechsel) steht im Bericht, mit Bedingung und Marktvorbehalt",
+          len(ins) == 1 and "je nachdem, was zuerst eintritt" in ins[0].beschreibung
+          and 'falls für Ihren Markt zutreffend' in ins[0].beschreibung
+          and "nicht bestätigt" in ins[0].beschreibung,
+          str(titel_liste(ins)))
 
     print("\n--- 3) Gegenprobe: ohne Serviceheft-Treffer gäbe es diese Hinweise nicht ---")
     f_nur_mit, r_nur_mit = await lauf(True, wartung_routing=False)
     check("C1) ohne Wartungstreffer: kein Serviceheft-Abruf und keine Serviceheft-Hinweise",
           not any(SERVICEHEFT in c for c in f_nur_mit.extract_calls)
-          and not any("15000" in f"{i.titel} {i.beschreibung}".replace(".", "")
-                      for i in wartung_insights(r_nur_mit)))
+          and not wartung_insights(r_nur_mit))
 
-    print("\n--- 4) Fragen und Dokumente aus dem Replay ---")
-    a_mit, a_nur = aktionen(r_mit), aktionen(r_nur_mit)
-    for n, v in a_mit.items():
-        print(f"   {n}: {len(v)} (ohne Wartungstreffer: {len(a_nur[n])})")
-    check("D1) Verkäuferfragen und Dokumente werden erzeugt",
-          bool(a_mit["verkaeuferfragen"]) and bool(a_mit["dokumente"]))
-    fragen_text = " ".join(a_mit["verkaeuferfragen"] + a_mit["dokumente"]).lower()
-    neu = {n: [x for x in a_mit[n] if x not in a_nur[n]] for n in ("verkaeuferfragen", "dokumente")}
-    check("D2) Wartung fügt je Bereich genau die drei Serviceheft-Punkte hinzu (Frage und Nachweisdokument)",
-          len(neu["verkaeuferfragen"]) == 3 and len(neu["dokumente"]) == 3
-          and all("wartung-web-" in x for n in neu for x in neu[n]),
-          f"{len(neu['verkaeuferfragen'])} Fragen / {len(neu['dokumente'])} Dokumente")
-    check("D3) Fragen und Dokumente tragen den Vorbehalt: Webrecherche statt geprüfter Datenbank; "
-          "zeitliche Alternative ohne Erstzulassungsmonat offen",
-          all("nicht aus der geprüften Fahrzeugdatenbank" in x for n in neu for x in neu[n])
-          and any("zeitliche Alternative" in x and "Erstzulassungsmonat" in x for x in neu["verkaeuferfragen"]),
-          "")
-    check("D4) Fahrzeugangaben nicht verfälscht (477 PS, 2017; keine 464 PS/Ultimate Edition)",
-          r_mit.vehicle_identity.get("horsepower") == 477 and r_mit.vehicle_identity.get("year") == 2017
-          and not any(x in r_mit.bericht + " ".join(a_mit["verkaeuferfragen"] + a_mit["dokumente"])
-                      for x in ("Ultimate Edition", "464", "08/24", "245 PS")))
-    k, k0 = r_mit.kaufaktionen, r_nur_mit.kaufaktionen
-    check("D5) Basisfragen und Basisdokumente bleiben unverändert",
-          len(k.verkaeuferfragen.basis) == len(k0.verkaeuferfragen.basis)
-          and len(k.dokumente.basis) == len(k0.dokumente.basis))
-    verdraengt = [x for x in a_nur["verkaeuferfragen"] + a_nur["dokumente"]
-                  if x not in a_mit["verkaeuferfragen"] + a_mit["dokumente"]]
-    print(f"   BEOBACHTUNG (kein Prüfpunkt): durch den bestehenden Deckel MAX_SPEZIFISCH_PRO_BEREICH "
-          f"fallen {len(verdraengt)} fahrzeugspezifische Einträge heraus: {[v[:40] for v in verdraengt]}")
-
-    print("\n--- 5) Abnahme mit dem Volltext desselben Servicehefts (nur der Quelltext getauscht) ---")
+    print("\n--- 4) Abnahme mit dem Volltext (nur der Quelltext getauscht; echte Tabellenblöcke) ---")
+    check("D0) der Volltext enthält die ORIGINALZEILE 'Ventilspiel (Inspektion mit Messfühler, LC 500, RC F) "
+          "Alle 90.000 km / 6 Jahre' und den erfundenen Satz nicht",
+          "Ventilspiel (Inspektion mit Messfühler, LC 500, RC F) Alle 90.000 km / 6 Jahre" in SERVICEHEFT_VOLLTEXT
+          and "zusätzliche Inspektionen laut Lexus Care-Wartungsplan" not in SERVICEHEFT_VOLLTEXT)
     f_voll, r_voll = await lauf(True, serviceheft_text=SERVICEHEFT_VOLLTEXT)
-    ins_v, a_v = wartung_insights(r_voll), aktionen(r_voll)
-    print(f"   Abruftext: Auszug {len(SERVICEHEFT_TEXT)} Zeichen -> Volltext {len(SERVICEHEFT_VOLLTEXT)} Zeichen")
-    print(f"   Hinweise Auszug: {sorted(i.titel.split(':')[0] for i in ins)}")
-    print(f"   Hinweise Volltext: {sorted(i.titel.split(':')[0] for i in ins_v)}")
-    for i in ins_v:
-        print(f"   [Volltext] {i.titel.split(':')[0]} | {i.beschreibung[:230]}")
-    for n in ("verkaeuferfragen", "dokumente"):
-        print(f"   {n} Volltext neu gg. Auszug:",
-              [x.split("titel=")[1].split(" aktion=")[0][:70] for x in a_v[n] if x not in a_mit[n] and "wartung-web" in x])
-    check("E0) Treffer, Eingaben und Generation gleich: UXC1 bestätigt, dieselben Wartungsanfragen",
+    ins_v = wartung_insights(r_voll)
+    a_v, a_0 = aktionen(r_voll), aktionen(r_nur_mit)
+    check("D1) Treffer, Eingaben und Generation gleich: UXC1 bestätigt, dieselben Wartungsanfragen",
           r_voll.vehicle_identity.get("generation") == "UXC1" and wartung_qs(f_voll) == wartung_qs(f_mit))
-    # Hinweise des Auszugs, die im Volltext fehlen: nur wegen des bestehenden Auswahllimits (kein Datenverlust
-    # durch die Anfrage); der Grund steht in der Ablehnungsliste der unveränderten Extraktion.
-    abgelehnt_v: list[dict] = []
-    fakten_v = tr._extrahiere_fakten([treffer(SERVICEHEFT, "Lexus Garantie- und Serviceheft", SERVICEHEFT_VOLLTEXT)],
-                                     "wartung", marke="Lexus ", modell="RC F", baujahr=2017, abgelehnt=abgelehnt_v)
-    limit_sätze = [a["satz"] for a in abgelehnt_v if a["grund"] == "wartung_auswahllimit_erreicht"]
-    fehlend = sorted({i.titel.split(":")[0] for i in ins} - {i.titel.split(":")[0] for i in ins_v})
-    print(f"   im Volltext fehlend gg. Auszug: {fehlend}; durch Auswahllimit zurückgehalten: {[x[:40] for x in limit_sätze]}")
-    check("E1) jeder im Volltext fehlende Auszug-Hinweis ist durch das bestehende Auswahllimit "
-          f"(MAX_FAKTEN_JE_KATEGORIE={tr.MAX_FAKTEN_JE_KATEGORIE}) zurückgehalten, nicht verworfen",
-          len(fakten_v) == tr.MAX_FAKTEN_JE_KATEGORIE
-          and all(any(f.lower() in sz.lower() for sz in limit_sätze) for f in fehlend), str(fehlend))
-    check("E2) jeder Hinweis behält Markt-Selbsteinschränkung der Quelle und 'nicht bestätigt'",
-          bool(ins_v) and all("nicht bestätigt" in i.beschreibung for i in ins_v), "")
-    d = next((i for i in ins_v if i.titel.startswith("Hinterachsdifferenzialöl")), None)
-    rm = next((i for i in ins_v if i.titel.startswith("Nebenaggregat-Antriebsriemen")), None)
-    check("E3) Differenzialöl (Hinterachse) kommt an: 30.000 km / 4 Jahre, Ausschlussliste der Quelle erhalten (RC F nicht darin)",
-          d is not None and "Alle 30.000 km / 4 Jahre" in d.beschreibung and "außer ES 300h" in d.beschreibung
-          and "RC F" not in d.beschreibung.split("außer")[1].split(")")[0],
-          d.beschreibung[:200] if d else "kein Hinweis")
-    check("E4) Nebenaggregat-Antriebsriemen kommt an: 105.000 km / 6 Jahre, Folgeintervall und Ausschlussliste erhalten",
+    sichtbar = titel_liste(ins_v)
+    print(f"   BEI FÜNFERLIMIT SICHTBAR: {sichtbar}")
+    check("D2) höchstens fünf Hinweise (Limit unverändert), Ventilspiel mit Originalzeile dabei",
+          len(ins_v) <= 5 and any(i.titel.startswith("Ventilspiel") and
+                                  "Alle 90.000 km / 6 Jahre" in i.beschreibung
+                                  and "laut Lexus Care-Wartungsplan" not in i.beschreibung for i in ins_v),
+          str(sichtbar))
+    oel_v = [i for i in ins_v if i.titel.startswith(("Motoröl", "Oel und filterwechsel"))]
+    check("D3) die beiden Ölstellen ergeben GENAU EINEN Hinweis (keine Dublette)", len(oel_v) == 1, str(sichtbar))
+    if oel_v:
+        b = oel_v[0].beschreibung
+        check("D4) der Ölhinweis führt beide Fundstellen mit ihren Bedingungen: Care-Zwischenservice "
+              "(15.000 km oder einmal jährlich, je nachdem, was zuerst eintritt) UND die Tabellenzeile",
+              "Lexus Care-Zwischenservice: alle 15.000 km oder einmal jährlich" in b
+              and "je nachdem, was zuerst eintritt" in b and "Motoröl und -filter" in b, b[:300])
+        stellen = b.split("Weitere Stelle im selben Dokument:")
+        bedingt = [t for t in stellen if "Managementsystem" in t]
+        unbedingt = [t for t in stellen if "Managementsystem" not in t]
+        check("D5) die Hinweismeldung gilt nur 'Bei Fahrzeugen mit Ölwechsel-Managementsystem' und steht NUR "
+              "in der Fundstelle, die diese Bedingung trägt -- die Care-Zwischenservice-Stelle bleibt davon frei",
+              len(stellen) == 2 and len(bedingt) == 1 and len(unbedingt) == 1
+              and "Bei Fahrzeugen mit Ölwechsel-Managementsystem" in bedingt[0]
+              and "Lexus Care-Zwischenservice" in unbedingt[0], b[:400])
+    frag_oel = [x for x in ids(r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch) if "wartung-web" in x and
+                ("motoroel" in x or "filterwechsel" in x)]
+    dok_oel = [x for x in ids(r_voll.kaufaktionen.dokumente.fahrzeugspezifisch) if "wartung-web" in x and
+               ("motoroel" in x or "filterwechsel" in x)]
+    check("D6) Öl: genau EINE Verkäuferfrage und EIN Nachweisdokument", len(frag_oel) == 1 and len(dok_oel) == 1,
+          f"{frag_oel} / {dok_oel}")
+    check("D7) kein Inverter-Kühlmittel: weder Hinweis noch Frage noch Nachweis noch Bericht (Elektrifizierung "
+          "unbekannt, Anwendbarkeit bleibt offen)",
+          not any("nverter" in t for t in sichtbar)
+          and not any("nverter" in x for x in ids(r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch)
+                      + ids(r_voll.kaufaktionen.dokumente.fahrzeugspezifisch))
+          and "nverter" not in r_voll.bericht)
+    check("D8) jeder sichtbare Hinweis behält Markt-Selbsteinschränkung der Quelle und 'nicht bestätigt'",
+          bool(ins_v) and all('falls für Ihren Markt zutreffend' in i.beschreibung
+                              and "nicht bestätigt" in i.beschreibung for i in ins_v))
+
+    print("\n--- 5) ALLE gültigen Kandidaten (Fünferlimit nur im Testprozess aufgehoben) ---")
+    f_alle, r_alle = await lauf_alle_kandidaten(True, SERVICEHEFT_VOLLTEXT)
+    ins_a = wartung_insights(r_alle)
+    print(f"   ALLE KANDIDATEN: {titel_liste(ins_a)}")
+    by = {i.titel.split(":")[0]: i for i in ins_a}
+    check("E0) UXC1 bleibt bestätigt, Inverter weiterhin kein Kandidat",
+          r_alle.vehicle_identity.get("generation") == "UXC1" and not any("nverter" in t for t in by))
+    ag = by.get("Automatikgetriebeöl")
+    check("E1) Automatikgetriebeöl ist eine PRÜFUNG (Abschnitt 'ZUSÄTZLICHE INSPEKTIONEN'): Frage 'bereits geprüft', "
+          "Dokument 'Prüfnachweis', Intervall 60.000 km / 4 Jahre",
+          ag is not None and "Alle 60.000 km / 4 Jahre" in ag.beschreibung
+          and any("automatikgetriebeoel" in a.id and "bereits geprüft" in a.titel
+                  for a in r_alle.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch)
+          and any("automatikgetriebeoel" in a.id and a.titel.startswith("Prüfnachweis")
+                  for a in r_alle.kaufaktionen.dokumente.fahrzeugspezifisch),
+          ag.beschreibung[:160] if ag else "fehlt")
+    zk = by.get("Zündkerzen")
+    check("E2) Zündkerzen: 90.000 km, ohne das fremde 60.000-km-Intervall (RX 300, LS 500), Tätigkeit 'ersetzen'",
+          zk is not None and "90.000 km" in zk.beschreibung and "60,000" not in zk.beschreibung
+          and "60.000" not in zk.beschreibung and "RX 300" not in zk.beschreibung
+          and any("zuendkerzen" in a.id and "gewechselt" in a.titel
+                  for a in r_alle.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch),
+          zk.beschreibung[:200] if zk else "fehlt")
+    mk = by.get("Motorkühlmittel")
+    check("E3) Motorkühlmittel ohne abgeschnittenes 'Inverter-'",
+          mk is not None and "Inverter" not in mk.beschreibung and "150.000 km" in mk.beschreibung,
+          mk.beschreibung[:200] if mk else "fehlt")
+    df = by.get("Hinterachsdifferenzialöl")
+    check("E4) Differenzialöl (Hinterachse): ersetzen, 30.000 km / 4 Jahre, 'außer …'-Ausschlussliste erhalten; "
+          "RC F nicht ausgeschlossen, aber auch nicht ausdrücklich zugeordnet",
+          df is not None and "Alle 30.000 km / 4 Jahre" in df.beschreibung and "außer ES 300h" in df.beschreibung
+          and any("differenzialoel" in a.id and "gewechselt" in a.titel
+                  for a in r_alle.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch),
+          df.beschreibung[:200] if df else "fehlt")
+    rm = by.get("Nebenaggregat-Antriebsriemen")
+    check("E5) Antriebsriemen: prüfen, 105.000 km / 6 Jahre, Folgeintervall 15.000 km / jährlich, Ausschlussliste erhalten",
           rm is not None and "Alle 105.000 km / 6 Jahre" in rm.beschreibung
           and "Danach alle 15.000 km / jährlich" in rm.beschreibung and "außer ES 300h" in rm.beschreibung,
-          rm.beschreibung[:200] if rm else "kein Hinweis")
-    neu_v = {n: [x for x in a_v[n] if x not in a_nur[n]] for n in ("verkaeuferfragen", "dokumente")}
-    for stichwort in ("Hinterachsdifferenzialöl", "Nebenaggregat-Antriebsriemen"):
-        check(f"E5) {stichwort}: Verkäuferfrage und Nachweisdokument vorhanden, mit Datenbank-Vorbehalt",
-              all(any(stichwort in x and "nicht aus der geprüften Fahrzeugdatenbank" in x for x in neu_v[n])
-                  for n in neu_v), "")
-    ids = lambda liste: {a.id for a in liste}
-    kv, k0 = r_voll.kaufaktionen, r_nur_mit.kaufaktionen
-    check("E6) Fahrzeugangaben unverändert (477 PS, 2017, keine 464 PS); keine Basisfrage/-dokument geht verloren",
+          rm.beschreibung[:200] if rm else "fehlt")
+    check("E6) alle Kandidaten behalten den Marktvorbehalt",
+          all('falls für Ihren Markt zutreffend' in i.beschreibung for i in ins_a))
+    gehalten = [t for t in titel_liste(ins_a) if t not in sichtbar]
+    print(f"   BEI FÜNFERLIMIT ZURÜCKGEHALTEN: {gehalten}")
+    check("E7) das Fünferlimit hält nur gültige, gleichrangige Kandidaten zurück (keine falschen oder fremden)",
+          set(gehalten) <= {"Nebenaggregat-Antriebsriemen", "Zündkerzen", "Motorkühlmittel", "Automatikgetriebeöl",
+                            "Hinterachsdifferenzialöl"} and len(sichtbar) + len(gehalten) == len(by), str(gehalten))
+
+    print("\n--- 6) Inverter: unbekannt vs. belegte Anwendbarkeit ---")
+    for bezeichnung, fuel, pt, erwartet in (("unbekannt", "benzin", None, False),
+                                            ("Hybrid belegt (HEV)", "benzin", frozenset({"HEV"}), True),
+                                            ("Plug-in belegt (PHEV)", "benzin", frozenset({"PHEV"}), True),
+                                            ("Verbrenner belegt (ICE)", "benzin", frozenset({"ICE"}), False)):
+        ab: list[dict] = []
+        alt = tr.MAX_FAKTEN_JE_KATEGORIE
+        tr.MAX_FAKTEN_JE_KATEGORIE = 99
+        try:
+            fk = tr._extrahiere_fakten([treffer(SERVICEHEFT, "Lexus Garantie- und Serviceheft", SERVICEHEFT_VOLLTEXT)],
+                                       "wartung", marke="Lexus", modell="RC F", baujahr=2017, abgelehnt=ab,
+                                       fuel_ziel=fuel, powertrains_ziel=pt)
+        finally:
+            tr.MAX_FAKTEN_JE_KATEGORIE = alt
+        inv = [f for f in fk if "nverter" in (f.bauteil or "")]
+        grund = sorted({a["grund"] for a in ab if "nverter" in a.get("satz", "")})
+        check(f"F) {bezeichnung}: Inverter-Wartungspunkt vorhanden={bool(inv)} (erwartet {erwartet}); "
+              f"Ablehnungsgrund={grund}",
+              bool(inv) == erwartet and (erwartet or bool(grund)), "")
+        if inv:
+            check(f"F) {bezeichnung}: Bedingung aufgelöst (kein Status 'unresolved'), Tätigkeit 'ersetzen'",
+                  inv[0].technische_bedingung_status is None and inv[0].taetigkeit == "ersetzen")
+    from app.evidence import build_insights
+    from app.kaufaktionen import build_kaufaktionen
+    from app.models import TechnischeRecherche
+    tr.MAX_FAKTEN_JE_KATEGORIE, alt = 99, tr.MAX_FAKTEN_JE_KATEGORIE
+    try:
+        fk = tr._extrahiere_fakten([treffer(SERVICEHEFT, "Lexus Garantie- und Serviceheft", SERVICEHEFT_VOLLTEXT)],
+                                   "wartung", marke="Lexus", modell="RC F", baujahr=2017, abgelehnt=[],
+                                   fuel_ziel="benzin", powertrains_ziel=frozenset({"HEV"}))
+    finally:
+        tr.MAX_FAKTEN_JE_KATEGORIE = alt
+    web = TechnischeRecherche(ausgeloest_durch="db_miss", fakten=[f for f in fk if "nverter" in (f.bauteil or "")])
+    hev_ins = build_insights(None, None, [], REQ, check_typ="kauf", web_recherche=web)
+    hev_akt = build_kaufaktionen(REQ, None, None, hev_ins)
+    check("F) belegter Hybrid: Inverter-Hinweis, Frage und Nachweis entstehen über den echten Pfad "
+          "(Evidence -> Kaufaktionen), ohne Anwendbarkeits-Umleitung",
+          any("nverter" in i.titel for i in hev_ins)
+          and any("nverter" in a.titel and "zuletzt gewechselt" in a.titel
+                  for a in hev_akt.verkaeuferfragen.fahrzeugspezifisch)
+          and any("nverter" in a.titel for a in hev_akt.dokumente.fahrzeugspezifisch)
+          and not any("trifft die bedingung" in a.titel.lower() for a in hev_akt.verkaeuferfragen.fahrzeugspezifisch),
+          str([a.titel for a in hev_akt.verkaeuferfragen.fahrzeugspezifisch]))
+
+    print("\n--- 7) Verkäuferfragen unter vollem Sechserlimit: Servicehistorie und Vorbesitz ---")
+    kv = r_voll.kaufaktionen.verkaeuferfragen
+    spez_ids = ids(kv.fahrzeugspezifisch)
+    basis_ids = ids(kv.basis)
+    print(f"   spezifisch ({len(spez_ids)}): {spez_ids}")
+    print(f"   Basis neu: {[b for b in basis_ids if b.endswith(('scheckheft', 'vorbesitzer', 'unfall'))]}")
+    check("G1) das Sechserlimit ist voll (6 fahrzeugspezifische Verkäuferfragen)", len(spez_ids) == 6, str(spez_ids))
+    check("G2) Servicehistorie und Vorbesitz stehen NICHT spezifisch, aber als Basisfragen",
+          "frage-scheckheft" not in spez_ids and "frage-vorbesitzer" not in spez_ids
+          and "frage-basis-scheckheft" in basis_ids and "frage-basis-vorbesitzer" in basis_ids, str(basis_ids))
+    titel_alle = [a.titel for a in kv.fahrzeugspezifisch + kv.basis]
+    check("G3) keine doppelte Frage (Titel eindeutig)", len(titel_alle) == len(set(titel_alle)),
+          str([t for t in titel_alle if titel_alle.count(t) > 1]))
+    check("G4) die Basisfragen tragen Titel und Hinweis der verdrängten spezifischen Frage",
+          any(a.id == "frage-basis-scheckheft" and "Scheckheft" in a.titel for a in kv.basis)
+          and any(a.id == "frage-basis-vorbesitzer" and "Vorbesitzer" in a.titel for a in kv.basis))
+    check("G5) Unfall bleibt als Basisfrage (wie bisher)", "frage-basis-unfall" in basis_ids)
+    kv0 = r_nur_mit.kaufaktionen.verkaeuferfragen
+    check("G6) ohne Verdrängung (Lauf ohne Wartungstreffer): spezifische Fragen stehen wie bisher und es "
+          "entsteht KEINE zweite Basisfrage dazu",
+          {"frage-scheckheft", "frage-vorbesitzer"} <= set(ids(kv0.fahrzeugspezifisch))
+          and "frage-basis-scheckheft" not in ids(kv0.basis) and "frage-basis-vorbesitzer" not in ids(kv0.basis),
+          str(ids(kv0.fahrzeugspezifisch)))
+    dok = r_voll.kaufaktionen.dokumente
+    web_ids = {i.id: i for i in ins_v}
+    wartung_dok = [a for a in dok.fahrzeugspezifisch if "wartung-web" in a.id]
+    check("G7) Dokumente getrennt: Serviceheft- und Zulassungsbescheinigungs-Basisdokument bleiben; jeder "
+          "Wartungsnachweis ist an einen Hinweis mit Marktvorbehalt gebunden (evidence_id)",
+          "dokument-basis-serviceheft" in ids(dok.basis) and "dokument-basis-zb2" in ids(dok.basis)
+          and len(wartung_dok) == len(ins_v)
+          and all(a.evidence_ids and a.evidence_ids[0] in web_ids
+                  and "falls für Ihren Markt zutreffend" in web_ids[a.evidence_ids[0]].beschreibung
+                  for a in wartung_dok), str([a.id for a in wartung_dok]))
+    check("G8) Fahrzeugangaben unverändert (477 PS, 2017; keine 464 PS/Ultimate Edition)",
           r_voll.vehicle_identity.get("horsepower") == 477 and r_voll.vehicle_identity.get("year") == 2017
-          and not any(x in r_voll.bericht for x in ("464", "Ultimate Edition"))
-          and ids(k0.verkaeuferfragen.basis) <= ids(kv.verkaeuferfragen.basis)
-          and ids(k0.dokumente.basis) <= ids(kv.dokumente.basis), "")
-    weg = sorted(ids(k0.verkaeuferfragen.fahrzeugspezifisch) - ids(kv.verkaeuferfragen.fahrzeugspezifisch))
-    print(f"   BEOBACHTUNG (kein Prüfpunkt): bei fünf Wartungspunkten verdrängt der Deckel "
-          f"(MAX_SPEZIFISCH_PRO_BEREICH=6) fahrzeugspezifische Verkäuferfragen: {weg}; "
-          f"als Basisfrage bleiben davon: {sorted(ids(kv.verkaeuferfragen.basis) - ids(k0.verkaeuferfragen.basis))}")
+          and not any(x in r_voll.bericht for x in ("464", "Ultimate Edition")))
 
     if _FEHLER:
         print(f"\n{len(_FEHLER)} FEHLER:")

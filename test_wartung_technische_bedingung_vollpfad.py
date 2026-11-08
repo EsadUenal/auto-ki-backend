@@ -184,13 +184,12 @@ _bauteile_3 = [f.bauteil for f in fakten_3]
 # technische Gate zurückgestellter Kandidat (die Unterscheidung ist genau
 # der Punkt dieses Tests). "Zugelassen, aber ggf. durchs Limit verdrängt"
 # ersetzt die vorige Erwartung "immer unter den ausgegebenen Fakten".
-check("3) ohne bekannte Kraftstoff-/Antriebsachse wird Inverter-Kühlmittel "
-      "NICHT durch das technische Gate ausgeschlossen -- bleibt entweder "
-      "unter den ausgegebenen Fakten ODER wird ausschließlich durchs "
-      "Auswahllimit zurückgestellt (nie durch 'widerspricht')",
-      any("inverter" in (b or "").lower() for b in _bauteile_3)
-      or any("inverter" in a.get("satz", "").lower()
-             and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt_3),
+check("3) ohne bekannte Kraftstoff-/Antriebsachse erzeugt Inverter-Kühlmittel KEINEN Wartungspunkt "
+      "(N7-Wartungsauswahl: unbekannt gilt nicht als bestätigt) -- Grund "
+      "'wartung_technische_bedingung_offen'",
+      not any("inverter" in (b or "").lower() for b in _bauteile_3)
+      and any("inverter" in a.get("satz", "").lower()
+              and a.get("grund") == "wartung_technische_bedingung_offen" for a in abgelehnt_3),
       f"bauteile={_bauteile_3!r} abgelehnt={abgelehnt_3!r}")
 check("3) KEINE Ablehnung mit dem technischen Bedingungs-Grund, solange die "
       "Zielachse unbekannt ist",

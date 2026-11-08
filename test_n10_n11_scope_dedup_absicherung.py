@@ -168,9 +168,12 @@ _DIFFERENZIAL_AUSSCHLUSS_NBSP = _mit_nbsp(
     "Hinterachsdifferenzialöl (außer ES 300h, NX 350h, NX 450h+, RX 300 2WD, "
     "RX 450h, RX 450hL, UX 200, UX 250h) Alle 30.000 km / 4 Jahre", _NBSP
 ).replace("ES 300h", "ES 300h")  # (bereits durch _mit_nbsp ersetzt)
+# N7-Wartungsauswahl: eine "außer ..."-Liste behält ihre Ausschlusswirkung (A8), gibt aber
+# keinen Bonus -- nicht gelistet heißt "nicht ausgeschlossen" (None, zugelassen), nicht
+# "ausdrücklich diesem Modell zugeordnet" (True).
 check("A7 Ausnahmeliste mit NBSP: 'RC F' (NICHT in der Ausschlussliste) "
-      "bleibt zugelassen (True)",
-      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "RC F")[0] is True)
+      "bleibt zugelassen, ohne ausdrückliche Zuordnung (None, nicht False, nicht True)",
+      _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "RC F")[0] is None)
 check("A8 Ausnahmeliste mit NBSP: 'ES 300h' (IN der Ausschlussliste) wird "
       "korrekt ausgeschlossen (False)",
       _zeilen_scope_passt(_DIFFERENZIAL_AUSSCHLUSS_NBSP, "ES 300h")[0] is False)

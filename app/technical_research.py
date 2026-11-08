@@ -3715,33 +3715,89 @@ def _fussnoten_definition(text: str, nummer: str, grenzen: list[int]) -> str:
     return text[m.start():ende].strip()
 
 
-def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str]:
-    """Zerlegt einen tabellenartigen Wartungsblock in EIN Fenster pro
-    Bauteil-Vorkommen, gebunden an die nächste harte Abschnittsgrenze oder
-    das nächste Vokabular-Vorkommen — nie an das Blockende. Kein
-    Tabellensignal erkannt -> `[text]` unverändert (Fließtext-Verhalten
-    bleibt exakt wie bisher).
+# N7-Wartungsauswahl (ENFAL-Folgepaket, 2026-11): zwei Lesefehler an echten
+# Tabellenzeilen (lex-sw-00de.pdf, Seite 16/17) und eine fehlende Zuordnung.
+#
+#  (1) ZEILENENDE: das Fenster eines Bauteils endete bisher am START des
+#      nächsten Vokabular-TREFFERS, also MITTEN im nächsten Wort ("...Danach
+#      alle 90.000 km Inverter-" | "Kühlmittel"). Das Ende liegt jetzt am
+#      WORTANFANG des nächsten Treffers.
+#  (2) MODELL-UNTERZEILE: "Zündkerzen Platin- oder Iridiumtyp Alle 90.000 km
+#      RX 300, LS 500 Alle 60,000 km" -- nach einem vollständigen Intervall
+#      folgt eine Liste von Modellcodes mit EIGENEM Intervall. Sie gehört nicht
+#      zur Hauptzeile; sie wird abgetrennt und als eigene, auf diese Modelle
+#      beschränkte Zeile geführt ("Zündkerzen (RX 300, LS 500) Alle 60,000 km").
+#      Für das Zielmodell greift dann dieselbe Zeilen-Scope-Prüfung wie bei
+#      jeder anderen Klammerliste.
+#  (3) ABSCHNITT -> TÄTIGKEIT: nennt die Zeile selbst keine Tätigkeit, gilt die
+#      des unmittelbar vorangehenden Abschnittskopfes ("ZUSÄTZLICHER
+#      TEILEAUSTAUSCH" -> ersetzen, "ZUSÄTZLICHE INSPEKTIONEN" -> prüfen). Ein
+#      Kopf ohne solches Wort ("FITNESS", "SICHERHEIT") liefert nichts.
+_ABSCHNITT_ERSETZEN = re.compile(r"TEILEAUSTAUSCH|AUSTAUSCH|ERSATZ|WECHSEL|ERNEUERUNG")
+_ABSCHNITT_PRUEFEN = re.compile(r"INSPEKTION|PR[ÜU]FUNG|KONTROLLE")
+_RE_MODELL_UNTERZEILE = re.compile(
+    r"(?<=\S)\s+"
+    r"((?:[A-ZÄÖÜ][A-Za-zÄÖÜ0-9+]{0,8}(?:[\s ][A-Za-zÄÖÜ0-9+]{1,8})?)"
+    r"(?:\s*,\s*[A-ZÄÖÜ][A-Za-zÄÖÜ0-9+]{0,8}(?:[\s ][A-Za-zÄÖÜ0-9+]{1,8})?)*)"
+    r"\s+(?=[Aa]lle\b)")
 
-    Trägt das Fenster selbst kein Intervall, aber ENDET es auf eine
-    Fußnoten-Referenz ("Motoröl und -filter*1"), wird NUR dann die Definition
-    dieser EINEN Fußnote ergänzt, wenn SIE SELBST ein Intervall nennt — eine
-    reine Geltungsbereichs-Fußnote ("betrifft nur: ...") bleibt ohne
-    Intervall und das Fenster damit unauflösbar (kein erfundener Wert)."""
+
+def _abschnitt_taetigkeit(text: str, position: int) -> str | None:
+    letzte = None
+    for m in _TABELLEN_HARTE_GRENZE.finditer(text[:position]):
+        letzte = m
+    if letzte is None:
+        return None
+    kopf = letzte.group(0).upper()
+    if _ABSCHNITT_ERSETZEN.search(kopf):
+        return "ersetzen"
+    if _ABSCHNITT_PRUEFEN.search(kopf):
+        return "pruefen"
+    return None
+
+
+def _modell_unterzeile_trennen(fenster: str) -> tuple[str, str | None]:
+    """(Hauptzeile, Unterzeile-als-eigene-Zeile|None). Siehe Block oben, Punkt (2)."""
+    for m in _RE_MODELL_UNTERZEILE.finditer(fenster):
+        codes = [c.strip() for c in m.group(1).split(",")]
+        if not all(_ist_modellcode_segment(c) for c in codes):
+            continue
+        if not any(re.search(r"\d", c) for c in codes):
+            continue
+        if not _INTERVALL.search(fenster[:m.start()]):
+            continue
+        kopf = fenster.split()[0] if fenster.split() else ""
+        rest = fenster[m.end(1):].strip()
+        return fenster[:m.start()].strip(), f"{kopf} ({', '.join(codes)}) {rest}".strip()
+    return fenster, None
+
+
+def _wartung_tabellen_fenster(text: str, vokabular: dict[str, str]) -> list[tuple[str, str | None]]:
+    """Wie `_wartung_tabellen_segmente()`, aber mit der aus dem Abschnittskopf
+    abgeleiteten Tätigkeit je Fenster (`None`, wenn keine eindeutig ist)."""
     if not _ist_tabellenartig(text, vokabular):
-        return [text]
+        return [(text, None)]
     positionen = _vokabular_positionen(text, vokabular)
     if len(positionen) < 2:
-        return [text]
+        return [(text, None)]
     grenzen = [m.start() for m in _TABELLEN_HARTE_GRENZE.finditer(text)]
-    segmente = []
+
+    def wortanfang(pos: int) -> int:
+        while pos > 0 and _WORTZEICHEN.match(text[pos - 1]):
+            pos -= 1
+        return pos
+
+    ergebnis: list[tuple[str, str | None]] = []
     for i, (roh_start, ende, _muster, _schluessel) in enumerate(positionen):
         # Ein Vokabular-Muster kann MITTEN in einem längeren Kompositum treffen
         # ("aggregat" in "Nebenaggregat-Antriebsriemen") -- das Fenster beginnt
         # trotzdem am WORTANFANG, sonst verliert die Anzeige den Wortteil davor.
-        start = roh_start
-        while start > 0 and _WORTZEICHEN.match(text[start - 1]):
-            start -= 1
-        naechste_vok = positionen[i + 1][0] if i + 1 < len(positionen) else len(text)
+        start = wortanfang(roh_start)
+        naechste_vok = len(text)
+        if i + 1 < len(positionen):
+            naechste_vok = wortanfang(positionen[i + 1][0])
+            if naechste_vok <= start:
+                continue          # zweiter Treffer im selben Wort: das Fenster des letzten gilt
         naechste_grenze = min((g for g in grenzen if g > ende), default=len(text))
         fenster_ende = min(naechste_vok, naechste_grenze, ende + _MAX_TABELLEN_FENSTER, len(text))
         fenster = text[start:fenster_ende]
@@ -3750,10 +3806,29 @@ def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str
             zusatz = _fussnoten_definition(text, fussnote.group(1), grenzen)
             if zusatz and _INTERVALL.search(zusatz):
                 fenster = f"{fenster.strip()} {zusatz}"
-        segment = fenster.strip()
-        if segment:
-            segmente.append(segment)
-    return segmente or [text]
+        haupt, unterzeile = _modell_unterzeile_trennen(fenster.strip())
+        taetigkeit = _abschnitt_taetigkeit(text, start)
+        if haupt:
+            ergebnis.append((haupt, taetigkeit))
+        if unterzeile:
+            ergebnis.append((unterzeile, taetigkeit))
+    return ergebnis or [(text, None)]
+
+
+def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str]:
+    """Zerlegt einen tabellenartigen Wartungsblock in EIN Fenster pro
+    Bauteil-Vorkommen, gebunden an die nächste harte Abschnittsgrenze oder
+    das nächste Vokabular-Vorkommen -- nie an das Blockende. Kein
+    Tabellensignal erkannt -> `[text]` unverändert (Fließtext-Verhalten
+    bleibt exakt wie bisher).
+
+    Trägt das Fenster selbst kein Intervall, aber ENDET es auf eine
+    Fußnoten-Referenz ("Motoröl und -filter*1"), wird NUR dann die Definition
+    dieser EINEN Fußnote ergänzt, wenn SIE SELBST ein Intervall nennt -- eine
+    reine Geltungsbereichs-Fußnote ("betrifft nur: ...") bleibt ohne
+    Intervall und das Fenster damit unauflösbar (kein erfundener Wert).
+    Zeilenende, Modell-Unterzeilen und Abschnitts-Tätigkeit: s. Block oben."""
+    return [fenster for fenster, _ in _wartung_tabellen_fenster(text, vokabular)]
 
 
 # ── Nachtrag N2/N3/N7 (ENFAL-Reparaturpaket, 2026-11): Fahrzeugzuordnung ────
@@ -3879,12 +3954,17 @@ def _zeilen_scope_passt(fenster: str, modell: str | None, *,
         if modell:
             modellartige = [s for s in segmente if _ist_modellcode_segment(s)]
             if modellartige:
-                fand_scope = True
                 ziel_dabei = any(_satz_nennt_modell(s, modell) for s in modellartige)
                 if ausschluss and ziel_dabei:
                     return False, None
                 if not ausschluss and not ziel_dabei:
                     return False, None
+                # N7-Wartungsauswahl: NUR eine Positivliste, die das Zielmodell
+                # nennt, ist eine ausdrückliche Zuordnung. "außer ..." behält die
+                # Ausschlusswirkung (oben), belegt aber nicht, dass die Zeile für
+                # dieses Modell gedacht ist -- kein Bonus.
+                if not ausschluss:
+                    fand_scope = True
         technik_begriffe = _technik_scope_begriffe(rumpf)
         if technik_begriffe:
             passt = scopes_passen(technik_begriffe, fuel_ziel, powertrains_ziel)
@@ -3894,7 +3974,7 @@ def _zeilen_scope_passt(fenster: str, modell: str | None, *,
                 return False, None
             if passt is None:
                 ungeklaerte_technik = ungeklaerte_technik or klammer.strip()
-            else:
+            elif not ausschluss:
                 fand_scope = True
     return (True if fand_scope else None), ungeklaerte_technik
 
@@ -5136,6 +5216,72 @@ def _ist_substanziell(satz: str, marke: str | None, modell: str | None,
     return len(_inhaltstokens(satz, marke, modell, bauteil)) >= 3
 
 
+def _wartung_km_menge(text: str) -> frozenset[str]:
+    return frozenset(t for t in (_wartung_merkmal_normalisiert(text) or "").split("+")
+                     if t.endswith("km"))
+
+
+def _wartung_taetigkeit_des_kandidaten(e: dict) -> str:
+    own = _wartung_aktion(e["aussage"])
+    if own == "unbestimmt":
+        own = (e.get("abschnitt_taetigkeit") or {}).get(e["aussage"], "unbestimmt")
+    return own
+
+
+def _gleiche_synonymgruppe(e: dict, e2: dict) -> bool:
+    """Beide Kandidaten wurden über Muster erkannt, die `_WARTUNG_VOKABULAR_ERWEITERUNG`
+    ausdrücklich als Synonyme DESSELBEN Schlüssels führt ("motoroel", "oelwechsel",
+    "oel und filterwechsel"). Ein gemeinsamer grober Prüfklassen-Schlüssel allein genügt
+    nicht ("Getriebeöl" vs. "Getriebefilter" bleiben zwei Fakten)."""
+    m1, m2 = e.get("muster") or set(), e2.get("muster") or set()
+    if not m1 or not m2:
+        return False
+    if not (m1 | m2) <= set(_WARTUNG_VOKABULAR_ERWEITERUNG):
+        return False
+    return len({_WARTUNG_VOKABULAR_ERWEITERUNG[m] for m in (m1 | m2)}) == 1
+
+
+def _wartung_gleiche_arbeit_zusammenfuehren(kandidaten: dict) -> dict:
+    """Zwei Fundstellen DESSELBEN Dokuments, die dieselbe Arbeit beschreiben, werden ein
+    Fakt statt zwei (N7-Wartungsauswahl): gleicher Bauteilschlüssel, gleiche belegte
+    Tätigkeit (ersetzen/prüfen), gleiche km-Intervalle und mindestens eine gemeinsame
+    Quell-URL. Beide Stellen bleiben im Aussagetext erhalten -- jede mit ihrer eigenen
+    Bedingung (z. B. "Bei Fahrzeugen mit Ölwechsel-Managementsystem: ..."); nichts wird
+    zu einer Bedingung für das ganze Fahrzeug verallgemeinert. Verschiedene Tätigkeiten,
+    Intervalle oder Quellen werden NICHT zusammengeführt."""
+    ergebnis: dict = {}
+    for key, e in kandidaten.items():
+        taet = _wartung_taetigkeit_des_kandidaten(e)
+        km = _wartung_km_menge(e["aussage"])
+        urls = {r.get("url") for r in e["treffer"]}
+        ziel_key = None
+        if taet in ("ersetzen", "pruefen") and km:
+            for k2, e2 in ergebnis.items():
+                if (k2[0] == key[0] and _gleiche_synonymgruppe(e, e2)
+                        and _wartung_taetigkeit_des_kandidaten(e2) == taet
+                        and _wartung_km_menge(e2["aussage"]) == km
+                        and urls & {r.get("url") for r in e2["treffer"]}):
+                    ziel_key = k2
+                    break
+        if ziel_key is None:
+            ergebnis[key] = e
+            continue
+        basis = ergebnis[ziel_key]
+        if e["aussage"] != basis["aussage"] and e["aussage"] not in basis["aussage"]:
+            neue_aussage = f"{basis['aussage']} Weitere Stelle im selben Dokument: {e['aussage']}"
+            basis["abschnitt_taetigkeit"][neue_aussage] = taet
+            basis["aussage"] = neue_aussage
+        for r in e["treffer"]:
+            if r not in basis["treffer"]:
+                basis["treffer"].append(r)
+        basis.setdefault("muster", set()).update(e.get("muster") or set())
+        basis["zeile_explizit_zugeordnet"] = (basis["zeile_explizit_zugeordnet"]
+                                              or e.get("zeile_explizit_zugeordnet", False))
+        if e.get("technik_ungeklaert") and not basis.get("technik_ungeklaert"):
+            basis["technik_ungeklaert"] = e["technik_ungeklaert"]
+    return ergebnis
+
+
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        marke: str | None = None, modell: str | None = None,
                        baujahr: int | None = None, generation: str | None = None,
@@ -5295,9 +5441,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             # zusätzlich in Bauteil-Fenster zerlegt (s. Moduldocstring bei
             # `_wartung_tabellen_segmente()`). Ohne Tabellensignal ändert
             # sich nichts — jeder bestehende Fließtext-Claim bleibt EIN Claim.
+            abschnitt_von_claim: dict[str, str] = {}
             if kategorie == "wartung":
-                claim_segmente = [fenster for seg in claim_segmente
-                                  for fenster in _wartung_tabellen_segmente(seg, vokabular)]
+                fenster_paare = [paar for seg in claim_segmente
+                                 for paar in _wartung_tabellen_fenster(seg, vokabular)]
+                claim_segmente = [fenster for fenster, _ in fenster_paare]
+                abschnitt_von_claim = {fenster: akt for fenster, akt in fenster_paare if akt}
             for claim in claim_segmente:
                 if kategorie == "rueckruf":
                     fremde_marke = _fremde_marke_satz(claim, marke, modell)
@@ -5364,6 +5513,17 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": grund, "satz": claim[:120]})
                     continue
+                if kategorie == "wartung" and zeilen_technik_ungeklaert:
+                    # N7-Wartungsauswahl: eine Zeile, die laut Quelle nur unter einer
+                    # technischen Bedingung gilt ("nur Hybrid- und Hybrid Plug-in-
+                    # Modelle"), deren Zutreffen unbekannt bleibt, erzeugt KEINEN
+                    # konkreten Wartungspunkt und keinen Nachweis. Unbekannt gilt
+                    # nicht als bestätigt; die Anwendbarkeit bleibt offen. Ist sie
+                    # belegt (`zeilen_scope is True`), läuft die Zeile wie bisher.
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "wartung_technische_bedingung_offen",
+                                      "satz": claim[:120]})
+                    continue
                 z = zeitraum(claim) if kategorie != "wartung" else None
                 passt = _im_zeitraum(baujahr, z)
                 if passt is None and artikel_passt is True:
@@ -5428,7 +5588,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "bauteile": [bauteil_claim] if bauteil_claim else [],
                                       "zeitraum": z, "passt": passt, "vage": vage.group(0) if vage else None,
                                       "zeile_explizit_zugeordnet": False,
-                                      "technik_ungeklaert": None})
+                                      "technik_ungeklaert": None,
+                                      "abschnitt_taetigkeit": {}})
+                    if claim in abschnitt_von_claim:
+                        eintrag["abschnitt_taetigkeit"][claim] = abschnitt_von_claim[claim]
+                    if muster:
+                        eintrag.setdefault("muster", set()).add(muster)
                     if kategorie == "rueckruf":
                         eintrag["ereignis_tokens"].append(ereignis_tokens)
                         if referenz:
@@ -5457,8 +5622,11 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         eintrag["technik_ungeklaert"] = zeilen_technik_ungeklaert
                     break
 
+    if kategorie == "wartung":
+        kandidaten = _wartung_gleiche_arbeit_zusammenfuehren(kandidaten)
     fakten: list[WebFakt] = []
     _wartung_explizit: list[bool] = []
+    _wartung_taet_rang: list[int] = []
     for schluessel, e in kandidaten.items():
         quellen = _quellen_aus(e["treffer"], marke=marke)
         if not quellen:
@@ -5534,6 +5702,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # "unbestimmt" (aus dem Text nicht ableitbar) wird bewusst zu `None`,
         # keine geratene Tätigkeit aus dem Bauteilnamen.
         taetigkeit_roh = _wartung_aktion(e["aussage"]) if kategorie == "wartung" else None
+        if kategorie == "wartung" and taetigkeit_roh == "unbestimmt":
+            # N7-Wartungsauswahl: keine eigene Tätigkeit -> die des zugehörigen
+            # Abschnitts ("ZUSÄTZLICHE INSPEKTIONEN" -> prüfen), nie aus dem Bauteilnamen.
+            taetigkeit_roh = (e.get("abschnitt_taetigkeit") or {}).get(e["aussage"], "unbestimmt")
         taetigkeit = taetigkeit_roh if taetigkeit_roh in ("ersetzen", "pruefen") else None
         fakten.append(WebFakt(
             kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
@@ -5546,6 +5718,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         ))
         if kategorie == "wartung":
             _wartung_explizit.append(bool(e.get("zeile_explizit_zugeordnet")))
+            # Rang der Tätigkeitsquelle: 0 = der eigene Aussagesatz nennt sie, 1 = nur der
+            # Abschnittskopf, 2 = keine. Die Tabellenübernahme ("ZUSÄTZLICHE INSPEKTIONEN")
+            # darf eine im Satz selbst belegte Tätigkeit nicht verdrängen.
+            _wartung_taet_rang.append(
+                0 if _wartung_aktion(e["aussage"]) != "unbestimmt"
+                else (1 if taetigkeit else 2))
 
     if kategorie == "wartung":
         # §4-Umsetzung (Auswahl, ENFAL-Reparaturpaket 2026-11): ERST alle
@@ -5593,12 +5771,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # sie gegen eine konkreter belegte Zeile. Alphabetisch bleibt
         # unverändert der letzte, rein deterministische Gleichstand-Tiebreak.
         geordnet = sorted(
-            zip(fakten, _wartung_explizit),
+            zip(fakten, _wartung_explizit, _wartung_taet_rang),
             key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[0].confidence],
                            0 if p[1] else (2 if p[0].technische_bedingung_status == "unresolved" else 1),
-                           0 if p[0].taetigkeit else 1,
+                           p[2],
                            p[0].bauteil or ""))
-        fakten = [f for f, _ in geordnet]
+        fakten = [f for f, _, _ in geordnet]
         behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
         verworfen = fakten[MAX_FAKTEN_JE_KATEGORIE:]
         for f in verworfen:

@@ -175,13 +175,15 @@ for bezeichnung, fuel_ziel, pt_ziel, erwartet_webfakt, erwartet_status in (
                                 fuel_ziel=fuel_ziel, powertrains_ziel=pt_ziel)
     inverter = [f for f in fakten if "nverter" in (f.bauteil or "")]
     if erwartet_webfakt is None:
-        zurueckgestellt = any("nverter" in a.get("satz", "")
-                              and a.get("grund") == "wartung_auswahllimit_erreicht"
-                              for a in abgelehnt)
-        check(f"A6 ({bezeichnung}): Inverter-Kühlmittel ist entweder als WebFakt "
-              f"vorhanden ODER ausschließlich durchs Auswahllimit zurückgestellt "
-              f"(nie durchs technische Gate ausgeschlossen)",
-              bool(inverter) or zurueckgestellt,
+        # N7-Wartungsauswahl (Folgepaket): bei UNBEKANNTER Elektrifizierung entsteht KEIN konkreter
+        # Wartungspunkt (und damit weder Hinweis, Frage noch Nachweis). Die Zeile wird mit eigenem
+        # Grund festgehalten -- die Anwendbarkeit bleibt offen, nichts gilt als bestätigt.
+        offen = any("nverter" in a.get("satz", "")
+                    and a.get("grund") == "wartung_technische_bedingung_offen"
+                    for a in abgelehnt)
+        check(f"A6 ({bezeichnung}): Inverter-Kühlmittel erzeugt keinen Wartungspunkt und steht "
+              f"mit Grund 'wartung_technische_bedingung_offen' in der Ablehnungsliste",
+              not inverter and offen,
               f"fakten={[f.bauteil for f in fakten]!r} abgelehnt={abgelehnt!r}")
     else:
         check(f"A6 ({bezeichnung}): Inverter-Kühlmittel als WebFakt vorhanden={bool(inverter)} "
@@ -328,10 +330,13 @@ async def _teil_c() -> None:
 
     wartung_insights = [i for i in r.insights if i.kategorie == "web_wartung"]
     inverter_insights = [i for i in wartung_insights if "nverter" in i.titel]
-    check("C1) Inverter-Kühlmittel erscheint als Insight mit ungeklärter "
-          "technischer Bedingung",
-          inverter_insights and inverter_insights[0].technische_bedingung_status == "unresolved",
-          str([(i.titel, i.technische_bedingung_status) for i in wartung_insights]))
+    # N7-Wartungsauswahl (Folgepaket): bei UNBEKANNTER Elektrifizierung entsteht kein konkreter
+    # Inverter-Wartungspunkt -- weder Insight noch Frage noch Nachweis. Die Anwendbarkeit bleibt
+    # offen (Grund 'wartung_technische_bedingung_offen' in der Ablehnungsliste, s. Teil A). Der
+    # Anwendbarkeits-Pfad in app/kaufaktionen.py bleibt für bestätigt-passende/handgebaute
+    # Insights bestehen und wird in Teil D unverändert geprüft.
+    check("C1) Inverter-Kühlmittel erzeugt KEINEN Insight (Elektrifizierung unbekannt)",
+          not inverter_insights, str([(i.titel, i.technische_bedingung_status) for i in wartung_insights]))
 
     frage_texte = {a.id: a.titel + " " + a.aktion
                   for a in r.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch}
@@ -340,31 +345,19 @@ async def _teil_c() -> None:
     inverter_fragen = [t for i, t in frage_texte.items() if "nverter" in i or "inverter" in t.lower()]
     inverter_dok = [t for i, t in dok_texte.items() if "nverter" in i or "inverter" in t.lower()]
 
-    check("C2) die Verkäuferfrage zu Inverter-Kühlmittel fragt ZUERST nach der "
-          "Anwendbarkeit (nennt die Bedingung), NICHT unbedingt nach einer "
-          "Durchführung ('Wann wurde ... zuletzt gemacht')",
-          inverter_fragen
-          and "trifft" in inverter_fragen[0].lower()
-          and "hybrid" in inverter_fragen[0].lower()
-          and "wann wurde" not in inverter_fragen[0].lower().split("trifft")[0],
-          str(inverter_fragen))
-    check("C3) dieselbe Anwendbarkeits-Priorität gilt für die Dokumentenanforderung",
-          inverter_dok and "anwendbarkeit" in inverter_dok[0].lower(),
-          str(inverter_dok))
-    check("C4) keine erfundene Fälligkeits-/Entwarnungsbehauptung in der Frage "
-          "(kein 'fällig'/'überfällig'/'nicht notwendig')",
-          inverter_fragen and not any(
-              w in inverter_fragen[0].lower() for w in ("fällig", "überfällig", "nicht notwendig")))
+    check("C2) keine Verkäuferfrage zu Inverter-Kühlmittel", not inverter_fragen, str(inverter_fragen))
+    check("C3) kein Nachweisdokument zu Inverter-Kühlmittel", not inverter_dok, str(inverter_dok))
+    check("C4) der Inverter taucht im Bericht an keiner Stelle auf (keine erfundene Aussage)",
+          "inverter" not in r.bericht.lower())
 
-    # Kontrolle: 'Automatikgetriebeöl' (keine technische Bedingung) bleibt
-    # unverändert eine normale, unbedingte Wartungsfrage.
+    # Kontrolle: 'Automatikgetriebeöl' (keine technische Bedingung) bleibt eine normale,
+    # unbedingte Wartungsfrage -- seit der Abschnitts-Tätigkeit als Prüfung formuliert.
     oel_fragen = [t for i, t in frage_texte.items() if "automatikgetriebeoel" in i]
     check("C5 Kontrolle) 'Automatikgetriebeöl' bleibt eine normale Frage "
-          "ohne Anwendbarkeits-Umleitung",
-          oel_fragen and "bereits gemacht" in oel_fragen[0].lower()
+          "ohne Anwendbarkeits-Umleitung (Tätigkeit 'prüfen' aus dem Abschnittskopf)",
+          oel_fragen and "bereits geprüft" in oel_fragen[0].lower()
           and "trifft die bedingung" not in oel_fragen[0].lower(),
           str(oel_fragen))
-
     if _FEHLER:
         print(f"\n{len(_FEHLER)} FEHLER (Teil C):")
         for f in _FEHLER[-10:]:

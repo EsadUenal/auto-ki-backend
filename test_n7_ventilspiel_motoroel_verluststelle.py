@@ -261,18 +261,18 @@ _idx_kuehlmittel = next((i for i, s in enumerate(_zurueckgestellt_saetze)
                         if s.lower().startswith("motorkühlmittel")), None)
 _idx_inverter = next((i for i, s in enumerate(_zurueckgestellt_saetze)
                      if s.lower().startswith("inverter")), None)
-check("D1) 'Inverter-Kühlmittel' (Elektrifizierung unbekannt) rangiert "
-      "weiterhin NACH der uneingeschränkten Zeile 'Motorkühlmittel' -- Folge "
-      "des N7-Fixes (dritte Prioritätsstufe), nicht Zufall -- beide verlieren "
-      "jetzt zusätzlich gegen die konkreter belegte Zeile 'Öl- und "
-      "Filterwechsel' (vierte Prioritätsstufe, s.o.)",
-      _idx_kuehlmittel is not None and _idx_inverter is not None
-      and _idx_kuehlmittel < _idx_inverter,
+# N7-Wartungsauswahl (Folgepaket): bei unbekannter Elektrifizierung ist "Inverter-Kühlmittel"
+# KEIN Kandidat mehr -- weder ausgewählt noch durchs Limit zurückgestellt. Die Bedingung
+# ("nur Hybrid- und Hybrid Plug-in-Modelle") ist unbekannt, nicht bestätigt: kein konkreter
+# Wartungspunkt, die Anwendbarkeit bleibt offen. Der Grund steht in der Ablehnungsliste.
+check("D1) 'Inverter-Kühlmittel' (Elektrifizierung unbekannt) ist weder ausgewähltes Faktum "
+      "noch durchs Limit zurückgestelltes",
+      not any("nverter" in (b or "") for b in bauteile) and _idx_inverter is None,
       f"zurückgestellt={_zurueckgestellt_saetze!r} bauteile={bauteile!r}")
-check("D2) ... aber NICHT durch das technische Gate ausgeschlossen -- nur "
-      "durchs Auswahllimit zurückgestellt",
+check("D2) ... und steht mit eigenem Grund 'wartung_technische_bedingung_offen' in der "
+      "Ablehnungsliste (unbekannt gilt nicht als bestätigt, nicht als widerlegt)",
       any("inverter" in a.get("satz", "").lower()
-          and a.get("grund") == "wartung_auswahllimit_erreicht" for a in abgelehnt),
+          and a.get("grund") == "wartung_technische_bedingung_offen" for a in abgelehnt),
       str([a for a in abgelehnt if "inverter" in a.get("satz", "").lower()]))
 check("D3) 'Öl- und Filterwechsel' erscheint jetzt unter den ausgewählten 5 "
       "Fakten (N7-Nachtrag: konkreter belegte Tätigkeit schlägt den reinen "
@@ -392,10 +392,10 @@ async def _teil_e() -> None:
     check("E3) 'Inverter-Kühlmittel' erscheint NICHT im sichtbaren Bericht -- "
           "konsistent mit Teil D (N7-Fix Teil 1, verliert gegen 'Motorkühlmittel')",
           not any("nverter" in t for t in titel_liste), str(titel_liste))
-    check("E4) 'Motorkühlmittel' erscheint JETZT NICHT mehr im sichtbaren "
-          "Bericht -- es verliert seinerseits gegen den konkreter belegten "
-          "Punkt 'Öl- und Filterwechsel' (N7-Fix Teil 2, konsistent mit Teil D1)",
-          not any("otorkühlmittel" in t for t in titel_liste), str(titel_liste))
+    check("E4) 'Motorkühlmittel' erscheint (N7-Wartungsauswahl: Tätigkeit 'ersetzen' aus dem Abschnittskopf "
+          "'ZUSÄTZLICHER TEILEAUSTAUSCH'), nach Ventilspiel (ausdrücklich zugeordnet) und Öl-/Filterwechsel "
+          "(Tätigkeit im eigenen Satz) im Rahmen des Fünferlimits",
+          any("otorkühlmittel" in t for t in titel_liste), str(titel_liste))
     check("E5) der Bericht behauptet an keiner Stelle, das Dokument sei "
           "vollständig/vollumfänglich ausgewertet",
           "vollständig ausgewertet" not in r.bericht.lower()
