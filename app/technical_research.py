@@ -61,7 +61,7 @@ import asyncio
 import logging
 import re
 from typing import Protocol
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from app.config import IDENTITY_DEBUG
 from app.kraftstoff_powertrain import (
@@ -320,7 +320,8 @@ def _tier(url: str) -> int:
 # wirkt nur auf das bereits bestehende `herstelleridentifikation`-Flag eines
 # generation-Claims, s. `_generationen_pruefen()`.
 _HERSTELLERIDENTIFIKATION_PFADWOERTER = (
-    "rettungsdatenblatt", "rettungskarte", "rettungsleitfaden", "fahrzeuginformationen")
+    "rettungsdatenblatt", "rettungskarte", "rettungsleitfaden", "fahrzeuginformationen",
+    "rescue card")
 # Die reale toyota.de-URL trägt den Pfadumlaut PROZENTKODIERT
 # ("rettungsdatenbl%C3%A4tter") -- `unquote()` + Umlaut-Faltung (ä→a usw.)
 # VOR dem Wortvergleich, sonst verfehlt der obige ASCII-Wortstamm genau das
@@ -348,10 +349,15 @@ def _herstelleridentifikationsdokument_grund(url: str, marke: str | None) -> str
     Diagnose, s. Kommentar oben."""
     if not _marke_eigene_domain(url, marke):
         return _GRUND_FREMDE_DOMAIN
-    pfad = unquote(url or "").lower().translate(_UMLAUT_FALTUNG)
+    # Nur der URL-PFAD zaehlt: Query/Fragment (z.B. "?download=1") machen aus
+    # einem PDF kein Nicht-PDF. Gepruefte und abgerufene URL bleibt das Original.
+    pfad = unquote(urlsplit(url or "").path).lower().translate(_UMLAUT_FALTUNG)
     if not pfad.endswith(".pdf"):
         return _GRUND_KEIN_PDF
-    if not any(wort in pfad for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER):
+    # Trenner normalisieren, damit "rescue-card"/"rescue_card" wie "rescue card" zaehlen.
+    pfad_woerter = re.sub(r"[-_+\s]+", " ", pfad)
+    if not any(wort in pfad or wort in pfad_woerter
+               for wort in _HERSTELLERIDENTIFIKATION_PFADWOERTER):
         return _GRUND_FALSCHES_PFADWORT
     return None
 
