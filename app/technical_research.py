@@ -61,7 +61,7 @@ import asyncio
 import logging
 import re
 from typing import Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from app.config import IDENTITY_DEBUG
 from app.kraftstoff_powertrain import (
@@ -73,9 +73,10 @@ from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleI
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
-    _domain_von, _marke_eigene_domain, _pressedomain_gehoert_marke, _psl_teile, _qualitaets_label,
+    _domain_von, _marke_eigene_domain, _markenlabel, _pressedomain_gehoert_marke, _psl_teile,
+    _qualitaets_label,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
-    registrable_domain, score_domain, tavily_search,
+    ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
 )
 
 log = logging.getLogger(__name__)
@@ -568,6 +569,142 @@ def _identitaet_nachlade_diagnose_je_intent(
         ergebnis[name] = diag
         global_gesehen.update(r.get("url") for r in treffer if r.get("url"))
     return ergebnis
+
+
+# ── N1: Herstellerübersicht -> verlinkte Rettungskarten-PDF ──────────────────
+# Hersteller liefern Rettungskarten oft nicht unter einer direkt auffindbaren
+# PDF-URL, sondern als Download-Link einer Übersichtsseite der EIGENEN Domain --
+# das PDF liegt dann auf einem Konzern-/CDN-Host. Der Dokumentfilter
+# (`_herstelleridentifikationsdokument_grund`) lehnt solche Hosts als fremd ab.
+# Dieser Fallback nimmt NUR einen direkten Link von einer verifizierten
+# Herstellerseite auf (a) die eigene Markendomain oder (b) einen ausdrücklich
+# gelisteten Konzern-/CDN-Host, dessen Pfad zusätzlich unter dem Markennamen
+# liegt. KEINE pauschale Freigabe über Quellen-Tier. Die Liste ist kuratiert
+# (nur Hostnamen, nie Markenpfade) und muss je Konzern bewusst erweitert werden.
+_KONZERN_CDN_HOSTE = ("scene7.toyota.eu",)
+_MD_LINK = re.compile(r"\[([^\]]{1,300})\]\((https?://[^)\s]+)\)")
+
+
+def _link_ziel_vertrauenswuerdig(url: str, marke: str | None) -> bool:
+    if not url or not marke or ist_abruf_gesperrt(url):
+        return False
+    teile = urlsplit(url)
+    if teile.scheme != "https":
+        return False
+    if _marke_eigene_domain(url, marke):
+        return True
+    if (teile.hostname or "").lower() not in _KONZERN_CDN_HOSTE:
+        return False
+    segmente = {_markenlabel(seg) for seg in unquote(teile.path).split("/") if seg}
+    return _markenlabel(marke) in segmente
+
+
+def _modell_woerter(text: str | None) -> list[str]:
+    return [w for w in re.split(r"[^0-9a-z]+", (text or "").lower()) if w]
+
+
+def _enthaelt_folge(woerter: list[str], folge: list[str]) -> bool:
+    n = len(folge)
+    return n > 0 and any(woerter[i:i + n] == folge for i in range(len(woerter) - n + 1))
+
+
+def _uebersicht_kandidaten(treffer: list[dict], *, marke: str | None) -> list[str]:
+    """Übersichtsseiten der EIGENEN Herstellerdomain mit Rettungskarten-/
+    Fahrzeuginformations-Pfadwort, die selbst kein PDF sind (sonst greift der
+    normale Abruf). Spezifischste (Pfad mit 'rettung'/'rescue') zuerst."""
+    gesehen: dict[str, tuple] = {}
+    for r in treffer:
+        url = r.get("url") or ""
+        if not url or url in gesehen or not _marke_eigene_domain(url, marke):
+            continue
+        pfad = unquote(urlsplit(url).path).lower().translate(_UMLAUT_FALTUNG)
+        if pfad.endswith(".pdf"):
+            continue
+        norm = re.sub(r"[-_+\s]+", " ", pfad)
+        if not any(w in pfad or w in norm for w in _HERSTELLERIDENTIFIKATION_PFADWOERTER):
+            continue
+        gesehen[url] = (-int("rettung" in pfad or "rescue" in norm), -len(pfad))
+    return sorted(gesehen, key=lambda u: gesehen[u])
+
+
+def _uebersicht_pdf_links(text: str, *, uebersicht_url: str, marke: str | None,
+                          modell: str | None) -> list[tuple[str, str]]:
+    """(url, label) der PDF-Links einer Übersicht, die zum Zielmodell passen und
+    auf ein vertrauenswürdiges Ziel zeigen. Modellbezug nur über ganze Wörter in
+    Linkbeschriftung oder Dateiname (nie Teilstring)."""
+    ziel = _modell_woerter(modell)
+    ergebnis: list[tuple[str, str]] = []
+    gesehen: set[str] = set()
+    for label, link in _MD_LINK.findall(text or ""):
+        link = urljoin(uebersicht_url, link)
+        if link in gesehen or not unquote(urlsplit(link).path).lower().endswith(".pdf"):
+            continue
+        gesehen.add(link)
+        if not _link_ziel_vertrauenswuerdig(link, marke):
+            continue
+        dateiname = unquote(urlsplit(link).path).rsplit("/", 1)[-1]
+        w_label, w_datei = _modell_woerter(label), _modell_woerter(dateiname)
+        if (_enthaelt_folge(w_label, ziel) or _enthaelt_folge(w_datei, ziel)
+                or _enthaelt_folge(w_datei, ["".join(ziel)])):
+            ergebnis.append((link, label.strip()))
+    return ergebnis
+
+
+async def _pruefe_redirects(url: str, marke: str | None, *, max_hops: int = 3) -> bool:
+    """Domainprüfung auch bei Redirects: jede Station muss
+    `_link_ziel_vertrauenswuerdig` erfüllen, am Ende ein 2xx. Fehler oder
+    Unklarheit = nicht vertrauenswürdig."""
+    import httpx
+    aktuell = url
+    for _ in range(max_hops + 1):
+        if not _link_ziel_vertrauenswuerdig(aktuell, marke):
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(6.0), follow_redirects=False) as c:
+                resp = await c.head(aktuell)
+        except Exception:
+            return False
+        if resp.status_code in (301, 302, 303, 307, 308):
+            ziel = resp.headers.get("location")
+            if not ziel:
+                return False
+            aktuell = urljoin(aktuell, ziel)
+            continue
+        return 200 <= resp.status_code < 300
+    return False
+
+
+async def _uebersicht_fallback(treffer: list[dict], *, marke: str | None, modell: str | None,
+                               budget: int) -> list[dict]:
+    """Übersicht -> verlinkte PDF -> Treffer für die BESTEHENDE Identitätsprüfung.
+    Verbraucht aus dem gemeinsamen Identitäts-Abrufbudget 1 Abruf für die
+    Übersicht + 1 für die PDF (`budget` muss >= 2 sein). Der Treffer trägt
+    `verlinkt_von_herstellerseite` -- nur eine Herkunftsaussage (Dokumenttyp);
+    Rollen-, Zeit- und Modellprüfung bleiben unverändert."""
+    if budget < 2:
+        return []
+    kandidaten = _uebersicht_kandidaten(treffer, marke=marke)
+    if not kandidaten:
+        return []
+    uebersicht = kandidaten[0]
+    texte, _ = await _sicheres_nachladen([uebersicht])
+    links = _uebersicht_pdf_links(texte.get(uebersicht, ""), uebersicht_url=uebersicht,
+                                  marke=marke, modell=modell)
+    log.info("research_phase=identitaet_uebersicht_fallback uebersicht_abgerufen=%s pdf_links_passend=%d",
+             bool(texte.get(uebersicht)), len(links))
+    for pdf_url, label in links:
+        if not await _pruefe_redirects(pdf_url, marke):
+            log.info("research_phase=identitaet_uebersicht_fallback link_abgelehnt=redirect_oder_host")
+            continue
+        pdf_text, _ = await _sicheres_nachladen([pdf_url])
+        if pdf_text.get(pdf_url):
+            log.info("research_phase=identitaet_uebersicht_fallback pdf_nachgeladen=True host=%s",
+                     registrable_domain(pdf_url))
+            return [{"url": pdf_url, "title": label, "content": pdf_text[pdf_url],
+                     "verlinkt_von_herstellerseite": uebersicht}]
+        log.info("research_phase=identitaet_uebersicht_fallback pdf_nachgeladen=False")
+        break
+    return []
 
 
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
@@ -2359,7 +2496,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # Docstring) -- reine Dokumenttyp-Erkennung dieser EINEN Quelle, keine
     # Rollenaussage. Wirkt nur zusammen mit unabhaengiger Rollenevidenz fuer
     # EXAKT denselben Code (s. `_generationen_pruefen()`).
-    herstelleridentifikation = _herstelleridentifikationsdokument(url, ziel.get("marke"))
+    herstelleridentifikation = (bool(r.get("verlinkt_von_herstellerseite"))
+                                or _herstelleridentifikationsdokument(url, ziel.get("marke")))
     for g in _generationscodes(r, ziel.get("modell")) if grund != "schwach" else []:
         passt = _im_zeitraum(baujahr, g["zeitraum"])
         if passt is False:
@@ -7137,6 +7275,13 @@ class TavilyTechnicalResearchProvider:
                              len(spec_nachlade_urls), len(spec_voller_text),
                              spec_nachlade_stats["aus_cache"], spec_nachlade_stats["fehler"],
                              ",".join(sorted({registrable_domain(u) for u in spec_nachlade_urls})) or "-")
+                if "generation" in offene_spec_felder and not (ident_nachlade_urls or spec_nachlade_urls):
+                    _vorab, _ = phase_identitaet(ident_treffer + neue_spec_treffer, z)
+                    if _vorab.generation is None:
+                        neue_spec_treffer = neue_spec_treffer + await _uebersicht_fallback(
+                            ident_treffer + neue_spec_treffer, marke=marke, modell=z["modell"],
+                            budget=_IDENTITAET_VOLLTEXT_NACHLADE_MAX - len(ident_nachlade_urls)
+                            - len(spec_nachlade_urls))
                 ident_treffer = ident_treffer + neue_spec_treffer
                 identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
                 abgelehnt += abgelehnt_i2
