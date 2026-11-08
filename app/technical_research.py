@@ -350,6 +350,12 @@ def _herstelleridentifikationsdokument_grund(url: str, marke: str | None) -> str
     Diagnose, s. Kommentar oben."""
     if not _marke_eigene_domain(url, marke):
         return _GRUND_FREMDE_DOMAIN
+    return _pfad_grund(url)
+
+
+def _pfad_grund(url: str) -> str | None:
+    """Pfadregel des Dokumenttyp-Gates (ohne Domainprüfung): PDF-Endung und
+    Rubrikwort. Auch vom Übersichts-Fallback für jede Download-Station genutzt."""
     # Nur der URL-PFAD zaehlt: Query/Fragment (z.B. "?download=1") machen aus
     # einem PDF kein Nicht-PDF. Gepruefte und abgerufene URL bleibt das Original.
     pfad = unquote(urlsplit(url or "").path).lower().translate(_UMLAUT_FALTUNG)
@@ -650,35 +656,71 @@ def _uebersicht_pdf_links(text: str, *, uebersicht_url: str, marke: str | None,
     return ergebnis
 
 
-async def _pruefe_redirects(url: str, marke: str | None, *, max_hops: int = 3) -> bool:
-    """Domainprüfung auch bei Redirects: jede Station muss
-    `_link_ziel_vertrauenswuerdig` erfüllen, am Ende ein 2xx. Fehler oder
-    Unklarheit = nicht vertrauenswürdig."""
+# Eigener, begrenzter PDF-Download NUR für den Übersichts-Fallback: Tavily Extract
+# macht die tatsächliche Ziel-URL nach Redirects nicht sichtbar. Hier wird jede
+# Station vor dem Request geprüft und genau die geprüften Bytes werden gelesen.
+_PDF_MAX_BYTES = 5_000_000
+_PDF_MAX_REDIRECTS = 3
+_PDF_TIMEOUT_S = 10.0
+_PDF_MAX_SEITEN = 10
+_PDF_DOWNLOAD_TRANSPORT = None   # Test-Naht: httpx.MockTransport statt Netzwerk
+
+
+def _pdf_station_erlaubt(url: str, marke: str | None) -> bool:
+    return _link_ziel_vertrauenswuerdig(url, marke) and _pfad_grund(url) is None
+
+
+async def _lade_pdf_bytes(url: str, marke: str | None) -> tuple[bytes, str] | None:
+    """(Bytes, finale URL) oder None. HTTPS, Zielhost und Pfadregel werden vor
+    JEDEM Request geprüft (auch nach Redirects), Redirects/Zeit/Größe sind
+    begrenzt. Jede Unklarheit -> None."""
     import httpx
     aktuell = url
-    for _ in range(max_hops + 1):
-        if not _link_ziel_vertrauenswuerdig(aktuell, marke):
-            return False
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(6.0), follow_redirects=False) as c:
-                resp = await c.head(aktuell)
-        except Exception:
-            return False
-        if resp.status_code in (301, 302, 303, 307, 308):
-            ziel = resp.headers.get("location")
-            if not ziel:
-                return False
-            aktuell = urljoin(aktuell, ziel)
-            continue
-        return 200 <= resp.status_code < 300
-    return False
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(_PDF_TIMEOUT_S), follow_redirects=False,
+                                     transport=_PDF_DOWNLOAD_TRANSPORT) as client:
+            for _ in range(_PDF_MAX_REDIRECTS + 1):
+                if not _pdf_station_erlaubt(aktuell, marke):
+                    return None
+                async with client.stream("GET", aktuell) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        ziel = resp.headers.get("location")
+                        if not ziel:
+                            return None
+                        aktuell = urljoin(aktuell, ziel)
+                        continue
+                    if not 200 <= resp.status_code < 300:
+                        return None
+                    laenge = resp.headers.get("content-length")
+                    if laenge and laenge.isdigit() and int(laenge) > _PDF_MAX_BYTES:
+                        return None
+                    daten = bytearray()
+                    async for block in resp.aiter_bytes():
+                        daten.extend(block)
+                        if len(daten) > _PDF_MAX_BYTES:
+                            return None
+                    return (bytes(daten), aktuell) if daten.startswith(b"%PDF-") else None
+    except Exception:
+        return None
+    return None
+
+
+def _pdf_text(daten: bytes) -> str:
+    """Text aus GENAU diesen Bytes; jeder Parserfehler -> leer."""
+    try:
+        import io
+        from pypdf import PdfReader
+        leser = PdfReader(io.BytesIO(daten))
+        return "\n".join((seite.extract_text() or "") for seite in leser.pages[:_PDF_MAX_SEITEN]).strip()
+    except Exception:
+        return ""
 
 
 async def _uebersicht_fallback(treffer: list[dict], *, marke: str | None, modell: str | None,
                                budget: int) -> list[dict]:
     """Übersicht -> verlinkte PDF -> Treffer für die BESTEHENDE Identitätsprüfung.
-    Verbraucht aus dem gemeinsamen Identitäts-Abrufbudget 1 Abruf für die
-    Übersicht + 1 für die PDF (`budget` muss >= 2 sein). Der Treffer trägt
+    Zählt gegen das gemeinsame Identitäts-Abrufbudget: 1 Tavily-Abruf für die
+    Übersicht + 1 eigener PDF-Download (`budget` muss >= 2 sein). Der Treffer trägt
     `verlinkt_von_herstellerseite` -- nur eine Herkunftsaussage (Dokumenttyp);
     Rollen-, Zeit- und Modellprüfung bleiben unverändert."""
     if budget < 2:
@@ -692,19 +734,18 @@ async def _uebersicht_fallback(treffer: list[dict], *, marke: str | None, modell
                                   marke=marke, modell=modell)
     log.info("research_phase=identitaet_uebersicht_fallback uebersicht_abgerufen=%s pdf_links_passend=%d",
              bool(texte.get(uebersicht)), len(links))
-    for pdf_url, label in links:
-        if not await _pruefe_redirects(pdf_url, marke):
-            log.info("research_phase=identitaet_uebersicht_fallback link_abgelehnt=redirect_oder_host")
-            continue
-        pdf_text, _ = await _sicheres_nachladen([pdf_url])
-        if pdf_text.get(pdf_url):
-            log.info("research_phase=identitaet_uebersicht_fallback pdf_nachgeladen=True host=%s",
-                     registrable_domain(pdf_url))
-            return [{"url": pdf_url, "title": label, "content": pdf_text[pdf_url],
-                     "verlinkt_von_herstellerseite": uebersicht}]
-        log.info("research_phase=identitaet_uebersicht_fallback pdf_nachgeladen=False")
-        break
-    return []
+    if not links:
+        return []
+    # Genau EIN PDF-Download (zweiter Budgetplatz), erster passender Link.
+    pdf_url, label = links[0]
+    geladen = await _lade_pdf_bytes(pdf_url, marke)
+    text = _pdf_text(geladen[0]) if geladen else ""
+    log.info("research_phase=identitaet_uebersicht_fallback pdf_geladen=%s text_vorhanden=%s",
+             bool(geladen), bool(text))
+    if not text:
+        return []
+    return [{"url": geladen[1], "title": label, "content": text,
+             "verlinkt_von_herstellerseite": uebersicht}]
 
 
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
