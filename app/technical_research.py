@@ -748,6 +748,52 @@ async def _uebersicht_fallback(treffer: list[dict], *, marke: str | None, modell
              "verlinkt_von_herstellerseite": uebersicht}]
 
 
+# ── N1: gezielte Nachladung eines unabhängigen Rollenbelegs ──────────────────
+# Ein Hersteller-Identifikationsdokument ordnet eine Kennung (z.B. aus einer
+# Rettungskarte) dem Modell zu, trägt aber selbst kein Rollenwort. Ohne eine
+# UNABHÄNGIGE Quelle, die dieselbe Kennung als Baureihe/Generation bezeichnet,
+# verwirft `_generationen_pruefen` sie ("ohne_generationskontext"). Suchtreffer
+# von Katalogseiten bringen oft nur einen Auszug OHNE die Baureihenzeile. Dieser
+# Schritt lädt dann höchstens EINEN bereits gefundenen, zum Modell passenden
+# Katalogtreffer (Stufe 1-2, nicht Hersteller/Konzern) vollständig nach; der Text
+# läuft danach unverändert durch die bestehende Rollen-/Zeitraumprüfung. Eigenes
+# Eigener Abruf, getrennt vom Identitäts-Abrufbudget (`_IDENTITAET_VOLLTEXT_NACHLADE_MAX`),
+# gegen das auch der Übersichts-Fallback zählt.
+
+def _rollenbeleg_kandidat(treffer: list[dict], *, ziel: dict) -> tuple[str | None, dict]:
+    """(URL oder None, Diagnose). Kein Abruf, reine Auswahl aus vorhandenen Treffern."""
+    marke, modell = ziel.get("marke"), ziel.get("modell")
+    quellen = [r for r in treffer if score_domain(r.get("url") or "") >= 0
+               and ausgerichtet(r, marke, modell)[0]]
+    claims = [c for r in quellen for c in _identitaets_claims(r, ziel)]
+    _generationen_pruefen(claims, ziel.get("auxiliary_code"))
+    gen = [c for c in claims if c["feld"] == "generation"]
+    dok = [c for c in gen if c.get("herstelleridentifikation")]
+    if not dok:
+        return None, {"kandidaten": 0, "hosts": [], "grund": "keine_dokumentkennung"}
+    offen = {c["wert"] for c in dok
+             if all(x.get("verworfen") == "ohne_generationskontext" for x in dok if x["wert"] == c["wert"])}
+    if not offen:
+        return None, {"kandidaten": 0, "hosts": [], "grund": "rollenbeleg_vorhanden_oder_anderer_grund"}
+    mit_claim = {c["url"] for c in gen}
+    dok_hosts = {c["domain"] for c in dok}
+    gerankt, gesehen = [], set()
+    for i, r in enumerate(quellen):
+        url = r.get("url") or ""
+        if (not url or url in gesehen or url in mit_claim or r.get("verlinkt_von_herstellerseite")
+                or hat_brauchbaren_raw_content(r) or ist_abruf_gesperrt(url)
+                or _marke_eigene_domain(url, marke) or _domain_von(url) in dok_hosts
+                or _tier_identitaet(url, marke) > 2):
+            continue
+        gesehen.add(url)
+        gerankt.append((-score_domain(url, KATEGORIE_TECHNISCHE_DATEN), _tier_identitaet(url, marke), i, url))
+    gerankt.sort()
+    hosts = sorted({registrable_domain(u) for *_, u in gerankt})
+    if not gerankt:
+        return None, {"kandidaten": 0, "hosts": [], "grund": "kein_geeigneter_treffer"}
+    return gerankt[0][3], {"kandidaten": len(gerankt), "hosts": hosts, "grund": "ausgewaehlt"}
+
+
 # F17-Folgefix (RC-F-Ursachenanalyse, Abschlussauftrag 2026-10-25): auch nach
 # dem PSL-/Pressedomain-Fix in `score_domain()` bleibt für "schwachstelle"/
 # "wartung" eine Scoring-Asymmetrie bestehen -- `score_domain()` kennt den
@@ -7386,6 +7432,19 @@ class TavilyTechnicalResearchProvider:
                             ident_treffer + neue_spec_treffer, marke=marke, modell=z["modell"],
                             budget=_IDENTITAET_VOLLTEXT_NACHLADE_MAX - len(ident_nachlade_urls)
                             - len(spec_nachlade_urls))
+                if "generation" in offene_spec_felder:
+                    _stand, _ = phase_identitaet(ident_treffer + neue_spec_treffer, z)
+                    if _stand.generation is None:
+                        _rb_url, _rb = _rollenbeleg_kandidat(ident_treffer + neue_spec_treffer, ziel=z)
+                        _rb_ausgang = "kein_abruf"
+                        if _rb_url:
+                            _rb_text, _rb_stats = await _sicheres_nachladen([_rb_url])
+                            ident_treffer = _treffer_mit_volltext(ident_treffer, _rb_text)
+                            neue_spec_treffer = _treffer_mit_volltext(neue_spec_treffer, _rb_text)
+                            _rb_ausgang = "nachgeladen" if _rb_text else "abruf_fehlgeschlagen"
+                        log.info("research_phase=identitaet_rollenbeleg_nachladung kandidaten=%d hosts=%s "
+                                 "grund=%s ausgang=%s", _rb["kandidaten"], ",".join(_rb["hosts"]) or "-",
+                                 _rb["grund"], _rb_ausgang)
                 ident_treffer = ident_treffer + neue_spec_treffer
                 identitaet, abgelehnt_i2 = phase_identitaet(ident_treffer, z)
                 abgelehnt += abgelehnt_i2
