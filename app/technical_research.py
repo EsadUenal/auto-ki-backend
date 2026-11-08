@@ -1225,9 +1225,27 @@ def parse_core_model(modell: str | None) -> tuple[str | None, str | None]:
 
 # ── Entity-Alignment ─────────────────────────────────────────────────────────
 
+def _modell_zusammenhaengend(text: str, modell: str | None, konkat: set[str] | None) -> bool:
+    """N17: ein mehrteiliges Zielmodell ("RC F") steht in `text` nur dann, wenn seine
+    Teile ZUSAMMENHÄNGEND und in Reihenfolge stehen (oder zusammengeschrieben, "RCF").
+    Die reine Mengen-Inklusion von `_modell_ausgerichtet()` ließ "Lexus RC 200t F
+    Sport" als "RC F" gelten: der Text beschreibt ein anderes Modell, das Zielmodell
+    ist nur als Wort-Streuung enthalten. Ein einteiliges Modell ist unverändert."""
+    ziel = [t for tok in _norm(modell).split() for t in _fein_zerlegt(tok)]
+    if len(ziel) < 2:
+        return True
+    woerter = _norm(text).split()
+    if _enthaelt_folge([t for tok in woerter for t in _fein_zerlegt(tok)], ziel):
+        return True
+    zusammen = "".join(ziel)
+    return zusammen in woerter or zusammen in (konkat or set())
+
+
 def _modell_im_titel(titel_tokens: set[str], modell: str | None, titel_text: str | None = None) -> bool:
     konkat = _quelle_konkatenationen(titel_text) if titel_text else None
-    return _modell_ausgerichtet(titel_tokens, modell, quelle_konkat=konkat)
+    if not _modell_ausgerichtet(titel_tokens, modell, quelle_konkat=konkat):
+        return False
+    return not titel_text or _modell_zusammenhaengend(titel_text, modell, konkat)
 
 
 def ausgerichtet(r: dict, marke: str | None, modell: str | None) -> tuple[bool, str | None]:
@@ -1267,7 +1285,9 @@ def ausgerichtet(r: dict, marke: str | None, modell: str | None) -> tuple[bool, 
 
 
 def _satz_nennt_modell(satz: str, modell: str | None) -> bool:
-    return _modell_ausgerichtet(_tokens(satz), modell, quelle_konkat=_quelle_konkatenationen(satz))
+    konkat = _quelle_konkatenationen(satz)
+    return (_modell_ausgerichtet(_tokens(satz), modell, quelle_konkat=konkat)
+            and _modell_zusammenhaengend(satz, modell, konkat))
 
 
 # Identity-Hardening (Folgeauftrag, Abschnitt 1 "Primary-Source-Pfad muss
