@@ -107,6 +107,12 @@ ADAC = t("https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/lexus
         "Marke Lexus Modell RC F Typ Automatik Baureihe RC (UXC1) (12/14 - 06/25) "
         "Motorcode 2UR-GSE Leistung maximal in PS 464 Antriebsart Hinterrad "
         "Getriebeart Automatikgetriebe Kraftstoffart Super Hubraum 4969 ccm")
+# N17-Folge: der reale ADAC-Eintrag oben gilt fuer 01/18-03/19 (Titelfenster) und darf fuer
+# das Baujahr 2017 nichts mehr bestaetigen. Die Positivkontrolle (2) braucht deshalb eine
+# Ausfuehrung, die 2017 abdeckt: SYNTHETISCH (gleicher Aufbau, Fenster 12/14-12/17).
+ADAC_2017 = t("https://www.adac.de/rund-ums-fahrzeug/autokatalog/marken-modelle/lexus/rc/xc1/288844/",
+              "Lexus RC F Automatik (12/14 - 12/17): Technische Daten, Bilder, Preise | ADAC",
+              ADAC["content"])
 CARWIKI = t("https://carwiki.de/lexus-rc-hsn-tsn-schluesselnummer/",
            "Lexus RC HSN & TSN | Tabelle aller Schluesselnummern",
            "Uebersicht: Alle Schluesselnummern (HSN/TSN) der Lexus RC Baureihen. "
@@ -175,7 +181,7 @@ async def main():
           "tatsaechlich (Ausschluss ist nicht nur 'bestaetigt nie etwas')")
     print("=" * 70)
     r2 = await _lauf(KaufCheckRequest(**REQ), web_fixture={
-        "identitaet": [ADAC, CARWIKI, ROLLING_HU, AMS, TOYOTA_PRESSE],
+        "identitaet": [ADAC_2017, CARWIKI, ROLLING_HU, AMS, TOYOTA_PRESSE],
         "wartung": [], "schwachstelle": [], "rueckruf": []})
     vi2 = r2.vehicle_identity
     e2_fuel = vi2.get("field_evidence", {}).get("fuel", {})

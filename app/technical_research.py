@@ -1643,6 +1643,21 @@ def _datenblatt_zeitraum(text: str) -> tuple[int, int] | str | None:
     return None
 
 
+# N17: Suchauszüge enthalten oft nur den TITEL, nicht die Felder Modellstart/Modellende.
+# Bei Katalogseiten nennt der Titel die Ausführung samt Bauzeitraum ("... Automatik
+# (08/24 - 06/25): Technische Daten"). Genau EIN solches Klammerfenster im Titel gilt
+# als Zeitfenster dieser Ausführung -- nur wenn kein Modellstart/Modellende-Paar
+# vorliegt. Mehrere verschiedene oder unvollständige Fenster bleiben offen (None).
+_RE_TITEL_ZEITFENSTER = re.compile(
+    r"\(\s*(\d{1,2})\s*/\s*(\d{2,4})\s*[-–]\s*(\d{1,2})\s*/\s*(\d{2,4})\s*\)")
+
+
+def _titel_zeitfenster(titel: str | None) -> tuple[int, int] | None:
+    fenster = {(_mm_yy_jahr(m.group(2)), _mm_yy_jahr(m.group(4)))
+               for m in _RE_TITEL_ZEITFENSTER.finditer(titel or "")}
+    return next(iter(fenster)) if len(fenster) == 1 else None
+
+
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
                                   r"|\b(sechs|f(?:ü|ue)nf)gang[- ]?(?:schaltgetriebe|handschaltung)"
                                   r"|\b(\d)-speed manual", re.I)
@@ -2603,6 +2618,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # segmentgefilterten `text`): das Feldpaar beschreibt die GANZE Seite,
     # nicht nur den lokal an das Zielmodell gebundenen Satzausschnitt.
     _datenblatt_fenster = _datenblatt_zeitraum(f"{r.get('title') or ''}. {r.get('content') or ''}")
+    if _datenblatt_fenster is None:
+        _datenblatt_fenster = _titel_zeitfenster(r.get("title"))
     # Mehrdeutigkeit (`ZEITRAUM_MEHRDEUTIG`) ist KEIN "keine Zeitangabe" --
     # eine erkannte, aber nicht aufloesbare Varianten-Zuordnung darf keinen
     # beliebigen Claim dieser Quelle als zielgueltig durchreichen. Beide
