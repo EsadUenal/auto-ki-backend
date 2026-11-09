@@ -454,11 +454,13 @@ check("E1) Kontrolle ('pruefen') -> Verkäuferfrage nennt 'geprüft', nicht 'gem
 check("E2) Wechsel ('ersetzen') -> Verkäuferfrage nennt 'gewechselt', nicht 'gemacht'",
       "web-wartung-wechsel" in fragen_e and "gewechselt" in fragen_e["web-wartung-wechsel"].titel,
       fragen_e.get("web-wartung-wechsel").titel if "web-wartung-wechsel" in fragen_e else "FEHLT")
-check("E3) unbestimmte Tätigkeit -> bleibt beim neutralen 'gemacht' (KEIN "
-      "Rückschluss aus dem Bauteilnamen 'Automatikgetriebeöl' auf 'gewechselt')",
+check("E3) unbestimmte Tätigkeit -> bleibt neutral ('Wartung ... durchgeführt'; N20: nicht mehr "
+      "'gemacht'), KEIN Rückschluss aus dem Bauteilnamen 'Automatikgetriebeöl' auf 'gewechselt'",
       "web-wartung-unbestimmt" in fragen_e
-      and "gemacht" in fragen_e["web-wartung-unbestimmt"].titel
-      and "gewechselt" not in fragen_e["web-wartung-unbestimmt"].titel,
+      and "bereits durchgeführt" in fragen_e["web-wartung-unbestimmt"].titel
+      and "gewechselt" not in fragen_e["web-wartung-unbestimmt"].titel
+      and "geprüft" not in fragen_e["web-wartung-unbestimmt"].titel
+      and "gemacht" not in fragen_e["web-wartung-unbestimmt"].titel,
       fragen_e.get("web-wartung-unbestimmt").titel if "web-wartung-unbestimmt" in fragen_e else "FEHLT")
 check("E4) Dokumenttitel unterscheiden sich entsprechend (Prüf-/Wechsel-/Wartungsnachweis)",
       "web-wartung-pruef" in dok_e and "Prüfnachweis" in dok_e["web-wartung-pruef"].titel

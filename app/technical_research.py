@@ -5419,7 +5419,11 @@ def _wartung_gleiche_arbeit_zusammenfuehren(kandidaten: dict) -> dict:
             continue
         basis = ergebnis[ziel_key]
         if e["aussage"] != basis["aussage"] and e["aussage"] not in basis["aussage"]:
-            neue_aussage = f"{basis['aussage']} Weitere Stelle im selben Dokument: {e['aussage']}"
+            # Satzzeichen vor der zweiten Fundstelle: eine Fußnotenbedingung ("falls für Ihr Land
+            # zutreffend") am Ende der ersten Stelle bleibt dort und läuft nicht in die zweite.
+            erste = basis["aussage"].rstrip()
+            trenner = "" if erste.endswith((".", "!", "?")) else "."
+            neue_aussage = f"{erste}{trenner} Weitere Stelle im selben Dokument: {e['aussage']}"
             basis["abschnitt_taetigkeit"][neue_aussage] = taet
             basis["aussage"] = neue_aussage
         for r in e["treffer"]:

@@ -162,7 +162,7 @@ async def run():
                        for a in (r_mit.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch
                                  + r_mit.kaufaktionen.verkaeuferfragen.basis))
     check("Verkäuferfragen enthalten eine neutrale Nachweis-Nachfrage zum Ölwechsel, "
-          "keine Kaufwarnung", "Ölwechsel" in vf_text and "zuletzt gemacht" in vf_text)
+          "keine Kaufwarnung", "Ölwechsel" in vf_text and "bereits durchgeführt" in vf_text)
 
 
 asyncio.run(run())

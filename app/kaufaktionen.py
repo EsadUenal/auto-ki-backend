@@ -1849,6 +1849,16 @@ def _taetigkeit_verb(taetigkeit: str | None) -> str:
     return _TAETIGKEIT_VERB.get(taetigkeit, "gemacht")
 
 
+def _wartungsfrage(bauteil: str, taetigkeit: str | None) -> str:
+    """EINE Fragenform für jeden Wartungspunkt, ausgerichtet an der BELEGTEN Tätigkeit:
+    "gewechselt", "geprüft" oder neutral, wenn die Tätigkeit offen ist."""
+    verb = _TAETIGKEIT_VERB.get(taetigkeit)
+    if verb:
+        return f"Wurde „{bauteil}“ bereits {verb}, und wenn ja, wann und bei welchem Kilometerstand?"
+    return (f"Wurde die Wartung zu „{bauteil}“ bereits durchgeführt, und wenn ja, wann und bei "
+            f"welchem Kilometerstand?")
+
+
 def _taetigkeit_dok_titel(taetigkeit: str | None) -> str:
     return _TAETIGKEIT_DOK_TITEL.get(taetigkeit, "Wartungsnachweis")
 
@@ -1956,7 +1966,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             verb = _taetigkeit_verb(getattr(i, "taetigkeit", None))
             dok_titel = _taetigkeit_dok_titel(getattr(i, "taetigkeit", None))
             s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}",
-                  f"{falls}Wann wurde „{bauteil}“ zuletzt {verb}: bei welchem Kilometerstand?",
+                  f"{falls}{_wartungsfrage(bauteil, getattr(i, 'taetigkeit', None))}",
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
@@ -2092,7 +2102,7 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
         verb = _taetigkeit_verb(getattr(w, "taetigkeit", None))
         dok_titel = _taetigkeit_dok_titel(getattr(w, "taetigkeit", None))
         s.add(VERKAEUFERFRAGEN, schluessel,
-              f"Wurde „{w.bauteil}“ bereits {verb}, und wenn ja, wann und bei welchem Kilometerstand?",
+              _wartungsfrage(w.bauteil, getattr(w, "taetigkeit", None)),
               f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
               gruppe="Wartung und Technik", bauteil=w.bauteil)

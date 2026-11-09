@@ -245,6 +245,14 @@ _ZEITALTERNATIVE = re.compile(
     re.IGNORECASE)
 
 
+def zeit_anzeige(zahl: int, einheit: str) -> str:
+    """Grammatisch korrekte Anzeige ("1 Jahr", "6 Jahre", "1 Monat", "18 Monate").
+    Nur Darstellung: `parse_zeitalternative` und die Schwellenlogik bleiben unverändert."""
+    if zahl == 1:
+        einheit = {"Jahre": "Jahr", "Monate": "Monat"}.get(einheit, einheit)
+    return f"{zahl} {einheit}"
+
+
 def parse_zeitalternative(text: str | None) -> tuple[int, str] | None:
     """Zeitliche Alternative direkt neben dem ERSTEN km-Wert im Text -- oder
     None. Rückgabe `(zahl, "Jahre"|"Monate")`."""
@@ -397,7 +405,7 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
         zahl, einheit = zeitalternative
         kern = (
             f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine "
-            f"zeitliche Alternative hinterlegt (oder {zahl} {einheit}). Der aktuelle "
+            f"zeitliche Alternative hinterlegt (oder {zeit_anzeige(zahl, einheit)}). Der aktuelle "
             f"Kilometerstand liegt weit von {punkt} entfernt -- der Kilometeranteil "
             f"dieses Wartungspunkts ist damit nicht einschlägig. Ohne den genauen "
             f"Erstzulassungsmonat und ohne bekannte Servicehistorie lässt sich aber "
@@ -410,7 +418,7 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
         zahl, einheit = zeitalternative
         zeit_zusatz = (
             f" Die Quelle nennt für diesen Wartungspunkt zusätzlich eine zeitliche "
-            f"Alternative (oder {zahl} {einheit}): der oben genannte Stand bezieht "
+            f"Alternative (oder {zeit_anzeige(zahl, einheit)}): der oben genannte Stand bezieht "
             f"sich ausschließlich auf den Kilometerstand -- ob die zeitliche "
             f"Alternative bereits erreicht ist, lässt sich ohne den genauen "
             f"Erstzulassungsmonat nicht bestimmen und bleibt deshalb offen.")

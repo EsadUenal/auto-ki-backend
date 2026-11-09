@@ -265,6 +265,11 @@ async def main():
               len(stellen) == 2 and len(bedingt) == 1 and len(unbedingt) == 1
               and "Bei Fahrzeugen mit Ölwechsel-Managementsystem" in bedingt[0]
               and "Lexus Care-Zwischenservice" in unbedingt[0], b[:400])
+        check("D5b) N20: die Fußnotenbedingung bleibt in ihrer Stelle, davor und danach lesbare Satzzeichen "
+              "(kein 'zutreffend Weitere Stelle')",
+              "zutreffend Weitere Stelle" not in b
+              and b.count("Weitere Stelle im selben Dokument:") == 1
+              and bedingt[0].rstrip().endswith((".", "!", "?")), b[:420])
     frag_oel = [x for x in ids(r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch) if "wartung-web" in x and
                 ("motoroel" in x or "filterwechsel" in x)]
     dok_oel = [x for x in ids(r_voll.kaufaktionen.dokumente.fahrzeugspezifisch) if "wartung-web" in x and
@@ -402,7 +407,7 @@ async def main():
     check("F) belegter Hybrid: Inverter-Hinweis, Frage und Nachweis entstehen über den echten Pfad "
           "(Evidence -> Kaufaktionen), ohne Anwendbarkeits-Umleitung",
           any("nverter" in i.titel for i in hev_ins)
-          and any("nverter" in a.titel and "zuletzt gewechselt" in a.titel
+          and any("nverter" in a.titel and "bereits gewechselt" in a.titel
                   for a in hev_akt.verkaeuferfragen.fahrzeugspezifisch)
           and any("nverter" in a.titel for a in hev_akt.dokumente.fahrzeugspezifisch)
           and not any("trifft die bedingung" in a.titel.lower() for a in hev_akt.verkaeuferfragen.fahrzeugspezifisch),

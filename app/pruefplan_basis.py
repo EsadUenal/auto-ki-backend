@@ -102,8 +102,8 @@ BASIS_BESICHTIGUNG: tuple[_Eintrag, ...] = (
      None, ("oelverlust",)),
     ("kaltstart", "Unten und Motorraum",
      "Kaltstart abwarten",
-     "Das Fahrzeug möglichst kalt starten lassen und auf Startdauer, Rauch aus dem "
-     "Auspuff und Geräusche in den ersten Sekunden achten.",
+     "Das Fahrzeug möglichst kalt starten lassen und auf Startdauer und Rauch aus dem "
+     "Auspuff achten. Auf Geräusche beim Start wird bei der Probefahrt geachtet.",
      "Vorher vereinbaren, dass der Verkäufer den Motor nicht warmlaufen lässt.",
      ("starterbatterie",)),
     ("warnlampen", "Innen und Elektrik",
@@ -167,14 +167,10 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
      "Start noch leuchtet, regelt die Bedienungsanleitung des jeweiligen Fahrzeugs.",
      None, ()),
     ("leerlauf", "Vor Fahrtbeginn",
-     "Leerlauf eine Minute beobachten",
+     "Leerlauf eine Minute beobachten und hinhören",
      "Die Leerlaufdrehzahl soll ruhig und gleichmäßig bleiben, ohne Schwanken oder "
-     "Absacken.",
-     None, ()),
-    ("startgeraeusche", "Vor Fahrtbeginn",
-     "Auf Geräusche direkt nach dem Start hören",
-     "Fenster öffnen und in den ersten Sekunden auf Rasseln, Klackern oder Pfeifen aus "
-     "dem Motorraum achten.",
+     "Absacken. Fenster öffnen und von den ersten Sekunden an auf Rasseln, Klackern oder "
+     "Pfeifen aus dem Motorraum achten.",
      None, ()),
     # ── Anfahren und niedrige Geschwindigkeit ────────────────────────────────
     ("anfahren", "Anfahren und Rangieren",
@@ -210,9 +206,9 @@ BASIS_PROBEFAHRT: tuple[_Eintrag, ...] = (
      "oder plötzlichen Einbruch anliegen.",
      None, ("turbolader", "zuendung", "einspritzung")),
     ("schalten", "Normale Fahrt",
-     "Alle Gänge einmal durchfahren",
-     "Jeden Gang inklusive der oberen Gänge nutzen; bei Automatik auf weiche, nicht "
-     "verzögerte Gangwechsel achten.",
+     "Gangwechsel im normalen Fahrbetrieb beobachten",
+     "Die Gangwechsel über den ganzen Fahrbereich beobachten: Sie sollen weich, ohne "
+     "Verzögerung und ohne Geräusche erfolgen.",
      None, ("getriebe", "automatikgetriebe")),
     ("last", "Normale Fahrt",
      "Verhalten unter Last an einer Steigung prüfen",
@@ -342,7 +338,8 @@ BASIS_VERKAEUFERFRAGEN: tuple[_Eintrag, ...] = (
      None, ("hu-bericht",)),
     ("werkstattpruefung", "Wartung und Technik",
      "Wäre eine Untersuchung in einer Werkstatt meiner Wahl möglich?",
-     "Ein grundloses Nein ist ein Warnsignal; ein seriöser Verkäufer stimmt in der Regel zu.",
+     "Verweigert der Verkäufer eine Untersuchung ohne nachvollziehbaren Grund, ist das ein "
+     "Warnsignal. Einen genannten Grund schriftlich festhalten.",
      None, ()),
     ("nutzung", "Nutzung",
      "Wie wurde das Fahrzeug überwiegend genutzt: Kurzstrecke, Langstrecke oder mit Anhänger?",
