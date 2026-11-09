@@ -1009,6 +1009,11 @@ class KaufCheckResponse(BaseModel):
     recommendation_state: str | None = None       # "NORMAL" | "LIMITED_ANALYSIS" | "INSUFFICIENT_IDENTITY"
     empfehlung_anzeige: str | None = None
     empfehlung_hinweis: str | None = None
+    # N18 (additiv; ältere Checks besitzen das Feld nicht): Datenarten, zu denen die
+    # Technikrecherche lief, aber nichts Belastbares lieferte (z.B. ["Schwachstellen",
+    # "Wartung"]). Nicht leer = die Empfehlung ist KEINE Freigabe zu diesen Themen;
+    # das Frontend zeigt dann eine neutrale Hinweisbox statt der Kauf-Optik.
+    technik_datenluecke: list[str] | None = None
     identitaet_aufloesung: dict | None = None
     anzeige_titel: str | None = None
     risiko_titel: str = "Relevante Risiken und Hinweise"

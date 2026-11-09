@@ -227,8 +227,9 @@ def forschung_unvollstaendig_hinweis(web_recherche) -> str | None:
 # VERIFIED-Identität ohne fehlgeschlagene Recherchephase (Vorrang haben die
 # strengeren Warnungen). Nur die ANZEIGE und der Hinweis ändern sich; Stufe
 # (`empfehlung`), `state`, Floor und Identitätsprüfung bleiben unberührt.
-# "Befund vorhanden" heißt: ein Insight der Kategorie (DB, auch geprüfter
-# Datenbankbefund, oder Web) ODER ein Web-Fakt der Kategorie.
+# "Befund vorhanden" heißt: ein Insight der Kategorie, dessen Trust nicht
+# "unverified_db" ist (geprüfter DB-Befund oder Webbefund), ODER ein Web-Fakt der
+# Kategorie. Ungeprüfte DB-Einträge zählen nicht.
 ANZEIGE_TECHNIK_EINGESCHRAENKT = ("Analyse eingeschränkt: keine bestätigten Schwachstellen- "
                                   "und Wartungsdaten")
 _SCHWACHSTELLEN_KATEGORIEN = ("schwachstelle", "motorproblem", "web_schwachstelle")
@@ -242,7 +243,12 @@ def technik_datenluecke(web_recherche, insights=None) -> tuple[str, ...]:
     if status.get("technik") not in ("success", "partial"):
         return ()
     fakt_kat = {getattr(f, "kategorie", None) for f in (getattr(web_recherche, "fakten", None) or [])}
-    insight_kat = {getattr(i, "kategorie", None) for i in (insights or [])}
+    # Ein DB-Insight zählt nur als Befund, wenn sein Trust (Verifikations-Architektur,
+    # app/evidence.py) nicht "unverified_db" ist. Der Default eines Insights ohne
+    # gesetzten Trust ist "unverified_db": ein ungeprüfter Datenbankeintrag hebt die
+    # Einschränkung nicht auf (er bleibt als Hinweis sichtbar, belegt aber nichts).
+    insight_kat = {getattr(i, "kategorie", None) for i in (insights or [])
+                   if (getattr(i, "trust", None) or "unverified_db") != "unverified_db"}
     vorhanden = fakt_kat | insight_kat
     if vorhanden & (set(_SCHWACHSTELLEN_KATEGORIEN) | set(_WARTUNGS_KATEGORIEN)):
         return ()

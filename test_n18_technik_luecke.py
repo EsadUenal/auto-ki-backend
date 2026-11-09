@@ -149,17 +149,29 @@ p = entscheide("kaufen_nach_besichtigung", v, insights=[],
 check("D3: Identität partial -> bestehender Wortlaut/Stufe unverändert",
       p.empfehlung == "unbekannt" and p.state == "LIMITED_ANALYSIS" and not p.technik_luecke, p.anzeige)
 
-# E) Datenbankbefunde (auch geprüfte) zählen als Befund, auch ohne Web-Fakten
+# E) Datenbankbefunde: nur GEPRÜFTE (trust=verified) zählen als Befund
 for name, db in (("verifizierte DB-Wartung", ins("d1", "wartung", trust="verified")),
                  ("verifizierte DB-Schwachstelle (mittel)",
                   ins("d2", "schwachstelle", schweregrad="mittel", trust="verified")),
-                 ("DB-Motorproblem", ins("d3", "motorproblem", trust="verified")),
-                 ("ungeprüfte DB-Wartung", ins("d4", "wartung"))):
+                 ("verifiziertes DB-Motorproblem", ins("d3", "motorproblem", trust="verified"))):
     x, xg, xa = lauf([db], [], False)
     check(f"E: {name} -> keine Einschränkung wegen fehlender Daten",
           not x.technik_luecke and x.anzeige != ANZEIGE_N18, x.anzeige)
     check(f"E: {name} -> Status unverändert",
           x.state == "NORMAL" and x.empfehlung in ("kaufen_nach_besichtigung", "nur_mit_werkstattpruefung"))
+for name, db in (("ungeprüfte DB-Wartung (Default-Trust)", ins("u1", "wartung")),
+                 ("ungeprüfte DB-Wartung (explizit)", ins("u2", "wartung", trust="unverified_db")),
+                 ("ungeprüfte DB-Schwachstelle", ins("u3", "schwachstelle", schweregrad="mittel")),
+                 ("ungeprüftes DB-Motorproblem", ins("u4", "motorproblem"))):
+    x, xg, xa = lauf([db], [], False)
+    zeige(f"E2) {name}", x, xa)
+    check(f"E2: {name} hebt die Einschränkung NICHT auf",
+          x.anzeige == ANZEIGE_N18 and x.technik_luecke == ("Schwachstellen", "Wartung"), x.anzeige)
+    check(f"E2: {name} -> Stufe/Status unverändert (Floor greift bei ungeprüftem Fakt nicht)",
+          x.empfehlung == "kaufen_nach_besichtigung" and x.state == "NORMAL")
+# ungeprüfter DB-Eintrag + geprüfter Webbefund: der geprüfte Befund genügt
+x, xg, xa = lauf([ins("u5", "wartung"), ins("w3", "web_wartung", trust="web")], ["wartung"], False)
+check("E3: ungeprüfter DB-Eintrag + Webbefund -> keine Einschränkung", not x.technik_luecke, x.anzeige)
 
 # F) Technikphase nicht gelaufen: keine Aussage über Abdeckung
 f, fg, fa = lauf([], [], False, technik="not_run")

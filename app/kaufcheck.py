@@ -623,6 +623,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         "recommendation_state": entscheidung.state,
         "empfehlung_anzeige": entscheidung.anzeige,
         "empfehlung_hinweis": entscheidung.hinweis,
+        "technik_datenluecke": list(entscheidung.technik_luecke),
         "identitaet_aufloesung": {"stufe": entscheidung.identitaet.stufe,
                                   "fehlend": list(entscheidung.identitaet.fehlend),
                                   "quellen": list(entscheidung.identitaet.quellen)},
