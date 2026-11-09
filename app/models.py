@@ -835,6 +835,11 @@ class TechnischeRecherche(BaseModel):
     # gültiges, nur unbekanntes Ergebnis — kein Konsument darf ein fehlendes
     # Feld als FAILED lesen.
     phasen_status: dict[str, str] = Field(default_factory=dict)
+    # N19 (additiv): Nachsuchen, die wegen des Provider-Budgets NICHT ausgeführt wurden,
+    # z.B. [{"kategorie": "schwachstelle", "runde": 2, "geplant": 2, "ausgefuehrt": 1,
+    # "budget_uebersprungen": 1}]. Weder leeres Suchergebnis noch Providerfehler: die
+    # Abdeckung dieser Kategorie ist unvollständig. Leer = nichts übersprungen.
+    nachsuche_uebersprungen: list[dict] = Field(default_factory=list)
 
 
 class Fahrzeugkontext(BaseModel):
@@ -1014,6 +1019,9 @@ class KaufCheckResponse(BaseModel):
     # "Wartung"]). Nicht leer = die Empfehlung ist KEINE Freigabe zu diesen Themen;
     # das Frontend zeigt dann eine neutrale Hinweisbox statt der Kauf-Optik.
     technik_datenluecke: list[str] | None = None
+    # N19 (additiv): wegen des Provider-Budgets nicht ausgeführte Nachsuchen
+    # (Kategorie, Runde, geplant/ausgeführt/übersprungen). Leer = nichts übersprungen.
+    nachsuche_uebersprungen: list[dict] = Field(default_factory=list)
     identitaet_aufloesung: dict | None = None
     anzeige_titel: str | None = None
     risiko_titel: str = "Relevante Risiken und Hinweise"

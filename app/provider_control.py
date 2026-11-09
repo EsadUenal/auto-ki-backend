@@ -42,6 +42,10 @@ class ProviderScope:
     started: float = field(default_factory=time.monotonic)
     calls: dict[str, int] = field(default_factory=lambda: {"gemini": 0, "tavily": 0})
     retries: dict[str, int] = field(default_factory=lambda: {"gemini": 0, "tavily": 0})
+    # N19: wie oft ein Call am Budget scheiterte (claim_call -> ProviderCallLimitExceeded).
+    # Ein budgetbedingt abgelehnter Call ist weder ein leeres Suchergebnis noch ein
+    # Providerfehler; Aufrufer, die Abdeckung bewerten, lesen diesen Zähler.
+    skipped: dict[str, int] = field(default_factory=lambda: {"gemini": 0, "tavily": 0})
 
 
 _scope_var: contextvars.ContextVar[ProviderScope | None] = contextvars.ContextVar(
@@ -81,6 +85,12 @@ def current_scope() -> ProviderScope | None:
     return _scope_var.get()
 
 
+def budget_uebersprungen(provider: str = "tavily") -> int:
+    """Bisher budgetbedingt abgelehnte Calls der laufenden Aktion (0 ohne Scope)."""
+    scope = current_scope()
+    return scope.skipped.get(provider, 0) if scope else 0
+
+
 def claim_call(provider: str, *, retry: bool = False) -> tuple[str, int, int]:
     """Registriert einen realen Provider-Versuch oder bricht vor dem HTTP-Call ab."""
     scope = current_scope()
@@ -98,6 +108,7 @@ def claim_call(provider: str, *, retry: bool = False) -> tuple[str, int, int]:
             "provider_event provider=%s feature=%s status=call_limit attempts=%d limit=%d",
             provider, scope.feature, used, limit,
         )
+        scope.skipped[provider] = scope.skipped.get(provider, 0) + 1
         raise ProviderCallLimitExceeded(
             f"Provider-Aufrufbudget für {scope.feature}/{provider} ausgeschöpft."
         )

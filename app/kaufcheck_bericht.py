@@ -260,6 +260,26 @@ def technik_ohne_fakten_hinweise(web_recherche, *, baureihe=None) -> list[str]:
     return [*hinweise, ""] if hinweise else []
 
 
+_NACHSUCHE_LABEL = {"schwachstelle": "Schwachstellen", "wartung": "Wartungsintervalle"}
+
+
+def nachsuche_uebersprungen_hinweis(web_recherche) -> list[str]:
+    """N19: eine geplante Nachsuche, die wegen des Provider-Budgets NICHT ausgeführt
+    wurde, ist weder ein leeres Suchergebnis noch ein Providerfehler -- die Abdeckung
+    der Kategorie bleibt aber erkennbar unvollständig. Rein additiv: ändert weder
+    Empfehlung noch Floor noch Insight-Menge."""
+    eintraege = getattr(web_recherche, "nachsuche_uebersprungen", None) or []
+    zeilen = []
+    for e in eintraege:
+        label = _NACHSUCHE_LABEL.get(e.get("kategorie"), str(e.get("kategorie")))
+        zeilen.append(
+            f"Hinweis: Die Nachsuche zu {label} (Runde {e.get('runde')}) wurde nur teilweise "
+            f"ausgeführt: {e.get('budget_uebersprungen')} von {e.get('geplant')} Anfragen "
+            "entfielen wegen des Anfragebudgets. Das ist kein leeres Suchergebnis und kein "
+            "Fehler der Quelle: die Abdeckung ist unvollständig.")
+    return [*zeilen, ""] if zeilen else []
+
+
 def _quellen_zeile(quellen) -> str:
     """Package E (Forensik-Folgeauftrag): `quellen` (EvidenceQuelle-Liste eines
     Insights) existiert strukturiert im API-Modell, bereits auf user-sichtbare,
@@ -304,6 +324,7 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
     lines += ["Datenbasis: " + "; ".join(sources) + ".", ""]
     lines += forschungsluecken_hinweis(web_recherche, entscheidung)
     lines += technik_ohne_fakten_hinweise(web_recherche, baureihe=baureihe)
+    lines += nachsuche_uebersprungen_hinweis(web_recherche)
     # Package D7 (Forensik-Folgeauftrag): "Antriebsart" (powertrain,
     # Elektrifizierungsgrad ICE/MHEV/PHEV/BEV) und "Antrieb" (drivetrain,
     # Radantrieb Front/Heck/Allrad) sind INTERN bereits zwei saubere, getrennte

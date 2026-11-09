@@ -666,6 +666,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
         # versteckt — Konsumenten (Diagnose, künftige UI) müssen nicht den
         # Berichtstext parsen, um SUCCESS/PARTIAL/FAILED/NOT_RUN zu lesen.
         "web_recherche_phasen_status": (web_recherche.phasen_status if web_recherche else {}),
+        # N19: budgetbedingt nicht ausgeführte Nachsuchen (additiv, leer = keine).
+        "nachsuche_uebersprungen": (list(web_recherche.nachsuche_uebersprungen) if web_recherche else []),
     })
 
 # Die gemeinsame Schreibstil-Regel (app/schreibstil.py) wird hier eingesetzt.
