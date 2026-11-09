@@ -3489,6 +3489,22 @@ _PROBLEM_WORTE = ("defekt", "problem", "schwachstelle", "verschleiss", "verschle
                   "häufig", "anfaellig", "anfällig", "typisch", "bekannt")
 _RUECKRUF_WORTE = ("rueckruf", "rückruf", "recall", "rueckrufaktion", "rückrufaktion")
 
+# N19-Nebenbefund: ein Rückrufdatensatz (ADAC-Rückruftabelle, KBA-/Herstellerformular) ist
+# KEINE allgemeine Schwachstelle der Baureihe. Zuverlässig erkennbar ist er an seinen
+# FELDBEZEICHNUNGEN ("Rückrufdatum", "Rückrufnummer", "Anzahl betroffener Fahrzeuge",
+# "Halterbenachrichtigung"): Eine Fließtext-Aussage über eine Schwachstelle, die einen Rückruf
+# nur erwähnt ("... führte zu einem Rückruf"), trägt keine dieser Bezeichnungen und bleibt
+# unberührt. Generisch, keine Marken- oder Quellenlogik; die Rückrufprüfung selbst nutzt das nicht.
+_RE_RUECKRUF_DATENSATZ = re.compile(
+    r"\br(?:ü|ue)ckruf[-\s]?(?:datum|nummer|nr\b|code|referenz|art\b|status|kennung)"
+    r"|\banzahl\s+betroffener\s+fahrzeuge\b|\bhalterbenachrichtigung", re.IGNORECASE)
+
+
+def _ist_rueckrufabschnitt(claim: str) -> bool:
+    """True, wenn das Segment ein Rückrufdatensatz-Abschnitt ist (Feldbezeichnungen eines
+    Rückrufformulars). Aussagen daraus dürfen allein KEINEN Schwachstellen-Fakt erzeugen."""
+    return bool(_RE_RUECKRUF_DATENSATZ.search(claim or ""))
+
 # Package C / RC-W3 (Root Cause: reiner Substring-Treffer gegen `_PROBLEM_WORTE`
 # ohne jede Prüfung der SATZRICHTUNG). Ein Satz, der ein Problemwort enthält,
 # aber seine eigene Aussage relativiert oder verneint ("... muss NICHT auf
@@ -5615,6 +5631,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "benign_relativiert", "satz": claim[:120]})
                     continue
+                if kategorie == "schwachstelle" and _ist_rueckrufabschnitt(claim):
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "rueckrufabschnitt", "satz": claim[:120]})
+                    continue
                 if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
                     # RC-W3 (struktureller Coverage-Fix): ohne klassisches
                     # Problemwort zählt zusätzlich das kleine, geschlossene
@@ -6792,6 +6812,10 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                 if _ist_benign_relativiert(claim):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "benign_relativiert", "satz": claim[:120]})
+                    continue
+                if _ist_rueckrufabschnitt(claim):
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue
                 if not any(w in n for w in _PROBLEM_WORTE) and not _hat_strukturelles_defektsignal(n, claim):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
