@@ -176,7 +176,65 @@ def db_miss(marke, modell, baujahr):
                   "fehlende_angabe": "simulierter DB-Miss, Testdouble"}
 
 
-async def lauf(*, tavily_budget=None, fehler_bei=None, nachsuche_treffer=None):
+_ECHTER_SCHLAF = asyncio.sleep   # vor dem Patch von ws.asyncio.sleep gesichert (selbes Modul)
+
+
+class HttpFake:
+    """Gestubbtes Tavily-HTTP: der ECHTE Pfad tavily_search -> claim_call -> post läuft."""
+    posts: list[str] = []
+    erste_antwort_429_bei: str | None = None
+    _schon_429: set = set()
+    routing: dict = {}
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, json):
+        q = json["query"]
+        cls = type(self)
+        await _ECHTER_SCHLAF(0)    # Kontrollabgabe wie bei echtem Netzwerk: parallele Anfragen verschränken sich
+        cls.posts.append(q)
+        req = httpx.Request("POST", url)
+        if cls.erste_antwort_429_bei and cls.erste_antwort_429_bei in q and q not in cls._schon_429:
+            cls._schon_429.add(q)
+            return httpx.Response(429, json={"error": "busy"}, request=req)
+        liste = []
+        for teil, hits in cls.routing.items():
+            if teil in q:
+                liste = hits
+                break
+        return httpx.Response(200, json={"results": [
+            {"url": h["url"], "title": h["title"], "content": h["content"]} for h in liste]}, request=req)
+
+
+async def lauf_http(*, tavily_budget=None, retry_429_bei=None):
+    """Wie lauf(), aber über den echten Suchpfad (web_search) mit gestubbtem HTTP."""
+    HttpFake.posts, HttpFake._schon_429 = [], set()
+    HttpFake.erste_antwort_429_bei = retry_429_bei
+    HttpFake.routing = {"Generation Modellcode": [treffer(RK_URL, "Lexus RC F Rettungskarte", RK_DUENN)],
+                        "technische Daten": [ADAC], "Generation Baureihe Bauzeitraum": [AMS],
+                        "bekannte Probleme Schwachstellen": [FORUM]}
+    ws._cache.clear()
+
+    async def kein_schlaf(_):
+        await _ECHTER_SCHLAF(0)
+
+    echt = (ws.httpx.AsyncClient, ws.TAVILY_API_KEY, ws.asyncio.sleep)
+    ws.httpx.AsyncClient, ws.TAVILY_API_KEY, ws.asyncio.sleep = HttpFake, "fake", kein_schlaf
+    try:
+        r, q, a, z = await lauf(tavily_budget=tavily_budget, http=True)
+    finally:
+        ws.httpx.AsyncClient, ws.TAVILY_API_KEY, ws.asyncio.sleep = echt
+    return r, list(HttpFake.posts), z
+
+
+async def lauf(*, tavily_budget=None, fehler_bei=None, nachsuche_treffer=None, http=False):
     """tavily_budget: Anzahl erlaubter Calls (None = unbegrenzt, kein Scope).
     fehler_bei: Teilstring einer Query, bei der der Provider eine Exception wirft.
     nachsuche_treffer: Treffer für die Schwachstellen-Nachsuche (echter Nulltreffer = [])."""
@@ -224,7 +282,10 @@ async def lauf(*, tavily_budget=None, fehler_bei=None, nachsuche_treffer=None):
     kc.tavily_search_with_fallback = kc.vertiefe_marktrecherche = verboten
     kc.marktpreis_recherche_moeglich = lambda *a: False
     kc.find_baureihe_mit_vertrauen = db_miss
-    tr.tavily_search, tr.hole_raw_content = search, extract
+    if http:
+        tr.hole_raw_content = extract      # tr.tavily_search bleibt der ECHTE Suchpfad
+    else:
+        tr.tavily_search, tr.hole_raw_content = search, extract
     fang, logger = _LogFang(), logging.getLogger("app.technical_research")
     alt = logger.level
     logger.addHandler(fang)
@@ -265,7 +326,7 @@ async def rundentests():
     r0, q0, a0, z0 = await lauf()
     check("Referenz (ohne Budget): beide Schwachstellen-Nachsuchen laufen", len(sw_r2(a0)) == 2, str(sw_r2(a0)))
     check("Referenz: Rundenlog nennt geplant=2 ausgefuehrt=2 budget_uebersprungen=0",
-          len(z0) == 1 and "geplant=2 ausgefuehrt=2 budget_uebersprungen=0" in z0[0], str(z0))
+          len(z0) == 1 and "geplant=2 ausgefuehrt=2 budget_uebersprungen=0 retry_budget_abgelehnt=0" in z0[0], str(z0))
     check("Referenz: nichts übersprungen (Ergebnisfeld leer)", r0.nachsuche_uebersprungen == [])
     check("Referenz: kein Hinweis im Bericht", "Anfragebudget" not in r0.bericht)
 
@@ -278,7 +339,7 @@ async def rundentests():
     check("… der zweite wurde angefragt, aber nicht ausgeführt (Skip)",
           len(sw_r2(q1)) == 2 and len(sw_r2(a1)) == 1)
     check("Rundenlog trennt geplant=2 ausgefuehrt=1 budget_uebersprungen=1",
-          len(z1) == 1 and "geplant=2 ausgefuehrt=1 budget_uebersprungen=1" in z1[0], str(z1))
+          len(z1) == 1 and "geplant=2 ausgefuehrt=1 budget_uebersprungen=1 retry_budget_abgelehnt=0" in z1[0], str(z1))
     check("Rundenlog behält query_count=2 (bestehendes Feld unverändert)", "query_count=2" in z1[0])
     erwartet = [{"kategorie": "schwachstelle", "runde": 2, "geplant": 2, "ausgefuehrt": 1,
                  "budget_uebersprungen": 1}]
@@ -306,9 +367,44 @@ async def rundentests():
     check("Providerfehler: Aufrufe haben stattgefunden", len(sw_r2(a2)) == 2)
 
 
+async def http_tests():
+    ref, posts0, z0 = await lauf_http()
+    idx = next(i for i, q in enumerate(posts0) if any(t in q for t in SW_R2))
+    check("HTTP-Referenz: beide Nachsuchen laufen, nichts abgelehnt",
+          len(sw_r2(posts0)) == 2 and "ausgefuehrt=2 budget_uebersprungen=0 retry_budget_abgelehnt=0" in z0[0], z0[0])
+
+    # (a) ERSTVERSUCH läuft, RETRY scheitert am Budget: Anfrage gilt als ausgeführt
+    r_a, posts_a, z_a = await lauf_http(tavily_budget=idx + 2, retry_429_bei="Werkstattinformation")
+    check("Retry-Fall: der Erstversuch beider Anfragen lief (2 HTTP-Posts der Nachsuche), der Retry nicht",
+          len(sw_r2(posts_a)) == 2 and posts_a.count(next(q for q in posts_a if "Werkstattinformation" in q)) == 1,
+          str(sw_r2(posts_a)))
+    check("Retry-Fall: Rundenlog geplant=2 ausgefuehrt=2 budget_uebersprungen=0 retry_budget_abgelehnt=1",
+          len(z_a) == 1 and "geplant=2 ausgefuehrt=2 budget_uebersprungen=0 retry_budget_abgelehnt=1" in z_a[0], str(z_a))
+    check("Retry-Fall: API-Feld ohne Schwachstellen-Skip, Bericht ohne 'teilweise ausgeführt'",
+          not [e for e in r_a.nachsuche_uebersprungen if e["kategorie"] == "schwachstelle"]
+          and "Nachsuche zu Schwachstellen (Runde 2) wurde nur teilweise" not in r_a.bericht)
+
+    # (b) ERSTVERSUCH scheitert am Budget: Anfrage gilt als übersprungen
+    r_b, posts_b, z_b = await lauf_http(tavily_budget=idx + 1)
+    check("Erstversuch-Fall: nur EIN HTTP-Post der Nachsuche (zweiter Erstversuch am Budget gescheitert)",
+          len(sw_r2(posts_b)) == 1, str(sw_r2(posts_b)))
+    check("Erstversuch-Fall: Rundenlog geplant=2 ausgefuehrt=1 budget_uebersprungen=1 retry_budget_abgelehnt=0",
+          len(z_b) == 1 and "geplant=2 ausgefuehrt=1 budget_uebersprungen=1 retry_budget_abgelehnt=0" in z_b[0],
+          str(z_b))
+    sk = [e for e in r_b.nachsuche_uebersprungen if e["kategorie"] == "schwachstelle"]
+    check("Erstversuch-Fall: API-Feld und Bericht melden den Skip",
+          sk == [{"kategorie": "schwachstelle", "runde": 2, "geplant": 2, "ausgefuehrt": 1,
+                  "budget_uebersprungen": 1}]
+          and "1 von 2 Anfragen entfielen" in r_b.bericht, str(sk))
+    check("Beide Fälle: Empfehlung/Status unverändert zur Referenz",
+          (r_a.empfehlung, r_a.recommendation_state) == (r_b.empfehlung, r_b.recommendation_state)
+          == (ref.empfehlung, ref.recommendation_state))
+
+
 async def main():
     await echter_pfad()
     await rundentests()
+    await http_tests()
 
 
 asyncio.run(main())

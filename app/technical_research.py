@@ -70,7 +70,7 @@ from app.kraftstoff_powertrain import (
 )
 from app.motor_applicability import _kraftstoffe as _technik_scope_begriffe
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
-from app.provider_control import budget_uebersprungen
+from app.provider_control import budget_retry_abgelehnt, budget_uebersprungen
 from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
@@ -7984,11 +7984,15 @@ class TavilyTechnicalResearchProvider:
                                                    merkmal_hint=merkmal_hint, runde=runde_nr)
                 # N19: budgetbedingt abgelehnte Calls getrennt zählen. Ein abgelehnter Call
                 # liefert eine leere Liste (web_search.py), ist aber weder ein echter
-                # Nulltreffer noch ein Providerfehler.
+                # Nulltreffer noch ein Providerfehler. Nur ERSTVERSUCHE zählen als
+                # übersprungen; ein am Budget gescheiterter Retry (Erstversuch lief) gilt
+                # als ausgeführt und wird getrennt als retry_budget_abgelehnt ausgewiesen.
                 _skip_vorher = budget_uebersprungen("tavily")
+                _retry_vorher = budget_retry_abgelehnt("tavily")
                 esk_treffer_je_intent = await asyncio.gather(
                     *[suche(q, phase="technik") for _, q in esk_intents])
                 geplant_n = len(esk_intents)
+                retry_abgelehnt_n = max(0, budget_retry_abgelehnt("tavily") - _retry_vorher)
                 uebersprungen_n = min(geplant_n, max(0, budget_uebersprungen("tavily") - _skip_vorher))
                 if uebersprungen_n:
                     nachsuche_uebersprungen.append({
@@ -8030,11 +8034,11 @@ class TavilyTechnicalResearchProvider:
                 if stop_reason == "continue":
                     fortschritt_runde2.add(kat)
                 log.info("research_phase=%s round=%d gap=%s query_count=%d "
-                         "geplant=%d ausgefuehrt=%d budget_uebersprungen=%d "
+                         "geplant=%d ausgefuehrt=%d budget_uebersprungen=%d retry_budget_abgelehnt=%d "
                          "new_source_families=%d new_candidates=%d source_tier_improved=%s "
                          "fact_state_before=%s fact_state_after=%s %s=%s",
                          kat, runde_nr, gap_grund, len(esk_intents),
-                         geplant_n, geplant_n - uebersprungen_n, uebersprungen_n,
+                         geplant_n, geplant_n - uebersprungen_n, uebersprungen_n, retry_abgelehnt_n,
                          zustand_nachher["families"] - zustand_vorher[kat]["families"],
                          zustand_nachher["n_kandidaten"] - zustand_vorher[kat]["n_kandidaten"],
                          zustand_nachher["bester_score"] > zustand_vorher[kat]["bester_score"],
