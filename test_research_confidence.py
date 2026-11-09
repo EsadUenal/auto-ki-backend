@@ -51,7 +51,7 @@ from app.empfehlungs_policy import (
     STATE_LIMITED, STATE_NORMAL, VERIFIED, entscheide,
 )
 from app.kaufcheck_bericht import forschungsluecken_hinweis
-from app.models import KaufCheckRequest, TechnischeRecherche
+from app.models import Insight, KaufCheckRequest, TechnischeRecherche
 from app.vehicle_identity import VehicleIdentity
 
 _FEHLER: list[str] = []
@@ -89,6 +89,13 @@ r1 = req(motor="QX12 2.0 Turbo", kraftstoff="Benzin", leistung_ps=150, getriebe=
 IDENTITY_VERIFIED = VehicleIdentity.from_check_context(b1, m1, r1)
 
 
+# N18: eine Recherche OHNE jeden Schwachstellen-/Wartungsbefund löst die
+# Anzeige-Einschränkung "keine bestätigten Daten" aus (test_n18_technik_luecke.py).
+# Diese Fälle prüfen den PHASENSTATUS; ihre Fixture hat deshalb einen Befund.
+BEFUND = [Insight(id="w1", kategorie="web_wartung", titel="Befund (synthetisch)",
+                  beschreibung="synthetisch", confidence="hoch", trust="web")]
+
+
 def recherche(**phasen_status) -> TechnischeRecherche:
     return TechnischeRecherche(ausgeloest_durch="db_miss", phasen_status=phasen_status)
 
@@ -102,7 +109,7 @@ check("V0 IDENTITY_VERIFIED ist tatsächlich VERIFIED (sonst testen die Fälle 1
 # ══════════════════════════════════════════════════════════════════════════
 print("\n=== 1) Alle Phasen SUCCESS -> STATE_NORMAL ===")
 r_voll = recherche(identitaet="success", rueckruf="success", technik="success")
-e1 = entscheide("kaufen_nach_besichtigung", IDENTITY_VERIFIED, web_recherche=r_voll)
+e1 = entscheide("kaufen_nach_besichtigung", IDENTITY_VERIFIED, web_recherche=r_voll, insights=BEFUND)
 check("1a state == STATE_NORMAL", e1.state == STATE_NORMAL)
 check("1b Empfehlung unverändert", e1.empfehlung == "kaufen_nach_besichtigung")
 check("1c kein Hinweis", e1.hinweis is None)
@@ -160,7 +167,7 @@ check("4e trotzdem nur EIN Satz pro Phase (keine Dopplung)",
 # ══════════════════════════════════════════════════════════════════════════
 print("\n=== 5) Technik PARTIAL (nur Tier-3) -> bleibt STATE_NORMAL auf Policy-Ebene ===")
 r_partial = recherche(identitaet="success", rueckruf="success", technik="partial")
-e5 = entscheide("kaufen_nach_besichtigung", IDENTITY_VERIFIED, web_recherche=r_partial)
+e5 = entscheide("kaufen_nach_besichtigung", IDENTITY_VERIFIED, web_recherche=r_partial, insights=BEFUND)
 check("5a state bleibt STATE_NORMAL (PARTIAL eskaliert NICHT die Empfehlungs-Policy)",
       e5.state == STATE_NORMAL)
 check("5b kein Policy-Hinweis (die niedrigere Confidence sitzt am einzelnen "

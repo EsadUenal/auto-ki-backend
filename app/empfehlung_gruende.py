@@ -109,7 +109,8 @@ def _name(insight) -> str:
 def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None,
                             insights: list, key_findings: list, empfehlung: str,
                             markt_verfuegbar: bool, preis_label: str | None,
-                            hu=None, generation: str | None = None, identity=None) -> list[str]:
+                            hu=None, generation: str | None = None, identity=None,
+                            technik_luecke: tuple = ()) -> list[str]:
     from app.anzeige import fahrzeug_titel, ohne_wiederholung
     gruende: list[str] = []
 
@@ -247,6 +248,11 @@ def baue_empfehlung_gruende(req, baureihe: dict | None, motor_match: dict | None
     # 6) Preis als eigene Dimension
     if markt_verfuegbar and preis_label:
         gruende.append(f"Preis separat bewertet: {preis_label}.")
+    elif technik_luecke:
+        # N18: der konkrete Hinweis zur Datenlage steht direkt unter der
+        # Überschrift; der pauschale Satz "rein technische Einschätzung" würde
+        # hier eine Prüfung behaupten, die nicht stattgefunden hat.
+        gruende.append("Preis nicht bewertbar: keine belastbare Marktpreisbasis.")
     else:
         gruende.append("Preis nicht bewertet: keine belastbare Marktpreisbasis. Die "
                        "Empfehlung ist eine rein technische Einschätzung.")

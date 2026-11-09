@@ -521,7 +521,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # keine Freigabe-Empfehlung ("Analyse eingeschränkt"). Die frühere
     # Zwei-Boolean-Prüfung (DB belastbar ODER Web "belegt") griff beim
     # DB-Miss praktisch nie, weil "belegt" nur Marke+Modell-Tokens prüfte.
-    entscheidung = entscheide_empfehlung(empfehlung_final, identity, web_recherche=web_recherche)
+    entscheidung = entscheide_empfehlung(empfehlung_final, identity, web_recherche=web_recherche,
+                                     insights=insights)
     if entscheidung.empfehlung != empfehlung_final:
         log.info("Kaufcheck: Empfehlung %s -> %s (Identitätsstufe %s, offen: %s)",
                  empfehlung_final, entscheidung.empfehlung, entscheidung.identitaet.stufe,
@@ -598,7 +599,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     empfehlung_gruende = baue_empfehlung_gruende(
         req, baureihe, motor_match, insights, key_findings, result.get("empfehlung", "unbekannt"),
         markt_verfuegbar, getattr(price_assessment, "label", None), hu=hu,
-        generation=(baureihe or {}).get("generation"), identity=identity)
+        generation=(baureihe or {}).get("generation"), identity=identity,
+        technik_luecke=entscheidung.technik_luecke)
 
     # EINE Datenbasis für Berichtszeile, Quellen-Chip (`quelle`) und `vertrauen`.
     basis = datenbasis_objekt(baureihe, insights, belege,

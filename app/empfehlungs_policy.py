@@ -168,6 +168,10 @@ class Empfehlungsentscheidung:
     anzeige: str
     hinweis: str | None
     identitaet: IdentitaetsAufloesung
+    # N18: Datenarten, zu denen die Technikrecherche lief, aber nichts Belastbares
+    # lieferte. Leer = keine solche Lücke. Reine Anzeige-Information; Stufe und
+    # `state` hängen NICHT daran.
+    technik_luecke: tuple[str, ...] = ()
 
 
 # ── Release-Hardening (Research Confidence) ─────────────────────────────────
@@ -211,7 +215,48 @@ def forschung_unvollstaendig_hinweis(web_recherche) -> str | None:
            f"abgeschlossene Recherche — die offene Prüfung sollte separat nachgeholt werden.")
 
 
-def entscheide(kandidat: str | None, identity, *, web_recherche=None) -> Empfehlungsentscheidung:
+# ── N18: Technikrecherche gelaufen, aber weder Schwachstellen noch Wartung ─────
+#
+# BEFUND (Live-Bericht 20261108-091413, Lexus RC F): Identität belegt, die
+# Technikrecherche lief (partial), lieferte aber 0 Schwachstellen- und 0
+# Wartungsbefunde. Die Überschrift zeigte trotzdem unverändert "KAUFEN NACH
+# BESICHTIGUNG", die Begründung nannte das eine "rein technische Einschätzung":
+# fehlende Abdeckung sah aus wie ein unauffälliger technischer Befund.
+#
+# REGEL: gilt nur für den bisherigen Kandidaten "kaufen_nach_besichtigung" bei
+# VERIFIED-Identität ohne fehlgeschlagene Recherchephase (Vorrang haben die
+# strengeren Warnungen). Nur die ANZEIGE und der Hinweis ändern sich; Stufe
+# (`empfehlung`), `state`, Floor und Identitätsprüfung bleiben unberührt.
+# "Befund vorhanden" heißt: ein Insight der Kategorie (DB, auch geprüfter
+# Datenbankbefund, oder Web) ODER ein Web-Fakt der Kategorie.
+ANZEIGE_TECHNIK_EINGESCHRAENKT = ("Analyse eingeschränkt: keine bestätigten Schwachstellen- "
+                                  "und Wartungsdaten")
+_SCHWACHSTELLEN_KATEGORIEN = ("schwachstelle", "motorproblem", "web_schwachstelle")
+_WARTUNGS_KATEGORIEN = ("wartung", "web_wartung")
+
+
+def technik_datenluecke(web_recherche, insights=None) -> tuple[str, ...]:
+    """("Schwachstellen", "Wartung"), wenn die Technikphase lief (SUCCESS/PARTIAL)
+    und WEDER Schwachstellen- NOCH Wartungsbefunde vorliegen, sonst ()."""
+    status = getattr(web_recherche, "phasen_status", None) or {}
+    if status.get("technik") not in ("success", "partial"):
+        return ()
+    fakt_kat = {getattr(f, "kategorie", None) for f in (getattr(web_recherche, "fakten", None) or [])}
+    insight_kat = {getattr(i, "kategorie", None) for i in (insights or [])}
+    vorhanden = fakt_kat | insight_kat
+    if vorhanden & (set(_SCHWACHSTELLEN_KATEGORIEN) | set(_WARTUNGS_KATEGORIEN)):
+        return ()
+    return ("Schwachstellen", "Wartung")
+
+
+_TECHNIK_LUECKE_HINWEIS = (
+    "Die Technikrecherche lief, ergab aber weder belastbare Schwachstellen- noch belastbare "
+    "Wartungsdaten. Das ist keine Entwarnung: zu Schwachstellen und Wartung liegt keine "
+    "belegte Aussage vor. Die Stufe „Kaufen nach Besichtigung“ sagt dazu nichts aus.")
+
+
+def entscheide(kandidat: str | None, identity, *, web_recherche=None,
+               insights=None) -> Empfehlungsentscheidung:
     """Die finale Empfehlung — die EINZIGE Stelle, die über den Zustand
     entscheidet. Bericht, API-Feld und Frontend lesen dieses Ergebnis."""
     aufl = identitaet_aufloesen(identity)
@@ -219,6 +264,11 @@ def entscheide(kandidat: str | None, identity, *, web_recherche=None) -> Empfehl
     if aufl.stufe == VERIFIED:
         forschungs_hinweis = forschung_unvollstaendig_hinweis(web_recherche)
         if forschungs_hinweis is None:
+            luecke = (technik_datenluecke(web_recherche, insights)
+                      if kandidat == "kaufen_nach_besichtigung" else ())
+            if luecke:
+                return Empfehlungsentscheidung(kandidat, STATE_NORMAL, ANZEIGE_TECHNIK_EINGESCHRAENKT,
+                                               _TECHNIK_LUECKE_HINWEIS, aufl, technik_luecke=luecke)
             return Empfehlungsentscheidung(kandidat, STATE_NORMAL,
                                            _ANZEIGE_NORMAL.get(kandidat, kandidat), None, aufl)
         # Empfehlung bleibt UNVERÄNDERT — nur state/anzeige/hinweis machen die
