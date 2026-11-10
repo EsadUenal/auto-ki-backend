@@ -7686,13 +7686,35 @@ class TavilyTechnicalResearchProvider:
                 anf_fehler[phase] += 1
                 return []
 
+        # N19: budgetbedingt nicht ausgeführte Suchanfragen JE PHASE und Runde getrennt melden
+        # (Erstversuch am Budget gescheitert = übersprungen; ein gescheiterter RETRY gilt als
+        # ausgeführt und wird getrennt ausgewiesen). Die Phasen laufen nacheinander (jede Runde wird
+        # vollständig awaited), die Differenz der Zähler vor/nach einer Runde gehört daher genau zu
+        # den Anfragen DIESER Runde.
+        nachsuche_uebersprungen: list[dict] = []
+
+        async def suche_runde(phase, runde, aufrufe):
+            skip0, retry0 = budget_uebersprungen("tavily"), budget_retry_abgelehnt("tavily")
+            ergebnis = await asyncio.gather(*[suche(q, phase=phase, **kw) for q, kw in aufrufe])
+            geplant = len(aufrufe)
+            skip = min(geplant, max(0, budget_uebersprungen("tavily") - skip0))
+            retry = max(0, budget_retry_abgelehnt("tavily") - retry0)
+            log.info("research_phase=%s round=%d geplant=%d ausgefuehrt=%d budget_uebersprungen=%d "
+                     "retry_budget_abgelehnt=%d", phase, runde, geplant, geplant - skip, skip, retry)
+            if skip:
+                nachsuche_uebersprungen.append({
+                    "kategorie": phase, "runde": runde, "geplant": geplant,
+                    "ausgefuehrt": geplant - skip, "budget_uebersprungen": skip,
+                    "retry_budget_abgelehnt": retry})
+            return list(ergebnis)
+
         # PHASE 1 — Identität
         phasen.append("identitaet")
         motor_ps = " ".join(filter(None, [z.get("motor"),
                                           f"{z['leistung_ps']} PS" if z.get("leistung_ps") else None]))
         q_ident = [" ".join(filter(None, [breit, jahr, motor_ps, "technische Daten"])),
                    " ".join(filter(None, [breit, jahr, "Generation Baureihe Bauzeitraum"]))]
-        ident_treffer = [r for liste in await asyncio.gather(*[suche(q, phase="identitaet") for q in q_ident])
+        ident_treffer = [r for liste in await suche_runde("identitaet", 1, [(q, {}) for q in q_ident])
                          for r in liste]
         # L1-Integrationsnachtrag (ENFAL-Recherchepfad-Folgeauftrag, 2026-11):
         # Volltext-Nachladung auch fuer Identitaetstreffer -- s. Moduldocstring
@@ -7735,6 +7757,7 @@ class TavilyTechnicalResearchProvider:
                                        provider_fehler=fehler and not ident_treffer,
                                        phasen=phasen, abgelehnte_fakten=abgelehnt,
                                        anfragen=anfragen,
+                                       nachsuche_uebersprungen=nachsuche_uebersprungen,
                                        phasen_status={"identitaet": status_identitaet,
                                                      "rueckruf": PHASE_NOT_RUN,
                                                      "technik": PHASE_NOT_RUN})
@@ -7754,8 +7777,8 @@ class TavilyTechnicalResearchProvider:
         if offene_spec_felder or offene_confirm_felder:
             spec_intents = _identity_spec_gap_queries(
                 breit, jahr, offene_spec_felder, ziel=z, confirm_felder=offene_confirm_felder)
-            spec_treffer_je_intent = await asyncio.gather(
-                *[suche(q, phase="identitaet") for _, q in spec_intents])
+            spec_treffer_je_intent = await suche_runde(
+                "identitaet", 2, [(q, {}) for _, q in spec_intents])
             neue_spec_treffer = [r for t in spec_treffer_je_intent for r in t]
             # Diagnostik (L1 Auftrag §4): welche Domains die Zusatzrunde
             # tatsächlich erreicht hat -- je Intent, damit sichtbar bleibt, ob
@@ -7921,14 +7944,14 @@ class TavilyTechnicalResearchProvider:
         basis = " ".join(filter(None, [breit, gen]))
         # PHASE 2 — Rückrufe (amtlich/Fachquellen bevorzugt)
         phasen.append("rueckruf")
-        rr = await asyncio.gather(
+        rr = await suche_runde("rueckruf", 1, [
             # Ohne Baujahr: ein Rückruf wird Jahre NACH der Produktion veröffentlicht;
             # ob das Baujahr betroffen ist, entscheidet das Produktionsfenster im
             # Quelltext (_extrahiere_fakten). Mit Baujahr fand die Suche vor allem
             # Meldungen aus dem Baujahr selbst.
-            suche(" ".join(filter(None, [basis, "Rückruf"])), phase="rueckruf"),
-            suche(" ".join(filter(None, [breit, "Rückruf Rückrufaktion"])),
-                  phase="rueckruf", include_domains=_RUECKRUF_DOMAINS))
+            (" ".join(filter(None, [basis, "Rückruf"])), {}),
+            (" ".join(filter(None, [breit, "Rückruf Rückrufaktion"])),
+             {"include_domains": _RUECKRUF_DOMAINS})])
         roh = {"rueckruf": [r for liste in rr for r in liste]}
         status_rueckruf = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["rueckruf"],
                                         anfragen_fehlgeschlagen=anf_fehler["rueckruf"])
@@ -7973,8 +7996,8 @@ class TavilyTechnicalResearchProvider:
             ("inspection_interval", f"{breit} Inspektionsintervall"),
         )
         technik_intents = sw_intents + wa_intents
-        technik_treffer_je_intent = await asyncio.gather(
-            *[suche(q, phase="technik") for _, q in technik_intents])
+        technik_treffer_je_intent = await suche_runde(
+            "technik", 1, [(q, {}) for _, q in technik_intents])
         sw_treffer_je_intent = technik_treffer_je_intent[:len(sw_intents)]
         wa_treffer_je_intent = technik_treffer_je_intent[len(sw_intents):]
         # Observability (nur log.debug — keine User-UI, keine zweite
@@ -8037,7 +8060,6 @@ class TavilyTechnicalResearchProvider:
         # jeder Runde für die jeweilige Kategorie aktualisiert.
         zustand_vorher: dict[str, dict] = {
             kat: _zustand_kategorie(abgelehnt, kat) for kat in ("schwachstelle", "wartung")}
-        nachsuche_uebersprungen: list[dict] = []
         # Kategorien, die in Runde 2 tatsächlich Fortschritt gebracht haben --
         # NUR diese dürfen in Runde 3 weitersuchen (§A Auftrag: Runde 3 nur,
         # "wenn Round 2 tatsächlich neue Evidence geliefert hat").

@@ -260,7 +260,9 @@ def technik_ohne_fakten_hinweise(web_recherche, *, baureihe=None) -> list[str]:
     return [*hinweise, ""] if hinweise else []
 
 
-_NACHSUCHE_LABEL = {"schwachstelle": "Schwachstellen", "wartung": "Wartungsintervalle"}
+_NACHSUCHE_LABEL = {"schwachstelle": "Schwachstellen", "wartung": "Wartungsintervalle",
+                    "identitaet": "der Fahrzeugidentität", "rueckruf": "Rückrufen",
+                    "technik": "Schwachstellen und Wartung"}
 
 
 def nachsuche_uebersprungen_hinweis(web_recherche) -> list[str]:
@@ -272,8 +274,9 @@ def nachsuche_uebersprungen_hinweis(web_recherche) -> list[str]:
     zeilen = []
     for e in eintraege:
         label = _NACHSUCHE_LABEL.get(e.get("kategorie"), str(e.get("kategorie")))
+        art = "Suche" if e.get("runde") == 1 else "Nachsuche"
         zeilen.append(
-            f"Hinweis: Die Nachsuche zu {label} (Runde {e.get('runde')}) wurde nur teilweise "
+            f"Hinweis: Die {art} zu {label} (Runde {e.get('runde')}) wurde nur teilweise "
             f"ausgeführt: {e.get('budget_uebersprungen')} von {e.get('geplant')} Anfragen "
             "entfielen wegen des Anfragebudgets. Das ist kein leeres Suchergebnis und kein "
             "Fehler der Quelle: die Abdeckung ist unvollständig.")
