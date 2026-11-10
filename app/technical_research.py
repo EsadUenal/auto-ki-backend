@@ -1512,7 +1512,19 @@ _RE_HUBRAUM = re.compile(r"\b(\d[.,]\d)\s*(?:-?\s*(?:l\b|liter|litre)|\s+(?=[A-Z
 # Motorformulierungen bleiben unveraendert erfasst.
 _HUBRAUM_FREMDEINHEIT = re.compile(
     r"^\s*(?:sekunden?|seconds?|sek\.?|minuten?|minutes?|stunden?|hours?|"
-    r"[a-z]?mph|km\s*/\s*h|u\s*/\s*min|rpm)\b", re.IGNORECASE)
+    r"[a-z]?mph|km\s*/\s*h|u\s*/\s*min|rpm)\b"
+    # N19-Nebenbefund (Hubraum): "4.5 s" (Beschleunigung). Ein KLEINES, alleinstehendes "s" ist die
+    # Sekunde; das GROSSE "S" bleibt Motorbezeichnung ("3.0 S Coupé"). Die Satzgrenze ist im
+    # zusammengesetzten Text nicht mehr sichtbar, deshalb entscheidet die Schreibweise.
+    r"|^\s*(?-i:s)\b", re.IGNORECASE)
+
+# Eine Literangabe, der unmittelbar eine Umrechnung in US/UK-Quarts bzw. -Gallonen folgt
+# ("8.8 l 9.3 US qt | 7.74 UK qt"), ist eine Fluessigkeitskapazitaet (Oel, Kuehlmittel, Tank), kein
+# Hubraum. Der Hubraum wird mit Kubikzoll umgerechnet ("4969 cm3 303.23 cu. in."), nie mit qt/gal.
+_RE_KAPAZITAET_UMRECHNUNG = re.compile(
+    r"^\s*(?:l\b|liter|litre)?\s*\d+(?:[.,]\d+)?\s*(?:(?:us|uk|imp)\s*)?(?:qt|quarts?|gal|gallons?)\b",
+    re.IGNORECASE)
+_RE_QT_ZAHL = re.compile(r"^\s*(?:(?:us|uk|imp)\s+)?(?:qt|quarts?|gal|gallons?)\b", re.IGNORECASE)
 
 # F12 (RC-F-Folgeauftrag, Ursachenanalyse-Bericht 2026-10-25): ein reiner
 # "cm3"/"cm³"/"ccm"-Wert ("4969 cm³") blieb bisher komplett unerkannt, obwohl
@@ -2746,6 +2758,10 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                 add("horsepower", ps_kandidat, pos=m.start())
     for m in _RE_HUBRAUM.finditer(text):
         if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
+            continue
+        if _RE_KAPAZITAET_UMRECHNUNG.match(text[m.end(1):]):
+            continue
+        if _RE_QT_ZAHL.match(text[m.end(1):]):        # "9.3 US qt": die Zahl IST die qt-Menge
             continue
         # Verbrauchsangabe ("6,5 l/100km") ist keine Hubraumangabe -- nur die
         # blosse "l"-Abkuerzung (nicht "Liter"/"litre") kollidiert damit, und
@@ -4910,6 +4926,13 @@ _RE_MOTORCODE_LABELZEILE = re.compile(
     r"^[\w/ .()-]{0,30}?(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*:?\s*$",
     re.IGNORECASE)
 _RE_CODEWERT_ANFANG = re.compile(r"^([A-Z0-9][A-Z0-9-]{1,9})(?=\s|$|\[)", re.IGNORECASE)
+# Hubraum: eigenstaendige Label-Zeile ("Hubraum") plus unmittelbar folgender Wert mit AUSDRUECKLICHER
+# Einheit (cm3/cm³/ccm oder Liter). Eine Zahl ohne Einheit bildet kein Paar.
+_RE_HUBRAUM_LABELZEILE = re.compile(
+    r"^[\w/ .()-]{0,30}?(?:hubraum|hubvolumen|displacement)\s*:?\s*$", re.IGNORECASE)
+_RE_HUBRAUMWERT_ANFANG = re.compile(
+    r"^(\d{3,5}\s*(?:cm\s*3|cm\s*³|ccm)(?![A-Za-z0-9])|\d[.,]\d\s*(?:-?\s*(?:l\b|liter|litre)))",
+    re.IGNORECASE)
 
 
 def _saetze_mit_segmentgrenze(text: str, *, mit_label_wert_paaren: bool = False
@@ -4930,6 +4953,9 @@ def _saetze_mit_segmentgrenze(text: str, *, mit_label_wert_paaren: bool = False
             wert = _RE_CODEWERT_ANFANG.match(chunks[i + 1].strip())
             if label and _RE_MOTORCODE_LABELZEILE.match(label) and wert:
                 out.append((f"{label} {wert.group(1)}", i > 0))
+            hub = _RE_HUBRAUMWERT_ANFANG.match(chunks[i + 1].strip())
+            if label and _RE_HUBRAUM_LABELZEILE.match(label) and hub:
+                out.append((f"{label} {hub.group(1)}", i > 0))
         for j, s in enumerate(_saetze(chunk, max_len=None)):
             out.append((s, i > 0 and j == 0))
     return out
