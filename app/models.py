@@ -771,6 +771,11 @@ class WebFakt(BaseModel):
     # Anzeige-Satz; ein Kraftstoff-/Leistungs-/Motorcode-Scope im NACHBARSATZ
     # desselben Artikels blieb fuer sie unsichtbar.
     scope_text: str | None = None
+    # Nur bei einem Rückruf aus einem STRUKTURIERTEN Rückrufdatensatz (z.B. ADAC-Tabelle):
+    # die Rohfelder genau dieses Datensatzes (datum, anlass, modelle, variante, bauzeitraum,
+    # anzahl, ...). Grundlage für den strukturierten Abgleich mit einem amtlichen Eintrag
+    # (app/rueckruf_abgleich.py) -- nie für eine Betroffenheits- oder Durchführungsaussage.
+    rueckruf_datensatz: dict | None = None
     # Adaptive-Evidence-Research (Folgeauftrag): optionale, zusätzliche
     # Beleglage-Kennzeichnung NEBEN `confidence` -- `confidence` bleibt die
     # bestehende dreistufige Quellenlage-Achse (hoch/mittel/niedrig), dieses

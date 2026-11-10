@@ -599,6 +599,31 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     except Exception:
         log.exception("RC-W6-Schema-Migration uebersprungen — App startet mit "
                       "unveraendertem rueckruf-Schema weiter.")
+    # NACH dem RC-W6-Rebuild (der nur die ihm bekannten Spalten kopiert).
+    _migriere_rueckruf_abgleich(conn)
+
+
+# Amtliche Abgleichsmerkmale je Rückruf (app/rueckruf_abgleich.py): additiv, NULLable,
+# NULL bei jeder Bestandszeile bis zum Nachtrag. Herstellercode, amtliche Modellspalte,
+# Veröffentlichungsdatum, Fallzahlen DE/weltweit und ob der Merkmalsschlüssel im
+# vollständigen amtlichen Bestand eindeutig ist. Kein Fingerprint-Feld -- eine bestehende
+# Verifikation bleibt gültig.
+_RUECKRUF_ABGLEICH_SPALTEN = (
+    ("herstellercode_amtlich", "TEXT"), ("modell_amtlich", "TEXT"),
+    ("veroeffentlicht_amtlich", "TEXT"), ("anzahl_de_amtlich", "INTEGER"),
+    ("anzahl_weltweit_amtlich", "INTEGER"), ("abgleich_eindeutig_amtlich", "INTEGER"),
+)
+
+
+def _migriere_rueckruf_abgleich(conn: sqlite3.Connection) -> None:
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rueckruf'").fetchone():
+        return
+    vorhanden = {r[1] for r in conn.execute("PRAGMA table_info(rueckruf)").fetchall()}
+    for name, typ in _RUECKRUF_ABGLEICH_SPALTEN:
+        if name not in vorhanden:
+            conn.execute(f"ALTER TABLE rueckruf ADD COLUMN {name} {typ}")
+    conn.commit()
 
 
 def _migriere_verification(conn: sqlite3.Connection) -> None:
@@ -677,6 +702,17 @@ def _migriere_chassis_codes(conn: sqlite3.Connection) -> None:
     log.info("chassis_codes-Seed: %d Baureihen gesetzt, %d nicht gefunden (%s).",
              gesetzt, len(fehlend), fehlend or "-")
 
+
+_ABGLEICH_SPALTEN_NAMEN = ("herstellercode_amtlich", "modell_amtlich", "veroeffentlicht_amtlich",
+                           "anzahl_de_amtlich", "anzahl_weltweit_amtlich", "abgleich_eindeutig_amtlich")
+
+
+def _abgleich_select(conn: sqlite3.Connection) -> str:
+    """', <Abgleichsspalten>' fuer SELECTs auf `rueckruf` -- nur die Spalten, die es in DIESER
+    Datenbank gibt. Eine (noch) nicht migrierte DB bleibt damit voll lesbar; fehlende Spalten
+    erscheinen als NULL ('keine Merkmale' -> kein strukturierter Abgleich)."""
+    vorhanden = {r[1] for r in conn.execute("PRAGMA table_info(rueckruf)").fetchall()}
+    return "".join(f", {s}" if s in vorhanden else f", NULL AS {s}" for s in _ABGLEICH_SPALTEN_NAMEN)
 
 _RUECKRUF_SPALTEN = ("id", "baureihe_id", "datum", "betroffene_baujahre", "mangel",
                     "abhilfe", "kba_referenz", "eingrenzung_amtlich",
@@ -969,7 +1005,8 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         _alle_rueckrufe = sichtbare_fakten(annotiere_fakten(conn, "rueckruf", [
             dict(r) for r in conn.execute(
                 "SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz,"
-                "eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich "
+                "eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich"
+                f"{_abgleich_select(conn)} "
                 "FROM rueckruf WHERE baureihe_id=?",
                 (baureihe_id,),
             ).fetchall()
@@ -1160,7 +1197,8 @@ def get_alle_rueckrufe_fuer_sync() -> list[dict]:
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT id, baureihe_id, datum, betroffene_baujahre, mangel, abhilfe, "
-            "kba_referenz, eingrenzung_amtlich, prod_von_amtlich, prod_bis_amtlich "
+            "kba_referenz, eingrenzung_amtlich, prod_von_amtlich, prod_bis_amtlich, "
+            f"canonical_make{_abgleich_select(conn)} "
             "FROM rueckruf").fetchall()]
 
 
@@ -1223,7 +1261,7 @@ def get_rueckrufe_canonical_fuer_identity(canonical_make: str, nameplate_kandida
         rows = [dict(r) for r in conn.execute(
             f"SELECT id,baureihe_id,datum,betroffene_baujahre,mangel,abhilfe,kba_referenz,"
             f"eingrenzung_amtlich,prod_von_amtlich,prod_bis_amtlich,canonical_make,"
-            f"canonical_nameplate FROM rueckruf WHERE baureihe_id IS NULL "
+            f"canonical_nameplate{_abgleich_select(conn)} FROM rueckruf WHERE baureihe_id IS NULL "
             f"AND canonical_make=? AND canonical_nameplate IN ({platzhalter}) "
             # Veroeffentlichungsdatum != Produktionszeitraum (Abschnitt 7 des
             # Audits): gefiltert wird AUSSCHLIESSLICH gegen das amtliche

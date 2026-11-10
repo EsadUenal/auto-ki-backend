@@ -4335,6 +4335,124 @@ _RE_BETROFFEN = re.compile(r"betroffen|betrifft|betreffen|gebaut|produziert|herg
 _RE_NICHT_BETROFFEN = re.compile(r"nicht\s+betroffen|nicht\s+betrifft|ausgenommen", re.IGNORECASE)
 
 
+# N19-Folgefund (ADAC-Rückruftabelle): ein STRUKTURIERTER Rückrufdatensatz (Feldbezeichnung + Wert,
+# als Markdown-Tabelle oder als Zeilenfolge) ist länger als die 300-Zeichen-Fließtextgrenze von
+# `_saetze()` und ging deshalb ohne jede Diagnose verloren; nur ein Restsatz ohne Rückrufwort blieb
+# übrig (`no_recall_signal`). Der Datensatz wird hier VOR dieser Grenze erkannt und bekommt eine eigene,
+# großzügigere Begrenzung. Generisch (Feldbezeichnungen, keine Marken-/Quellenlogik). Erzeugt nur
+# eine Aussage aus den Feldern DESSELBEN Datensatzes; weder Referenzcode noch Quellenstatus noch
+# Betroffenheit werden daraus abgeleitet -- das bleibt Sache der bestehenden Rückruf-Pipeline.
+_RUECKRUF_DATENSATZ_MAX = 700
+_RUECKRUF_FELDER = {
+    "rueckrufdatum": "datum", "rückrufdatum": "datum", "anlass": "anlass",
+    "betroffene modelle": "modelle", "variante": "variante",
+    "bauzeitraum betroffener fahrzeuge": "bauzeitraum",
+    "anzahl betroffener fahrzeuge": "anzahl", "dauer": "dauer",
+    "halterbenachrichtigung durch": "halter", "zusätzliche information": "zusatz",
+    "zusaetzliche information": "zusatz",
+}
+_RE_RR_TABELLENZEILE = re.compile(r"^\s*\|\s*([^|\n]+?)\s*\|\s*(.*?)\s*\|?\s*$")
+_RE_RR_KEINE_ANGABE = re.compile(r"^\s*(?:keine?\s+angaben?|-|–|n/?a)\s*$", re.IGNORECASE)
+
+
+def _rr_bauzeitraum_normalisiert(wert: str) -> str:
+    """'05.2014 bis 04.12.2017' -> '05/2014 bis 12/2017' (gleiche Angabe, vom Zeitraum-Parser lesbar)."""
+    wert = re.sub(r"\b\d{1,2}\.(\d{1,2})\.((?:19|20)\d{2})\b", r"\1/\2", wert)
+    return re.sub(r"\b(\d{1,2})\.((?:19|20)\d{2})\b", r"\1/\2", wert)
+
+
+def _zeitraum_aussage(satz: str):
+    """`zeitraum()` (Jahresfenster). Nur für eine Datensatz-Aussage wird ein Bauzeitraum mit Tages-/
+    Monatsangabe ('05.2014 bis 04.12.2017') zum LESEN auf Jahre normalisiert -- der angezeigte Wortlaut
+    behält das genaue Datum. Verglichen wird ohnehin nur das Baujahr; ein Fahrzeug im Endjahr bleibt
+    deshalb 'möglich', nie bestätigt (der genaue Stichtag ist dem Abgleich nicht zugänglich)."""
+    if satz.startswith("Rückruf ") and "Bauzeitraum betroffener Fahrzeuge:" in satz:
+        return zeitraum(_rr_bauzeitraum_normalisiert(satz))
+    return zeitraum(satz)
+
+
+def _rueckruf_datensaetze(text: str) -> list[dict]:
+    """Strukturierte Rückrufdatensätze (je 'Rückrufdatum'-Feld ein Datensatz) als Feld-Dict.
+    Ein Datensatz endet am nächsten 'Rückrufdatum'; Felder vermischen sich nie. Je Feld zählt nur
+    der erste Wert (eine Zeile). Ohne 'Anlass' kein Datensatz."""
+    zeilen: list[tuple[str | None, str]] = []  # (feld, wert) in Lesereihenfolge
+    offen: str | None = None
+    for roh in (text or "").splitlines():
+        zeile = roh.strip()
+        if not zeile:
+            continue
+        m = _RE_RR_TABELLENZEILE.match(zeile)
+        if m and m.group(1).strip().rstrip(":").lower() in _RUECKRUF_FELDER:
+            feld = _RUECKRUF_FELDER[m.group(1).strip().rstrip(":").lower()]
+            zeilen.append((feld, m.group(2).strip()))
+            offen = None
+            continue
+        schluessel = zeile.strip("*# ").rstrip(":").strip().lower()
+        if schluessel in _RUECKRUF_FELDER:
+            offen = _RUECKRUF_FELDER[schluessel]
+            zeilen.append((offen, ""))
+            continue
+        if offen and zeilen and zeilen[-1][0] == offen and not zeilen[-1][1]:
+            zeilen[-1] = (offen, zeile)
+    datensaetze: list[dict] = []
+    aktuell: dict | None = None
+    for feld, wert in zeilen:
+        if feld == "datum":
+            aktuell = {"datum": wert}
+            datensaetze.append(aktuell)
+        elif aktuell is not None and feld not in aktuell and wert:
+            aktuell[feld] = wert
+    return [d for d in datensaetze if d.get("anlass")]
+
+
+def _rueckruf_datensatz_aussage(d: dict) -> str | None:
+    """Eine Aussage aus den Feldern EINES Datensatzes (Anlass, Zeitraum, Variante, Modelle);
+    None, wenn sie die Datensatzgrenze überschreitet."""
+    teile = [f"Rückruf {d.get('datum') or ''}: {d['anlass']}.".replace("  ", " ")]
+    bz = d.get("bauzeitraum")
+    if bz and not _RE_RR_KEINE_ANGABE.match(bz):
+        teile.append(f"Bauzeitraum betroffener Fahrzeuge: {bz}.")
+    va = d.get("variante")
+    if va and not _RE_RR_KEINE_ANGABE.match(va):
+        teile.append(f"Variante: {va}.")
+    if d.get("modelle"):
+        teile.append(f"Betroffene Modelle: {d['modelle']}.")
+    aussage = " ".join(teile)
+    return aussage if len(aussage) <= _RUECKRUF_DATENSATZ_MAX else None
+
+
+def _rueckruf_saetze_mit_bauteiltext(text: str) -> tuple[list[str], dict[str, str]]:
+    """Fließtext-Sätze (unverändert, 300 Zeichen) PLUS die Aussagen strukturierter Rückrufdatensätze.
+    Zweites Ergebnis: je Datensatz-Aussage der Text, in dem das BAUTEIL gesucht wird (Anlass plus
+    'Zusätzliche Information' DESSELBEN Datensatzes). Variante und Modellliste dürfen das Bauteil nie
+    bestimmen ('2UR-GSE Motor' ist die Variante, nicht das defekte Teil)."""
+    saetze = _saetze(text)
+    bauteiltext: dict[str, str] = {}
+    for d in _rueckruf_datensaetze(text):
+        aussage = _rueckruf_datensatz_aussage(d)
+        if aussage and aussage not in saetze:
+            saetze.append(aussage)
+            bauteiltext[aussage] = f"{d['anlass']}. {d.get('zusatz') or ''}"[:_RUECKRUF_DATENSATZ_MAX]
+    return saetze, bauteiltext
+
+
+def _rueckruf_saetze(text: str) -> list[str]:
+    return _rueckruf_saetze_mit_bauteiltext(text)[0]
+
+
+def _rueckruf_zusatz_normen(text: str) -> list[str]:
+    """Normalisierte 'Zusätzliche Information'-Absätze aller Rückrufdatensätze eines Textes."""
+    return [_norm(d["zusatz"]) for d in _rueckruf_datensaetze(text) if d.get("zusatz")]
+
+
+def _im_rueckruf_zusatz(claim: str, zusatz_normen: list[str]) -> bool:
+    """True, wenn der Claim wörtlich aus dem Zusatzabsatz eines Rückrufdatensatzes stammt. Ein
+    solcher Absatz beschreibt DIESE Aktion und begründet keine allgemeine Schwachstelle; Sätze
+    außerhalb des Datensatzes (eigene Schwachstellen derselben Seite) sind nicht betroffen."""
+    n = _norm(claim)
+    return bool(n) and len(n) >= 20 and any(n in z for z in zusatz_normen)
+
+
 def _artikel_geltung(text: str, baujahr: int | None, hubraum=None,
                      leistung_ps: int | None = None) -> tuple[bool | None, str | None, tuple | None]:
     """Geltungsbereich eines Rückruf-ARTIKELS, nicht nur eines Satzes.
@@ -4350,8 +4468,8 @@ def _artikel_geltung(text: str, baujahr: int | None, hubraum=None,
     False = der Artikel schließt dieses Fahrzeug aus (Baujahr, Hubraum oder
     Leistung), True = ein Fenster deckt das Baujahr, None = offen."""
     from app.recall_filter import _RE_SCOPE_HUBRAUM, _RE_SCOPE_PS
-    saetze = [s for s in _saetze(text) if _RE_BETROFFEN.search(s) and not _RE_NICHT_BETROFFEN.search(s)]
-    fenster = [z for z in (zeitraum(s) for s in saetze) if z]
+    saetze = [s for s in _rueckruf_saetze(text) if _RE_BETROFFEN.search(s) and not _RE_NICHT_BETROFFEN.search(s)]
+    fenster = [z for z in (_zeitraum_aussage(s) for s in saetze) if z]
     deckend = [z for z in fenster if _im_zeitraum(baujahr, z)] if baujahr else []
     if baujahr and fenster and not deckend:
         return False, "baujahr_ausserhalb_artikel", fenster[0]
@@ -5528,6 +5646,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     # bisherigen, geteilten `_bauteil_vokabular()`.
     vokabular = _wartung_vokabular() if kategorie == "wartung" else _bauteil_vokabular()
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
+    # Rückrufdatensatz-Aussage -> Rohfelder DIESES Datensatzes (für den strukturierten Abgleich).
+    datensatz_von_aussage: dict[str, dict] = {}
     kandidaten: dict[str, dict] = {}
     abgelehnt = abgelehnt if abgelehnt is not None else []
 
@@ -5605,6 +5725,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # `_segment_kontext_saetze()`. "rueckruf" bleibt bewusst auf dem
         # unveränderten `_distanz1_kontext_saetze()`-Port (Recall/KBA nicht
         # angefasst, §15 Auftrag).
+        datensatz_bauteiltext: dict[str, str] = {}
+        rr_zusatz = (_rueckruf_zusatz_normen(r.get("content") or "")
+                     if kategorie == "schwachstelle" else [])
         if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN:
             satz_markiert = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
             satz_liste = [s for s, _ in satz_markiert]
@@ -5631,7 +5754,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             # sehen konnte -- nur für die Kategorien in
             # `_CLAIM_SEGMENTIERUNG_KATEGORIEN` aufgehoben (oben, `max_len=
             # None`); "rueckruf" behält die Grenze unverändert.
-            satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=300)
+            satz_liste, datensatz_bauteiltext = _rueckruf_saetze_mit_bauteiltext(
+                f"{r.get('title') or ''}. {r.get('content') or ''}")
+            for _d in _rueckruf_datensaetze(f"{r.get('title') or ''}. {r.get('content') or ''}"):
+                _a = _rueckruf_datensatz_aussage(_d)
+                if _a and _a in datensatz_bauteiltext:
+                    datensatz_von_aussage[_a] = _d
             erlaubte_saetze = _distanz1_kontext_saetze(
                 satz_liste, marke=marke, modell=modell, grund=grund,
                 abgelehnt=abgelehnt, url=url, kategorie=kategorie)
@@ -5677,11 +5805,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                           "satz": claim[:120]})
                         continue
                 n = _norm(claim)
+                # Datensatz-Aussage: Bauteil nur aus Anlass/Zusatz DESSELBEN Datensatzes lesen.
+                bt_text = datensatz_bauteiltext.get(claim, claim) if kategorie == "rueckruf" else claim
                 if kategorie == "schwachstelle" and _ist_benign_relativiert(claim):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "benign_relativiert", "satz": claim[:120]})
                     continue
-                if kategorie == "schwachstelle" and _ist_rueckrufabschnitt(claim):
+                if kategorie == "schwachstelle" and (_ist_rueckrufabschnitt(claim)
+                                                     or _im_rueckruf_zusatz(claim, rr_zusatz)):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue
@@ -5749,7 +5880,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "grund": "wartung_technische_bedingung_offen",
                                       "satz": claim[:120]})
                     continue
-                z = zeitraum(claim) if kategorie != "wartung" else None
+                z = _zeitraum_aussage(claim) if kategorie != "wartung" else None
                 passt = _im_zeitraum(baujahr, z)
                 if passt is None and artikel_passt is True:
                     # Das Claim-Segment selbst nennt kein Fenster, der Artikel schon.
@@ -5759,12 +5890,13 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "satz": claim[:120]})
                     continue
                 vage = _RE_VAGE.search(claim) if kategorie != "rueckruf" else None
-                treffer_voc = [(m, s) for m, s in vokabular.items() if m in n][:1]
+                n_bt = _norm(bt_text)
+                treffer_voc = [(m, s) for m, s in vokabular.items() if m in n_bt][:1]
                 if not treffer_voc and kategorie == "rueckruf":
                     # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
                     # ("Kraftstoffleitung"). Ein Rückruf darf daran nicht verloren
                     # gehen: das Bauteil wird dann aus dem Claim-Segment selbst gelesen.
-                    teil = _rueckruf_bauteil(claim)
+                    teil = _rueckruf_bauteil(bt_text)
                     if teil:
                         treffer_voc = [(None, "rr:" + _norm(teil).replace(" ", ""))]
                 if not treffer_voc:
@@ -5779,16 +5911,16 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 for muster, schluessel in treffer_voc:
                     if (kategorie == "rueckruf" and passt is not True
                             and schluessel in ausgeschlossene_themen):
-                        bauteil_kandidat = (_anzeige_bauteil(claim, muster) if muster
-                                            else _rueckruf_bauteil(claim))
+                        bauteil_kandidat = (_anzeige_bauteil(bt_text, muster) if muster
+                                            else _rueckruf_bauteil(bt_text))
                         kandidat_tokens = _inhaltstokens(claim, marke, modell, bauteil_kandidat)
                         if _gleiches_rueckruf_ereignis(kandidat_tokens, ausgeschlossene_themen[schluessel]):
                             abgelehnt.append({"url": url, "kategorie": kategorie,
                                               "grund": "rueckruf_thema_bereits_ausgeschlossen",
                                               "satz": claim[:120]})
                             continue
-                    bauteil_claim = (_anzeige_bauteil(claim, muster) if muster
-                                     else _rueckruf_bauteil(claim))
+                    bauteil_claim = (_anzeige_bauteil(bt_text, muster) if muster
+                                     else _rueckruf_bauteil(bt_text))
                     kandidat_key = (
                         _kandidat_schluessel_fuer_risiko(kandidaten, schluessel, claim,
                                                          marke, modell, bauteil_claim,
@@ -5882,7 +6014,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             # Alle betroffenheits-tragenden Saetze aller beitragenden Treffer bilden
             # deshalb die normalisierte Scope-Grundlage.
             scope_saetze = [s for r in e["treffer"]
-                            for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+                            for s in _rueckruf_saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
                             if _RE_BETROFFEN.search(s)]
             scope_text = " ".join(scope_saetze)[:2000] or None
             # RC-W1: ohne Scope-Match UND ohne jede Scope-Information (kein
@@ -5936,6 +6068,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
             confidence=confidence, applicability=applicability, quellen=quellen,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
+            rueckruf_datensatz=(dict(datensatz_von_aussage[e["aussage"]])
+                                if kategorie == "rueckruf" and e["aussage"] in datensatz_von_aussage
+                                else None),
             herkunftsregion=herkunftsregion, regionale_geltung=regionale_geltung,
             technische_bedingung=technik_bedingung,
             technische_bedingung_status="unresolved" if technik_bedingung else None,
@@ -6852,6 +6987,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
             abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": "andere_generation"})
             continue
         family = _source_family(url)
+        rr_zusatz = _rueckruf_zusatz_normen(r.get("content") or "")
         satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
         lokale = _segment_kontext_saetze(
             satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
@@ -6863,7 +6999,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "benign_relativiert", "satz": claim[:120]})
                     continue
-                if _ist_rueckrufabschnitt(claim):
+                if _ist_rueckrufabschnitt(claim) or _im_rueckruf_zusatz(claim, rr_zusatz):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue

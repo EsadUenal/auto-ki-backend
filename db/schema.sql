@@ -97,6 +97,14 @@ CREATE TABLE IF NOT EXISTS rueckruf (
     -- baureihe-gebundenen Zeile; beide gesetzt bei jeder canonical-only Zeile.
     canonical_make      TEXT,
     canonical_nameplate TEXT,
+    -- Amtliche Abgleichsmerkmale (app/rueckruf_abgleich.py, additiv; dieselben Spalten
+    -- ergaenzt app/database.py::_migriere_rueckruf_abgleich auf einer Bestands-DB).
+    herstellercode_amtlich     TEXT,
+    modell_amtlich             TEXT,
+    veroeffentlicht_amtlich    TEXT,
+    anzahl_de_amtlich          INTEGER,
+    anzahl_weltweit_amtlich    INTEGER,
+    abgleich_eindeutig_amtlich INTEGER,
     CHECK (baureihe_id IS NOT NULL
            OR (canonical_make IS NOT NULL AND canonical_nameplate IS NOT NULL))
 );

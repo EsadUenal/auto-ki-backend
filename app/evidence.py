@@ -317,6 +317,9 @@ def build_insights(
         ))
 
     # ── 2) Rückrufe (KBA-Daten; RC-W6: + canonical-only ohne Baureihe) ──────────
+    # Angezeigte amtliche Rückrufe -- Grundlage für den strukturierten Abgleich eines
+    # Web-Rückrufdatensatzes (Abschnitt 6, app/rueckruf_abgleich.py).
+    amtlich_angezeigt: list[dict] = []
     for r in ((baureihe or {}).get("rueckrufe") or []) + (canonical_rueckrufe or []):
         if not allowed(r):
             continue
@@ -424,6 +427,7 @@ def build_insights(
             titel = f"{kurz} ({praefix})"
         else:
             titel = f"{kurz} ({praefix}, {scope_wort})"
+        amtlich_angezeigt.append(r)
         insights.append(Insight(
             id=_id("rueckruf"),
             kategorie="rueckruf",
@@ -688,6 +692,21 @@ def build_insights(
             # (NOT_APPLICABLE) schließt den Web-Rückruf genauso aus wie einen
             # DB-Rückruf; ohne bekannten Gegenbeweis bleibt er sichtbar.
             if fakt.kategorie == "rueckruf":
+                # Strukturierter Abgleich: ein Web-Rückrufdatensatz (z.B. ADAC-Tabelle, ohne
+                # eigene Kennung) ist dieselbe Aktion wie GENAU EIN angezeigter amtlicher
+                # Eintrag, wenn alle belegten Merkmale übereinstimmen und der amtliche
+                # Merkmalsschlüssel im VOLLSTÄNDIGEN Bestand eindeutig ist. Dann bleibt der
+                # amtliche Eintrag führend und unverändert; der Web-Fakt entfällt (er
+                # verschärft weder Variante noch FIN-Aussage). Sonst: beide bleiben sichtbar.
+                datensatz = getattr(fakt, "rueckruf_datensatz", None)
+                if datensatz:
+                    from app.rueckruf_abgleich import eindeutige_amtliche_zuordnung
+                    zuordnung = eindeutige_amtliche_zuordnung(datensatz, amtlich_angezeigt)
+                    if zuordnung is not None:
+                        log.info("Web-Rückruf '%s' entfällt: strukturiert eindeutig dieselbe "
+                                 "Aktion wie der amtliche Rückruf %s.", fakt.bauteil,
+                                 zuordnung.get("kba_referenz"))
+                        continue
                 # RC-W6 (Abschnitt 9): KBA ist primaer. Beschreibt dieser
                 # Web-Rückruf-Fakt (nach Inhalt, nicht nur Bauteil) dieselbe
                 # Meldung wie ein bereits gefundener canonical-only
