@@ -2584,7 +2584,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # Funktion liefert ausschließlich die Detail-Claims (PS/Hubraum/
         # Kraftstoff/Antrieb/Antriebsart/Getriebe/Motorcode/Generation), nie
         # die Existenzfrage selbst.
-        satz_mit_grenze = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        satz_mit_grenze = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}",
+                                                  mit_label_wert_paaren=True)
         lokale_saetze = _segment_kontext_saetze(
             [s for s, _ in satz_mit_grenze], marke=ziel.get("marke"), modell=ziel.get("modell"),
             titel_stark=True, segment_marker=[g for _, g in satz_mit_grenze],
@@ -4898,14 +4899,37 @@ def _claim_widerspricht_fahrzeug_lokal(satz: str, marke: str | None,
 _ABSATZ_ODER_UEBERSCHRIFT_TRENNER = re.compile(r"\r?\n\s*\r?\n|#{2,}")
 
 
-def _saetze_mit_segmentgrenze(text: str) -> list[tuple[str, bool]]:
+# N19-Nebenbefund (Motorcode-Parser): Datenblatt-Seiten (z.B. auto-data.net) geben Merkmale als
+# Label-Wert-Paare in getrennten ABSÄTZEN aus ("Motormodell/Motorcode", Leerzeile, "2UR-GSE").
+# `_saetze()` verwirft beide Zeilen einzeln (Mindestlänge 20 Zeichen/5 Wörter), der Motorcode-Claim
+# kann dadurch nie entstehen. Eine eigenständige Label-Zeile, die den Motorcode benennt, plus ein
+# unmittelbar folgender Codewert wird deshalb als EIN Satz "Label Wert" geführt. Die Prüfung, ob der
+# Wert ein Motorcode ist und ob er zum Zielmodell gehört, bleibt unverändert bei den bestehenden
+# Stellen (`_ist_motorcode_wert`, `_segment_kontext_saetze`, Dokument-/Zeitraumprüfung).
+_RE_MOTORCODE_LABELZEILE = re.compile(
+    r"^[\w/ .()-]{0,30}?(?:motorcode|motorkennung|motorkennbuchstaben|engine code)\s*:?\s*$",
+    re.IGNORECASE)
+_RE_CODEWERT_ANFANG = re.compile(r"^([A-Z0-9][A-Z0-9-]{1,9})(?=\s|$|\[)", re.IGNORECASE)
+
+
+def _saetze_mit_segmentgrenze(text: str, *, mit_label_wert_paaren: bool = False
+                              ) -> list[tuple[str, bool]]:
     """Wie `_saetze(text, max_len=None)`, zusätzlich mit einem Flag pro Satz:
     True für den ERSTEN Satz nach einer echten Absatz-/Überschriften-Grenze
     im Originaltext (siehe Kommentar oben). `_saetze()` selbst bleibt für
     alle anderen Aufrufer unverändert -- nur diese Funktion liest zusätzlich
-    die Trennerposition mit."""
+    die Trennerposition mit.
+
+    `mit_label_wert_paaren=True` (nur Identitäts-Claims): zusätzlich Motorcode-Label/Wert-Paare
+    aus getrennten Absätzen als ein Satz (siehe `_RE_MOTORCODE_LABELZEILE`). Default unverändert."""
     out: list[tuple[str, bool]] = []
-    for i, chunk in enumerate(_ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text or "")):
+    chunks = _ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text or "")
+    for i, chunk in enumerate(chunks):
+        if mit_label_wert_paaren and i + 1 < len(chunks):
+            label = chunk.strip()
+            wert = _RE_CODEWERT_ANFANG.match(chunks[i + 1].strip())
+            if label and _RE_MOTORCODE_LABELZEILE.match(label) and wert:
+                out.append((f"{label} {wert.group(1)}", i > 0))
         for j, s in enumerate(_saetze(chunk, max_len=None)):
             out.append((s, i > 0 and j == 0))
     return out
