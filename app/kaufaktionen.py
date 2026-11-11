@@ -1030,16 +1030,29 @@ class _Sammler:
             self._erstes_bauteil[(bereich, schluessel)] = bauteil
 
     def _sortiert(self, bereich: str) -> list[Kaufaktion]:
-        """Höchster Rang zuerst. Bei gleichem Rang gilt F2: die Reihenfolge der Wartungsauswahl (Position des
-        Insights); Aktionen ohne Wartungsposition (Rückrufe, Schwachstellen, ...) folgen danach, und erst
-        zuletzt entscheidet die ID (§12) -- vorher war die ID (alphabetisch) der einzige Gleichstand."""
-        def key(a: Kaufaktion):
-            pos = self._ordnung.get((bereich, a.id.split("-", 1)[1]))
-            return (-a.rang, 0 if pos is not None else 1, pos if pos is not None else 0, a.id)
-        return sorted(self._pro_bereich[bereich].values(), key=key)
+        """Höchster Rang zuerst, bei gleichem Rang stabil nach ID (§12) -- unverändert für JEDE Aktion ohne
+        Wartungsauswahl-Position. F2 ordnet ausschließlich die Wartungsaktionen UNTEREINANDER: innerhalb eines
+        Rangs nehmen sie genau die Plätze ein, die sie nach ID ohnehin hätten, aber in der Reihenfolge der
+        Wartungsauswahl. Gegenüber Rückrufen, Schwachstellen, Inserat-Punkten gleichen Rangs entsteht dadurch
+        weder Vor- noch Nachrang."""
+        def pos(a: Kaufaktion) -> int | None:
+            return self._ordnung.get((bereich, a.id.split("-", 1)[1]))
+        reihe = sorted(self._pro_bereich[bereich].values(), key=lambda a: (-a.rang, a.id))
+        out = list(reihe)
+        start = 0
+        while start < len(reihe):
+            ende = start
+            while ende < len(reihe) and reihe[ende].rang == reihe[start].rang:
+                ende += 1
+            plaetze = [n for n in range(start, ende) if pos(reihe[n]) is not None]
+            wartung = sorted((reihe[n] for n in plaetze), key=lambda a: (pos(a), a.id))
+            for n, a in zip(plaetze, wartung):
+                out[n] = a
+            start = ende
+        return out
 
     def liste(self, bereich: str) -> list[Kaufaktion]:
-        """Höchste Relevanz zuerst; bei Ranggleichheit Wartungsauswahl-Reihenfolge, dann ID (§12, F2)."""
+        """Höchste Relevanz zuerst; bei Ranggleichheit ID (§12), Wartungen untereinander nach Auswahl (F2)."""
         aktionen = self._sortiert(bereich)
         out: list[Kaufaktion] = []
         for a in aktionen[:MAX_SPEZIFISCH_PRO_BEREICH]:
@@ -1056,7 +1069,9 @@ class _Sammler:
 
     @staticmethod
     def _rest_einleitung(bereich: str) -> str:
-        return ("Weitere ausgewählte Wartungspunkte, ebenfalls nach Datum, Kilometerstand und Beleg fragen: "
+        # "jeweils" statt "ebenfalls": die Restzeile übernimmt nichts vom Träger (weder dessen Tätigkeit noch
+        # eine Anwendbarkeitsfrage); was für den einzelnen Punkt gilt, steht in seiner eigenen Klammer.
+        return ("Weitere ausgewählte Wartungspunkte, jeweils nach Datum, Kilometerstand und Beleg fragen: "
                 if bereich == VERKAEUFERFRAGEN else
                 "Weitere ausgewählte Wartungspunkte, jeweils Rechnung oder Serviceheft-Eintrag mit Datum und "
                 "Kilometerstand zeigen lassen: ")
@@ -1981,7 +1996,8 @@ def _kompakt_wartung(bauteil: str, taetigkeit: str | None, intervall_text: str |
     if kern:
         teile.append(f"laut Quelle: {kern}")
     if technische_bedingung:
-        teile.append(f"Anwendbarkeit ungeklärt: {technische_bedingung}")
+        # N12: bei ungeklärter Voraussetzung ZUERST die Anwendbarkeit klären, nicht nach der Durchführung fragen.
+        teile.append(f"Anwendbarkeit ungeklärt, zuerst klären: {technische_bedingung}")
     if hat_quellenvorbehalt(text):
         teile.append("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt")
     if _BEDINGT.search(kern):

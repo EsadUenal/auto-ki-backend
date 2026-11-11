@@ -433,7 +433,7 @@ from app.kaufaktionen import _kompakt_wartung  # noqa: E402
 kz = _kompakt_wartung("Zahnriemen", "ersetzen", HUELLE + MARKT + BED, "Falls Zahnriemen verbaut: ", technische_bedingung="nur Hybridmodelle")
 check("F3-20 kompakte Restzeile: Präsenz, Tätigkeit, Intervall, ungeklärte Bedingung, Marktvorbehalt GETRENNT benannt; keine Erreicht-/Fälligkeitsaussage",
       kz.startswith("Falls Zahnriemen verbaut: „Zahnriemen“ (Wechsel; laut Quelle: wechseln: alle 150.000 km oder 6 Jahre")
-      and "Anwendbarkeit ungeklärt: nur Hybridmodelle" in kz and "Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt" in kz
+      and "Anwendbarkeit ungeklärt, zuerst klären: nur Hybridmodelle" in kz and "Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt" in kz
       and "erreicht" not in kz and "fällig" not in kz.lower() and "übereinstimmend" not in kz, kz)
 
 print("\n== F1 Bereichsende / allgemeine Abschnitte ==")
