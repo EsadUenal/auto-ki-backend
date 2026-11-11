@@ -295,6 +295,55 @@ def _zeitalternative_trotz_entfernt_moeglich(alter_jahre: int | None,
     return (alter_jahre + 1) >= schwelle_jahre
 
 
+# ── Priorisierung der Servicehistorie-Prüfung (Wartungsrangfolge am Fünferlimit) ──────────────
+#
+# Ordnet NUR die Auswahl bei sonst gleichem Rang -- es entsteht keine Aussage über das Fahrzeug.
+# Dieselben Parser wie oben (`parse_wartungspunkt`, `parse_zeitalternative`, `fahrzeugalter`), keine
+# zweite Zahleninterpretation. `_zeitalternative_trotz_entfernt_moeglich` fragt "könnte die Zeitschwelle
+# erreicht sein?" (alter + 1 >= Schwelle, vorsichtig AUFNEHMEN); hier wird die Gegenfrage "ist sie
+# BELEGBAR erreicht?" gestellt (alter - 1 >= Schwelle): aus dem Baujahr allein folgt nur ein Altersintervall
+# [alter-1, alter+1], belegbar ist nur, was in seinem ganzen Bereich gilt.
+_FOLGEINTERVALL = re.compile(r"\bdanach\b", re.IGNORECASE)
+# Bedingte Angabe: das Intervall gilt nur unter einer Voraussetzung (Anzeige/Hinweismeldung, Landesbezug,
+# "bei Bedarf"). Daraus entsteht kein Vorrang -- ob die Bedingung am Fahrzeug eintrat, ist unbekannt.
+_BEDINGT = re.compile(
+    r"\b(?:wenn|falls|sofern|je\s+nach|abh(?:ä|ae)ngig|nach\s+bedarf|bei\s+bedarf)\b"
+    r"|hinweismeldung|wartungsanzeige|serviceanzeige|service-?anzeige", re.IGNORECASE)
+
+
+def erstintervall_text(text: str | None) -> str:
+    """Nur der Teil VOR einem Folgeintervall ("Danach alle 15.000 km / jährlich"): Erst- und
+    Folgeintervall bleiben getrennt, das Folgeintervall wird hier nie gelesen."""
+    return _FOLGEINTERVALL.split(text or "", maxsplit=1)[0]
+
+
+def zeitalternative_belegbar_erreicht(alter_jahre: int | None, zeitalternative: tuple[int, str]) -> bool:
+    zahl, einheit = zeitalternative
+    schwelle_jahre = zahl if einheit == "Jahre" else zahl / 12.0
+    if alter_jahre is None:
+        return False           # Baujahr unbekannt: kein Vorrang
+    return (alter_jahre - 1) >= schwelle_jahre
+
+
+def schwelle_belegbar_erreicht(text: str | None, kilometerstand: int | None, baujahr: int | None,
+                               *, heute_jahr: int | None = None) -> bool:
+    """True nur, wenn eine Schwelle des ERSTintervalls belegbar erreicht ist: der Kilometerstand liegt
+    am/über dem ersten Wartungspunkt, ODER eine ausdrücklich mit "km oder/ Jahre" genannte Zeitalternative
+    ist im ganzen möglichen Altersintervall erreicht (es genügt eine der beiden Schwellen). Fehlende,
+    mehrdeutige oder bedingte Angaben -> False (kein künstlicher Vorrang). Behauptet keine Fälligkeit:
+    gemeint ist nur "hier lohnt der Nachweis der Servicehistorie"."""
+    erst = erstintervall_text(text)
+    if not erst or _BEDINGT.search(erst):
+        return False
+    punkt = parse_wartungspunkt(erst)
+    if punkt and kilometerstand and kilometerstand > 0 and kilometerstand >= punkt[0]:
+        return True
+    zeit = parse_zeitalternative(erst)
+    if zeit and zeitalternative_belegbar_erreicht(fahrzeugalter(baujahr, heute_jahr=heute_jahr), zeit):
+        return True
+    return False
+
+
 # ── Alter / km pro Jahr (§4, §5) ──────────────────────────────────────────────
 
 def fahrzeugalter(baujahr: int | None, *, heute_jahr: int | None = None) -> int | None:

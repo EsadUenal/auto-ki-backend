@@ -5634,7 +5634,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        abgelehnt: list[dict] | None = None, hubraum=None,
                        leistung_ps: int | None = None,
                        fuel_ziel: str | None = None,
-                       powertrains_ziel: frozenset | None = None) -> list[WebFakt]:
+                       powertrains_ziel: frozenset | None = None,
+                       kilometerstand: int | None = None) -> list[WebFakt]:
     """Strukturierte Fakten aus Snippets — je Bauteil höchstens einer.
 
     Jeder Treffer muss das Zielfahrzeug betreffen (Entity-Alignment, inkl.
@@ -6136,12 +6137,22 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # Gleichstand (gleiche Confidence, gleicher Explizit-Rang) verliert
         # sie gegen eine konkreter belegte Zeile. Alphabetisch bleibt
         # unverändert der letzte, rein deterministische Gleichstand-Tiebreak.
-        geordnet = sorted(
-            zip(fakten, _wartung_explizit, _wartung_taet_rang),
-            key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[0].confidence],
-                           0 if p[1] else (2 if p[0].technische_bedingung_status == "unresolved" else 1),
-                           p[2],
-                           p[0].bauteil or ""))
+        #
+        # FÜNFTE Stufe (Wartungsrangfolge am Fünferlimit): bei sonst gleichem Rang kommt zuerst, wessen
+        # ERSTintervall eine belegbar erreichte Schwelle hat (app/laufleistung.py::
+        # `schwelle_belegbar_erreicht`, dieselben Parser wie der Laufleistungskontext). Das ordnet nur die
+        # Auswahl und behauptet keine Fälligkeit. Danach entscheidet die Dokumentreihenfolge (stabil), das
+        # Alphabet nur noch als letzter Notnagel.
+        from app.laufleistung import schwelle_belegbar_erreicht
+        geordnet = [(f, expl, taet) for _i, f, expl, taet in sorted(
+            ((i, f, expl, taet) for i, (f, expl, taet) in
+             enumerate(zip(fakten, _wartung_explizit, _wartung_taet_rang))),
+            key=lambda p: ({"hoch": 0, "mittel": 1, "niedrig": 2}[p[1].confidence],
+                           0 if p[2] else (2 if p[1].technische_bedingung_status == "unresolved" else 1),
+                           p[3],
+                           0 if schwelle_belegbar_erreicht(p[1].aussage, kilometerstand, baujahr) else 1,
+                           p[0],
+                           p[1].bauteil or ""))]
         fakten = [f for f, _, _ in geordnet]
         behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
         verworfen = fakten[MAX_FAKTEN_JE_KATEGORIE:]
@@ -7212,7 +7223,8 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                      generation_cluster=gen_cluster,
                                      abgelehnt=abgelehnt, hubraum=ziel.get("hubraum"),
                                      leistung_ps=ziel.get("leistung_ps"),
-                                     fuel_ziel=fuel_ziel, powertrains_ziel=powertrains_ziel)
+                                     fuel_ziel=fuel_ziel, powertrains_ziel=powertrains_ziel,
+                                     kilometerstand=ziel.get("kilometerstand"))
         if kategorie == "wartung":
             # Source-Trust-Fix (Scope: NUR wartung) -- siehe Moduldocstring
             # oben. Rein additiv: verarbeitet ausschliesslich Treffer, die
@@ -8386,6 +8398,7 @@ def _ziel_aus_request(req) -> dict:
     from app.getriebe import aus_request
     from app.vehicle_identity import antrieb_nutzer
     return {"leistung_ps": getattr(req, "leistung_ps", None),
+            "kilometerstand": getattr(req, "kilometerstand", None),
             "kraftstoff": getattr(req, "kraftstoff", None),
             "getriebe": aus_request(req), "antrieb": antrieb_nutzer(req)}
 

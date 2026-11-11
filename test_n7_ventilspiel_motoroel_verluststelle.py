@@ -392,10 +392,13 @@ async def _teil_e() -> None:
     check("E3) 'Inverter-Kühlmittel' erscheint NICHT im sichtbaren Bericht -- "
           "konsistent mit Teil D (N7-Fix Teil 1, verliert gegen 'Motorkühlmittel')",
           not any("nverter" in t for t in titel_liste), str(titel_liste))
-    check("E4) 'Motorkühlmittel' erscheint (N7-Wartungsauswahl: Tätigkeit 'ersetzen' aus dem Abschnittskopf "
-          "'ZUSÄTZLICHER TEILEAUSTAUSCH'), nach Ventilspiel (ausdrücklich zugeordnet) und Öl-/Filterwechsel "
-          "(Tätigkeit im eigenen Satz) im Rahmen des Fünferlimits",
-          any("otorkühlmittel" in t for t in titel_liste), str(titel_liste))
+    check("E4) Wartungsrangfolge: nach Ventilspiel (ausdrücklich zugeordnet) und Öl-/Filterwechsel (Tätigkeit im "
+          "eigenen Satz) kommen bei gleichem Rang zuerst Hinweise mit belegbar erreichter Schwelle. "
+          "'Nebenaggregat-Antriebsriemen' (105.000 km / 6 Jahre; Zeit bei Baujahr 2017 belegbar erreicht) "
+          "steht im Fünferlimit, 'Motorkühlmittel' (150.000 km, bei 82.000 km nicht erreicht) nicht -- zuvor "
+          "entschied hier das Alphabet",
+          any("ntriebsriemen" in t for t in titel_liste) and not any("otorkühlmittel" in t for t in titel_liste),
+          str(titel_liste))
     check("E5) der Bericht behauptet an keiner Stelle, das Dokument sei "
           "vollständig/vollumfänglich ausgewertet",
           "vollständig ausgewertet" not in r.bericht.lower()

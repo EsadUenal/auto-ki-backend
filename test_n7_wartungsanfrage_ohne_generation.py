@@ -307,13 +307,20 @@ async def main():
           bool([a for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id])
           and all(herkunft in a.aktion for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id),
           str([a.id for a in dok_v.fahrzeugspezifisch if "wartung-web" in a.id and herkunft not in a.aktion]))
-    kuehl = [a for a in dok_v.fahrzeugspezifisch if "motorkuehlmittel" in a.id]
+    kuehl = [a for a in dok_v.fahrzeugspezifisch if "antriebsriemen" in a.id]
     for a in kuehl:
-        print("   NACHWEIS Motorkühlmittel:", a.titel, "|", a.aktion)
-    check("D13) Motorkühlmittel (150.000 km, bei 82.000 km nicht erreicht): Nachweis mit Herkunft und der "
-          "unveränderten Vorlage (Rechnung/Serviceheft, Datum, Kilometerstand)",
+        print("   NACHWEIS Antriebsriemen:", a.titel, "|", a.aktion)
+    check("D13) Nebenaggregat-Antriebsriemen (105.000 km / 6 Jahre, bei 82.000 km km-seitig nicht erreicht): "
+          "Nachweis mit Herkunft und der unveränderten Vorlage (Rechnung/Serviceheft, Datum, Kilometerstand). "
+          "(Wartungsrangfolge-Paket: 'Motorkühlmittel' mit 150.000 km, nicht erreicht, steht nicht mehr im "
+          "Fünferlimit; der Antriebsriemen belegt dieselbe Eigenschaft 'km-Schwelle nicht erreicht')",
           len(kuehl) == 1 and herkunft in kuehl[0].aktion and "Datum und Kilometerstand" in kuehl[0].aktion
-          and "Kilometerstand der letzten Ausführung" in kuehl[0].aktion, str([a.aktion for a in kuehl]))
+          and "zeitliche Alternative" in kuehl[0].aktion
+          and "nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist" in kuehl[0].aktion
+          and "überfällig" not in kuehl[0].aktion, str([a.aktion for a in kuehl]))
+    check("D13b) Motorkühlmittel (150.000 km, nicht erreicht, kein Zeitintervall) verliert gegen den "
+          "Antriebsriemen mit belegbar erreichter Zeitschwelle -- kein Nachweis dafür im Fünferlimit",
+          not [a for a in dok_v.fahrzeugspezifisch if "motorkuehlmittel" in a.id])
     fr_oel = [a for a in r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch if "motoroel" in a.id]
     dk_oel = [a for a in dok_v.fahrzeugspezifisch if "motoroel" in a.id]
     for a in fr_oel + dk_oel:

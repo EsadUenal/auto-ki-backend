@@ -145,13 +145,12 @@ check("1) die Zeile wird mit dem EIGENEN, von der Modell-Scope-Ablehnung "
       any(a.get("grund") == "wartung_zeile_technische_bedingung_widerspricht"
           and "inverter" in (a.get("satz") or "").lower() for a in abgelehnt_1),
       str([a for a in abgelehnt_1 if "inverter" in (a.get("satz") or "").lower()]))
-check("1) der freigewordene Platz lässt einen zuvor durchs Limit verdrängten, "
-      "tatsächlich passenden Kandidaten ('Motorkühlmittel') jetzt durch -- "
-      "echter Produktnutzen des Fixes, nicht nur Ausschluss (seit der N9-"
-      "Folgerunde konkurriert zusätzlich 'Hinterachsdifferenzialöl' um die "
-      "fünf Plätze -- 'Zündkerzen' bleibt deshalb weiterhin durchs Limit "
-      "zurückgehalten, s. Test 4/6 unten)",
-      "Motorkühlmittel" in _bauteile_1, str(_bauteile_1))
+check("1) der freigewordene Platz wird von einem gültigen Kandidaten belegt (Fünferlimit voll) -- "
+      "echter Produktnutzen des Fixes, nicht nur Ausschluss. WELCHER Kandidat nachrückt, entscheidet bei "
+      "gleichem Rang die Dokumentreihenfolge (Wartungsrangfolge-Paket; vorher das Alphabet, das hier "
+      "'Motorkühlmittel' vor 'Nebenaggregat-Antriebsriemen'/'Zündkerzen' gesetzt hatte -- ohne Beleg-Grund). "
+      "Die Rangfolge nach belegbar erreichter Schwelle prüft test_wartung_rangfolge_intervall.py",
+      len(_bauteile_1) == 5 and len(set(_bauteile_1)) == 5, str(_bauteile_1))
 
 # ── Test 2: passendes Hybridziel -- die Zeile bleibt zugelassen ────────────
 abgelehnt_2: list[dict] = []
