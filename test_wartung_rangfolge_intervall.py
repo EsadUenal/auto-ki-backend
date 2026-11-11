@@ -1,13 +1,13 @@
 """
 Wartungsrangfolge am (unveränderten) Fünferlimit: bei sonst gleichem Rang kommt zuerst, wessen
-ERSTintervall eine belegbar erreichte Schwelle hat; danach Dokumentreihenfolge statt Alphabet.
+ERSTintervall eine belegbar erreichte Schwelle hat; danach Trefferreihenfolge statt Alphabet.
 
 Geprüft mit Netzsperre + Temp-DB vor dem App-Import (kein Provider, keine Live-DB):
   A  Einzelfälle der Schwellenlogik (km oder Jahre, unbekanntes Alter, Schwelle innerhalb des möglichen
      Altersintervalls, Erst-/Folgeintervall, Hinweismeldungs-Bedingung, fehlende Angaben)
   B  echter RC-F-Replay (Lexus-Serviceheft, Seiten 4/15-17) bis zu Insights, Verkäuferfragen, Nachweisen
-  C  Fünferlimit unverändert; Dokumentreihenfolge als stabiler Gleichstand; ohne km/Baujahr = Altverhalten
-     bis auf Alphabet->Dokumentreihenfolge
+  C  Fünferlimit unverändert; Trefferreihenfolge als stabiler Gleichstand; ohne km/Baujahr = Altverhalten
+     bis auf Alphabet->Trefferreihenfolge
 
 Eingaben: Kilometerstand 82.000, Baujahr 2017, Stand = heute_jahr 2026 (im Test fest gesetzt, damit das
 Ergebnis nicht vom Kalenderjahr abhängt). [SYNTH] markiert synthetische Gegenproben.
@@ -135,7 +135,7 @@ def replay(km, baujahr=BJ, limit=None):
 
 alle, _ = replay(KM, limit=99)
 bauteile_alle = [f.bauteil for f in alle]
-print("  alle gültigen Kandidaten (Dokumentreihenfolge nach Rang):", bauteile_alle)
+print("  alle gültigen Kandidaten (Trefferreihenfolge nach Rang):", bauteile_alle)
 check("B1 sieben gültige Kandidaten", len(alle) == 7, str(len(alle)))
 
 neu, ab_neu = replay(KM)
@@ -147,7 +147,7 @@ check("B3 Antriebsriemen vor Motorkühlmittel (gleicher sonstiger Rang)",
 check("B4 Zündkerzen (90.000 km, nicht erreicht) fällt heraus", "Zündkerzen" not in namen)
 check("B5 Ventilspiel (RC F ausdrücklich) bleibt Erstplatzierter, Motoröl (Tätigkeit im Satz) Zweiter",
       namen[:2] == ["Ventilspiel", "Motoröl"], str(namen[:2]))
-check("B6 drei erreichte Hinweise in Dokumentreihenfolge statt Alphabet",
+check("B6 drei erreichte Hinweise in Trefferreihenfolge statt Alphabet",
       namen[2:] == ["Hinterachsdifferenzialöl", "Nebenaggregat-Antriebsriemen", "Automatikgetriebeöl"], str(namen[2:]))
 check("B7 ausgeschiedene Kandidaten tragen den Limit-Grund (diagnostisch erhalten)",
       sorted(a["satz"][:12] for a in ab_neu if a["grund"] == "wartung_auswahllimit_erreicht")
@@ -156,10 +156,10 @@ check("B8 Marktvorbehalt bleibt sichtbar (herkunftsregion/regionale_geltung unve
       all(getattr(f, "herkunftsregion", None) is not None or getattr(f, "regionale_geltung", None) is not None
           for f in neu) or all(hasattr(f, "herkunftsregion") for f in neu))
 
-# ohne km und Baujahr: kein Vorrang -> reine Dokumentreihenfolge (zuvor Alphabet)
+# ohne km und Baujahr: kein Vorrang -> reine Trefferreihenfolge (zuvor Alphabet)
 ohne, _ = replay(None, baujahr=None)
 print("  Auswahl ohne km/Baujahr:", [f.bauteil for f in ohne])
-check("B9 ohne km/Baujahr entsteht KEIN erfundener Vorrang: die erreichte-Stufe entfällt (nur Dokumentreihenfolge)",
+check("B9 ohne km/Baujahr entsteht KEIN erfundener Vorrang: die erreichte-Stufe entfällt (nur Trefferreihenfolge)",
       [f.bauteil for f in ohne][:2] == ["Ventilspiel", "Motoröl"] and len(ohne) == 5)
 
 # Bericht, Verkäuferfragen, Nachweise über den echten Pfad
@@ -193,8 +193,59 @@ check("B14 kein Rückruf-/Identitätsbezug in der Wartungsauswahl", all(f.katego
 print("\n== C. Gleichstand ==")
 alt_alphabetisch = sorted([f.bauteil for f in alle if f.bauteil in
                            {"Automatikgetriebeöl", "Hinterachsdifferenzialöl", "Nebenaggregat-Antriebsriemen"}])
-check("C1 [SYNTH] Reihenfolge der drei gleichrangig erreichten Hinweise weicht vom Alphabet ab (Dokumentreihenfolge)",
+check("C1 [SYNTH] Reihenfolge der drei gleichrangig erreichten Hinweise weicht vom Alphabet ab (Trefferreihenfolge)",
       [f.bauteil for f in neu[2:]] != alt_alphabetisch)
+
+# ── D. neutrale, markenunabhängige Gegenproben (echter Extraktionspfad, Quellreihenfolge vertauscht) ──
+print("\n== D. neutrale Gegenproben ==")
+ZEILEN = {   # Alter bei Baujahr 2017 / Stand 2026 = 9 -> Zeit belegbar erreicht ab 8 Jahren
+    "Bremsflüssigkeit": "Bremsflüssigkeit wechseln: alle 100.000 km oder 4 Jahre",       # Zeit sicher, km (82.000) nicht
+    "Automatikgetriebeöl": "Automatikgetriebeöl wechseln: alle 60.000 km oder 20 Jahre",   # km sicher, Zeit nicht
+    "Zündkerzen": "Zündkerzen wechseln: alle 120.000 km oder 20 Jahre",                    # keine Seite erreicht
+    "Zahnriemen": "Zahnriemen wechseln: alle 150.000 km Danach alle 10.000 km",            # Erst nicht erreicht, Folge kleiner
+    "Wasserpumpe": "Wasserpumpe wechseln, wenn die Wartungsanzeige erscheint (zumindest alle 20.000 km oder 1 Jahr)",  # bedingt
+}
+
+
+def neutral(reihenfolge, km, bj):
+    treffer_n = [{"url": f"https://www.toyota.de/service/wartung-{i}.pdf", "title": "Toyota Yaris Wartungsplan Serviceheft",
+                  "content": ZEILEN[k]} for i, k in enumerate(reihenfolge)]
+    alt = tr.MAX_FAKTEN_JE_KATEGORIE
+    tr.MAX_FAKTEN_JE_KATEGORIE = 99
+    try:
+        return [x.bauteil for x in tr._extrahiere_fakten(treffer_n, "wartung", marke="Toyota", modell="Yaris",
+                                                         baujahr=bj, abgelehnt=[], kilometerstand=km)]
+    finally:
+        tr.MAX_FAKTEN_JE_KATEGORIE = alt
+
+
+BASIS = list(ZEILEN)
+for rf_name, rf in (("A", BASIS), ("B (vertauscht)", BASIS[::-1])):
+    nur_zeit = neutral(rf, None, 2017)
+    check(f"D1 [{rf_name}] Zeit sicher erreicht, Kilometerstand fehlt: 'oder'-Seite Zeit genügt -> Bremsflüssigkeit vorn",
+          nur_zeit[0] == "Bremsflüssigkeit", str(nur_zeit))
+    check(f"D1b [{rf_name}] ... und die unbekannte km-Seite hebt nichts auf: Automatikgetriebeöl (km sicher, aber km unbekannt) "
+          "bekommt KEINEN Vorrang", nur_zeit.index("Automatikgetriebeöl") > nur_zeit.index("Bremsflüssigkeit")
+          and [b for b in nur_zeit if b != "Bremsflüssigkeit"] == [b for b in rf if b != "Bremsflüssigkeit"
+                                                                    and b in nur_zeit], str(nur_zeit))
+    nur_km = neutral(rf, 82000, None)
+    check(f"D2 [{rf_name}] Kilometer sicher erreicht, Baujahr fehlt: km genügt -> Automatikgetriebeöl vorn",
+          nur_km[0] == "Automatikgetriebeöl", str(nur_km))
+    check(f"D2b [{rf_name}] ... Bremsflüssigkeit (Zeit, aber Baujahr unbekannt) bekommt keinen Vorrang",
+          [b for b in nur_km if b != "Automatikgetriebeöl"] == [b for b in rf if b != "Automatikgetriebeöl"
+                                                                  and b in nur_km], str(nur_km))
+    beide = neutral(rf, 82000, 2017)
+    check(f"D3 [{rf_name}] erreichte Schwellen (Zeit ODER km) stehen vor allen nicht erreichten, unabhängig von der Quellreihenfolge",
+          set(beide[:2]) == {"Bremsflüssigkeit", "Automatikgetriebeöl"}, str(beide))
+    rest = [b for b in beide[2:]]
+    check(f"D4 [{rf_name}] bekannte Seite nicht erreicht / Erstintervall nicht erreicht (Folge kleiner) / bedingt: "
+          "kein Vorrang -> Gleichstand folgt der Quellreihenfolge",
+          rest == [b for b in rf if b in rest], str(rest))
+    check(f"D5 [{rf_name}] Folgeintervall (10.000 km) erzeugt keinen Vorrang für Zahnriemen", "Zahnriemen" in rest)
+    check(f"D6 [{rf_name}] bedingtes Intervall (Wartungsanzeige) erzeugt keinen Vorrang für Wasserpumpe", "Wasserpumpe" in rest)
+    unbekannt = neutral(rf, None, None)
+    check(f"D7 [{rf_name}] weder km noch Baujahr: reine Quellreihenfolge", unbekannt == [b for b in rf if b in unbekannt],
+          str(unbekannt))
 
 print()
 print("ALLE GRÜN" if not fehler else f"{len(fehler)} FEHLER: {fehler}")

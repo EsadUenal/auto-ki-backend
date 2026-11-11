@@ -6141,7 +6141,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         # FÜNFTE Stufe (Wartungsrangfolge am Fünferlimit): bei sonst gleichem Rang kommt zuerst, wessen
         # ERSTintervall eine belegbar erreichte Schwelle hat (app/laufleistung.py::
         # `schwelle_belegbar_erreicht`, dieselben Parser wie der Laufleistungskontext). Das ordnet nur die
-        # Auswahl und behauptet keine Fälligkeit. Danach entscheidet die Dokumentreihenfolge (stabil), das
+        # Auswahl und behauptet keine Fälligkeit. Danach entscheidet die Trefferreihenfolge (stabil: Reihenfolge der Quellen wie geliefert, innerhalb einer Quelle die Satzfolge -- NICHT die Seitenfolge im Dokument), das
         # Alphabet nur noch als letzter Notnagel.
         from app.laufleistung import schwelle_belegbar_erreicht
         geordnet = [(f, expl, taet) for _i, f, expl, taet in sorted(
