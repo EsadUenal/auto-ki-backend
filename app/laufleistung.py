@@ -325,22 +325,73 @@ def zeitalternative_belegbar_erreicht(alter_jahre: int | None, zeitalternative: 
     return (alter_jahre - 1) >= schwelle_jahre
 
 
+# Zeitschwelle für die RANGFOLGE: kennt zusätzlich die reine Zeitangabe ("alle 6 Jahre") und die umgekehrte
+# Schreibweise ("6 Jahre oder 105.000 km"). `parse_zeitalternative` (Anzeige/Hinweistexte) bleibt bewusst
+# UNVERÄNDERT -- eine Erweiterung dort würde sichtbare Wartungstexte und die "entfernt"-Prüfung des
+# Laufleistungskontexts ändern. Kilometerwerte kommen weiterhin ausschließlich aus `parse_wartungspunkt`.
+_ZEIT_ZAHL = re.compile(r"(?<![0-9.,])(\d{1,3})\s*(jahre?n?|monate?n?)\b", re.IGNORECASE)
+_VERBINDER_FUELL = re.compile(r"\b(?:alle|alle[nr]?|spätestens|nach|jeweils|zumindest|mindestens|ca\.?|etwa)\b",
+                              re.IGNORECASE)
+_VERBINDER_ODER = re.compile(r"^(?:oder|/|bzw\.?|beziehungsweise)$", re.IGNORECASE)
+_VERBINDER_UND = re.compile(r"^(?:und|sowie|\+|&|,\s*und)$", re.IGNORECASE)
+
+
+def _km_spanne(text: str) -> tuple[int, int] | None:
+    """Position des ersten Kilometerwerts -- dieselben Muster wie `parse_wartungspunkt`."""
+    m = _SPANNE.search(text) or _EINZELN.search(text)
+    return (m.start(), m.end()) if m else None
+
+
+def parse_zeitschwelle(text: str | None) -> tuple[int, str] | None:
+    """Erste ausdrücklich genannte Zeitangabe `(zahl, "Jahre"|"Monate")` -- oder None. Nur für die Rangfolge."""
+    m = _ZEIT_ZAHL.search(text or "")
+    if not m:
+        return None
+    return int(m.group(1)), ("Jahre" if m.group(2).lower().startswith("jahr") else "Monate")
+
+
 def schwelle_belegbar_erreicht(text: str | None, kilometerstand: int | None, baujahr: int | None,
                                *, heute_jahr: int | None = None) -> bool:
-    """True nur, wenn eine Schwelle des ERSTintervalls belegbar erreicht ist: der Kilometerstand liegt
-    am/über dem ersten Wartungspunkt, ODER eine ausdrücklich mit "km oder/ Jahre" genannte Zeitalternative
-    ist im ganzen möglichen Altersintervall erreicht (es genügt eine der beiden Schwellen). Fehlende,
-    mehrdeutige oder bedingte Angaben -> False (kein künstlicher Vorrang). Behauptet keine Fälligkeit:
-    gemeint ist nur "hier lohnt der Nachweis der Servicehistorie"."""
+    """True nur, wenn die Schwelle des ERSTintervalls belegbar erreicht ist.
+
+    Schwellen: Kilometer (erster Wartungspunkt, `parse_wartungspunkt`) und/oder Zeit (`parse_zeitschwelle`,
+    sicher erreicht = ganzes mögliches Altersintervall, alter-1 >= Schwelle).
+      * nur Kilometer / nur Zeit ("alle 6 Jahre"): diese eine Schwelle entscheidet;
+      * beide mit ODER ("km oder Jahre", "Jahre oder km", "km / Jahre"): eine sicher erreichte genügt, die
+        unbekannte andere Seite hebt sie nicht auf;
+      * beide mit UND ("km und Jahre"): beide müssen sicher erreicht sein -- eine unbekannte Seite = kein
+        Vorrang (UND wird nie als ODER gelesen);
+      * beide ohne erkennbaren Verbinder: mehrdeutig -> kein Vorrang.
+    Bedingte Angaben ("wenn", "falls", Hinweismeldung, ...) und alles ab einem Folgeintervall ("Danach")
+    zählen nicht. Behauptet keine Fälligkeit und keine unterlassene Wartung: gemeint ist nur "hier lohnt der
+    Nachweis der Servicehistorie"."""
     erst = erstintervall_text(text)
     if not erst or _BEDINGT.search(erst):
         return False
     punkt = parse_wartungspunkt(erst)
-    if punkt and kilometerstand and kilometerstand > 0 and kilometerstand >= punkt[0]:
-        return True
-    zeit = parse_zeitalternative(erst)
-    if zeit and zeitalternative_belegbar_erreicht(fahrzeugalter(baujahr, heute_jahr=heute_jahr), zeit):
-        return True
+    zeit = parse_zeitschwelle(erst)
+    km_ok = bool(punkt and kilometerstand and kilometerstand > 0 and kilometerstand >= punkt[0])
+    zeit_ok = bool(zeit and zeitalternative_belegbar_erreicht(fahrzeugalter(baujahr, heute_jahr=heute_jahr), zeit))
+    if punkt and not zeit:
+        return km_ok
+    if zeit and not punkt:
+        return zeit_ok
+    if not punkt and not zeit:
+        return False
+    # beide Schwellen genannt: Verbinder zwischen den beiden Angaben bestimmt ODER/UND
+    km_pos = _km_spanne(erst)
+    zm = _ZEIT_ZAHL.search(erst)
+    if not km_pos or not zm:
+        return False
+    if km_pos[0] < zm.start():
+        zwischen = erst[km_pos[1]:zm.start()]
+    else:
+        zwischen = erst[zm.end():km_pos[0]]
+    verbinder = _VERBINDER_FUELL.sub(" ", zwischen).strip(" ,;:()")
+    if _VERBINDER_ODER.match(verbinder):
+        return km_ok or zeit_ok
+    if _VERBINDER_UND.match(verbinder):
+        return km_ok and zeit_ok
     return False
 
 

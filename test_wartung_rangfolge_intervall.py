@@ -247,6 +247,91 @@ for rf_name, rf in (("A", BASIS), ("B (vertauscht)", BASIS[::-1])):
     check(f"D7 [{rf_name}] weder km noch Baujahr: reine Quellreihenfolge", unbekannt == [b for b in rf if b in unbekannt],
           str(unbekannt))
 
+# ── E. reine Zeitintervalle, umgekehrte ODER-Intervalle, UND (echter Extraktionspfad) ─────────────────
+print("\n== E. Zeit-Schreibweisen ==")
+ZEIT = {   # neutrale Bauteile; Alter bei Baujahr 2017 / Stand 2026 = 9 -> Zeit belegbar erreicht ab 8 Jahren
+    "Bremsflüssigkeit": "Bremsflüssigkeit wechseln: alle 6 Jahre",                         # reine Zeit, sicher erreicht
+    "Zündkerzen": "Zündkerzen wechseln: alle 12 Jahre",                                     # reine Zeit, nicht erreicht
+    "Zahnriemen": "Zahnriemen wechseln: 6 Jahre oder 105.000 km",                           # umgekehrtes ODER, Zeit sicher
+    "Automatikgetriebeöl": "Automatikgetriebeöl wechseln: 20 Jahre oder 60.000 km",         # umgekehrtes ODER, km sicher
+    "Wasserpumpe": "Wasserpumpe wechseln: 4 Jahre und 150.000 km",                          # UND: Zeit ja, km nein
+}
+
+
+def neutral_z(reihenfolge, km, bj, quelle=ZEIT):
+    treffer_n = [{"url": f"https://www.toyota.de/service/wartung-{i}.pdf", "title": "Toyota Yaris Wartungsplan Serviceheft",
+                  "content": quelle[k]} for i, k in enumerate(reihenfolge)]
+    alt = tr.MAX_FAKTEN_JE_KATEGORIE
+    tr.MAX_FAKTEN_JE_KATEGORIE = 99
+    try:
+        return [x.bauteil for x in tr._extrahiere_fakten(treffer_n, "wartung", marke="Toyota", modell="Yaris",
+                                                         baujahr=bj, abgelehnt=[], kilometerstand=km)]
+    finally:
+        tr.MAX_FAKTEN_JE_KATEGORIE = alt
+
+
+def vor(liste, a, b):
+    return a in liste and b in liste and liste.index(a) < liste.index(b)
+
+
+ZB = list(ZEIT)
+for rf_name, rf in (("A", ZB), ("B (vertauscht)", ZB[::-1])):
+    p = f"E [{rf_name}]"
+    voll = neutral_z(rf, 82000, 2017)
+    check(f"{p} reine Zeit 'alle 6 Jahre' sicher erreicht -> vor 'alle 12 Jahre' (nicht erreicht)",
+          vor(voll, "Bremsflüssigkeit", "Zündkerzen"), str(voll))
+    check(f"{p} umgekehrtes ODER '6 Jahre oder 105.000 km' (Zeit sicher) und '20 Jahre oder 60.000 km' (km sicher) "
+          "stehen beide vor den nicht erreichten", set(voll[:4]) >= {"Zahnriemen", "Automatikgetriebeöl", "Bremsflüssigkeit"}
+          and vor(voll, "Zahnriemen", "Zündkerzen") and vor(voll, "Automatikgetriebeöl", "Zündkerzen"), str(voll))
+    check(f"{p} UND '4 Jahre und 150.000 km' (Zeit ja, km nein) bekommt KEINEN Vorrang (nicht als ODER gelesen)",
+          vor(voll, "Zündkerzen", "Wasserpumpe") == (rf.index("Zündkerzen") < rf.index("Wasserpumpe"))
+          and "Wasserpumpe" not in voll[:3], str(voll))
+    nur_bj = neutral_z(rf, None, 2017)
+    check(f"{p} nur Baujahr vorhanden: Zeitschwellen zählen (Bremsflüssigkeit, Zahnriemen vorn), 'Automatikgetriebeöl' "
+          "(km unbekannt) nicht", set(nur_bj[:2]) == {"Bremsflüssigkeit", "Zahnriemen"}, str(nur_bj))
+    nur_km = neutral_z(rf, 82000, None)
+    check(f"{p} nur Kilometerstand vorhanden: km zählt (Automatikgetriebeöl vorn), Zeitangaben ohne Baujahr nicht",
+          nur_km[0] == "Automatikgetriebeöl" and [b for b in nur_km if b != "Automatikgetriebeöl"]
+          == [b for b in rf if b != "Automatikgetriebeöl"], str(nur_km))
+    unbek = neutral_z(rf, None, None)
+    check(f"{p} Alter und Kilometerstand unbekannt: reine Quellreihenfolge, kein erfundener Vorrang",
+          unbek == [b for b in rf if b in unbek], str(unbek))
+
+# Altersgrenze innerhalb des unsicheren Altersintervalls (Baujahr 2017, Stand 2026 -> Alter 9, sicher >= 8)
+check("E Schwelle 8 Jahre: sicher erreicht (Vorrang)", erreicht("Teil wechseln: alle 8 Jahre"))
+check("E Schwelle 9 Jahre: INNERHALB des unsicheren Altersintervalls -> kein Vorrang", not erreicht("Teil wechseln: alle 9 Jahre"))
+check("E Schwelle 10 Jahre: nicht erreicht", not erreicht("Teil wechseln: alle 10 Jahre"))
+check("E Monate: 96 Monate (= 8 Jahre) sicher, 108 Monate (= 9 Jahre) unsicher",
+      erreicht("Teil wechseln: alle 96 Monate") and not erreicht("Teil wechseln: alle 108 Monate"))
+check("E reine Zeit, Baujahr unbekannt: unbekannt, kein Vorrang", not erreicht("Teil wechseln: alle 6 Jahre", bj=None))
+# UND / ODER / Verbinder
+check("E UND: beide sicher erreicht -> Vorrang", erreicht("Teil wechseln: alle 60.000 km und 6 Jahre"))
+check("E UND: nur km bekannt (Baujahr fehlt) -> unbekannt, KEIN Vorrang (nicht als ODER)",
+      not erreicht("Teil wechseln: alle 60.000 km und 6 Jahre", bj=None))
+check("E UND: nur Zeit bekannt (Kilometerstand fehlt) -> KEIN Vorrang", not erreicht("Teil wechseln: alle 6 Jahre und 60.000 km", km=None))
+check("E UND: eine Seite nicht erreicht -> KEIN Vorrang", not erreicht("Teil wechseln: alle 105.000 km und 6 Jahre"))
+check("E ODER umgekehrt, nur Baujahr: Zeit genügt", erreicht("Teil wechseln: 6 Jahre oder 105.000 km", km=None))
+check("E ODER umgekehrt, nur Kilometerstand: km genügt", erreicht("Teil wechseln: 20 Jahre oder 60.000 km", bj=None))
+check("E 'km / Jahre' und 'Jahre / km' gleich behandelt", erreicht("Teil: 105.000 km / 6 Jahre") and erreicht("Teil: 6 Jahre / 105.000 km"))
+check("E beide Angaben ohne erkennbaren Verbinder: mehrdeutig, kein Vorrang", not erreicht("Teil wechseln: alle 105.000 km 6 Jahre"))
+check("E 'je nachdem, was zuerst eintritt' (ODER) wird wie ODER gelesen",
+      erreicht("Teil: alle 105.000 km oder 6 Jahre, je nachdem, was zuerst eintritt"))
+# Bedingung / Folgeintervall
+check("E bedingte Zeitangabe ('wenn die Anzeige erscheint, spätestens alle 6 Jahre'): kein Vorrang",
+      not erreicht("Teil wechseln, wenn die Wartungsanzeige erscheint, spätestens alle 6 Jahre"))
+check("E Erstintervall nicht erreicht, kleineres Folgeintervall 'Danach alle 1 Jahr': kein Vorrang",
+      not erreicht("Teil wechseln: alle 12 Jahre Danach alle 1 Jahr") and not erreicht("Teil: alle 150.000 km Danach alle 2 Jahre"))
+check("E Erstintervall erreicht + Folgeintervall: Vorrang folgt dem ERSTintervall",
+      erreicht("Teil wechseln: alle 6 Jahre Danach alle 1 Jahr"))
+check("E Fenster 'a bis b Jahre' / fehlende Einheit: nur ausdrücklich genannte Jahre/Monate zählen",
+      not erreicht("Teil wechseln: regelmäßig") and not erreicht("Teil wechseln: alle sechs Jahre"))
+
+# Verwender des gemeinsamen Parsers: Anzeige/Hinweistexte unverändert
+from app.laufleistung import parse_zeitalternative  # noqa: E402
+check("E `parse_zeitalternative` UNVERÄNDERT: erkennt nur 'km oder/ Jahre' (Anzeigetexte bleiben stabil)",
+      parse_zeitalternative("alle 105.000 km oder 6 Jahre") == (6, "Jahre")
+      and parse_zeitalternative("alle 6 Jahre oder 105.000 km") is None and parse_zeitalternative("alle 6 Jahre") is None)
+
 print()
 print("ALLE GRÜN" if not fehler else f"{len(fehler)} FEHLER: {fehler}")
 sys.exit(1 if fehler else 0)
