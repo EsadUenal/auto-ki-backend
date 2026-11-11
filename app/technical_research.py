@@ -78,6 +78,7 @@ from app.web_search import (
     _qualitaets_label,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
     ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
+    bereinige_steuerzeichen, bereinige_treffer,
 )
 
 log = logging.getLogger(__name__)
@@ -5627,6 +5628,93 @@ def _wartung_gleiche_arbeit_zusammenfuehren(kandidaten: dict) -> dict:
     return ergebnis
 
 
+# ── F1: Modellbereich-Überschriften ("Für <Modellliste>") ─────────────────────────────────────
+#
+# Befund (echter Bericht, Request-Export 20261111-143316): das Lexus-Serviceheft führt hinter dem RC-F-Abschnitt
+# (Seite 15, "Für ES 300h, ..., RC F, UX 200 und UX 250h") einen weiteren Abschnitt "Für UX 300e" (Seite 17) mit
+# eigenen Sätzen ("Lexus Care-Zwischenservice ... Dieser Service beinhaltet Inspektionen von Lenkung, Bremsen
+# ..."). In der fließenden Darstellung stand die Überschrift im selben Absatz wie die Folgesätze und wurde von
+# keiner Kontextprüfung als FREMDER Modellbereich erkannt: der UX-300e-Satz wurde zum "Bremsen"-Hinweis des RC F.
+#
+# Regel (generisch, keine Modell-/Markenliste): eine Überschrift "Für <Liste>" -- großes "Für", danach EINE oder
+# mehrere modellartige Angaben (2-3 Großbuchstaben + Ziffern/Suffix wie "UX 300e", "NX 450h+", oder Großbuchstaben-
+# Paar + Einzelbuchstabe wie "RC F") getrennt durch Komma, "und" oder "/" -- eröffnet einen Modellbereich. Die
+# Liste endet am ersten Wort, das keine modellartige Angabe mehr ist ("Lexus", "Care", ...): so ist ihre Grenze
+# auch im Fließtext bestimmbar. Der Bereich reicht bis zur nächsten Modellbereich-Überschrift, einer nummerierten
+# Abschnittsüberschrift ("2.9. LEXUS CARE-WARTUNGSPLAN") oder dem Textende; ein fremder Bereich wird NIE in einen
+# Folgeabschnitt getragen. Nennt die Liste das Zielmodell (auch zusammen mit anderen), gilt der Bereich als passend
+# und bleibt unverändert; nennt sie es nicht, wird der Bereich (Überschrift + Inhalt) für das Ziel verworfen.
+# Eine Überschrift, deren Liste nicht eindeutig als Modellliste erkennbar ist, eröffnet keinen Bereich -- es wird
+# keine Anwendbarkeit erfunden und nichts verworfen.
+_MODELL_ITEM = r"[A-ZÄÖÜ]{2,3}(?:\s?\d{2,4}[A-Za-z+]{0,3}|\s[A-Z](?![a-zäöüß]))"
+_RE_MODELLBEREICH = re.compile(
+    rf"(?<![A-Za-zäöüÄÖÜß])F(?:ü|ue)r\s+(?P<liste>{_MODELL_ITEM}(?:\s*(?:,|/|\bund\b)\s*{_MODELL_ITEM})*)"
+)
+_RE_ABSCHNITTSNUMMER = re.compile(r"(?<![\d.])\d{1,2}\.\d{1,2}\.?\s+[A-ZÄÖÜ]{3,}")
+_RE_FUER_UEBERSCHRIFT = re.compile(r"(?<![A-Za-zäöüÄÖÜß])F(?:ü|ue)r\s+(?P<k>[^.:;\n]{1,40})")
+# Ein ausdrücklich ALLGEMEINER Abschnitt beendet ebenfalls jeden fremden Modellbereich: "Für alle Modelle", "Für
+# alle Fahrzeuge", "Gilt für alle ...", "Allgemeine Hinweise". Nur diese ausdrücklichen Formen -- ein beliebiges
+# "Für ..." im Fließtext ("Für die Wartung ...") ist keine Bereichsgrenze.
+_RE_ALLGEMEINER_ABSCHNITT = re.compile(
+    r"(?<![A-Za-zäöüÄÖÜß])(?:F(?:ü|ue)r|[Gg]ilt\s+f(?:ü|ue)r)\s+(?:alle|sämtliche|jedes?)\s+(?:Modelle|Fahrzeuge|Baureihen|Varianten)\b"
+    r"|(?<![A-Za-zäöüÄÖÜß])Allgemeine[rsn]?\s+(?:Hinweise|Informationen|Angaben|Wartung)\b")
+
+
+def _modellbereich_nennt_ziel(liste: str, modell: str | None) -> bool:
+    """Nennt die Modellliste das Zielmodell? Vergleich auf normalisierten Einträgen ohne Leerzeichen."""
+    ziel = _norm(modell).replace(" ", "")
+    if not ziel:
+        return True
+    for eintrag in re.split(r"\s*(?:,|/|\bund\b)\s*", liste):
+        e = _norm(eintrag).replace(" ", "")
+        if e and (e == ziel or e.startswith(ziel) or ziel.startswith(e)):
+            return True
+    return False
+
+
+def _entferne_fremde_modellbereiche(text: str, modell: str | None, *, url: str = "",
+                                    abgelehnt: list[dict] | None = None,
+                                    kategorie: str = "wartung") -> str:
+    """Text OHNE die Bereiche, deren "Für <Modellliste>"-Überschrift das Zielmodell nicht nennt (s.o.)."""
+    if not text or not modell:
+        return text
+    treffer = list(_RE_MODELLBEREICH.finditer(text))
+    if not treffer:
+        return text
+    teile: list[str] = []
+    pos = 0
+    for idx, m in enumerate(treffer):
+        if m.start() < pos:
+            continue                      # bereits von einem vorherigen fremden Bereich überdeckt
+        if _modellbereich_nennt_ziel(m.group("liste"), modell):
+            continue                      # passender/gemeinsamer Bereich bleibt unverändert
+        ende = len(text)
+        if idx + 1 < len(treffer):
+            ende = min(ende, treffer[idx + 1].start())
+        nr = _RE_ABSCHNITTSNUMMER.search(text, m.end())
+        if nr:
+            ende = min(ende, nr.start())
+        allg = _RE_ALLGEMEINER_ABSCHNITT.search(text, m.end())
+        if allg:
+            ende = min(ende, allg.start())
+        # Eine spätere "Für ..."-Überschrift, die das ZIELMODELL selbst nennt (auch wenn ihre Liste nicht als
+        # Modellliste erkennbar ist, z. B. mit Markenname), ist der eigene Bereich des Ziels und beendet den
+        # fremden. Nur ab 3 Zeichen des normalisierten Modellnamens: kürzere Namen wären zu unscharf.
+        ziel = _norm(modell).replace(" ", "")
+        if len(ziel) >= 3:
+            for k in _RE_FUER_UEBERSCHRIFT.finditer(text, m.end()):
+                if ziel in _norm(k.group("k")).replace(" ", ""):
+                    ende = min(ende, k.start())
+                    break
+        teile.append(text[pos:m.start()])
+        pos = ende
+        if abgelehnt is not None:
+            abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "wartung_bereich_fremdes_modell",
+                              "satz": f"Für {m.group('liste')}"[:120]})
+    teile.append(text[pos:])
+    return "".join(teile)
+
+
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        marke: str | None = None, modell: str | None = None,
                        baujahr: int | None = None, generation: str | None = None,
@@ -5651,6 +5739,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     # Root Cause 5: Motoröl-Erweiterung NUR für "wartung" (siehe
     # `_wartung_vokabular()`) — "schwachstelle"/"rueckruf" bleiben exakt beim
     # bisherigen, geteilten `_bauteil_vokabular()`.
+    treffer = bereinige_treffer(treffer)   # F5: Sicherheitsnetz (Eingang: web_search.bereinige_treffer)
     vokabular = _wartung_vokabular() if kategorie == "wartung" else _bauteil_vokabular()
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
     # Rückrufdatensatz-Aussage -> Rohfelder DIESES Datensatzes (für den strukturierten Abgleich).
@@ -5736,7 +5825,11 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         rr_zusatz = (_rueckruf_zusatz_normen(r.get("content") or "")
                      if kategorie == "schwachstelle" else [])
         if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN:
-            satz_markiert = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+            _roh = f"{r.get('title') or ''}. {r.get('content') or ''}"
+            if kategorie == "wartung":
+                # F1: Abschnitte, die laut "Für <Modellliste>"-Überschrift ein ANDERES Modell betreffen, entfallen.
+                _roh = _entferne_fremde_modellbereiche(_roh, modell, url=url, abgelehnt=abgelehnt, kategorie=kategorie)
+            satz_markiert = _saetze_mit_segmentgrenze(_roh)
             satz_liste = [s for s, _ in satz_markiert]
             erlaubte_saetze = _segment_kontext_saetze(
                 satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
@@ -6558,7 +6651,8 @@ def _wartung_kandidat_saetze(r: dict, marke: str | None, modell: str | None,
         abgelehnt.append({"url": url, "kategorie": "wartung", "grund": grund,
                           "source_type": _wartung_source_type(r)})
         return []
-    satz_mit_grenze = _saetze_mit_segmentgrenze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+    satz_mit_grenze = _saetze_mit_segmentgrenze(_entferne_fremde_modellbereiche(
+        f"{r.get('title') or ''}. {r.get('content') or ''}", modell, url=url, abgelehnt=abgelehnt, kategorie="wartung"))
     satz_liste = [s for s, _ in satz_mit_grenze]
     segment_marker = [g for _, g in satz_mit_grenze]
     # F18-Fix (RC-F-Ursachenanalyse, 2026-10-25): bedingte, NICHT pauschale

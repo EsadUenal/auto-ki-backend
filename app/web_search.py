@@ -778,6 +778,37 @@ def _normalisiere_url(url: str) -> str:
         return url
 
 
+# F5: unzulässige Steuerzeichen am Provider-Eingang entfernen. PDF-/Extractor-Text enthält gelegentlich
+# Steuerzeichen (real: U+0007 an einer Aufzählungsstelle der Serviceheft-PDF), die sonst unverändert bis in
+# sichtbare Fragen, Nachweise und den Bericht wandern. Erhalten bleiben Zeilenumbruch, Wagenrücklauf und Tab
+# (Tabellen-/Zeilenstruktur); Vertikal-Tab und Seitenvorschub sind Zeilengrenzen und werden zu "\n". Alle
+# anderen C0-/C1-Steuerzeichen und DEL werden durch EIN Leerzeichen ersetzt (Wortgrenzen bleiben) und
+# anschließend unmittelbar doppelte Leerzeichen derselben Ersetzung zusammengezogen.
+_STEUERZEICHEN = re.compile("[\x00-\x08\x0e-\x1f\x7f-\x9f]+")
+_ZEILENGRENZE_STEUER = re.compile("[\x0b\x0c]")
+
+
+def bereinige_steuerzeichen(text):
+    """Entfernt unzulässige Steuerzeichen; `None`/Nicht-Text bleibt unverändert."""
+    if not isinstance(text, str) or not text:
+        return text
+    if text.isprintable() and "\n" not in text:
+        return text
+    text = _ZEILENGRENZE_STEUER.sub("\n", text)
+    return _STEUERZEICHEN.sub(" ", text)
+
+
+def bereinige_treffer(results):
+    """Steuerzeichen aus title/content/raw_content jedes Treffers entfernen (Kopien, Original unverändert)."""
+    out = []
+    for r in results or []:
+        if isinstance(r, dict) and any(isinstance(r.get(k), str) for k in ("title", "content", "raw_content")):
+            r = {**r, **{k: bereinige_steuerzeichen(r[k]) for k in ("title", "content", "raw_content")
+                         if isinstance(r.get(k), str)}}
+        out.append(r)
+    return out
+
+
 def curate_results(
     results: list[dict[str, Any]],
     kategorie: str | None = None,
@@ -977,7 +1008,7 @@ async def _tavily_search_intern(
                 data = resp.json()
                 if not isinstance(data, dict) or not isinstance(data.get("results", []), list):
                     raise ValueError("ungueltige_provider_antwort")
-                results = ohne_gesperrte_quellen(data.get("results", []))
+                results = bereinige_treffer(ohne_gesperrte_quellen(data.get("results", [])))
                 log_provider_event("tavily", status="success", attempt=versuch + 1,
                                    started=call_started)
                 hatte_fehler = False
@@ -1183,7 +1214,7 @@ async def hole_raw_content(urls: list[str]) -> tuple[dict[str, str], dict[str, i
             statistik["fehler"] += len(batch)
             continue
         for e in ergebnisse:
-            inhalt = (e.get("raw_content") or "").strip()
+            inhalt = (bereinige_steuerzeichen(e.get("raw_content")) or "").strip()
             if not e.get("erfolg") or len(inhalt) < _MIN_RAW_CONTENT_LEN:
                 statistik["fehler"] += 1
                 continue

@@ -311,10 +311,43 @@ _BEDINGT = re.compile(
     r"|hinweismeldung|wartungsanzeige|serviceanzeige|service-?anzeige", re.IGNORECASE)
 
 
+# Sätze, die `app/evidence.py::_web_beschreibung` HINTER die Quellenaussage hängt (Marktvorbehalt, unbestätigte
+# Anwendbarkeit, ...): sie gehören nicht zum Intervall. Ohne diesen Schnitt würde das "falls für Ihren Markt
+# zutreffend" des angehängten Marktvorbehalts jede Intervallangabe als "bedingt" erscheinen lassen.
+_ANGEHAENGT = ("Die Quelle schränkt sich selbst ein", "Ob das für Ihr Fahrzeug in Deutschland",
+               "Ob diese Bedingung auf dieses Fahrzeug", "Laut Quelle betrifft das")
+# Übereinstimmend belegte Fakten (`beleglage == "uebereinstimmend_unbestaetigt"`) stehen als HÜLLE um die
+# Quellenaussage: Präfix VOR dem wörtlichen Zitat, Bestätigungsstatus dahinter. Die Hülle ist kein Anhang (ein
+# Schnitt an ihrem Präfix würde die ganze Aussage verwerfen), sie wird um das Zitat herum entfernt.
+_UEBEREINSTIMMEND_PRAEFIX = "Die ausgewerteten Quellen nennen übereinstimmend: „"
+_UEBEREINSTIMMEND_SUFFIX = "“ Für dieses Fahrzeug ist diese Angabe nicht ausreichend bestätigt."
+
+
+def quellenaussage(text: str | None) -> str:
+    """Die Intervallaussage der Quelle OHNE die von `app/evidence.py::_web_beschreibung` ergänzten Teile
+    (Übereinstimmungs-Hülle, Marktvorbehalt, Teil-Geltung, unbestätigte technische Bedingung). Was die ENFAL-
+    Auswertung zusätzlich anfügt, ist weder Erst- noch Folgeintervall und nie eine Bedingung des Intervalls."""
+    t = text or ""
+    if t.startswith(_UEBEREINSTIMMEND_PRAEFIX):
+        t = t[len(_UEBEREINSTIMMEND_PRAEFIX):]
+        i = t.find(_UEBEREINSTIMMEND_SUFFIX)
+        if i >= 0:
+            t = t[:i] + " " + t[i + len(_UEBEREINSTIMMEND_SUFFIX):]
+    schnitt = [t.find(m) for m in _ANGEHAENGT if t.find(m) >= 0]
+    return (t[:min(schnitt)] if schnitt else t).strip()
+
+
+def hat_quellenvorbehalt(text: str | None) -> bool:
+    """Trägt die Beschreibung einen Marktvorbehalt der Quelle (nicht bestätigte Geltung für Deutschland)?"""
+    t = text or ""
+    return "Die Quelle schränkt sich selbst ein" in t or "Ob das für Ihr Fahrzeug in Deutschland" in t
+
+
 def erstintervall_text(text: str | None) -> str:
-    """Nur der Teil VOR einem Folgeintervall ("Danach alle 15.000 km / jährlich"): Erst- und
-    Folgeintervall bleiben getrennt, das Folgeintervall wird hier nie gelesen."""
-    return _FOLGEINTERVALL.split(text or "", maxsplit=1)[0]
+    """Nur der Teil VOR einem Folgeintervall ("Danach alle 15.000 km / jährlich") und ohne angefügte
+    Marktvorbehalt-/Anwendbarkeitssätze: Erst- und Folgeintervall bleiben getrennt, das Folgeintervall wird
+    hier nie gelesen, ein Marktvorbehalt macht das Intervall selbst nicht "bedingt"."""
+    return _FOLGEINTERVALL.split(quellenaussage(text), maxsplit=1)[0]
 
 
 def zeitalternative_belegbar_erreicht(alter_jahre: int | None, zeitalternative: tuple[int, str]) -> bool:
@@ -365,13 +398,20 @@ def schwelle_belegbar_erreicht(text: str | None, kilometerstand: int | None, bau
     Bedingte Angaben ("wenn", "falls", Hinweismeldung, ...) und alles ab einem Folgeintervall ("Danach")
     zählen nicht. Behauptet keine Fälligkeit und keine unterlassene Wartung: gemeint ist nur "hier lohnt der
     Nachweis der Servicehistorie"."""
+    return schwelle_belegbar_erreicht_alter(text, kilometerstand, fahrzeugalter(baujahr, heute_jahr=heute_jahr))
+
+
+def schwelle_belegbar_erreicht_alter(text: str | None, kilometerstand: int | None,
+                                     alter_jahre: int | None) -> bool:
+    """Wie `schwelle_belegbar_erreicht`, aber mit bereits berechnetem Fahrzeugalter (`fahrzeugalter()`): die
+    GEMEINSAME Schwellenlogik für Auswahl-Rang und Aktionsrang."""
     erst = erstintervall_text(text)
     if not erst or _BEDINGT.search(erst):
         return False
     punkt = parse_wartungspunkt(erst)
     zeit = parse_zeitschwelle(erst)
     km_ok = bool(punkt and kilometerstand and kilometerstand > 0 and kilometerstand >= punkt[0])
-    zeit_ok = bool(zeit and zeitalternative_belegbar_erreicht(fahrzeugalter(baujahr, heute_jahr=heute_jahr), zeit))
+    zeit_ok = bool(zeit and zeitalternative_belegbar_erreicht(alter_jahre, zeit))
     if punkt and not zeit:
         return km_ok
     if zeit and not punkt:
@@ -476,7 +516,8 @@ _HERKUNFT_ZUSATZ = {
 def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 von_km: int, bis_km: int | None, herkunft: str,
                 zeitalternative: tuple[int, str] | None = None,
-                zeit_offen_trotz_entfernt: bool = False) -> str:
+                zeit_offen_trotz_entfernt: bool = False,
+                zeit_erreicht_ab_jahre: int | None = None) -> str:
     """Der ausformulierte Hinweis.
 
     Jede Variante ist bewusst so gebaut, dass sie eine ZUSTANDSFRAGE stellt statt
@@ -501,6 +542,24 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
     """
     punkt = _punkt_text(von_km, bis_km)
     zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
+    # F3: eine SEPARAT belegte Zeitschwelle (`zeitalternative_belegbar_erreicht`: im ganzen möglichen
+    # Altersintervall überschritten, nicht bedingt) ändert den Zeittext. Ein erreichter Kilometerpunkt beweist
+    # nichts über die Zeit und kommt hier nie hinein. Die Arbeit selbst bleibt unbelegt: keine Fälligkeit,
+    # kein Versäumnis.
+    zeit_erreicht_text = ""
+    if zeitalternative and zeit_erreicht_ab_jahre is not None:
+        zahl, einheit = zeitalternative
+        zeit_erreicht_text = (
+            f"die zeitliche Alternative (oder {zeit_anzeige(zahl, einheit)}) ist nach dem Baujahr bereits "
+            f"erreicht (Fahrzeugalter mindestens {zeit_erreicht_ab_jahre} Jahre; der genaue Erstzulassungsmonat "
+            f"ist unbekannt). Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor.")
+    if zeit_offen_trotz_entfernt and zeitalternative and zeit_erreicht_text:
+        zahl, einheit = zeitalternative
+        return (f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine zeitliche Alternative "
+                f"hinterlegt. Der aktuelle Kilometerstand liegt weit von {punkt} entfernt -- der "
+                f"Kilometeranteil dieses Wartungspunkts ist damit nicht einschlägig; "
+                f"{zeit_erreicht_text} Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den "
+                f"Beleg dazu ansehen.") + zusatz
     if zeit_offen_trotz_entfernt and zeitalternative:
         zahl, einheit = zeitalternative
         kern = (
@@ -514,7 +573,10 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
             f"Beleg dazu ansehen.")
         return kern + zusatz
     zeit_zusatz = ""
-    if zeitalternative:
+    if zeitalternative and zeit_erreicht_text:
+        zeit_zusatz = (f" Der oben genannte Stand bezieht sich ausschließlich auf den Kilometerstand; "
+                       f"{zeit_erreicht_text}")
+    elif zeitalternative:
         zahl, einheit = zeitalternative
         zeit_zusatz = (
             f" Die Quelle nennt für diesen Wartungspunkt zusätzlich eine zeitliche "
@@ -587,6 +649,10 @@ def _bauteil(i: Insight) -> str:
     for q in i.quellen:
         if q.typ == "motorvarianten" and q.ref:
             return q.ref.strip()
+    # F4: bei Web-Insights ist das STRUKTURIERTE Bauteil der Schlüssel; der Titel kann eine Präsenz-Bedingung
+    # davor tragen ("Falls Automatikgetriebeöl verbaut: ...", app/evidence.py::wende_praesenz_an).
+    if i.kategorie == "web_wartung" and (getattr(i, "bauteil", None) or "").strip():
+        return _anzeigeform(i.bauteil.strip())
     m = _WARTUNG_TITEL.match(i.titel or "")
     return _anzeigeform((m.group("bauteil").strip() if m else (i.titel or "").strip())
                         or "Wartungspunkt")
@@ -671,6 +737,12 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             status == STATUS_ENTFERNT and zeitalternative is not None
             and _zeitalternative_trotz_entfernt_moeglich(alter_jahre, zeitalternative)
         )
+        # F3: Zeitschwelle SEPARAT belegt (nicht bedingt, im ganzen Altersintervall überschritten).
+        zeit_erreicht_ab = None
+        if (zeitalternative is not None and alter_jahre is not None
+                and not _BEDINGT.search(erstintervall_text(roh))
+                and zeitalternative_belegbar_erreicht(alter_jahre, zeitalternative)):
+            zeit_erreicht_ab = alter_jahre - 1
         if status == STATUS_ENTFERNT and not zeit_offen_trotz_entfernt:
             continue           # §G: kein Anlass, also keine Warnung
         bauteil = _bauteil(i)
@@ -678,6 +750,11 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
         if schluessel in gesehen:
             continue
         gesehen.add(schluessel)
+        # F4: die Präsenz-Bedingung des Titels ("Falls ... verbaut") bleibt in der Ausgabe erhalten, ist aber
+        # nicht Teil des Schlüssels.
+        bedingung_praefix = ""
+        if (i.titel or "").startswith("Falls ") and ": " in i.titel:
+            bedingung_praefix = i.titel.split(": ", 1)[0] + ": "
         out.append(Wartungshinweis(
             bauteil=bauteil,
             status=status,
@@ -685,9 +762,14 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             punkt_bis_km=bis_km,
             differenz_km=kilometerstand - von_km,
             intervall_text=(roh or "").strip(),
-            hinweis=_formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft,
-                                zeitalternative,
-                                zeit_offen_trotz_entfernt=zeit_offen_trotz_entfernt),
+            hinweis=bedingung_praefix + _formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft,
+                                                    zeitalternative,
+                                                    zeit_offen_trotz_entfernt=zeit_offen_trotz_entfernt,
+                                                    zeit_erreicht_ab_jahre=zeit_erreicht_ab)
+            # F3: der Marktvorbehalt der Quelle macht das Intervall nicht "bedingt" (s. `erstintervall_text`),
+            # bleibt aber SICHTBAR: erreichte Schwelle und bestätigte Geltung für Deutschland sind getrennte Fragen.
+            + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
+               "nicht bestätigt." if hat_quellenvorbehalt(roh) else ""),
             herkunft=herkunft,
             evidence_id=beleg_id,
             quellen=[EvidenceQuelle(**q.model_dump()) for q in i.quellen],

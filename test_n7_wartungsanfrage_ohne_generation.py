@@ -15,6 +15,7 @@ eine Anfrage mit "UXC1" bekäme die verdrängenden Treffer. Netz + DB über scri
 """
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -316,7 +317,13 @@ async def main():
           "Fünferlimit; der Antriebsriemen belegt dieselbe Eigenschaft 'km-Schwelle nicht erreicht')",
           len(kuehl) == 1 and herkunft in kuehl[0].aktion and "Datum und Kilometerstand" in kuehl[0].aktion
           and "zeitliche Alternative" in kuehl[0].aktion
-          and "nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist" in kuehl[0].aktion
+          # F3 (fachlich begründet): Baujahr 2017 -> Fahrzeugalter mindestens 8 Jahre >= 6 Jahre Zeitschwelle: die
+          # Zeitschwelle ist BELEGBAR erreicht und wird so benannt (vorher "nicht ausschließen, dass ... erreicht
+          # ist" -- zu vorsichtig, obwohl der ganze mögliche Altersbereich die Schwelle überschreitet). Aussage
+          # bleibt: ob die Arbeit gemacht wurde, ist unbekannt; keine Fälligkeit, kein Versäumnis.
+          and "nach dem Baujahr bereits erreicht" in kuehl[0].aktion
+          and re.search(r"Fahrzeugalter mindestens \d+ Jahre", kuehl[0].aktion)
+          and "geht aus den vorliegenden Daten nicht hervor" in kuehl[0].aktion
           and "überfällig" not in kuehl[0].aktion, str([a.aktion for a in kuehl]))
     check("D13b) Motorkühlmittel (150.000 km, nicht erreicht, kein Zeitintervall) verliert gegen den "
           "Antriebsriemen mit belegbar erreichter Zeitschwelle -- kein Nachweis dafür im Fünferlimit",

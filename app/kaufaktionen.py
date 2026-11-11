@@ -983,13 +983,23 @@ class _Sammler:
         # welche weiteren Bauteile unter demselben Schlüssel zusammengefallen sind.
         self._erstes_bauteil: dict[tuple[str, str], str] = {}
         self._weitere_bauteile: dict[tuple[str, str], list[str]] = {}
+        # F2: Position des zugehörigen Wartungs-Insights in der Wartungsauswahl (Reihenfolge der `insights`).
+        self._ordnung: dict[tuple[str, str], int] = {}
+        # Variante (a): kompakte, konkrete Zeile je Wartungsaktion (Bauteil, Tätigkeit, Intervall, Bedingungen),
+        # mit der ein durch das Limit gekappter Wartungspunkt sichtbar bleibt.
+        self._kompakt: dict[tuple[str, str], str] = {}
 
     def add(self, bereich: str, schluessel: str, titel: str, aktion: str, rang: int,
             *, evidence_ids: list[str] | None = None, kategorie: str | None = None,
             schweregrad: str | None = None, kostenhinweis: str | None = None,
-            gruppe: str | None = None, bauteil: str | None = None) -> None:
+            gruppe: str | None = None, bauteil: str | None = None,
+            ordnung: int | None = None, kompakt: str | None = None) -> None:
         if not aktion:
             return
+        if ordnung is not None:
+            self._ordnung.setdefault((bereich, schluessel), ordnung)
+        if kompakt:
+            self._kompakt.setdefault((bereich, schluessel), kompakt)
         vorhanden = self._pro_bereich[bereich].get(schluessel)
         if vorhanden is not None:
             for ev in evidence_ids or []:
@@ -1019,10 +1029,18 @@ class _Sammler:
         if bauteil:
             self._erstes_bauteil[(bereich, schluessel)] = bauteil
 
+    def _sortiert(self, bereich: str) -> list[Kaufaktion]:
+        """Höchster Rang zuerst. Bei gleichem Rang gilt F2: die Reihenfolge der Wartungsauswahl (Position des
+        Insights); Aktionen ohne Wartungsposition (Rückrufe, Schwachstellen, ...) folgen danach, und erst
+        zuletzt entscheidet die ID (§12) -- vorher war die ID (alphabetisch) der einzige Gleichstand."""
+        def key(a: Kaufaktion):
+            pos = self._ordnung.get((bereich, a.id.split("-", 1)[1]))
+            return (-a.rang, 0 if pos is not None else 1, pos if pos is not None else 0, a.id)
+        return sorted(self._pro_bereich[bereich].values(), key=key)
+
     def liste(self, bereich: str) -> list[Kaufaktion]:
-        """Höchste Relevanz zuerst; bei Ranggleichheit stabil nach ID (§12)."""
-        aktionen = sorted(self._pro_bereich[bereich].values(),
-                          key=lambda a: (-a.rang, a.id))
+        """Höchste Relevanz zuerst; bei Ranggleichheit Wartungsauswahl-Reihenfolge, dann ID (§12, F2)."""
+        aktionen = self._sortiert(bereich)
         out: list[Kaufaktion] = []
         for a in aktionen[:MAX_SPEZIFISCH_PRO_BEREICH]:
             weitere = self._weitere_bauteile.get((bereich, a.id.split("-", 1)[1]))
@@ -1030,14 +1048,75 @@ class _Sammler:
                 a = a.model_copy(update={"aktion": a.aktion + " Gilt auch für: "
                                          + ", ".join(f"„{w}“" for w in weitere) + "."})
             out.append(a)
-        return out
+        return self._mit_wartungsrest(bereich, out, aktionen[MAX_SPEZIFISCH_PRO_BEREICH:])
+
+    @staticmethod
+    def _ist_wartung(a: Kaufaktion) -> bool:
+        return a.kategorie in ("wartung", "web_wartung")
+
+    @staticmethod
+    def _rest_einleitung(bereich: str) -> str:
+        return ("Weitere ausgewählte Wartungspunkte, ebenfalls nach Datum, Kilometerstand und Beleg fragen: "
+                if bereich == VERKAEUFERFRAGEN else
+                "Weitere ausgewählte Wartungspunkte, jeweils Rechnung oder Serviceheft-Eintrag mit Datum und "
+                "Kilometerstand zeigen lassen: ")
+
+    def _rest_zeilen(self, bereich: str, rest: list[Kaufaktion]) -> tuple[list[str], list[str]]:
+        """Je gekapptem Wartungspunkt EINE konkrete Zeile (Bauteil, Tätigkeit, Intervall, Bedingungen) und die
+        Evidenz-IDs, jeweils aus derselben Aktion -- die Zeile nennt ihr Bauteil selbst, die ID gehört zu ihm."""
+        zeilen: list[str] = []
+        evidenz: list[str] = []
+        for a in rest:
+            schluessel = a.id.split("-", 1)[1]
+            zeile = self._kompakt.get((bereich, schluessel)) or (
+                f"„{self._erstes_bauteil.get((bereich, schluessel)) or a.titel}“")
+            weitere = self._weitere_bauteile.get((bereich, schluessel))
+            if weitere:       # unter demselben Schlüssel zusammengefallene Bauteile gehen mit dem Punkt nicht verloren
+                zeile += " Gilt auch für: " + ", ".join(f"„{w}“" for w in weitere) + "."
+            if zeile not in zeilen:
+                zeilen.append(zeile)
+            evidenz += [e for e in a.evidence_ids if e not in evidenz]
+        return zeilen, evidenz
+
+    def _mit_wartungsrest(self, bereich: str, ausgegeben: list[Kaufaktion],
+                          gekappt: list[Kaufaktion]) -> list[Kaufaktion]:
+        """Variante (a): ausgewählte Wartungspunkte, die das Limit aus der Einzelausgabe drängt, bleiben in
+        Fragen UND Dokumenten KONKRET sichtbar -- als kompakte Zeilen im Text der niedrigstrangigen Wartungsaktion
+        derselben Liste, mit ihren Evidenz-IDs. Die Zahl der Einzelaktionen bleibt unverändert; es entstehen keine
+        zusätzlichen Rückrufaktionen. Gibt es unter den ausgegebenen Aktionen keine Wartungsaktion, übernimmt
+        `wartungsrest_ohne_traeger` (Basiskatalog, s. `build_kaufaktionen`)."""
+        if bereich not in (VERKAEUFERFRAGEN, DOKUMENTE):
+            return ausgegeben
+        rest = [a for a in gekappt if self._ist_wartung(a)]
+        traeger = [n for n, a in enumerate(ausgegeben) if self._ist_wartung(a)]
+        if not rest or not traeger:
+            return ausgegeben
+        zeilen, evidenz = self._rest_zeilen(bereich, rest)
+        n = traeger[-1]
+        host = ausgegeben[n]
+        neu = host.model_copy(update={
+            "aktion": host.aktion + " " + self._rest_einleitung(bereich) + "; ".join(zeilen) + ".",
+            "evidence_ids": list(host.evidence_ids) + [e for e in evidenz if e not in host.evidence_ids]})
+        ausgegeben = list(ausgegeben)
+        ausgegeben[n] = neu
+        return ausgegeben
+
+    def wartungsrest_ohne_traeger(self, bereich: str) -> list[str]:
+        """Konkrete Zeilen der ausgewählten Wartungspunkte, die das Limit verdrängt hat UND für die unter den
+        ausgegebenen Einzelaktionen KEINE Wartungsaktion als Träger existiert (alle Plätze belegen höher
+        gerankte Rückrufe/Schwachstellen/...). Leer, wenn nichts verloren ginge oder ein Träger vorhanden ist."""
+        if bereich not in (VERKAEUFERFRAGEN, DOKUMENTE):
+            return []
+        sortiert = self._sortiert(bereich)
+        if any(self._ist_wartung(a) for a in sortiert[:MAX_SPEZIFISCH_PRO_BEREICH]):
+            return []
+        rest = [a for a in sortiert[MAX_SPEZIFISCH_PRO_BEREICH:] if self._ist_wartung(a)]
+        return self._rest_zeilen(bereich, rest)[0] if rest else []
 
     def gekappt(self, bereich: str) -> list[Kaufaktion]:
         """Fahrzeugspezifische Aktionen, die `MAX_SPEZIFISCH_PRO_BEREICH` aus der
         Ausgabe drängt (höchster Rang zuerst)."""
-        ausgegeben = {a.id for a in self.liste(bereich)}
-        return [a for a in sorted(self._pro_bereich[bereich].values(), key=lambda a: (-a.rang, a.id))
-                if a.id not in ausgegeben]
+        return self._sortiert(bereich)[MAX_SPEZIFISCH_PRO_BEREICH:]
 
     def schluessel(self, bereich: str) -> set[str]:
         """Themen-/Bauteilschlüssel, die in diesem Bereich fahrzeugspezifisch belegt
@@ -1237,6 +1316,32 @@ def _katalog_mit_gekappten_fragen(katalog, gekappt: list[Kaufaktion]):
     return tuple(ergebnis)
 
 
+# Wartungsrest ohne Einzelaktion als Träger: Anker-Katalogeintrag, hinter dem der Sammelpunkt steht.
+_WARTUNGSREST_ANKER = {VERKAEUFERFRAGEN: "wartung", DOKUMENTE: "wartungsrechnungen"}
+
+
+def _katalog_mit_wartungsrest(katalog, bereich: str, zeilen: list[str]):
+    """Gleicher vorhandener Weg wie `_katalog_mit_gekappten_fragen`: was das Limit aus den Einzelaktionen drängt
+    und keinen Wartungsträger findet, bleibt als EIN Sammelpunkt im Basiskatalog sichtbar. Das Basismodell kennt
+    keine Evidence-IDs (`Kaufaktion.typ == "basis"`), deshalb steht jede Zeile mit Bauteil und "laut Quelle" im Text;
+    die Evidenz selbst bleibt in den Insights. Das Sechserlimit der Einzelaktionen bleibt unberührt."""
+    if not zeilen:
+        return katalog
+    if bereich == VERKAEUFERFRAGEN:
+        eintrag = ("wartungsrest", "Wartung und Technik",
+                   "Wann und bei welchem Kilometerstand wurden die weiteren ausgewählten Wartungspunkte gemacht?",
+                   _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
+    else:
+        eintrag = ("wartungsrest", "Prüfungen und Wartung",
+                   "Nachweise zu den weiteren ausgewählten Wartungspunkten zeigen lassen",
+                   _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
+    ergebnis = list(katalog)
+    anker = _WARTUNGSREST_ANKER.get(bereich)
+    pos = next((i + 1 for i, e in enumerate(ergebnis) if e[0] == anker), len(ergebnis))
+    ergebnis.insert(pos, eintrag)
+    return tuple(ergebnis)
+
+
 def _basis_liste(bereich: str, katalog, belegte_schluessel: set[str],
                  fahrzeug: str | None, getriebe: str | None = None,
                  verkaeufer: str | None = None,
@@ -1317,7 +1422,7 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     # eingetragenen TEXT und hebt nur den Rang an. Der laufleistungsbezogene,
     # konkretere Text soll gewinnen — deshalb steht dieser Aufruf vor
     # `_aus_wartung`/`_aus_web_evidence`, die denselben Schlüssel belegen.
-    _aus_laufleistung(s, laufleistungskontext)
+    _aus_laufleistung(s, laufleistungskontext, insights)
     _aus_schwachstellen(s, insights, getattr(req, "ausstattung", None))
     _aus_motorproblemen(s, insights, motor_match, baujahr)
     _aus_rueckrufen(s, insights)
@@ -1356,6 +1461,11 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
     kataloge[VERKAEUFERFRAGEN] = _katalog_mit_gekappten_fragen(
         kataloge[VERKAEUFERFRAGEN], s.gekappt(VERKAEUFERFRAGEN))
     for bereich, katalog in kataloge.items():
+        rest_ohne_traeger = s.wartungsrest_ohne_traeger(bereich)
+        if rest_ohne_traeger:
+            log.info("Wartungsrest ohne Einzelaktions-Träger (%s): %d Zeile(n) im Basiskatalog.",
+                     bereich, len(rest_ohne_traeger))
+            katalog = _katalog_mit_wartungsrest(katalog, bereich, rest_ohne_traeger)
         spezifisch = s.liste(bereich)
         listen[bereich] = Pruefliste(
             bereich=bereich,
@@ -1797,6 +1907,7 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
     Bewusst KEINE Besichtigungsaktion: ein Wartungsintervall ist vor Ort nicht
     prüfbar, sondern nur über Nachweise.
     """
+    positionen = _insight_positionen(insights)
     for i in insights:
         if i.kategorie != "wartung":
             continue
@@ -1818,12 +1929,12 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
         s.add(VERKAEUFERFRAGEN, schluessel, falls + frage.format(b=bauteil),
               f"{herkunft}.{satz} {nachfrage}",
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe="Wartung und Technik", bauteil=bauteil)
+              gruppe="Wartung und Technik", bauteil=bauteil, ordnung=positionen.get(i.id))
 
         s.add(DOKUMENTE, schluessel, falls + dok_titel.format(b=bauteil),
               falls + dok_text.format(b=bauteil),
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe=dok_gruppe, bauteil=bauteil)
+              gruppe=dok_gruppe, bauteil=bauteil, ordnung=positionen.get(i.id))
 
 
 # ── 4b) Technischer Web-Fallback ─────────────────────────────────────────────
@@ -1847,6 +1958,40 @@ _TAETIGKEIT_DOK_TITEL = {"ersetzen": "Wechselnachweis", "pruefen": "Prüfnachwei
 
 def _taetigkeit_verb(taetigkeit: str | None) -> str:
     return _TAETIGKEIT_VERB.get(taetigkeit, "gemacht")
+
+
+_KOMPAKT_TAETIGKEIT = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}
+
+
+def _kompakt_wartung(bauteil: str, taetigkeit: str | None, intervall_text: str | None,
+                     falls: str = "", technische_bedingung: str | None = None) -> str:
+    """Eine kompakte, konkrete Zeile für einen gekappten Wartungspunkt: Bauteil, belegte Tätigkeit, Intervall
+    (Erst- und Folgeintervall wörtlich, auf die Quellenaussage begrenzt) und Bedingungen. Die Bedingungen bleiben
+    GETRENNT benannt: Einbau-Präsenz ("Falls ... verbaut", vor dem Bauteil), technische Anwendbarkeit (ungeklärte
+    Bedingung), bedingtes Intervall (Anzeige/Hinweismeldung/Land) und Marktvorbehalt der Quelle. Keine Bewertung,
+    keine Fälligkeit, keine bestätigte Anwendbarkeit."""
+    from app.laufleistung import _BEDINGT, hat_quellenvorbehalt, quellenaussage
+    text = " ".join((intervall_text or "").split())
+    kern = " ".join(quellenaussage(text).split())
+    if kern.lower().startswith(bauteil.lower()):
+        kern = kern[len(bauteil):].lstrip(" :-–—")          # die Bauteilnennung steht schon vor der Klammer
+    if len(kern) > 170:
+        kern = kern[:167].rstrip() + "..."
+    teile = [_KOMPAKT_TAETIGKEIT.get(taetigkeit, "Tätigkeit nicht belegt")]
+    if kern:
+        teile.append(f"laut Quelle: {kern}")
+    if technische_bedingung:
+        teile.append(f"Anwendbarkeit ungeklärt: {technische_bedingung}")
+    if hat_quellenvorbehalt(text):
+        teile.append("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt")
+    if _BEDINGT.search(kern):
+        teile.append("Intervall bedingt")
+    return f"{falls}„{bauteil}“ ({'; '.join(teile)})"
+
+
+def _insight_positionen(insights: list[Insight] | None) -> dict[str, int]:
+    """Insight-ID -> Position in der (Wartungs-)Auswahl; Grundlage der stabilen Reihenfolge (F2)."""
+    return {i.id: n for n, i in enumerate(insights or [])}
 
 
 def _wartungsfrage(bauteil: str, taetigkeit: str | None) -> str:
@@ -1914,6 +2059,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
     ausgedruckter Prüfplan ohne die ENFAL-Oberfläche nicht so wirkt, als käme der
     Punkt aus der ENFAL-Fahrzeugdatenbank.
     """
+    positionen = _insight_positionen(insights)
     for i in insights:
         if not i.kategorie.startswith("web_"):
             continue
@@ -1952,12 +2098,16 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                 frage, hinweis = _technik_anwendbarkeit_frage(
                     bauteil, bedingung, _taetigkeit_verb(getattr(i, "taetigkeit", None)))
                 dok_titel, dok_text = _technik_anwendbarkeit_dokument(bauteil, bedingung)
+                kompakt = _kompakt_wartung(bauteil, getattr(i, "taetigkeit", None), i.beschreibung, falls,
+                                           technische_bedingung=bedingung)
                 s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}", falls + frage, hinweis,
                       _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                      gruppe="Wartung und Technik", bauteil=bauteil)
+                      gruppe="Wartung und Technik", bauteil=bauteil,
+                      ordnung=positionen.get(i.id), kompakt=kompakt)
                 s.add(DOKUMENTE, f"wartung-web-{wartung_schluessel}", falls + dok_titel, dok_text,
                       _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                      gruppe="Prüfungen und Wartung", bauteil=bauteil)
+                      gruppe="Prüfungen und Wartung", bauteil=bauteil,
+                      ordnung=positionen.get(i.id), kompakt=kompakt)
                 continue
             # N13-Fix: belegtes Verb statt des tätigkeitsneutralen "gemacht",
             # wenn die Quelle Kontrolle/Inspektion oder Wechsel/Austausch
@@ -1965,12 +2115,14 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
             # der bisherige, ehrliche Default erhalten.
             verb = _taetigkeit_verb(getattr(i, "taetigkeit", None))
             dok_titel = _taetigkeit_dok_titel(getattr(i, "taetigkeit", None))
+            kompakt = _kompakt_wartung(bauteil, getattr(i, "taetigkeit", None), i.beschreibung, falls)
             s.add(VERKAEUFERFRAGEN, f"wartung-web-{wartung_schluessel}",
                   f"{falls}{_wartungsfrage(bauteil, getattr(i, 'taetigkeit', None))}",
                   f"Eine Webrecherche nennt für dieses Modell ein Intervall zu „{bauteil}“. "
                   f"Nach Datum, Kilometerstand und Beleg fragen.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                  gruppe="Wartung und Technik", bauteil=bauteil)
+                  gruppe="Wartung und Technik", bauteil=bauteil,
+                  ordnung=positionen.get(i.id), kompakt=kompakt)
             # Web-Wartungsfakten sind geprüfte Intervallangaben
             # (app/technical_research.py), also reguläre Wartung.
             # Herkunft IMMER nennen -- auch wenn die Kilometerschwelle noch nicht erreicht ist und
@@ -1980,7 +2132,8 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
                   + " Die Intervallangabe stammt aus der Webrecherche, nicht aus der geprüften "
                     "Fahrzeugdatenbank.",
                   _R_WEB_WARTUNG, evidence_ids=[i.id], kategorie="web_wartung",
-                  gruppe="Prüfungen und Wartung", bauteil=bauteil)
+                  gruppe="Prüfungen und Wartung", bauteil=bauteil,
+                  ordnung=positionen.get(i.id), kompakt=kompakt)
             continue
 
         # art == "schwachstelle". Ohne bekannte Prüfklasse keine Besichtigung
@@ -2051,7 +2204,7 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 _LAUF_SCHLUESSEL_PRAEFIX = {"db_wartung": "wartung-", "web_wartung": "wartung-web-"}
 
 
-def _aus_laufleistung(s: _Sammler, kontext) -> None:
+def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = None) -> None:
     """Wartungspunkte, die bei DIESER Laufleistung relevant sind -> Frage + Nachweis.
 
     Der Kontext liefert ausschließlich Hinweise, die aus einer EXISTIERENDEN
@@ -2069,18 +2222,36 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
     """
     if kontext is None:
         return
+    from app.laufleistung import schwelle_belegbar_erreicht_alter
+    nach_id = {i.id: i for i in insights or []}
+    positionen = _insight_positionen(insights)
     for w in getattr(kontext, "wartungshinweise", None) or []:
-        komp = _komponente(w.bauteil)
+        # F4: STRUKTURIERTES Bauteil des zugehörigen Web-Insights als Schlüssel (derselbe wie in
+        # `_aus_web_evidence`); die Präsenz-Bedingung ("Falls ... verbaut") steht davor in der Ausgabe, nicht im
+        # Schlüssel -- sonst entstünde bei unbekanntem Getriebe eine zweite Aktion zum selben Punkt.
+        ins = nach_id.get(w.evidence_id)
+        bauteil = (getattr(ins, "bauteil", None) or w.bauteil) if ins is not None and \
+            ins.kategorie == "web_wartung" else w.bauteil
+        falls = _bedingt(ins) if ins is not None and ins.kategorie.startswith("web_") else ""
+        komp = _komponente(bauteil)
         # Derselbe Schlüssel wie `_aus_wartung`/`_aus_web_evidence`, sonst
         # entstünde ein zweiter Punkt statt eines geschärften (N11-Fix:
         # bauteilgenau über `_schluessel_wartungsintervall()`, s. dort).
-        basis = _schluessel_wartungsintervall(komp, w.bauteil, w.intervall_text)
+        basis = _schluessel_wartungsintervall(komp, bauteil, w.intervall_text)
         schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
-        rang = (_R_WARTUNG_RELEVANT if w.status in ("im_bereich", "darueber")
+        # F3: Aktionsrang aus DERSELBEN Schwellenlogik wie die Wartungsauswahl: eine km-seitig "entfernte" Angabe
+        # mit belegbar erreichter Zeitschwelle ist ebenso ein einlösbarer Nachweis-Wunsch wie ein erreichter Punkt.
+        rang = (_R_WARTUNG_RELEVANT
+                if (w.status in ("im_bereich", "darueber")
+                    or schwelle_belegbar_erreicht_alter(w.intervall_text, getattr(kontext, "kilometerstand", None),
+                                                         getattr(kontext, "fahrzeugalter_jahre", None)))
                 else _R_WARTUNG)
-
+        pos = positionen.get(w.evidence_id)
         bedingung = getattr(w, "technische_bedingung", None)
-        if getattr(w, "technische_bedingung_status", None) == "unresolved" and bedingung:
+        ungeklaert = getattr(w, "technische_bedingung_status", None) == "unresolved" and bool(bedingung)
+        kompakt = _kompakt_wartung(bauteil, getattr(w, "taetigkeit", None), w.intervall_text, falls,
+                                   technische_bedingung=bedingung if ungeklaert else None)
+        if ungeklaert:
             # N12-Fix: ungeklärte technische Anwendbarkeit zuerst klären --
             # der laufleistungsbezogene Hinweis (`w.hinweis`) bleibt als
             # Kontext erhalten, ersetzt aber nicht die vorrangige Frage nach
@@ -2090,10 +2261,10 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
             dok_titel, dok_text = _technik_anwendbarkeit_dokument(w.bauteil, bedingung)
             s.add(VERKAEUFERFRAGEN, schluessel, frage, f"{w.hinweis} {hinweis}",
                   rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-                  gruppe="Wartung und Technik", bauteil=w.bauteil)
+                  gruppe="Wartung und Technik", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
             s.add(DOKUMENTE, schluessel, dok_titel, f"{w.hinweis} {dok_text}",
                   rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-                  gruppe="Prüfungen und Wartung", bauteil=w.bauteil)
+                  gruppe="Prüfungen und Wartung", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
             continue
 
         # N13-Fix: belegtes Verb statt des tätigkeitsneutralen "gemacht",
@@ -2102,16 +2273,16 @@ def _aus_laufleistung(s: _Sammler, kontext) -> None:
         verb = _taetigkeit_verb(getattr(w, "taetigkeit", None))
         dok_titel = _taetigkeit_dok_titel(getattr(w, "taetigkeit", None))
         s.add(VERKAEUFERFRAGEN, schluessel,
-              _wartungsfrage(w.bauteil, getattr(w, "taetigkeit", None)),
+              f"{falls}{_wartungsfrage(bauteil, getattr(w, 'taetigkeit', None))}",
               f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-              gruppe="Wartung und Technik", bauteil=w.bauteil)
+              gruppe="Wartung und Technik", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
 
-        s.add(DOKUMENTE, schluessel, f"{dok_titel} {w.bauteil}",
+        s.add(DOKUMENTE, schluessel, f"{falls}{dok_titel} {bauteil}",
               f"{w.hinweis} Rechnung oder Eintrag im Serviceheft mit Datum und "
               f"Kilometerstand zeigen lassen.",
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
-              gruppe="Prüfungen und Wartung", bauteil=w.bauteil)
+              gruppe="Prüfungen und Wartung", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
 
 
 # ── 5) Inserat-Angaben (§8 — nur was der Nutzer tatsächlich angegeben hat) ───

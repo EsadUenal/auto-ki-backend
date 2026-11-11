@@ -262,10 +262,26 @@ if ventilspiel_c:
         check("C5) Der Kilometerstatus wird ausdrücklich ALS SOLCHER gekennzeichnet "
               "('bezieht sich ausschließlich auf den Kilometerstand')",
               "ausschließlich auf den Kilometerstand" in hinweis_c.hinweis, hinweis_c.hinweis)
-        check("C6) Die zeitliche Fälligkeit wird ausdrücklich als OFFEN benannt "
-              "('nicht bestimmen', 'bleibt ... offen')",
-              "nicht bestimmen" in hinweis_c.hinweis and "offen" in hinweis_c.hinweis,
+        # C6 (fachlich neu gefasst, F3): Baujahr 2017 -> Fahrzeugalter mindestens 8 Jahre >= 6 Jahre: die erste
+        # Zeitschwelle ist BELEGBAR erreicht und wird so benannt (vorher "nicht bestimmen ... bleibt offen", obwohl
+        # der ganze mögliche Altersbereich die Schwelle überschreitet). Eine erreichte Schwelle ist keine aktuelle
+        # Fälligkeit: ob die Arbeit gemacht wurde, bleibt AUSDRÜCKLICH offen (C7 verbietet Fälligkeitsbegriffe).
+        check("C6) Zeitschwelle belegbar erreicht -> als erreicht benannt, Durchführung/Fälligkeit ausdrücklich OFFEN",
+              "nach dem Baujahr bereits erreicht" in hinweis_c.hinweis
+              and "Fahrzeugalter mindestens 8 Jahre" in hinweis_c.hinweis
+              and "Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor" in hinweis_c.hinweis
+              and "bleibt deshalb offen" not in hinweis_c.hinweis,
               hinweis_c.hinweis)
+        # C6b: ist die Zeitschwelle NICHT belegbar erreicht (Baujahr 2020: Alter 5-7 Jahre, Schwelle 6), bleibt die
+        # bisherige Aussage unverändert: nicht bestimmbar, offen.
+        req_c2 = Req(marke="Lexus", modell="RC F", baujahr=2020, kilometerstand=82_000,
+                     kraftstoff="Benzin", scheckheftgepflegt=None)
+        ctx_c2 = build_laufleistungskontext(req_c2, insights_aus_fakten([ventilspiel_c], req_c2), heute_jahr=2026)
+        hinweis_c2 = next((w for w in (ctx_c2.wartungshinweise if ctx_c2 else []) if w.bauteil == "Ventilspiel"), None)
+        check("C6b) Zeitschwelle NICHT belegbar erreicht (Baujahr 2020) -> Zeit bleibt ausdrücklich OFFEN ('nicht bestimmen')",
+              hinweis_c2 is not None and "nicht bestimmen" in hinweis_c2.hinweis and "offen" in hinweis_c2.hinweis
+              and "bereits erreicht (Fahrzeugalter" not in hinweis_c2.hinweis,
+              hinweis_c2.hinweis if hinweis_c2 else "kein Hinweis")
         check("C7) KEINE Fälligkeits-/Entwarnungs-/Versäumnis-Begriffe (unverändertes Verbot)",
               not any(w in hinweis_c.hinweis.lower()
                      for w in ("fällig", "überfällig", "versäumt", "nicht durchgeführt", "fehlt")),
@@ -418,11 +434,29 @@ if ventilspiel_c:
               "6 Jahre" in hinweis_g.hinweis, hinweis_g.hinweis)
         check("G4) Der Text sagt ausdrücklich, dass der Kilometeranteil NICHT einschlägig ist",
               "nicht einschlägig" in hinweis_g.hinweis, hinweis_g.hinweis)
-        check("G5) Die zeitliche Bewertung bleibt ausdrücklich OFFEN ('nicht ausschließen')",
-              "nicht ausschließen" in hinweis_g.hinweis, hinweis_g.hinweis)
-        check("G6) Der genannte Grund für die Offenheit ist der Startpunkt/die Servicehistorie",
-              "Erstzulassungsmonat" in hinweis_g.hinweis
-              and "Servicehistorie" in hinweis_g.hinweis, hinweis_g.hinweis)
+        # G5/G6 (fachlich neu gefasst, F3): Baujahr 2017 -> Alter mindestens 8 Jahre >= 6 Jahre: die Zeitschwelle ist
+        # BELEGBAR erreicht (kein "nicht ausschließen" mehr), der Kilometeranteil weiter nicht einschlägig (G4). Offen
+        # bleibt, OB die Arbeit gemacht wurde; der Altersbereich (Erstzulassungsmonat unbekannt) wird benannt.
+        check("G5) Zeitschwelle belegbar erreicht -> so benannt; ob die Arbeit gemacht wurde, bleibt ausdrücklich OFFEN",
+              "nach dem Baujahr bereits erreicht" in hinweis_g.hinweis
+              and "Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor" in hinweis_g.hinweis
+              and "nicht ausschließen" not in hinweis_g.hinweis, hinweis_g.hinweis)
+        check("G6) Grund der Altersunschärfe benannt: Erstzulassungsmonat unbekannt, Mindestalter genannt",
+              "Erstzulassungsmonat" in hinweis_g.hinweis and "Fahrzeugalter mindestens 8 Jahre" in hinweis_g.hinweis,
+              hinweis_g.hinweis)
+        # G5b/G6b: NICHT belegbar erreichte Zeitschwelle (Baujahr 2020, Alter 5-7 bei 6 Jahren) -> unveränderte
+        # vorsichtige Aussage mit Servicehistorie als Grund.
+        req_g2 = Req(marke="Lexus", modell="RC F", baujahr=2020, kilometerstand=20_000,
+                     kraftstoff="Benzin", scheckheftgepflegt=None)
+        ctx_g2 = build_laufleistungskontext(req_g2, insights_aus_fakten([ventilspiel_c], req_g2), heute_jahr=2026)
+        hinweis_g2 = next((w for w in (ctx_g2.wartungshinweise if ctx_g2 else []) if w.bauteil == "Ventilspiel"), None)
+        check("G5b) Zeitschwelle NICHT belegbar erreicht (Baujahr 2020) -> Zeitbewertung OFFEN ('nicht ausschließen')",
+              hinweis_g2 is not None and "nicht ausschließen" in hinweis_g2.hinweis
+              and "bereits erreicht (Fahrzeugalter" not in hinweis_g2.hinweis,
+              hinweis_g2.hinweis if hinweis_g2 else "kein Hinweis")
+        check("G6b) ... mit Erstzulassungsmonat und Servicehistorie als Grund der Offenheit",
+              hinweis_g2 is not None and "Erstzulassungsmonat" in hinweis_g2.hinweis
+              and "Servicehistorie" in hinweis_g2.hinweis, hinweis_g2.hinweis if hinweis_g2 else "kein Hinweis")
         check("G7) KEINE Fälligkeits-/Entwarnungs-/Versäumnis-Begriffe",
               not any(w in hinweis_g.hinweis.lower()
                      for w in ("fällig", "überfällig", "versäumt", "nicht durchgeführt", "fehlt")),
