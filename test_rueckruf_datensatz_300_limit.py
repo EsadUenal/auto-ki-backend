@@ -31,6 +31,14 @@ socket.socket.connect = _gesperrt
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from app import technical_research as tr  # noqa: E402
+# Rückruftabellen-Pfad ist erst nach dem Abgleichs-Nachtrag aktiv (Freigabe-Marker). Diese
+# Tests prüfen den FREIGEGEBENEN Pfad: Marker in der Temp-DB ausdrücklich setzen.
+from app import database as _db  # noqa: E402
+from app.rueckruf_abgleich import FREIGABE_MARKER, invalidate_freigabe_cache  # noqa: E402
+_db.ensure_tables()
+with _db.get_conn() as _c:
+    _c.execute("INSERT OR IGNORE INTO schema_migrations (name) VALUES (?)", (FREIGABE_MARKER,))
+invalidate_freigabe_cache()
 
 _FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests", "fixtures",
                     "adac_lexus_rc_f_seitentext_2026-11-08.txt")

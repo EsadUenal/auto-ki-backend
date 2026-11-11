@@ -4428,6 +4428,12 @@ def _rueckruf_saetze_mit_bauteiltext(text: str) -> tuple[list[str], dict[str, st
     bestimmen ('2UR-GSE Motor' ist die Variante, nicht das defekte Teil)."""
     saetze = _saetze(text)
     bauteiltext: dict[str, str] = {}
+    from app.rueckruf_abgleich import freigabe_aktiv
+    if not freigabe_aktiv():
+        # Freigabe-Sperre: solange der Abgleichs-Nachtrag für den vorhandenen Bestand nicht
+        # gelaufen ist, erzeugt eine Rückruftabelle keinen Web-Rückruf (wie vor dem
+        # Tabellenpfad) -- sonst stünde eine amtlich erfasste Aktion doppelt im Bericht.
+        return saetze, bauteiltext
     for d in _rueckruf_datensaetze(text):
         aussage = _rueckruf_datensatz_aussage(d)
         if aussage and aussage not in saetze:

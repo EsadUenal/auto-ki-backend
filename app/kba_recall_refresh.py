@@ -617,14 +617,17 @@ def main() -> None:
     log.info("=== Abgleichsmerkmale nachgetragen: %d Zeile(n) ===", nachtrag["aktualisiert"])
 
 
-def abgleich_nachtrag(kba_zeilen: list[dict], *, apply_: bool) -> dict:
+def abgleich_nachtrag(kba_zeilen: list[dict], *, apply_: bool,
+                      min_zeilen: int | None = None) -> dict:
     """Plant (und mit `apply_` schreibt) den Nachtrag der amtlichen Abgleichsmerkmale auf
     `rueckruf` -- frische, ungecachte Reads; zweiter Lauf schreibt nichts mehr."""
     from app.database import get_alle_baureihen_kurz, get_alle_rueckrufe_fuer_sync, get_conn
     from app.rueckruf_abgleich import apply_nachtrag, plane_nachtrag
 
     baureihen_marke = {b["id"]: b.get("marke") for b in get_alle_baureihen_kurz()}
-    plan = plane_nachtrag(kba_zeilen, get_alle_rueckrufe_fuer_sync(), baureihen_marke)
+    from app.rueckruf_abgleich import MIN_EXPORT_ZEILEN
+    plan = plane_nachtrag(kba_zeilen, get_alle_rueckrufe_fuer_sync(), baureihen_marke,
+                          min_zeilen=MIN_EXPORT_ZEILEN if min_zeilen is None else min_zeilen)
     if not apply_:
         return {"plan": plan, "aktualisiert": 0}
     with get_conn() as conn:

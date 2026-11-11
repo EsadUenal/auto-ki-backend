@@ -55,6 +55,9 @@ _VOLL = os.environ.get("AUTO_KI_KBA_EXPORT_CSV") or os.path.join(
 _AUSZUG = os.path.join(_HIER, "tests", "fixtures", "kba_export_auszug_2026-11-10.csv")
 EXPORT = _VOLL if os.path.exists(_VOLL) else _AUSZUG
 VOLLSTAENDIG = EXPORT == _VOLL
+# Gegen den 10-Zeilen-Auszug ist der Nachtrag nur ausdrücklich erlaubt (min_zeilen=0) und
+# setzt dann keinen Freigabe-Marker -- der Test setzt ihn in diesem Fall selbst (gekennzeichnet).
+MINZ = None if VOLLSTAENDIG else 0
 
 fehler: list[str] = []
 
@@ -117,23 +120,23 @@ with db.get_conn() as conn:
     erst = apply_sync(conn, plan)
 n_nach_import = _snapshot(_DB)[0]
 inhalt_vor_nachtrag = _snapshot(_DB)
-n1 = abgleich_nachtrag(zeilen, apply_=True)
+n1 = abgleich_nachtrag(zeilen, apply_=True, min_zeilen=MINZ)
 check("I3 Nachtrag schreibt Merkmale", n1["aktualisiert"] > 0, str(n1["aktualisiert"]))
 check("I4 Nachtrag ändert weder Originaldaten noch Verifikation (Fingerprint-Felder)",
       _snapshot(_DB) == inhalt_vor_nachtrag)
-n2 = abgleich_nachtrag(zeilen, apply_=True)
+n2 = abgleich_nachtrag(zeilen, apply_=True, min_zeilen=MINZ)
 check("I5 zweiter Nachtrag: nichts mehr zu tun", n2["aktualisiert"] == 0 and not n2["plan"]["updates"],
       str(n2["aktualisiert"]))
 # Der Sync konvergiert auf diesem Altstand im 2. Lauf (+2 Zeilen honda-civic-7 / mercedes-sl-r231,
 # identisch auf 606a6bb -- Bestandsverhalten, nicht Teil dieses Pakets), danach ist er leer.
 with db.get_conn() as conn:
     zweit = apply_sync(conn, plane_sync(zeilen))
-n3 = abgleich_nachtrag(zeilen, apply_=True)
+n3 = abgleich_nachtrag(zeilen, apply_=True, min_zeilen=MINZ)
 check("I6a Nachtrag erfasst auch die Zeilen des zweiten Imports", n3["aktualisiert"] == zweit["eingefuegt"],
       f"{n3['aktualisiert']} vs {zweit['eingefuegt']}")
 plan3 = plane_sync(zeilen)
 check("I6b dritter Import: nichts mehr zu tun", not plan3["neue_zeilen"] and not plan3["neue_zeilen_konditional"])
-check("I6c dritter Nachtrag: nichts mehr zu tun", abgleich_nachtrag(zeilen, apply_=True)["aktualisiert"] == 0)
+check("I6c dritter Nachtrag: nichts mehr zu tun", abgleich_nachtrag(zeilen, apply_=True, min_zeilen=MINZ)["aktualisiert"] == 0)
 _c = sqlite3.connect(_DB)
 dubl = _c.execute("SELECT COUNT(*) FROM (SELECT kba_referenz, baureihe_id, COUNT(*) n FROM rueckruf "
                   "WHERE kba_referenz IS NOT NULL GROUP BY 1,2 HAVING n>1)").fetchone()[0]
@@ -196,7 +199,7 @@ def amtliche_zeile(ref, baureihe_id=BAUREIHE):
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (*zeile.values(), k.eingrenzung, k.prod_von, k.prod_bis))
             verifiziere_amtlich(conn, cur.lastrowid, zeile, heute="2026-11-10")
-    abgleich_nachtrag(zeilen, apply_=True)
+    abgleich_nachtrag(zeilen, apply_=True, min_zeilen=MINZ)
     db.invalidate_referenzdaten_cache()
 
 
@@ -209,6 +212,12 @@ def baureihe_lesen():
 
 
 amtliche_zeile("7704")
+if not VOLLSTAENDIG:
+    with db.get_conn() as _c:   # [SYNTH] Marker nur im Auszug-Modus von Hand
+        _c.execute("INSERT OR IGNORE INTO schema_migrations (name) VALUES ('rueckruf_abgleich_nachtrag_v1')")
+from app.rueckruf_abgleich import freigabe_aktiv, invalidate_freigabe_cache  # noqa: E402
+invalidate_freigabe_cache()
+check("III0 Freigabe des Tabellenpfads aktiv", freigabe_aktiv())
 br = baureihe_lesen()
 amt7704 = [r for r in br["rueckrufe"] if str(r.get("kba_referenz")).lstrip("0") == "7704"]
 check("III1 7704 über den echten Lesepfad mit Merkmalen", len(amt7704) == 1
