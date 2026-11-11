@@ -1,0 +1,52 @@
+{
+ "herkunft": "Rein lesender Produktionsabgleich (SQLite mode=ro, query_only) am 2026-11-11: die drei tatsaechlich gespeicherten canonical-Zeilen zu KBA 7704 (ohne Baureihenbindung); Verifikation dort: verified, Stufe A, KBA-Gesamtexport, geprueft 2026-10-09. Nur Rueckrufdaten, keine Nutzer-/Konto-/Secret-Daten.",
+ "verifikation": {
+  "status": "verified",
+  "quelle_stufe": "A",
+  "quelle": "KBA-Rueckrufdatenbank, amtlicher Gesamtexport (automatischer Freshness-Abgleich)",
+  "referenz": "7704",
+  "geprueft_am": "2026-10-09",
+  "fingerprint": "209e41f0ad675b0b01eab37b3b402c55881c109695ec6a89bf2cfe1e01e9b611"
+ },
+ "zeilen": [
+  {
+   "baureihe_id": null,
+   "datum": "2018-03-22",
+   "betroffene_baujahre": "2014-2017",
+   "mangel": "Ein Bruch des Pulsationsdämpfers der Kraftstoffhochdruckpumpe kann zum Austritt von Kraftstoff führen.",
+   "abhilfe": "Austausch der betroffenen Baugruppe in der Kraftstoffversorgungsleitung.",
+   "kba_referenz": "7704",
+   "eingrenzung_amtlich": "GS-F, LC500, RC-F",
+   "prod_von_amtlich": 2014,
+   "prod_bis_amtlich": 2017,
+   "canonical_make": "LEXUS",
+   "canonical_nameplate": "GS-F"
+  },
+  {
+   "baureihe_id": null,
+   "datum": "2018-03-22",
+   "betroffene_baujahre": "2014-2017",
+   "mangel": "Ein Bruch des Pulsationsdämpfers der Kraftstoffhochdruckpumpe kann zum Austritt von Kraftstoff führen.",
+   "abhilfe": "Austausch der betroffenen Baugruppe in der Kraftstoffversorgungsleitung.",
+   "kba_referenz": "7704",
+   "eingrenzung_amtlich": "GS-F, LC500, RC-F",
+   "prod_von_amtlich": 2014,
+   "prod_bis_amtlich": 2017,
+   "canonical_make": "LEXUS",
+   "canonical_nameplate": "LC"
+  },
+  {
+   "baureihe_id": null,
+   "datum": "2018-03-22",
+   "betroffene_baujahre": "2014-2017",
+   "mangel": "Ein Bruch des Pulsationsdämpfers der Kraftstoffhochdruckpumpe kann zum Austritt von Kraftstoff führen.",
+   "abhilfe": "Austausch der betroffenen Baugruppe in der Kraftstoffversorgungsleitung.",
+   "kba_referenz": "7704",
+   "eingrenzung_amtlich": "GS-F, LC500, RC-F",
+   "prod_von_amtlich": 2014,
+   "prod_bis_amtlich": 2017,
+   "canonical_make": "LEXUS",
+   "canonical_nameplate": "RC-F"
+  }
+ ]
+}

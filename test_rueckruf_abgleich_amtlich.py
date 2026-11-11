@@ -179,8 +179,9 @@ BAUREIHE = "lexus-rc-xc10"
 
 def amtliche_zeile(ref, baureihe_id=BAUREIHE):
     """[AMTLICH] Exportdatensatz -> rueckruf-Zeile über den echten Importweg (INSERT +
-    verifiziere_amtlich) und den echten Nachtrag. Die Baureihen-BINDUNG ist [SYNTH]: lokal liegt
-    7704 im Review (Altstand), im Live-Bericht stand die Aktion am RC F."""
+    verifiziere_amtlich) und den echten Nachtrag. Die Baureihen-BINDUNG ist [SYNTH] und sichert den
+    unterstützten Speicherpfad 'baureihengebunden' ab. In PRODUKTION liegt 7704 NICHT so, sondern als drei
+    canonical-Zeilen ohne Baureihe -- diese echte Zuordnung prüft test_rueckruf_abgleich_freigabe.py (G)."""
     from app.kba_import_kandidaten import ImportKandidat
     from app.kba_recall_refresh import verifiziere_amtlich
     z = je_ref[ref]
