@@ -319,5 +319,35 @@ for motor, state, gate in (("5.0 V8 Kompressor", "user_confirmed", True),
 check("E+ Hubraum und Zusatz in verschiedenen Saetzen: nichts bestaetigt",
       kern("5.0 V8 Kompressor", [SYN_GETRENNT]).motor is None)
 
+print("\n== F: Zusatzwort-Pruefung gegen Negation und falsche Zuordnung (SYNTHETISCH) ==")
+F_FAELLE = {
+    "ohne":      synth("Der RC F wird von einem 5,0 Liter V8 Saugmotor ohne Kompressor angetrieben."),
+    "nicht":     synth("Der RC F wird von einem 5,0 Liter V8 angetrieben, nicht die Kompressor-Variante."),
+    "kein":      synth("Der RC F hat einen 5,0 Liter V8 Motor, kein Kompressor."),
+    "andere":    synth("Der RC F wird von einem 5,0 Liter V8 angetrieben, die Sonderedition dagegen "
+                       "von einem 5,0 Liter V8 Kompressor."),
+    "alternativ": synth("Der RC F wird von einem 5,0 Liter V8 angetrieben; alternativ ist ein Kompressor "
+                         "nur fuer die Sonderedition erhaeltlich."),
+}
+for name, quelle in F_FAELLE.items():
+    for motor in ("5.0 V8 Kompressor", "5.0 V8 Kompressor, Heckantrieb"):
+        r, st, tl, g = zeile(motor, [quelle, CARWIKI, AMS])
+        print(f"     {name:10s} {motor!r:34s} state={st} teile={tl} gate_frei={g}")
+        check(f"F {name} / {motor!r}: Kompressor nicht bestaetigt (Status user_only)", st == "user_only", str(st))
+        check(f"F {name} / {motor!r}: nur '5.0 V8' als Teil", tl == ["5.0 V8"], str(tl))
+        check(f"F {name} / {motor!r}: Gate nicht freigegeben", g is False, str(g))
+        check(f"F {name} / {motor!r}: Anzeige nennt Kompressor nie als bestaetigt",
+              "Kompressor“ durch Webquellen" not in r.bericht and "5.0 V8 Kompressor“ durch" not in r.bericht)
+
+SYN_MIT = synth("Der RC F wird von einem 5,0 Liter V8 Saugmotor mit Kompressor angetrieben.")
+for motor, state, gate in (("5.0 V8 Kompressor", "user_confirmed", True),
+                           ("5.0 V8 Kompressor, Heckantrieb", "user_only", True)):
+    r, st, tl, g = zeile(motor, [SYN_MIT, CARWIKI, AMS])
+    print(f"     mit        {motor!r:34s} state={st} teile={tl} gate_frei={g}")
+    check(f"F mit / {motor!r}: positiv belegter Zusatz bestaetigt (Status)", st == state, str(st))
+    check(f"F mit / {motor!r}: Gate", g == gate, str(g))
+    if state == "user_only":
+        check(f"F mit / {motor!r}: Teil nennt den belegten Zusatz", tl == ["5.0 V8 Kompressor"], str(tl))
+
 print("\nERGEBNIS:", "ALLE OK" if not FAILS else f"{len(FAILS)} FEHLER: {FAILS}")
 raise SystemExit(1 if FAILS else 0)

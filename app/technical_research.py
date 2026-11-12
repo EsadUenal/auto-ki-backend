@@ -3486,8 +3486,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # erfunden (wie bei den Claims).
         kern_text = _motor_kern_bestaetigt(motor)
 
-        def _motorkern_belege(r: dict) -> list[tuple[int, frozenset]]:
-            """(effektive Stufe, Tokens des Satzes) je qualifizierter Fundstelle."""
+        def _motorkern_belege(r: dict) -> list[tuple[int, frozenset, str]]:
+            """(effektive Stufe, Tokens, Satztext) je qualifizierter Fundstelle."""
             q = _qualifizierte_quelle(r, ziel)
             if q["verwurf_grund_datenblatt"]:
                 return []
@@ -3508,17 +3508,44 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                         continue
                     anker = start + next(p for w, p in werte if w == hub_norm)
                 eff = max(q["tier"], 3) if _in_fremdmarkt_span(anker, q["fremdmarkt"]) else q["tier"]
-                out.append((eff, frozenset(_tokens(satz))))
+                out.append((eff, frozenset(_tokens(satz)), satz))
             return out
 
         belege = [(r, _motorkern_belege(r)) for r in claim_quellen]
 
         def _kern_bestaetigt(pruefe) -> tuple[bool, set[str]]:
-            ok = [(r, b) for r, bs in belege for b in bs if pruefe(b[1])]
-            d = {_domain_von(r.get("url") or "") for r, (eff, _) in ok if eff <= 2}
-            return (len(d) >= 2 or any(eff == 1 for _, (eff, _) in ok)), d
+            ok = [(r, b) for r, bs in belege for b in bs if pruefe(b)]
+            d = {_domain_von(r.get("url") or "") for r, (eff, _t, _s) in ok if eff <= 2}
+            return (len(d) >= 2 or any(b[0] == 1 for _, b in ok)), d
 
-        kern_ok, doms = _kern_bestaetigt(lambda toks: True)
+        def _wort_positiv_gebunden(satz: str, wort: str) -> bool:
+            """Ein Motorwort zaehlt nur als POSITIVE, an die belegte Motorisierung
+            gebundene Aussage (nicht allein als Wortvorkommen): mindestens ein
+            Vorkommen, das (1) nicht verneint ist (`_verneint_im_teilsatz`, dieselbe
+            Regel wie bei den Claims), (2) im selben Teilsatz-Segment (Komma/
+            Semikolon/Satzzeichen/"sondern") wie Bauart und Hubraum steht -- ein
+            Zusatz in einem anderen Segment gehoert nicht belegbar zu diesem
+            Motor -- und (3) in einem Segment, das das Zielmodell nennt oder das
+            erste des Satzes ist (der Satz-Anker); ein spaeteres Segment ohne
+            Modellnennung ("die Sonderedition dagegen ...") ist eine andere Variante."""
+            grenzen = [0] + [m.end() for m in re.finditer(r"(?<!\d)[,.]|[,.](?!\d)|[;:!?]|sondern", satz, re.IGNORECASE)]
+            for m in re.finditer(r"(?<![A-Za-z0-9ÄÖÜäöüß])" + re.escape(wort) + r"(?![A-Za-z0-9ÄÖÜäöüß])",
+                                 satz, re.IGNORECASE):
+                if _verneint_im_teilsatz(satz, m.start()):
+                    continue
+                start = max(g for g in grenzen if g <= m.start())
+                ende = next((g for g in grenzen if g > m.start()), len(satz))
+                seg = satz[start:ende]
+                if not kern <= _tokens(seg):
+                    continue
+                if hub_norm and hub_norm not in {w for w, _ in _hubraum_liter_werte(seg)}:
+                    continue
+                if start != 0 and not _satz_nennt_modell(seg, ziel.get("modell")):
+                    continue
+                return True
+            return False
+
+        kern_ok, doms = _kern_bestaetigt(lambda b: True)
         if (kern or hub_norm) and kern_ok:
             # Voll- und Teilbestaetigung folgen EINER Regel (N6/N17-Restluecke):
             # jedes Wort der Motorangabe (ohne Antriebsrad-Phrase) braucht selbst
@@ -3541,7 +3568,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                     continue
                 if hub_norm and re.fullmatch(r"\d[.,]\d", w) and w.replace(",", ".") == hub_norm:
                     belegt_worte.append(w)
-                elif _kern_bestaetigt(lambda toks, wt=wt: wt <= toks)[0]:
+                elif _kern_bestaetigt(lambda b, w=w, wt=wt: wt <= b[1] and _wort_positiv_gebunden(b[2], w))[0]:
                     belegt_worte.append(w)
                 else:
                     unbelegt.append(w)
@@ -3567,7 +3594,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # unterscheidbar (N6-Befund). Reine Beobachtbarkeit -- ändert nichts
         # an der Bestätigungsschwelle selbst.
         anzahl_kernbeleg = sum(1 for _, bs in belege if bs)
-        anzahl_tier1_kernbeleg = sum(1 for _, bs in belege if any(eff == 1 for eff, _ in bs))
+        anzahl_tier1_kernbeleg = sum(1 for _, bs in belege if any(b[0] == 1 for b in bs))
         log.info(
             "Motorkern-Prüfung: nutzerwert=%r kern=%s hubraum_erforderlich=%s "
             "quellen_mit_kernbeleg=%d domains_tier<=2=%d davon_tier1=%d bestaetigt=%s",
