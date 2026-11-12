@@ -375,6 +375,251 @@ else:
     # Fallback: der Test zählt die fehlende Quelle als Fehler, statt still grün zu bleiben
     fehler.append("echte PDF-Quelle fehlt")
 
+# ══ H. Einsatzbereich: Reichweite der Überschrift (echte PDF-Struktur, tatsächlicher Extraktionspfad) ═══════════
+print("\n== H Einsatzbereich ==")
+
+
+def extraktion_alle(text, modell="RC F", marke="Lexus", bj=2017, km=82000, fuel="benzin"):
+    alt = tr.MAX_FAKTEN_JE_KATEGORIE
+    tr.MAX_FAKTEN_JE_KATEGORIE = 99
+    try:
+        ab: list[dict] = []
+        f = tr._extrahiere_fakten([{"url": URL, "title": "WARTUNG UND GARANTIE", "content": text}], "wartung",
+                                  marke=marke, modell=modell, baujahr=bj, abgelehnt=ab, fuel_ziel=fuel, kilometerstand=km)
+    finally:
+        tr.MAX_FAKTEN_JE_KATEGORIE = alt
+    return f
+
+
+GELTUNG = "Geltungsbereich laut Quelle: Für normale Einsatzbedingungen"
+if SEITEN:
+    real = "WARTUNG UND GARANTIE. " + "\n\n".join(SEITEN[n] for n in (4, 15, 16, 17))
+    ber = tr._einsatz_bereiche(real)
+
+    def in_ber(pos, i=None):
+        return [k for k, (a, b, _l) in enumerate(ber) if a <= pos < b] if i is None else (ber[i][0] <= pos < ber[i][1])
+
+    p_kopf = real.index("Lexus Care-Zwischenservice: alle 15.000")
+    p_tab = real.index("Motoröl und -filter*")
+    p_fn = real.index("Bei Fahrzeugen mit Ölwechsel")
+    p_s16 = real.index("Hinterachsdifferenzialöl (außer")
+    p_ux = real.index("Für UX 300e")
+    p_ux_tab = real.index("Heizgerät-Kühlmittel")
+    check("H1 [ECHT] zwei Einsatz-Überschriften (RC-F-Abschnitt S.15, UX-300e-Abschnitt S.17), wörtlich erkannt",
+          len(ber) == 2 and ber[0][2] == "Für normale Einsatzbedingungen" and ber[1][2] == "Für normale Einsatzbedingungen", str(ber))
+    check("H2 [ECHT] Reichweite: Tabelle, Fußnote *1 und Fortsetzung auf S.16 gehören dazu",
+          in_ber(p_tab, 0) and in_ber(p_fn, 0) and in_ber(p_s16, 0))
+    check("H3 [ECHT] Reichweite: die KOPFZEILE davor (am Textrand, vor der Überschrift) gehört NICHT dazu -- nie rückwärts",
+          in_ber(p_kopf) == [] and "Einsatzbedingungen" not in real[real.index("2.9. LEXUS"):real.index("Für normale Einsatzbedingungen")])
+    check("H4 [ECHT] Nachbarabschnitt: der UX-300e-Abschnitt ('Für UX 300e') ist eine Grenze; seine Tabelle hat die EIGENE Überschrift",
+          ber[0][1] <= p_ux and not in_ber(p_ux, 0) and in_ber(p_ux_tab, 1) and not in_ber(p_ux_tab, 0))
+    # Die Überschrift steht AUSSERHALB des bisherigen Fakttexts (Produzentenlücke): kein Tabellenfenster trägt sie
+    saetze = [s for s, _ in tr._saetze_mit_segmentgrenze(tr._entferne_fremde_modellbereiche(real, "RC F", url="u", abgelehnt=[]))]
+    tabellensatz = next(s for s in saetze if s.startswith("Für normale Einsatzbedingungen"))
+    fenster = tr._wartung_tabellen_fenster_ort(tabellensatz, tr._wartung_vokabular())
+    check("H5 [ECHT] ohne Ergänzung trägt KEIN Tabellenfenster den Einsatzbereich (Überschrift liegt vor dem ersten Fenster)",
+          len(fenster) >= 5 and all("Einsatzbedingungen" not in f for f, _t, _s in fenster)
+          and tabellensatz.index("Einsatzbedingungen") < min(s for _f, _t, s in fenster))
+
+    fk = extraktion_alle(real)
+    nach = {f.bauteil: f for f in fk}
+    print("  Fakten:", sorted(nach))
+    for b in ("Ventilspiel", "Automatikgetriebeöl", "Hinterachsdifferenzialöl", "Nebenaggregat-Antriebsriemen"):
+        check(f"H6 {b}: Fakttext trägt den belegten Einsatzbereich wörtlich (Tabellenzeile, auch Fortsetzung S.16)",
+              b in nach and GELTUNG in " ".join(nach[b].aussage.split()), nach[b].aussage[-120:] if b in nach else "fehlt")
+    mo = nach["Motoröl"]
+    rs_mo = ll.zerlege_regeln(mo.aussage)
+    check("H7 Motoröl: die FUSSNOTEN-Fundstelle (Tabelle) trägt den Einsatzbereich, die KOPFZEILEN-Fundstelle nicht",
+          len(rs_mo) == 2 and rs_mo[0].bedingt and rs_mo[0].einsatz == "normal"
+          and not rs_mo[1].bedingt and rs_mo[1].einsatz is None and "Einsatzbedingungen" not in rs_mo[1].text,
+          str([(r.einsatz, r.text[:40]) for r in rs_mo]))
+    check("H8 Fußnote: Landesvorbehalt der Regel, Ausstattungsbedingung und Einsatzbereich getrennt im Text",
+          "falls für Ihr Land zutreffend" in rs_mo[0].text and "Ölwechsel-Managementsystem" in rs_mo[0].text and GELTUNG in rs_mo[0].text)
+    check("H9 kein Fakt trägt einen erschwerten Bereich", not any("erschwert" in f.aussage.lower() for f in fk))
+    # Nachbarabschnitt mit nummerierter Überschrift: die Überschrift wirkt nicht darüber hinaus
+    fk_n = extraktion_alle(real + "\n\n2.10. WEITERE ARBEITEN\nBeim Lexus RC F Zahnriemen kontrollieren: alle 120.000 km oder 8 Jahre.")
+    zr = [f for f in fk_n if f.bauteil == "Zahnriemen"]
+    check("H10 [SYNTH-Nachbar] Abschnitt '2.10. ...' hinter der Tabelle: seine Zeile trägt KEINEN Einsatzbereich",
+          len(zr) == 1 and "Geltungsbereich" not in zr[0].aussage and "Einsatzbedingungen" not in zr[0].aussage, str([f.aussage for f in zr]))
+    # sichtbare Folgen bis Hinweis, Fragen, Dokumente, Evidenz
+    ins_h, lk_h, ka_h = kette(fk)
+    hs_h = {w.bauteil: w for w in lk_h.wartungshinweise}
+    check("H11 Hinweis Ventilspiel: Einsatzbereich genannt, NICHT als am Fahrzeug bestätigt; Nutzungsprofil und Marktgeltung offen",
+          "gilt laut Quelle für normale Einsatzbedingungen" in hs_h["Ventilspiel"].hinweis
+          and "vorlagen, ist unbekannt" in hs_h["Ventilspiel"].hinweis
+          and "in Deutschland gilt, ist nicht bestätigt" in hs_h["Ventilspiel"].hinweis, hs_h["Ventilspiel"].hinweis[-420:])
+    check("H12 Hinweis Motoröl: Grundregel (Kopfzeile) ohne erfundenen Bereich; die bedingte Fußnote zeigt ihren Einsatzbereich",
+          "gilt laut Quelle für normale Einsatzbedingungen" not in hs_h["Motoröl"].hinweis
+          and GELTUNG in hs_h["Motoröl"].hinweis and "Zusätzlich nennt die Quelle eine bedingte Regel" in hs_h["Motoröl"].hinweis)
+    for bereich in ("verkaeuferfragen", "dokumente"):
+        spez = getattr(ka_h, bereich).fahrzeugspezifisch
+        vs = next((a for a in spez if "ventilspiel" in (a.titel + a.aktion).lower() and a.kategorie in ("wartung", "web_wartung")), None)
+        mo_a = next((a for a in spez if "motoröl" in (a.titel + a.aktion).lower() and a.kategorie in ("wartung", "web_wartung")), None)
+        check(f"H13 {bereich}: Einsatzbereich erreicht die Aktion (Ventilspiel; bei Motoröl in der Zusatzregel)",
+              vs is not None and "normale Einsatzbedingungen" in vs.aktion and mo_a is not None and GELTUNG in mo_a.aktion)
+    ins_vs = next(i for i in ins_h if i.titel.startswith("Ventilspiel"))
+    check("H14 Evidenz: der Einsatzbereich steht im Insight-Text; Evidenzverweis der Aktion unverändert",
+          "normale Einsatzbedingungen" in ins_vs.beschreibung
+          and any(ins_vs.id in a.evidence_ids for a in ka_h.dokumente.fahrzeugspezifisch))
+    kompakt_vs = ka_mod._kompakt_wartung("Ventilspiel", "pruefen", nach["Ventilspiel"].aussage)
+    check("H15 kompakte Zeile (Überlauf) trägt den Einsatzbereich", "Einsatzbedingungen" in kompakt_vs, kompakt_vs)
+
+    # normale und erschwerte Regime getrennt (SYNTH, in der Struktur des echten Heftes: je eigene Überschrift)
+    TAB = ("Erneuern - Inspektion ZUSÄTZLICHER TEILEAUSTAUSCH Zahnriemen Alle {a} Bremsflüssigkeit Alle {b} Zündkerzen Alle {c} "
+           "Luftfilter Alle {d} ZUSÄTZLICHE INSPEKTIONEN Ventilspiel Alle {e} Motorkühlmittel Alle {f}")
+    doc = (SEITEN[4] + "\n\n2.9. LEXUS CARE-WARTUNGSPLAN\nFür RC F und UX 200\nFür normale Einsatzbedingungen\n"
+           + TAB.format(a="150.000 km / 8 Jahre", b="60.000 km / 4 Jahre", c="90.000 km / 6 Jahre", d="60.000 km / 4 Jahre",
+                        e="90.000 km / 6 Jahre", f="150.000 km / 10 Jahre")
+           + "\nFür erschwerte Einsatzbedingungen\n"
+           + TAB.format(a="90.000 km / 5 Jahre", b="30.000 km / 2 Jahre", c="45.000 km / 3 Jahre", d="30.000 km / 2 Jahre",
+                        e="45.000 km / 3 Jahre", f="75.000 km / 5 Jahre"))
+    ber_s = tr._einsatz_bereiche(doc)
+    check("H16 [SYNTH] zwei getrennte Bereiche (normal, erschwert), sich nicht überlappend",
+          [b[2] for b in ber_s] == ["Für normale Einsatzbedingungen", "Für erschwerte Einsatzbedingungen"] and ber_s[0][1] <= ber_s[1][0], str(ber_s))
+    fk_s = extraktion_alle(doc)
+    regeln_zr = [r for f in fk_s if f.bauteil == "Zahnriemen" for r in ll.zerlege_regeln(f.aussage)]
+    print("  Zahnriemen-Regeln:", [(r.km, r.einsatz, r.bedingt) for r in regeln_zr])
+    check("H17 [SYNTH] 150.000 km nur NORMAL und unbedingt, 90.000 km nur ERSCHWERT und bedingt -- keine Vermischung",
+          any(r.km == (150000, None) and r.einsatz == "normal" and not r.bedingt for r in regeln_zr)
+          and any(r.km == (90000, None) and r.einsatz == "erschwert" and r.bedingt for r in regeln_zr)
+          and not any(r.einsatz == "gemischt" for r in regeln_zr)
+          and not any(r.km == (150000, None) and r.einsatz == "erschwert" for r in regeln_zr)
+          and not any(r.km == (90000, None) and r.einsatz == "normal" for r in regeln_zr))
+    ins_s, lk_s, ka_s = kette(fk_s)
+    hz = [w for w in lk_s.wartungshinweise if w.bauteil == "Zahnriemen"]
+    erschw = [w for w in hz if "nur unter einer Voraussetzung" in w.hinweis]
+    check("H18 [SYNTH] erschwerter Bereich wird nie als erreicht ausgegeben (bedingte Regel, Voraussetzung ungeklärt)",
+          all("wurde bei dieser Laufleistung rein rechnerisch" not in w.hinweis for w in erschw)
+          and all("ist nach dem Baujahr bereits erreicht" not in w.hinweis for w in erschw)
+          and all("ungeklärt" in w.hinweis for w in erschw), str([w.hinweis[:200] for w in hz]))
+    check("H19 [SYNTH] die normale Grundregel geht neben der erschwerten nicht verloren (kein Bauteilplatz-Verbrauch)",
+          any("gilt laut Quelle für normale Einsatzbedingungen" in w.hinweis and "nur unter einer Voraussetzung" not in w.hinweis for w in hz),
+          str([(w.status, w.hinweis[:120]) for w in hz]))
+    check("H20 [SYNTH] Bremsflüssigkeit/Luftfilter: Regel mit erschwertem Bereich ist bedingt, die normale nicht",
+          all(r.bedingt for f in fk_s if f.bauteil in ("Luftfilter", "Bremsflüssigkeit") for r in ll.zerlege_regeln(f.aussage) if r.einsatz == "erschwert")
+          and all(not r.bedingt for f in fk_s if f.bauteil in ("Luftfilter", "Bremsflüssigkeit") for r in ll.zerlege_regeln(f.aussage) if r.einsatz == "normal"))
+else:
+    fehler.append("H: echte PDF-Quelle fehlt")
+
+# ══ I. Reine Zeitgrundregel (kein Kilometerpunkt) neben bedingter Kilometer-Zusatzregel ═════════════════════
+print("\n== I Reine Zeitgrundregel ==")
+ZEIT = "Zahnriemen kontrollieren: alle 6 Jahre"
+KMB = ("Bei Fahrzeugen mit Wartungsanzeige: Zahnriemen kontrollieren, wenn die Hinweismeldung erscheint "
+       "(zumindest alle 150.000 km), falls für Ihr Land zutreffend")
+beide_a = ZEIT + ". " + M + " " + KMB
+beide_b = KMB + ". " + M + " " + ZEIT
+
+
+def zh(text, km=82000, alter=9, technik=None):
+    i = Insight(id="z1", kategorie="web_wartung", titel="Zahnriemen: x", beschreibung=text, confidence="mittel", taetigkeit="pruefen",
+                technische_bedingung=technik, technische_bedingung_status="unresolved" if technik else None)
+    return ll.zeit_hinweise([i], km, alter), ll._wartungshinweise([i], km, alter)
+
+
+for lab, t in (("A (Zeitregel zuerst)", beide_a), ("B (Zusatzregel zuerst)", beide_b)):
+    zhs, kmh = zh(t)
+    h = zhs[0].hinweis if zhs else ""
+    check(f"I1 {lab}: die Zeit-Grundregel wird eigenständig ausgewertet (6 Jahre, Alter 9 -> bereits erreicht, mindestens 8 Jahre)",
+          len(zhs) == 1 and "Zeitintervall (6 Jahre) ohne Kilometerangabe" in h and "bereits erreicht (Fahrzeugalter mindestens 8 Jahre" in h, h)
+    check(f"I2 {lab}: KEIN Kilometer-Hinweis aus dem Kilometerwert der bedingten Zusatzregel (nicht ersatzweise verwendet)",
+          kmh == [] and "Kilometerpunkt" not in h and "rechnerisch mindestens einmal erreicht" not in h)
+    check(f"I3 {lab}: die bedingte Zusatzregel bleibt wörtlich, ungeklärt und wird nicht auf die Zeitregel übertragen",
+          "Zusätzlich nennt die Quelle eine bedingte Regel" in h and "zumindest alle 150.000 km" in h
+          and "nicht auf die Zeitregel übertragen" in h and "ungeklärt" in h)
+    check(f"I4 {lab}: weder Fälligkeit noch unterlassene Wartung",
+          sauber(h) and "seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor" in h)
+    zhs_hoch, kmh_hoch = zh(t, km=200000)
+    check(f"I5 {lab}: auch bei Kilometerstand ÜBER dem Zusatzwert (200.000 km): kein Kilometer-Hinweis, Zeitregel unverändert",
+          kmh_hoch == [] and len(zhs_hoch) == 1 and "Kilometerpunkt" not in zhs_hoch[0].hinweis)
+    check(f"I6 {lab}: Rang aus DERSELBEN Schwellenlogik (Zeit sicher erreicht), unabhängig vom Zusatz-Kilometerwert",
+          ll.schwelle_belegbar_erreicht_alter(t, 82000, 9) and not ll.schwelle_belegbar_erreicht_alter(t, 82000, 2)
+          and ll.schwelle_belegbar_erreicht_alter(t, 1000, 9))
+    zu, _ = zh(t, alter=None)
+    check(f"I7 {lab}: Alter UNBEKANNT -> Grund 'ohne bekanntes Baujahr', kein Erstzulassungsmonat, Rang ohne belegte Schwelle",
+          len(zu) == 1 and "ohne bekanntes Baujahr" in zu[0].hinweis and "Erstzulassungsmonat" not in zu[0].hinweis
+          and not ll.schwelle_belegbar_erreicht_alter(t, 82000, None), zu[0].hinweis if zu else "")
+    zb, _ = zh(t, alter=6)
+    check(f"I8 {lab}: Alter im UNSICHERHEITSBEREICH (6 bei Schwelle 6) -> der Erstzulassungsmonat ist entscheidend, offen",
+          len(zb) == 1 and "Erstzulassungsmonat" in zb[0].hinweis and "bleibt deshalb offen" in zb[0].hinweis
+          and "bereits erreicht (Fahrzeugalter" not in zb[0].hinweis and not ll.schwelle_belegbar_erreicht_alter(t, 82000, 6))
+    zn, _ = zh(t, alter=2)
+    check(f"I9 {lab}: Zeitgrenze auch im ältesten Fall nicht erreicht -> kein Hinweis ohne Anlass", zn == [])
+zt, _ = zh(beide_a, technik="nur Hybrid- und Hybrid Plug-in-Modelle")
+check("I10 technische Voraussetzung ungeklärt: sie ist der Grund der offenen Zeitaussage",
+      len(zt) == 1 and "ungeklärten technischen Voraussetzung" in zt[0].hinweis and "Sofern sie zutrifft" in zt[0].hinweis)
+zonly, konly = zh(KMB, km=160000)
+check("I11 NUR bedingte Regel: keine erfundene Grundregel, kein Zeit-Hinweis; der Kilometer-Hinweis bleibt ausdrücklich bedingt",
+      zonly == [] and len(konly) == 1 and "nur unter einer Voraussetzung" in konly[0].hinweis
+      and "weder als erreicht noch als nicht erreicht" in konly[0].hinweis and not ll.schwelle_belegbar_erreicht_alter(KMB, 82000, 9))
+znone, knone = zh("Zahnriemen kontrollieren, wenn die Hinweismeldung erscheint (zumindest alle 6 Jahre)")
+check("I12 NUR bedingte REINE ZEIT-Regel: weder Hinweis noch erfundene Grundregel", znone == [] and knone == [])
+z2, _ = zh(ZEIT + ". " + M + " Zahnriemen kontrollieren: alle 8 Jahre")
+check("I13 [SYNTH] zwei verschiedene Zeit-Grundregeln: keine Auswahl, Mehrdeutigkeit ausgewiesen",
+      len(z2) == 1 and "mehrere unterschiedliche Zeitintervalle" in z2[0].hinweis and "keines wird ausgewählt" in z2[0].hinweis)
+zk, kk = zh("Zahnriemen kontrollieren: alle 90.000 km. " + M + " Zahnriemen kontrollieren: alle 6 Jahre")
+check("I14 Zeit-Grundregel NEBEN einer Kilometer-GRUNDregel: mehrdeutig statt Erstauswahl; kein zusätzlicher Zeit-Hinweis",
+      zk == [] and len(kk) == 1 and "mehrere unterschiedliche Intervalle" in kk[0].hinweis)
+
+# tatsächlicher Pfad: Erzeuger -> Zusammenführung gleicher Bauteile (app/risikothemen.py) -> Laufleistung -> Aktionen.
+# Zeitregel und bedingte Kilometerregel kommen als zwei Fakten derselben Quelle; die Zusammenführung legt sie mit dem
+# Marker "Weiterer Datensatz (Webrecherche):" in EINEN Insight (der Erzeuger-Marker greift hier nicht).
+KM_T = 160000   # über dem Wert der bedingten Zusatzregel (150.000 km): sie darf trotzdem nicht auf die Zeitregel wirken
+REQ_T = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=2017, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[])
+QUELLE_T = "https://www.toyota.de/service/wartung.pdf"
+
+
+def fakten_t(text, bj=2017):
+    return tr._extrahiere_fakten([{"url": QUELLE_T, "title": "Toyota Yaris Wartungsplan Serviceheft", "content": text}], "wartung",
+                                 marke="Toyota", modell="Yaris", baujahr=bj, abgelehnt=[], kilometerstand=KM_T)
+
+
+for lab, text in (("A Zeitregel zuerst", ZEIT + ". " + KMB + "."), ("B Zusatzregel zuerst", KMB + ". " + ZEIT + ".")):
+    fk_i = fakten_t(text)
+    ins_i, lk_i, ka_i = kette(fk_i, REQ_T)
+    print(f"  [{lab}] Fakten:", [(f.bauteil, f.aussage[:40]) for f in fk_i])
+    zr_ins = [i for i in ins_i if i.titel.startswith("Zahnriemen")]
+    check(f"I15 {lab} [Extraktionspfad] der Erzeuger liefert Zeitregel und bedingte Kilometerregel als zwei Fakten; die Zusammen-"
+          f"führung macht EINEN Insight mit 'Weiterer Datensatz' daraus",
+          len(fk_i) == 2 and sum(1 for f in fk_i if ll.WartungsRegel(f.aussage).km is None) == 1
+          and len(zr_ins) == 1 and "Weiterer Datensatz (Webrecherche):" in zr_ins[0].beschreibung and len(zr_ins[0].nebenbelege) == 1,
+          str([i.beschreibung[:120] for i in zr_ins]))
+    rg = ll.zerlege_regeln(zr_ins[0].beschreibung)
+    check(f"I16 {lab} [Extraktionspfad] die zusammengeführte Aussage wird an BEIDEN Markern zerlegt: eine Zeit-Grundregel, eine bedingte "
+          f"Kilometerregel -- kein gemischter Einzelwert",
+          len(rg) == 2 and sorted((r.km is None, r.bedingt) for r in rg) == [(False, True), (True, False)]
+          and not any(r.km and r.zeit for r in rg))
+    check(f"I17 {lab} [Extraktionspfad] KEIN Kilometer-Hinweis aus dem Wert der bedingten Regel (160.000 km >= 150.000 km)",
+          not [w for w in lk_i.wartungshinweise if w.bauteil == "Zahnriemen"])
+    for bereich in ("verkaeuferfragen", "dokumente"):
+        spez = [a for a in getattr(ka_i, bereich).fahrzeugspezifisch if "zahnriemen" in (a.titel + a.aktion).lower()]
+        za = spez[0] if spez else None
+        check(f"I18 {lab} {bereich}: EINE Aktion; Zeit-Grundregel ausgewertet (erreicht), bedingte Kilometerregel wörtlich, ungeklärt, nicht übertragen",
+              len(spez) == 1 and "Zeitintervall (6 Jahre) ohne Kilometerangabe" in za.aktion
+              and "bereits erreicht (Fahrzeugalter mindestens 8 Jahre" in za.aktion
+              and "Zusätzlich nennt die Quelle eine bedingte Regel" in za.aktion and "zumindest alle 150.000 km" in za.aktion
+              and "nicht auf die Zeitregel übertragen" in za.aktion and "Kilometerpunkt" not in za.aktion,
+              str([a.aktion[:160] for a in spez]))
+        check(f"I19 {lab} {bereich}: Rang einlösbar (750) aus der Zeitschwelle, Evidenz = der zusammengeführte Insight",
+              za is not None and za.rang == 750 and za.evidence_ids == [zr_ins[0].id], str((za.rang, za.evidence_ids) if za else None))
+        check(f"I20 {lab} {bereich}: Prüfwortlaut (Tätigkeit 'prüfen'), keine Fälligkeit, keine unterlassene Wartung",
+              za is not None and ("geprüft" in za.titel or "Prüfnachweis" in za.titel) and sauber(za.aktion))
+# Alter unbekannt / unsicher durch den echten Pfad
+for lab, bj, erwartet in (("Alter unbekannt", None, "ohne bekanntes Baujahr"), ("Unsicherheitsbereich", 2020, "Erstzulassungsmonat")):
+    req_x = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=bj, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[])
+    _i, _l, ka_x = kette(fakten_t(ZEIT + ". " + KMB + ".", bj=bj), req_x)
+    za = [a for a in ka_x.verkaeuferfragen.fahrzeugspezifisch if "Zeitintervall (6 Jahre) ohne Kilometerangabe" in a.aktion]
+    check(f"I21 [Extraktionspfad] {lab}: Zeitregel sichtbar mit dem richtigen Grund ('{erwartet}'), nicht als erreicht, kein Rang 750",
+          len(za) == 1 and erwartet in za[0].aktion and "bereits erreicht (Fahrzeugalter" not in za[0].aktion
+          and za[0].rang < 750, za[0].aktion[:260] if za else "keine Aktion")
+# nur bedingte Kilometerregel durch den echten Pfad: keine erfundene Grundregel
+fk_n = fakten_t(KMB + ".")
+_i, lk_n, ka_n = kette(fk_n, REQ_T)
+hn = [w for w in lk_n.wartungshinweise if w.bauteil == "Zahnriemen"]
+an = [a for a in ka_n.verkaeuferfragen.fahrzeugspezifisch if "zahnriemen" in (a.titel + a.aktion).lower()]
+check("I22 [Extraktionspfad] NUR bedingte Kilometerregel: Hinweis ausdrücklich bedingt, keine Zeit-Grundregel erfunden, Rang unter 750",
+      len(hn) == 1 and "nur unter einer Voraussetzung" in hn[0].hinweis and len(an) == 1 and "Zeitintervall" not in an[0].aktion
+      and an[0].rang < 750 and "wurde bei dieser Laufleistung rein rechnerisch" not in an[0].aktion)
+
 # ══ G. Keine schweren Importe für die gemeinsame Konstante ═══════════════════════════════════
 print("\n== G Importe ==")
 p = subprocess.run([sys.executable, "-I", "-c",

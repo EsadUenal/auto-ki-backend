@@ -293,6 +293,13 @@ def evidenz_rang(insight: Insight) -> tuple[int, int]:
 
 # ── Zusammenführung ──────────────────────────────────────────────────────────
 
+# Trennmarker der Zusammenführung ("Weiterer Datensatz (Webrecherche): ...") und die angehängten Schlusssätze: hier
+# definiert, damit der Verbraucher (app/laufleistung.py, regimegetrennte Wartungsauswertung) dieselben Texte liest,
+# ohne eine zweite Kopie zu pflegen. Dieses Modul importiert nur `re` und die Modelle.
+DATENSATZ_MARKER = re.compile(r"Weiterer Datensatz \([^)]*\):")
+SCHLUSSSATZ_UNEINHEITLICH = "Die hinterlegten Angaben sind nicht einheitlich; übernommen ist die zurückhaltendere."
+SCHLUSSSATZ_KEINE_HERSTELLERVORGABE = "Keine der Angaben ist als Herstellervorgabe belegt."
+
 _HERKUNFT = {
     "schwachstelle": "Baureihendaten",
     "motorproblem": "Motordaten",
@@ -351,11 +358,10 @@ def _fuehre_zusammen(gruppe: list[Insight]) -> Insight:
                       f"{_satz(text)}")
     verbindlich = {verbindlichkeit(t) for t in gesehen}
     if 0 in verbindlich and 2 in verbindlich:
-        zusatz.append("Die hinterlegten Angaben sind nicht einheitlich; übernommen ist "
-                      "die zurückhaltendere.")
+        zusatz.append(SCHLUSSSATZ_UNEINHEITLICH)
     if fuehrend.trust != "verified" and any(i.kategorie in ("wartung", "web_wartung")
                                             for i in gruppe):
-        zusatz.append("Keine der Angaben ist als Herstellervorgabe belegt.")
+        zusatz.append(SCHLUSSSATZ_KEINE_HERSTELLERVORGABE)
 
     schweregrad = fuehrend.schweregrad or next(
         (i.schweregrad for i in weitere if i.schweregrad), None)

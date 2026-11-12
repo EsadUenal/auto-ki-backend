@@ -3926,19 +3926,28 @@ def _modell_unterzeile_trennen(fenster: str) -> tuple[str, str | None]:
 def _wartung_tabellen_fenster(text: str, vokabular: dict[str, str]) -> list[tuple[str, str | None]]:
     """Wie `_wartung_tabellen_segmente()`, aber mit der aus dem Abschnittskopf
     abgeleiteten Tätigkeit je Fenster (`None`, wenn keine eindeutig ist)."""
+    return [(f, t) for f, t, _ in _wartung_tabellen_fenster_ort(text, vokabular)]
+
+
+def _wartung_tabellen_fenster_ort(text: str, vokabular: dict[str, str]) -> list[tuple[str, str | None, int]]:
+    """Wie `_wartung_tabellen_fenster()`, zusätzlich mit der STARTPOSITION des Fensters im Text (für den
+    Einsatzbereich, s. `_einsatz_bereiche`). Ohne Tabellenzerlegung: `(text, None, 0)`."""
     if not _ist_tabellenartig(text, vokabular):
-        return [(text, None)]
+        return [(text, None, 0)]
     positionen = _vokabular_positionen(text, vokabular)
     if len(positionen) < 2:
-        return [(text, None)]
-    grenzen = [m.start() for m in _TABELLEN_HARTE_GRENZE.finditer(text)]
+        return [(text, None, 0)]
+    # Eine Einsatz-Überschrift ("Für erschwerte Einsatzbedingungen") beendet das Fenster der Zeile davor: sie darf
+    # weder in deren Fakttext laufen noch dessen Einsatzbereich verfälschen.
+    grenzen = sorted([m.start() for m in _TABELLEN_HARTE_GRENZE.finditer(text)]
+                     + [m.start() for m in _RE_EINSATZ_UEBERSCHRIFT.finditer(text)])
 
     def wortanfang(pos: int) -> int:
         while pos > 0 and _WORTZEICHEN.match(text[pos - 1]):
             pos -= 1
         return pos
 
-    ergebnis: list[tuple[str, str | None]] = []
+    ergebnis: list[tuple[str, str | None, int]] = []
     for i, (roh_start, ende, _muster, _schluessel) in enumerate(positionen):
         # Ein Vokabular-Muster kann MITTEN in einem längeren Kompositum treffen
         # ("aggregat" in "Nebenaggregat-Antriebsriemen") -- das Fenster beginnt
@@ -3965,10 +3974,10 @@ def _wartung_tabellen_fenster(text: str, vokabular: dict[str, str]) -> list[tupl
         haupt, unterzeile = _modell_unterzeile_trennen(fenster.strip())
         taetigkeit = _abschnitt_taetigkeit(text, start)
         if haupt:
-            ergebnis.append((haupt, taetigkeit))
+            ergebnis.append((haupt, taetigkeit, start))
         if unterzeile:
-            ergebnis.append((unterzeile, taetigkeit))
-    return ergebnis or [(text, None)]
+            ergebnis.append((unterzeile, taetigkeit, start))
+    return ergebnis or [(text, None, 0)]
 
 
 def _wartung_tabellen_segmente(text: str, vokabular: dict[str, str]) -> list[str]:
@@ -5716,6 +5725,56 @@ def _entferne_fremde_modellbereiche(text: str, modell: str | None, *, url: str =
     return "".join(teile)
 
 
+# ── Einsatzbereich ("Für normale Einsatzbedingungen") ─────────────────────────────────────────
+#
+# Befund (echtes Serviceheft, lex-sw-00de.pdf S. 15): die Überschrift "Für normale Einsatzbedingungen" steht VOR der
+# FITNESS-Tabelle und gehört nicht zum Fakttext der Tabellenzeilen. Ein Fenster "Motoröl und -filter*1 ..." trug den
+# Geltungsbereich deshalb nie; er ging beim Zerlegen verloren (Produzentenlücke).
+#
+# Reichweite (am Dokument belegt, nicht an der Position allein): die Überschrift ist Teil des eingerückten Tabellen-
+# blocks (gleiche Einrückung wie die Tabellen, unmittelbar über deren Legende "Erneuern - Inspektion ..."), die
+# Kopfzeilen-Sätze davor ("Lexus Care-Zwischenservice: alle 15.000 km ...") stehen am Textrand OHNE Überschrift. Sie gilt
+# deshalb VORWÄRTS -- für die Tabellen, ihre Fußnoten und die Fortsetzung des Abschnitts -- bis zur nächsten
+# Bereichsgrenze (andere Einsatz-Überschrift, "Für <Modellliste>", nummerierte Abschnittsüberschrift, "Für alle
+# Modelle"), und NIE rückwärts auf Sätze davor. Fehlt die Überschrift im Text oder liegt eine Grenze dazwischen, entsteht
+# kein Einsatzbereich: nichts wird erfunden. "Normale" und "erschwerte" Bereiche bleiben getrennt (je eigene Überschrift).
+_RE_EINSATZ_UEBERSCHRIFT = re.compile(
+    r"(?<![A-Za-zäöüÄÖÜß])F(?:ü|ue)r\s+(?P<art>normale|erschwerte)\s+(?:Einsatz|Betriebs)bedingungen\b")
+_RE_EINSATZ_WORT = re.compile(r"(?:normale|erschwerte)[nr]?\s+(?:Einsatz|Betriebs)bedingungen", re.IGNORECASE)
+
+
+def _einsatz_bereiche(text: str) -> list[tuple[int, int, str]]:
+    """`(start, ende, überschrift)` je Einsatz-Überschrift. Die Überschrift muss am Zeilen-/Satzanfang stehen."""
+    kopf = []
+    for m in _RE_EINSATZ_UEBERSCHRIFT.finditer(text or ""):
+        davor = text[:m.start()].rstrip(" \t")
+        if not davor or davor[-1] in "\n.!?:":
+            kopf.append(m)
+    if not kopf:
+        return []
+    grenzen = sorted([g.start() for rx in (_RE_MODELLBEREICH, _RE_ABSCHNITTSNUMMER, _RE_ALLGEMEINER_ABSCHNITT)
+                      for g in rx.finditer(text)] + [m.start() for m in kopf])
+    return [(m.end(), min([g for g in grenzen if g >= m.end()], default=len(text)), m.group(0)) for m in kopf]
+
+
+def _einsatz_bei(bereiche: list[tuple[int, int, str]], position: int | None) -> str | None:
+    if position is None:
+        return None
+    for start, ende, label in bereiche:
+        if start <= position < ende:
+            return label
+    return None
+
+
+def _mit_einsatzbereich(fenster: str, label: str | None) -> str:
+    """Hängt den belegten Geltungsbereich an das Fenster -- wörtlich mit der Überschrift der Quelle. Nennt das Fenster
+    selbst schon einen Einsatzbereich, bleibt es unverändert."""
+    if not label or _RE_EINSATZ_WORT.search(fenster):
+        return fenster
+    t = fenster.rstrip()
+    return f"{t}{'' if t.endswith(('.', '!', '?')) else '.'} Geltungsbereich laut Quelle: {label}."
+
+
 def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        marke: str | None = None, modell: str | None = None,
                        baujahr: int | None = None, generation: str | None = None,
@@ -5832,6 +5891,17 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 _roh = _entferne_fremde_modellbereiche(_roh, modell, url=url, abgelehnt=abgelehnt, kategorie=kategorie)
             satz_markiert = _saetze_mit_segmentgrenze(_roh)
             satz_liste = [s for s, _ in satz_markiert]
+            # Einsatzbereich: Überschrift-Reichweiten im ganzen Text und die Position jedes Satzes darin (die
+            # Sätze sind der Reihe nach exakte Teilstrings von `_roh`; nicht auffindbare/ergänzte Sätze: kein Bereich).
+            einsatz_ber = _einsatz_bereiche(_roh) if kategorie == "wartung" else []
+            satz_pos: dict[str, int] = {}
+            if einsatz_ber:
+                _cursor = 0
+                for _s in satz_liste:
+                    _p = _roh.find(_s, _cursor)
+                    if _p >= 0:
+                        satz_pos.setdefault(_s, _p)
+                        _cursor = _p + len(_s)
             erlaubte_saetze = _segment_kontext_saetze(
                 satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
                 # §10-Erweiterung NUR für schwachstelle MIT echtem Zielmodell
@@ -5893,8 +5963,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             # sich nichts — jeder bestehende Fließtext-Claim bleibt EIN Claim.
             abschnitt_von_claim: dict[str, str] = {}
             if kategorie == "wartung":
-                fenster_paare = [paar for seg in claim_segmente
-                                 for paar in _wartung_tabellen_fenster(seg, vokabular)]
+                fenster_paare = []
+                for seg in claim_segmente:
+                    _off = satz.find(seg)
+                    for fenster, akt, _start in _wartung_tabellen_fenster_ort(seg, vokabular):
+                        if einsatz_ber and satz in satz_pos and _off >= 0:
+                            fenster = _mit_einsatzbereich(
+                                fenster, _einsatz_bei(einsatz_ber, satz_pos[satz] + _off + _start))
+                        fenster_paare.append((fenster, akt))
                 claim_segmente = [fenster for fenster, _ in fenster_paare]
                 abschnitt_von_claim = {fenster: akt for fenster, akt in fenster_paare if akt}
             for claim in claim_segmente:

@@ -99,6 +99,7 @@ import re
 from datetime import date
 
 from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshinweis
+from app.risikothemen import DATENSATZ_MARKER, SCHLUSSSATZ_KEINE_HERSTELLERVORGABE, SCHLUSSSATZ_UNEINHEITLICH
 from app.wartungsangabe import aus_request as wartungsangabe_aus_request
 from app.servicehistorie import (
     NICHT_VORHANDEN as SH_NICHT_VORHANDEN, TEILWEISE as SH_TEILWEISE,
@@ -349,11 +350,16 @@ def hat_quellenvorbehalt(text: str | None) -> bool:
     return "Die Quelle schränkt sich selbst ein" in t or "Ob das für Ihr Fahrzeug in Deutschland" in t
 
 
+# Vom Erzeuger angehängte Zeile je Fundstelle ("Geltungsbereich laut Quelle: Für normale Einsatzbedingungen."): eine
+# Annotation zum Einsatzbereich, nicht Teil der Intervallaussage (wie der Marktvorbehalt).
+_GELTUNGSZEILE = re.compile(r"\.?\s*Geltungsbereich laut Quelle:[^.]*\.")   # samt dem vom Erzeuger davor gesetzten Punkt
+
+
 def erstintervall_text(text: str | None) -> str:
     """Nur der Teil VOR einem Folgeintervall ("Danach alle 15.000 km / jährlich") und ohne angefügte
     Marktvorbehalt-/Anwendbarkeitssätze: Erst- und Folgeintervall bleiben getrennt, das Folgeintervall wird
     hier nie gelesen, ein Marktvorbehalt macht das Intervall selbst nicht "bedingt"."""
-    return _FOLGEINTERVALL.split(quellenaussage(text), maxsplit=1)[0]
+    return _GELTUNGSZEILE.sub("", _FOLGEINTERVALL.split(quellenaussage(text), maxsplit=1)[0])
 
 
 def zeitalternative_belegbar_erreicht(alter_jahre: int | None, zeitalternative: tuple[int, str]) -> bool:
@@ -387,6 +393,7 @@ _ZEIT_JAEHRLICH = re.compile(
 # Einsatzbedingungen: "normale" Einsatzbedingungen sind ein GELTUNGSBEREICH der Angabe, "erschwerte" eine eigene,
 # bedingte Regel (`_BEDINGT`). Beides ist weder ein Marktvorbehalt noch eine technische Ausstattungsbedingung.
 _EINSATZ_NORMAL = re.compile(r"normale[nr]?\s+(?:einsatz|betriebs)bedingungen", re.IGNORECASE)
+_EINSATZ_ERSCHWERT = re.compile(r"erschwert\w*\s+(?:einsatz|betriebs)bedingungen|unter\s+erschwerten", re.IGNORECASE)
 
 
 def _zeit_treffer(text: str | None) -> tuple[int, str, int, int] | None:
@@ -441,9 +448,14 @@ class WartungsRegel:
 
     def __init__(self, text: str):
         self.text = text
-        self.erst = _FOLGEINTERVALL.split(text, maxsplit=1)[0].strip()
-        self.bedingt = bool(_BEDINGT.search(self.erst))
-        self.einsatz = "normal" if _EINSATZ_NORMAL.search(self.erst) else None
+        self.erst = _GELTUNGSZEILE.sub("", _FOLGEINTERVALL.split(text, maxsplit=1)[0]).strip()
+        # Einsatzbereich: aus dem GANZEN Fundstellentext (die vom Erzeuger angehängte Zeile "Geltungsbereich laut
+        # Quelle: Für normale Einsatzbedingungen." steht hinter einem eventuellen "Danach ..."). Nennt eine Fundstelle
+        # BEIDE Bereiche, ist sie nicht eindeutig zuzuordnen und gilt als bedingt ("gemischt").
+        normal, erschwert = bool(_EINSATZ_NORMAL.search(text)), bool(_EINSATZ_ERSCHWERT.search(text))
+        self.einsatz = ("gemischt" if normal and erschwert else "erschwert" if erschwert
+                        else "normal" if normal else None)
+        self.bedingt = bool(_BEDINGT.search(self.erst)) or self.einsatz in ("erschwert", "gemischt")
         self.km = parse_wartungspunkt(self.erst)
         z = _zeit_treffer(self.erst)
         self.zeit = (z[0], z[1]) if z else None
@@ -467,14 +479,20 @@ class WartungsRegel:
 
 
 def zerlege_regeln(text: str | None) -> list[WartungsRegel]:
-    """Die einzelnen Fundstellen einer Wartungsaussage, am Trennmarker des Erzeugers
-    (`WEITERE_STELLE_MARKER`, app/technical_research.py) getrennt. Marktvorbehalt-/Hüllentext der ENFAL-
-    Auswertung (`quellenaussage`) ist vorher abgeschnitten. Jede Fundstelle behält ihren Wortlaut."""
+    """Die einzelnen Fundstellen einer Wartungsaussage -- getrennt an BEIDEN Zusammenführungs-Markern:
+    `WEITERE_STELLE_MARKER` (der Erzeuger legt zwei Fundstellen DESSELBEN Dokuments zusammen) und
+    `DATENSATZ_MARKER` ("Weiterer Datensatz (Webrecherche): ...", app/risikothemen.py führt Aussagen gleichen Bauteils
+    zu einem Insight zusammen). Der Marktvorbehalt-/Hüllentext der ENFAL-Auswertung (`quellenaussage`) wird JE
+    Datensatz abgeschnitten (sonst verschwänden alle Datensätze hinter dem ersten Vorbehalt); die angehängten
+    Schlusssätze der Zusammenführung gehören zu keiner Regel. Jede Fundstelle behält ihren Wortlaut."""
     out: list[WartungsRegel] = []
-    for teil in quellenaussage(text).split(WEITERE_STELLE_MARKER):
-        seg = " ".join(teil.split())
-        if seg:
-            out.append(WartungsRegel(seg))
+    for datensatz in DATENSATZ_MARKER.split(str(text or "")):
+        for satz in (SCHLUSSSATZ_UNEINHEITLICH, SCHLUSSSATZ_KEINE_HERSTELLERVORGABE):
+            datensatz = datensatz.replace(satz, " ")
+        for teil in quellenaussage(datensatz).split(WEITERE_STELLE_MARKER):
+            seg = " ".join(teil.split())
+            if seg:
+                out.append(WartungsRegel(seg))
     return out
 
 
@@ -767,6 +785,17 @@ def _zeit_bedingt_satz(zeit_alt: tuple[int, str] | None, klasse: str | None) -> 
 _VERNEHMBAR_KURZ = 220
 
 
+def _zusatz_satz(texte: list[str], zeitregel: bool = False) -> str:
+    """Bedingte Zusatzregel(n): wörtlich, mit ungeklärter Voraussetzung, NICHT ausgewertet."""
+    if not texte:
+        return ""
+    zitate = "; ".join(f"„{_kurz(t, 420)}“" for t in texte[:3])
+    ende = ("sie wird hier nicht ausgewertet, und ihre Angaben werden nicht auf die Zeitregel übertragen."
+            if zeitregel else "sie wird hier nicht ausgewertet und ändert die Grundregel nicht.")
+    return (f" Zusätzlich nennt die Quelle eine bedingte Regel ({zitate}). Ob ihre Voraussetzung auf dieses "
+            f"Fahrzeug zutrifft, ist ungeklärt; {ende}")
+
+
 def _kurz(text: str, n: int = _VERNEHMBAR_KURZ) -> str:
     t = " ".join((text or "").split())
     return t if len(t) <= n else t[:n - 3].rstrip() + "..."
@@ -785,12 +814,7 @@ def _formuliere_regeln(bauteil: str, ausw: "_Auswertung", kilometerstand: int, h
     regeln = ausw.regeln
     einsatz = (" Die Angabe gilt laut Quelle für normale Einsatzbedingungen; welche Einsatzbedingungen beim "
                "Fahrzeug vorlagen, ist unbekannt.") if any(r.einsatz == "normal" for r in regeln) else ""
-    bedingte = ""
-    if ausw.zusatz and ausw.modus == "grund":
-        zitate = "; ".join(f"„{_kurz(t, 420)}“" for t in ausw.zusatz[:3])
-        bedingte = (f" Zusätzlich nennt die Quelle eine bedingte Regel ({zitate}). Ob ihre Voraussetzung auf "
-                    f"dieses Fahrzeug zutrifft, ist ungeklärt; sie wird hier nicht ausgewertet und ändert die "
-                    f"Grundregel nicht.")
+    bedingte = _zusatz_satz(ausw.zusatz) if ausw.modus == "grund" else ""
     if ausw.modus == "grund" and not ausw.mehrdeutig:
         r = regeln[0]
         alt = r.zeit_alternative()
@@ -848,24 +872,31 @@ class _Auswertung:
 
 
 def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | None) -> "_Auswertung | None":
-    """Wertet die Fundstellen einer Aussage GETRENNT aus -- oder None (kein Kilometerpunkt im Erstintervall).
+    """Wertet die Fundstellen einer Aussage GETRENNT aus -- oder None (kein Kilometer-Hinweis).
 
-    Grundlage ist `modus`: "grund" (mindestens eine unbedingte Regel mit Kilometerpunkt; nur sie wird
-    ausgewertet) oder "nur_bedingt" (alle Regeln mit Kilometerpunkt sind bedingt). Mehrere VERSCHIEDENE Regeln
-    gleicher Art sind `mehrdeutig`: Status und Punkt stammen dann vom FRÜHESTEN genannten Kilometerpunkt, es wird
-    keine Regel ausgewählt und nichts kombiniert."""
+    `modus` "grund": mindestens eine UNBEDINGTE Regel mit Kilometerpunkt; nur unbedingte Regeln werden ausgewertet
+    (eine reine Zeit-Grundregel daneben zählt für die Mehrdeutigkeit mit). "nur_bedingt": alle Regeln mit
+    Kilometerpunkt sind bedingt. Mehrere VERSCHIEDENE Regeln gleicher Art sind `mehrdeutig`: Status und Punkt stammen
+    dann vom FRÜHESTEN genannten Kilometerpunkt, es wird keine Regel ausgewählt und nichts kombiniert.
+
+    Gibt es UNBEDINGTE Regeln, aber KEINE davon mit Kilometerpunkt (reine Zeit-Grundregel), entsteht hier KEIN
+    Kilometer-Hinweis: der Kilometerpunkt einer bedingten Zusatzregel darf die Zeitregel nicht ersetzen. Die
+    Zeit-Grundregel wird eigenständig in `zeit_hinweise` ausgewertet."""
     rs = zerlege_regeln(roh)
-    mit_km = [r for r in rs if r.km]
-    if not mit_km:
+    schwelle = [r for r in rs if r.km or r.zeit]
+    grund_alle = eindeutige_regeln([r for r in schwelle if not r.bedingt])
+    if grund_alle and not any(r.km for r in grund_alle):
         return None
-    grund = eindeutige_regeln([r for r in mit_km if not r.bedingt])
-    basis = grund if grund else eindeutige_regeln(mit_km)
+    grund = grund_alle
+    basis = grund if grund else eindeutige_regeln([r for r in schwelle if r.km])
+    if not basis:
+        return None
     a = _Auswertung()
     a.modus = "grund" if grund else "nur_bedingt"
     a.regeln = basis
     a.zusatz = list(dict.fromkeys(r.text for r in rs if r.bedingt)) if grund else []
     a.mehrdeutig = len(basis) > 1
-    frueh = min(basis, key=lambda r: (r.km[0], r.km[1] if r.km[1] is not None else 0))
+    frueh = min((r for r in basis if r.km), key=lambda r: (r.km[0], r.km[1] if r.km[1] is not None else 0))
     a.von_km, a.bis_km = frueh.km
     a.status = status_zu_punkt(kilometerstand, a.von_km, a.bis_km)
     a.zeit_offen_trotz_entfernt = (
@@ -873,6 +904,98 @@ def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | No
         and any(r.zeit_alternative() and _zeit_klasse(r.zeit_alternative(), alter_jahre) != "nicht_erreicht"
                 for r in basis))
     return a
+
+
+class ZeitHinweis:
+    """Hinweis zu einer REINEN Zeit-Grundregel (kein Kilometerpunkt): Duck-Type von `Wartungshinweis` für die
+    Kaufaktionen, bewusst OHNE Kilometerfelder und ohne Schemaänderung (`status` ist None)."""
+    __slots__ = ("bauteil", "status", "intervall_text", "hinweis", "herkunft", "evidence_id", "taetigkeit",
+                 "technische_bedingung", "technische_bedingung_status")
+
+    def __init__(self, **kw):
+        for k in self.__slots__:
+            setattr(self, k, kw.get(k))
+
+
+def _formuliere_zeit(bauteil: str, regeln: list[WartungsRegel], alter_jahre: int | None, technik: str | None,
+                     herkunft: str, zusatz_texte: list[str]) -> str:
+    """Hinweistext einer reinen Zeit-Grundregel. Keine Fälligkeit, keine unterlassene Wartung; der Grund der
+    offenen Aussage ist der tatsächliche (Baujahr unbekannt / Unsicherheitsbereich / technische Voraussetzung)."""
+    einsatz = (" Die Angabe gilt laut Quelle für normale Einsatzbedingungen; welche Einsatzbedingungen beim "
+               "Fahrzeug vorlagen, ist unbekannt.") if any(r.einsatz == "normal" for r in regeln) else ""
+    zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
+    if len(regeln) > 1:
+        aufz = "; ".join(f"„{_kurz(r.erst, 140)}“" for r in regeln[:4])
+        return (f"Die Quelle nennt für „{bauteil}“ mehrere unterschiedliche Zeitintervalle ohne erkennbare "
+                f"Zuordnung: {aufz}. Welches für dieses Fahrzeug gilt, geht aus den vorliegenden Daten nicht hervor; "
+                f"keines wird ausgewählt oder mit einer anderen Angabe kombiniert."
+                f"{einsatz}{_zusatz_satz(zusatz_texte, True)}{zusatz}")
+    zahl, einheit = regeln[0].zeit
+    klasse = _zeit_klasse(regeln[0].zeit, alter_jahre)
+    kopf = f"Für „{bauteil}“ nennt die Quelle ein Zeitintervall ({zeit_anzeige(zahl, einheit)}) ohne Kilometerangabe."
+    erreicht = (f"nach dem Baujahr bereits erreicht (Fahrzeugalter mindestens {alter_jahre - 1} Jahre; der genaue "
+                f"Erstzulassungsmonat ist unbekannt)") if klasse == "erreicht" else ""
+    if technik:
+        satz = (f" Ob die Zeitgrenze für dieses Fahrzeug überhaupt gilt, hängt von der ungeklärten technischen "
+                f"Voraussetzung ab ({technik}).")
+        if erreicht:
+            satz += f" Sofern sie zutrifft, ist die Zeitgrenze {erreicht}."
+    elif klasse == "erreicht":
+        satz = (f" Diese Zeitgrenze ist {erreicht}. Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden "
+                f"Daten nicht hervor.")
+    elif klasse == "baujahr_unbekannt":
+        satz = (" Ob diese Zeitgrenze bereits erreicht ist, lässt sich ohne bekanntes Baujahr nicht bestimmen und "
+                "bleibt deshalb offen. Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den Beleg "
+                "dazu ansehen.")
+    else:
+        satz = (" Ob diese Zeitgrenze bereits erreicht ist, lässt sich ohne den genauen Erstzulassungsmonat nicht "
+                "bestimmen und bleibt deshalb offen. Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, "
+                "und den Beleg dazu ansehen.")
+    return f"{kopf}{satz}{einsatz}{_zusatz_satz(zusatz_texte, True)}{zusatz}"
+
+
+def zeit_hinweise(insights: list[Insight], kilometerstand: int | None, alter_jahre: int | None,
+                  bereits: set[str] | None = None) -> list[ZeitHinweis]:
+    """Hinweise zu Web-Wartungsfakten, deren UNBEDINGTE Grundregel nur eine Zeit nennt (kein Kilometerpunkt) --
+    eigenständig und unabhängig von einer bedingten Kilometer-Zusatzregel, deren Kilometerwert nie ersatzweise
+    verwendet wird (s. `_auswerte_regeln`). Nur Webrecherche-Fakten (die DB-Zeitzeilen bleiben unverändert).
+    Kein Hinweis ohne Anlass: ist die Zeitgrenze nach dem Baujahr auch im ältesten Fall nicht erreicht, entsteht
+    keiner. Mit `kilometerstand` None entsteht keiner (ohne Laufleistungskontext)."""
+    if not kilometerstand:
+        return []
+    gesehen = set(bereits or ())
+    out: list[ZeitHinweis] = []
+    kandidaten = _kandidaten(insights)
+    for i, beleg_id in kandidaten:
+        if _QUELLEN_KATEGORIEN.get(i.kategorie) != "web_wartung":
+            continue
+        roh = _intervall_text(i, "web_wartung")
+        rs = zerlege_regeln(roh)
+        grund = eindeutige_regeln([r for r in rs if not r.bedingt and (r.km or r.zeit)])
+        if not grund or any(r.km for r in grund):
+            continue
+        if all(_zeit_klasse(r.zeit, alter_jahre) == "nicht_erreicht" for r in grund):
+            continue           # kein Anlass
+        bauteil = _bauteil(i)
+        schluessel = norm_bauteil(bauteil)
+        if schluessel in gesehen:
+            continue
+        gesehen.add(schluessel)
+        technik = (getattr(i, "technische_bedingung", None)
+                   if getattr(i, "technische_bedingung_status", None) == "unresolved" else None)
+        praefix = ""
+        if (i.titel or "").startswith("Falls ") and ": " in i.titel:
+            praefix = i.titel.split(": ", 1)[0] + ": "
+        zusatz = list(dict.fromkeys(r.text for r in rs if r.bedingt))
+        out.append(ZeitHinweis(
+            bauteil=bauteil, status=None, intervall_text=(roh or "").strip(), herkunft="web_wartung",
+            evidence_id=beleg_id, taetigkeit=getattr(i, "taetigkeit", None),
+            technische_bedingung=getattr(i, "technische_bedingung", None),
+            technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
+            hinweis=praefix + _formuliere_zeit(bauteil, grund, alter_jahre, technik, "web_wartung", zusatz)
+            + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
+               "nicht bestätigt." if hat_quellenvorbehalt(roh) else "")))
+    return out
 
 
 # ── Evidence -> Wartungshinweise ──────────────────────────────────────────────
@@ -941,6 +1064,28 @@ def _intervall_text(i: Insight, herkunft: str) -> str | None:
     return text
 
 
+def _regel_signaturen(i: Insight) -> set[tuple]:
+    herkunft = _QUELLEN_KATEGORIEN.get(i.kategorie)
+    if herkunft is None:
+        return set()
+    return {r.signatur() for r in zerlege_regeln(_intervall_text(i, herkunft)) if r.km or r.zeit}
+
+
+def _kandidaten(insights: list[Insight]) -> list[tuple[Insight, str]]:
+    """Insights und ihre Nebenbelege (zusammengeführte Aussagen). Ein Nebenbeleg, dessen Regeln der führende Insight
+    in seinem Text (`Weiterer Datensatz ...`) bereits trägt, wird nicht ein zweites Mal bewertet: gleiche Fundstellen
+    sind keine unabhängigen Belege und erzeugen keine zweite Aktion."""
+    out = [(i, i.id) for i in insights]
+    for i in insights:
+        eigene = _regel_signaturen(i)
+        for n in getattr(i, "nebenbelege", None) or []:
+            sig = _regel_signaturen(n)
+            if eigene and sig and sig <= eigene:
+                continue
+            out.append((n, i.id))
+    return out
+
+
 def _wartungshinweise(insights: list[Insight], kilometerstand: int,
                       alter_jahre: int | None = None) -> list[Wartungshinweis]:
     """Wartungshinweise aus vorhandener Evidence — nie aus dem Nichts.
@@ -961,13 +1106,13 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
     erreicht haben könnte — s. `_zeitalternative_trotz_entfernt_moeglich()`.
     """
     gesehen: set[str] = set()
+    gesehen_grund: set[str] = set()
     out: list[tuple[bool, Wartungshinweis]] = []
     # Root-Cause-Closing: ein Wartungseintrag kann in eine Schwachstellen-Aussage
     # zum selben Bauteil zusammengeführt sein (app/risikothemen.py). Sein
     # Intervall zählt trotzdem; als Beleg steht die ID der sichtbaren,
     # zusammengeführten Aussage, denn nur sie existiert in `insights`.
-    kandidaten = [(i, i.id) for i in insights]
-    kandidaten += [(n, i.id) for i in insights for n in getattr(i, "nebenbelege", None) or []]
+    kandidaten = _kandidaten(insights)
     for i, beleg_id in kandidaten:
         herkunft = _QUELLEN_KATEGORIEN.get(i.kategorie)
         if herkunft is None:
@@ -984,9 +1129,14 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             continue           # §G: kein Anlass, also keine Warnung
         bauteil = _bauteil(i)
         schluessel = norm_bauteil(bauteil)
-        if schluessel in gesehen:
+        # Eine NUR bedingte Regel (Voraussetzung ungeklärt, z. B. erschwerte Einsatzbedingungen) verbraucht den
+        # Bauteilplatz nicht gegen eine spätere GRUNDREGEL desselben Bauteils: sonst ginge die Grundregel verloren.
+        nur_bedingt = ausw.modus == "nur_bedingt"
+        if schluessel in gesehen_grund or (nur_bedingt and schluessel in gesehen):
             continue
         gesehen.add(schluessel)
+        if not nur_bedingt:
+            gesehen_grund.add(schluessel)
         # F4: die Präsenz-Bedingung des Titels ("Falls ... verbaut") bleibt in der Ausgabe erhalten, ist aber
         # nicht Teil des Schlüssels.
         bedingung_praefix = ""
