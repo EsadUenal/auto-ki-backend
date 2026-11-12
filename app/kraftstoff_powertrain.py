@@ -48,7 +48,10 @@ POWERTRAIN_BEV = "BEV"
 _FUEL_HINWEISE: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FUEL_DIESEL, ("diesel", "tdi", "cdi", "hdi", "dci", "bluetec", "crdi", "jtd",
                   "dti", "cdti", "d4d", "dtec")),
-    (FUEL_ELEKTRO, ("elektro", "electric", "bev", " ev")),
+    # FUEL_ELEKTRO wird NICHT ueber Teilzeichenketten erkannt (N17-Folgefix:
+    # "elektro" steckt in "Elektromotor"), sondern in `fuel_aus_freitext()` ueber
+    # `_ELEKTRO_KLASSE`/"EV" -- an dieser Stelle der Reihenfolge.
+    (FUEL_ELEKTRO, ()),
     (FUEL_BENZIN, ("benzin", "tsi", "tfsi", "petrol", "otto", "vti", "mpi", "gdi",
                   "tce", "puretech", "skyactiv-g")),
 )
@@ -84,6 +87,15 @@ def fuel_aus_freitext(*texte: str | None) -> str | None:
         if not t:
             continue
         for fuel, keys in _FUEL_HINWEISE:
+            if fuel == FUEL_ELEKTRO:
+                # Nur eine ausdrueckliche, unverneinte Fahrzeugklasse -- und nicht
+                # neben einem Hybridbezug (zwei Klassen im selben Text, z.B. "als
+                # Vollhybrid und als Elektroauto"): ein Bauteilwort wie
+                # "Elektromotor" ist keine Kraftstoffart.
+                if ((_positiv_erwaehnt(_ELEKTRO_KLASSE, t) or _positiv_erwaehnt(_EV_KUERZEL, t))
+                        and not _positiv_erwaehnt(_HYBRIDBEZUG_IRGENDEINER, t)):
+                    return fuel
+                continue
             if any(k in t for k in keys):
                 return fuel
     return None
@@ -202,12 +214,32 @@ _MHEV_WORT = re.compile(r"mild[\s-]?hybrid|\bmhev\b|\b48\s?v\b", re.IGNORECASE)
 # Antrieb"/"elektrisches Fahrzeug") -- ein bloss NACHGESTELLTES Bauteilwort
 # ("elektrische Servolenkung") faellt NICHT mehr darunter, weil "elektrisch"
 # dort das Bauteil beschreibt, nicht den Antrieb.
-_BEV_WORT = re.compile(
-    r"\bbev\b|elektro\w*"
-    r"|(?:voll|rein|ausschlie(?:ß|ss)lich|nur)[\s-]?elektrisch\w*"
-    r"|elektrisch\w*\s+(?:angetrieben\w*|antrieb\w*|fahrzeug\w*)"
-    r"|electric\s+vehicle|all[\s-]?electric|fully[\s-]?electric",
+# N17-Folgefix (BEV-Fehlausloeser durch Bauteilwoerter): das bisher hier
+# enthaltene, unbeschraenkte `elektro\w*` las JEDES Kompositum als Fahrzeug-
+# klasse BEV -- "Elektromotor" (steckt in jedem Hybrid), "Elektro-Fensterheber",
+# "2.5 Hybrid mit Elektromotor". Ein Antriebsbauteil bestimmt die Fahrzeugklasse
+# nicht. Jetzt zwei getrennte Wortgruppen:
+#   * `_ELEKTRO_KLASSE`: ausdrueckliche FAHRZEUGKLASSEN-Bezeichnungen
+#     (Elektroauto/-fahrzeug, batterieelektrisch, BEV, "electric vehicle", das
+#     alleinstehende Klassenwort "Elektro"/"Electric" als Feldwert am Ende).
+#   * `_ELEKTRO_MODUS`: Formulierungen fuer elektrisches FAHREN ("vollelektrisch",
+#     "rein elektrisch", "elektrisch angetrieben"). Sie belegen BEV nur, wenn der
+#     Text KEINEN Hybridbezug hat -- ein Vollhybrid "faehrt bis 2 km rein
+#     elektrisch" (F16-Logik fuer "elektrische Servolenkung" bleibt erhalten).
+_ELEKTRO_KLASSE = re.compile(
+    r"\bbev\b"
+    r"|elektro[\s-]?(?:auto|fahrzeug|wagen|pkw|version|variante|modell)\w*"
+    r"|batterie[\s-]?elektrisch\w*"
+    r"|elektrisch\w*\s+fahrzeug\w*"
+    r"|electric\s+vehicle|all[\s-]?electric|fully[\s-]?electric"
+    r"|\b(?:elektro|electric)\b(?=\s*(?:$|[,.;:)/|]))",
     re.IGNORECASE)
+_ELEKTRO_MODUS = re.compile(
+    r"(?:voll|rein|ausschlie(?:ß|ss)lich|nur)[\s-]?elektrisch\w*"
+    r"|elektrisch\w*\s+(?:angetrieben\w*|antrieb\w*)",
+    re.IGNORECASE)
+_EV_KUERZEL = re.compile(r"\bev\b", re.IGNORECASE)
+_BEV_WORT = re.compile(_ELEKTRO_KLASSE.pattern + "|" + _ELEKTRO_MODUS.pattern, re.IGNORECASE)
 # Backend-Folgeauftrag (Praezision statt Prioritaetsreihenfolge): "HEV" ist im
 # Datenmodell (s. Moduldocstring: ICE|MHEV|PHEV|BEV) kein eigener, klar
 # abgegrenzter Wert, sondern der Sammelbegriff fuer den NICHT-Plug-in-,
@@ -257,19 +289,34 @@ def powertrain_aus_freitext(*texte: str | None) -> str | None:
     Elektrifizierungswörtern. "Benzin"/"Diesel" liefern bewusst nichts — und
     eine Verneinung ("ohne Hybridisierung", "kein Mild-Hybrid") liefert NIE
     automatisch das Gegenteil, nur eine eigene explizite ICE-/
-    Verbrenner-Formulierung tut das."""
+    Verbrenner-Formulierung tut das.
+
+    N17-Folgefix: nennt der Text MEHRERE unterschiedliche Fahrzeugklassen
+    (z.B. "als Vollhybrid und als Elektroauto", "Mild-Hybrid oder Plug-in-
+    Hybrid"), wird keine davon willkuerlich per Reihenfolge bestaetigt -> None.
+    Ein elektrischer Fahrmodus ("rein elektrisch") belegt BEV nur ohne jeden
+    Hybridbezug im Text."""
     roh = " ".join(_norm(t) for t in texte if t)
     if not roh.strip():
         return None
-    if _positiv_erwaehnt(_PHEV_WORT, roh):
-        return POWERTRAIN_PHEV
-    if _positiv_erwaehnt(_MHEV_WORT, roh):
-        return POWERTRAIN_MHEV
-    if _positiv_erwaehnt(_BEV_WORT, roh):
+    hybrid_klassen = [k for k, w in ((POWERTRAIN_PHEV, _PHEV_WORT), (POWERTRAIN_MHEV, _MHEV_WORT),
+                                     ("HEV", _HEV_WORT)) if _positiv_erwaehnt(w, roh)]
+    bev_klasse = _positiv_erwaehnt(_ELEKTRO_KLASSE, roh)
+    if len(hybrid_klassen) + (1 if bev_klasse else 0) > 1:
+        return None
+    if hybrid_klassen:
+        return hybrid_klassen[0]
+    hybridbezug = _positiv_erwaehnt(_HYBRIDBEZUG_IRGENDEINER, roh)
+    if bev_klasse:
+        # Ausdrueckliche BEV-Klasse neben einem (unspezifischen) Hybridbezug:
+        # zwei Klassen im selben Text, keine davon belegt.
+        return None if hybridbezug else POWERTRAIN_BEV
+    if not hybridbezug and _positiv_erwaehnt(_ELEKTRO_MODUS, roh):
         return POWERTRAIN_BEV
-    if _positiv_erwaehnt(_HEV_WORT, roh):
-        return "HEV"
-    if _positiv_erwaehnt(_ICE_WORT, roh):
+    # Derselbe Grundsatz fuer den Verbrenner: in einem Text mit Hybridbezug
+    # ("kombiniert Elektromotor und Verbrenner") ist "Verbrenner" ein Bauteil
+    # des Hybridsystems, keine Fahrzeugklasse ICE.
+    if not hybridbezug and _positiv_erwaehnt(_ICE_WORT, roh):
         return POWERTRAIN_ICE
     return None
 

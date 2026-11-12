@@ -76,8 +76,12 @@ check("A0) Reproduktion: Rohregel liest das Snippet als ICE",
       powertrain_aus_freitext(SNIPPET["title"] + " " + SNIPPET["content"]) == "ICE")
 check("A1) Snippet 'Motorbauart (Verbrennungsmotor)' erzeugt keinen Elektrifizierungs-Claim mehr",
       pt_claims(SNIPPET) == [], str(pt_claims(SNIPPET)))
-check("A2) Reproduktion: Rohregel liest die ADAC-Navigation als BEV ('Elektromobilität')",
-      "Elektromobilität" in NAVIGATION and powertrain_aus_freitext(NAVIGATION) == "BEV")
+# N17-Folgefix (BEV durch Bauteilwoerter): das unbeschraenkte `elektro\w*` ist aus
+# `_BEV_WORT` entfernt -- die Rohregel liest das Themenwort "Elektromobilität" nicht
+# mehr als Fahrzeugklasse. Die frühere Reproduktions-Vorbedingung ist damit an der
+# Ursache behoben; A3 sichert weiterhin den Claim-Pfad.
+check("A2) Rohregel liest die ADAC-Navigation ('Elektromobilität') nicht mehr als BEV",
+      "Elektromobilität" in NAVIGATION and powertrain_aus_freitext(NAVIGATION) != "BEV")
 nav = t(SNIPPET["url"], VOLL["title"], NAVIGATION)
 check("A3) Navigation allein erzeugt keinen Elektrifizierungs-Claim mehr",
       pt_claims(nav) == [], str(pt_claims(nav)))
