@@ -180,5 +180,62 @@ check("D7 rueckruf_scope liefert nie 'confirmed_by_vin' (FIN-Betroffenheit separ
       "confirmed_by_vin" not in {rueckruf_scope(x, ident(p))[0] for x in (R_BAUTEIL, R_BEV, R_HEV)
                                 for p in ("ICE", "HEV", None)})
 
+print("\n== E: Scope-Matrix ueber den echten Rueckrufpfad (rueckruf_applicability / gefilterte_rueckrufe) ==")
+from app.recall_filter import gefilterte_rueckrufe, rueckruf_applicability
+
+
+def ident_kl(pt, state="web_only"):
+    v = VehicleIdentity(make="Testmarke", model="Modellz")
+    v.fuel = "elektro" if pt == "BEV" else "benzin"
+    v.powertrain = pt
+    if pt:
+        v.field_evidence["powertrain"] = {"verification_state": state, "value": pt}
+    return v
+
+
+E_RUECKRUFE = {
+    "BEV-exklusiv": dict(eingrenzung_amtlich="Betroffen sind ausschließlich batterieelektrische Fahrzeuge."),
+    "Elektrofzg-unklar": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Elektrofahrzeuge."),
+    "Hochvolt-allg": dict(mangel="An der Hochvolt-Batterie kann ein Kurzschluss auftreten."),
+    "Qualifier(Elektro)": dict(betroffene_baujahre="2020-2022 (Elektro)", mangel="Ein Steuergerät kann ausfallen."),
+    "HEV-spez": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Fahrzeuge als Vollhybrid."),
+    "PHEV-spez": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge."),
+    "negiert": dict(eingrenzung_amtlich="Batterieelektrische Fahrzeuge sind nicht betroffen."),
+    "mehrere": dict(eingrenzung_amtlich="Betroffen sind Plug-in-Hybrid-Fahrzeuge und batterieelektrische Fahrzeuge."),
+    "BEV+Hybrid-Erlaeut": dict(eingrenzung_amtlich="Betroffen sind ausschließlich batterieelektrische Fahrzeuge. "
+                                                   "Hybridfahrzeuge mit demselben Bauteil sind nicht betroffen."),
+    "Bauteil-Elektromotor": dict(mangel="Der Elektromotor der Servolenkung kann ausfallen; die Lenkunterstützung entfällt."),
+}
+S, U, I = "series_only", "unclear", "incompatible"
+#              BEV  HEV  PHEV ICE  UNKNOWN BEV/nur-Nutzer
+E_ERWARTET = {
+    "BEV-exklusiv":         (S, I, I, I, U, U),
+    "Elektrofzg-unklar":    (S, U, U, I, U, U),
+    "Hochvolt-allg":        (S, S, S, I, U, S),   # allgemeiner Hochvolt-Scope NICHT auf BEV verengt
+    "Qualifier(Elektro)":   (S, U, U, I, U, U),
+    "HEV-spez":             (S, S, S, I, U, S),   # unveraendert (Hochvolt-Gruppe), s. Grenze im Bericht
+    "PHEV-spez":            (S, S, S, I, U, S),   # unveraendert
+    "negiert":              (S, S, S, S, S, S),   # Ausnahme-Satz ist kein Scope
+    "mehrere":              (S, U, S, I, U, S),
+    "BEV+Hybrid-Erlaeut":   (S, I, I, I, U, U),   # Hybrid in Erlaeuterung erweitert den Scope nicht
+    "Bauteil-Elektromotor": (S, S, S, S, S, S),   # Bauteil ist kein Antriebs-Scope
+}
+E_KLASSEN = [("BEV", "web_only"), ("HEV", "web_only"), ("PHEV", "web_only"), ("ICE", "web_only"),
+             (None, None), ("BEV", "user_only")]
+for name, felder in E_RUECKRUFE.items():
+    r = {"betroffene_baujahre": "2020-2022", "kba_referenz": None, "mangel": "Ein Bauteil kann ausfallen.", **felder}
+    for (kl, st), soll in zip(E_KLASSEN, E_ERWARTET[name]):
+        idn = ident_kl(kl, st or "unknown")
+        ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=idn)[0]
+        label = f"{kl or 'UNKNOWN'}{'/nur Nutzer' if st == 'user_only' else ''}"
+        check(f"E {name} x {label}: {soll}", ist == soll, ist)
+        sichtbar = gefilterte_rueckrufe([r], None, 2021, marke="Testmarke", identity=idn)
+        check(f"E {name} x {label}: sichtbar == (nicht incompatible)", bool(sichtbar) == (soll != I))
+        if sichtbar:
+            txt = sichtbar[0]["text"]
+            check(f"E {name} x {label}: Ausgabe verlangt FIN-Pruefung, keine FIN-Bestaetigung",
+                  "per FIN prüfen" in txt and "per FIN bestätigt" not in txt, txt)
+            check(f"E {name} x {label}: nie confirmed_by_vin", sichtbar[0]["applicability"] != "confirmed_by_vin")
+
 print("\nERGEBNIS:", "ALLE OK" if not FAILS else f"{len(FAILS)} FEHLER: {FAILS}")
 raise SystemExit(1 if FAILS else 0)

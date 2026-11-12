@@ -474,7 +474,11 @@ _HV_MUSTER = re.compile(
     r"(?<![a-zäöüß])(?:"
     r"hochvolt|hochspannung|hv[-\s]?batterie|traktionsbatterie|antriebsbatterie|"
     r"plug-?\s?in|plugin|phev|hybrid|"
-    r"elektro(?!nisch|nik|mechanisch)"
+    # N17-Folgefix: bisher `elektro(?!nisch|nik|mechanisch)` -- "Der Elektromotor
+    # der Servolenkung" machte einen Lenkungsrueckruf zum Hochvolt-Rueckruf und
+    # blendete ihn bei Verbrennern als "incompatible" aus. Ein Antriebsbauteil-
+    # wort ist kein Hochvolt-Antrieb; nur Fahrzeug-/Antriebsklassenwoerter zaehlen.
+    r"elektro(?:antrieb|fahrzeug|auto|wagen)\w*|batterie[\s-]?elektrisch"
     r")",
     re.IGNORECASE,
 )
@@ -628,6 +632,23 @@ def _scope_zahlen(rx, text) -> set[int]:
     return {int(m) for m in rx.findall(text or "")}
 
 
+_POWERTRAIN_BESTAETIGT = ("user_confirmed", "user_refined", "web_only", "reference_only")
+
+
+def _achsen_fuer_bev_scope(fuel, powertrains, identity):
+    """N17-Folgefix: ein BEV-Klassenscope (exklusiv oder unklar "Elektro") darf
+    eine Fahrzeugklasse weder bestätigen noch ausschließen, die nur aus einer
+    Nutzerangabe stammt -- dafür muss die Antriebsart unabhängig bestätigt sein.
+    Ohne kanonische Identität (DB-Referenz) unverändert."""
+    if identity is None:
+        return fuel, powertrains
+    fe = (getattr(identity, "field_evidence", None) or {}).get("powertrain") or {}
+    if (fe.get("verification_state") in _POWERTRAIN_BESTAETIGT
+            or set(fe.get("confirmed_by") or []) & {"web", "enfal"}):
+        return fuel, powertrains
+    return None, None
+
+
 def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
     """Varianten-Scope eines Rückrufs gegen die kanonische Identität.
 
@@ -740,15 +761,40 @@ def rueckruf_scope(r: dict, identity) -> tuple[str, str | None]:
     if eingr_amtlich:
         from app.kraftstoff_powertrain import hybridbezug_erwaehnt, powertrain_aus_freitext
         from app.kraftstoff_powertrain import scope_passt as _antrieb_scope_passt
-        pt_wort = powertrain_aus_freitext(eingr_amtlich)
-        pt_scope = {"MHEV": "mild", "PHEV": "phev", "HEV": "phev", "BEV": "elektro"}.get(pt_wort)
+        from app.kraftstoff_powertrain import (SCOPE_BEV_EXKLUSIV, SCOPE_ELEKTRO_KLASSE,
+                                               klassen_scope_passt, scope_klassen)
+        # N17-Folgefix: die genannten Klassen bleiben bis zum Abgleich erhalten
+        # (`scope_klassen`, Ausnahme-Saetze "… nicht betroffen" tragen keinen
+        # Scope). BEV wird nicht mehr in den Hochvolt-Sammelscope "elektro"
+        # uebersetzt: eindeutig batterieelektrisch -> BEV-exklusiv, sonst
+        # "Elektro-Klasse" (HEV/PHEV offen). HEV/PHEV/MHEV einzeln unveraendert.
+        klassen, generisch_hybrid, bev_exklusiv = scope_klassen(eingr_amtlich)
+        pt_wort = next(iter(klassen)) if len(klassen) == 1 and not generisch_hybrid else None
+        pt_scope = {"MHEV": "mild", "PHEV": "phev", "HEV": "phev"}.get(pt_wort) or (
+            (SCOPE_BEV_EXKLUSIV if bev_exklusiv else SCOPE_ELEKTRO_KLASSE) if pt_wort == "BEV" else None)
         if pt_scope:
             fuel_id, powertrains_id = _fahrzeug_achsen(None, identity=identity)
+            if pt_scope in (SCOPE_BEV_EXKLUSIV, SCOPE_ELEKTRO_KLASSE):
+                fuel_id, powertrains_id = _achsen_fuer_bev_scope(fuel_id, powertrains_id, identity)
             ok = _antrieb_scope_passt(pt_scope, fuel_id, powertrains_id)
             if ok is False:
                 return RECALL_NOT_APPLICABLE, (
                     f"Amtliche Eingrenzung nennt {pt_wort}-Antrieb als Bedingung; "
                     f"die erkannte Antriebsart passt nicht")
+            if ok is None:
+                offen.append("Antriebsart")
+            else:
+                passt_explizit.append("Antriebsart")
+        elif klassen:
+            # Mehrere ausdrücklich genannte Klassen (oder BEV neben generischem
+            # Hybridbezug): nur eine genannte Klasse passt, Verbrenner nicht,
+            # andere Hochvolt-Klassen bleiben offen.
+            _, powertrains_id = _fahrzeug_achsen(None, identity=identity)
+            ok = klassen_scope_passt(klassen, generisch_hybrid, powertrains_id)
+            if ok is False:
+                return RECALL_NOT_APPLICABLE, (
+                    f"Amtliche Eingrenzung nennt {'/'.join(sorted(klassen))}; "
+                    f"die erkannte Antriebsart gehört nicht dazu")
             if ok is None:
                 offen.append("Antriebsart")
             else:
@@ -862,7 +908,12 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     # ODER klarer Hochvolt-/Hybrid-Bezug).
     scope = qualifier or ("phev" if ist_hv_rueckruf else None)
     if scope:
-        from app.kraftstoff_powertrain import scope_passt
+        from app.kraftstoff_powertrain import SCOPE_ELEKTRO_KLASSE, scope_passt
+        if scope == "elektro":
+            # N17-Folgefix: "(Elektro)" benennt eine Klasse, keinen Hochvolt-
+            # Sammelscope -- HEV/PHEV bleiben offen statt "passt".
+            scope = SCOPE_ELEKTRO_KLASSE
+            fuel, powertrains = _achsen_fuer_bev_scope(fuel, powertrains, identity)
         matcht = scope_passt(scope, fuel, powertrains)
         if matcht is None:
             # Die für DIESEN Scope maßgebliche Achse ist unbekannt (Motor nicht
@@ -886,6 +937,7 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
         # Findings UND aus jedem LLM-Prompt entfernt (kein Anzeigen als "unklare
         # Betroffenheit").
         scope_label = {"phev": "Plug-in-Hybrid-/Hochvolt-Varianten", "elektro": "Elektro-Varianten",
+                       "elektro_klasse": "Elektro-Varianten", "bev": "batterieelektrische Varianten",
                        "diesel": "Diesel-Varianten", "benzin": "Benzin-Varianten",
                        "mild": "Mild-Hybrid-Varianten"}.get(scope, "bestimmte Varianten")
         return ("incompatible", "hoch",

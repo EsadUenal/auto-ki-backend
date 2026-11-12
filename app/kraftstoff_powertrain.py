@@ -392,6 +392,23 @@ def scope_passt(scope: str | None, fuel: str | None, powertrains: frozenset | No
             if POWERTRAIN_MHEV not in powertrains:
                 return False
         return None
+    if scope == SCOPE_BEV_EXKLUSIV:
+        # Ausdrücklich batterieelektrisch: Hochvolt allein genügt NICHT.
+        if powertrains:
+            if powertrains <= {POWERTRAIN_BEV}:
+                return True
+            if POWERTRAIN_BEV not in powertrains:
+                return False
+        return None
+    if scope == SCOPE_ELEKTRO_KLASSE:
+        # "Elektrofahrzeug"/"(Elektro)" ohne eindeutige Exklusivität: BEV passt,
+        # ein Nicht-Hochvolt-Antrieb nicht, HEV/PHEV bleiben offen.
+        if powertrains:
+            if powertrains <= {POWERTRAIN_BEV}:
+                return True
+            if not (powertrains & HOCHVOLT_POWERTRAINS):
+                return False
+        return None
     if scope in ("phev", "elektro"):
         if powertrains:
             if powertrains <= HOCHVOLT_POWERTRAINS:
@@ -412,5 +429,70 @@ def scopes_passen(scopes, fuel: str | None, powertrains: frozenset | None) -> bo
     if any(e is True for e in ergebnisse):
         return True
     if ergebnisse and all(e is False for e in ergebnisse):
+        return False
+    return None
+
+
+# ── Klassen-Scope eines Rückruftexts (N17-Folgefix: BEV-exklusiv vs. Hochvolt) ──
+#
+# BEFUND: Die amtliche Eingrenzung wurde auf EINE Klasse reduziert und diese in
+# den Sammelscope "phev"/"elektro" (= ganze Hochvolt-Gruppe PHEV/HEV/BEV)
+# übersetzt. "Ausschließlich batterieelektrische Fahrzeuge" galt dadurch auch für
+# ein bestätigtes HEV/PHEV als möglich; ein Satz "… sind nicht betroffen" wurde
+# als positive Eingrenzung gelesen (die Verneinung steht HINTER dem Klassenwort).
+#
+# REGEL:
+#   * Sätze, die eine Klasse AUSNEHMEN ("… nicht betroffen", "ausgenommen"),
+#     tragen keinen positiven Scope (Erläuterungs-/Vergleichssätze).
+#   * Aus den übrigen Sätzen: die Menge der ausdrücklich genannten Klassen.
+#   * BEV-Klasse in zwei Stärken: BEV-EXKLUSIV nur bei eindeutig batterie-
+#     elektrischer Formulierung ("batterieelektrisch", "BEV", "rein/voll-
+#     elektrisch", "reine Elektrofahrzeuge"); "Elektrofahrzeug"/"Elektroauto"
+#     allein ist UNKLAR (kann PHEV einschließen) -> HEV/PHEV bleiben offen.
+_BEV_EXKLUSIV = re.compile(
+    r"\bbev\b|batterie[\s-]?elektrisch\w*|battery[\s-]?electric"
+    r"|(?:voll|rein|ausschlie(?:ß|ss)lich|nur)[\s-]?elektrisch\w*"
+    r"|\breine?[nrs]?\s+elektro[\s-]?(?:fahrzeug|auto)\w*"
+    r"|all[\s-]?electric|fully[\s-]?electric",
+    re.IGNORECASE)
+_AUSNAHME_SATZ = re.compile(r"\bnicht\b[^.;!?]*\bbetroffen|\bausgenommen\b", re.IGNORECASE)
+
+SCOPE_BEV_EXKLUSIV = "bev"
+SCOPE_ELEKTRO_KLASSE = "elektro_klasse"
+
+
+def scope_klassen(text: str | None) -> tuple[frozenset, bool, bool]:
+    """(ausdrücklich genannte Fahrzeugklassen, generischer Hybridbezug ohne
+    Unterklasse, BEV-Nennung eindeutig exklusiv) aus den POSITIVEN Sätzen eines
+    Rückruf-Eingrenzungstexts."""
+    saetze = [s for s in re.split(r"(?<=[.;!?])\s+", text or "")
+              if s.strip() and not _AUSNAHME_SATZ.search(s)]
+    roh = _norm(" ".join(saetze))
+    if not roh:
+        return frozenset(), False, False
+    klassen = {k for k, w in ((POWERTRAIN_PHEV, _PHEV_WORT), (POWERTRAIN_MHEV, _MHEV_WORT),
+                              ("HEV", _HEV_WORT)) if _positiv_erwaehnt(w, roh)}
+    hybridbezug = _positiv_erwaehnt(_HYBRIDBEZUG_IRGENDEINER, roh)
+    if _positiv_erwaehnt(_ELEKTRO_KLASSE, roh) or (not hybridbezug and _positiv_erwaehnt(_ELEKTRO_MODUS, roh)):
+        klassen.add(POWERTRAIN_BEV)
+    generisch = hybridbezug and not (klassen - {POWERTRAIN_BEV})
+    exklusiv = POWERTRAIN_BEV in klassen and _positiv_erwaehnt(_BEV_EXKLUSIV, roh)
+    return frozenset(klassen), generisch, exklusiv
+
+
+def klassen_scope_passt(klassen: frozenset, generisch_hybrid: bool,
+                        powertrains: frozenset | None) -> bool | None:
+    """Mehrere ausdrücklich genannte Klassen (oder BEV neben einem generischen
+    Hybridbezug): passt nur eine GENANNTE Klasse; ein klarer Nicht-Hochvolt-
+    Antrieb ist ausgeschlossen; jede andere Hochvolt-Klasse bleibt offen."""
+    if not powertrains:
+        return None
+    if powertrains <= klassen:
+        return True
+    if powertrains & klassen:
+        return None
+    if powertrains <= {POWERTRAIN_ICE}:
+        return False
+    if powertrains <= {POWERTRAIN_MHEV} and klassen <= HOCHVOLT_POWERTRAINS and not generisch_hybrid:
         return False
     return None

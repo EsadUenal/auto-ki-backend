@@ -269,9 +269,18 @@ _KEIN_HV = ("elektronische Bremssteuermodul", "elektronischen Feststellbremse",
 for _t in _KEIN_HV:
     check(f"F1 {_t!r} -> KEIN Hochvolt", not _HV_MUSTER.search(_t))
 
+# N17-Folgefix: "Elektromotor" ist ein Antriebs-BAUTEILwort und steckt auch in
+# jedem Verbrenner (Servolenkung, Fensterheber, Luefter). Allein belegt es kein
+# Hochvolt-System -- bisher machte es einen Lenkungsrueckruf fuer Verbrenner zu
+# "incompatible" (ausgeblendet). Daher hier entfernt und unten (F1b) als
+# Nicht-Hochvolt gesichert; Hochvolt bleibt ueber Klassen-/Systemwoerter erkannt.
 _ECHT_HV = ("Hochvoltbatterie", "Hochvoltsystem", "Plug-in-Hybrid", "Plugin Hybrid",
-            "PHEV-Variante", "Hybridfahrzeuge", "Elektromotor", "Elektroantrieb",
-            "Hochspannungsleitung")
+            "PHEV-Variante", "Hybridfahrzeuge", "Elektroantrieb", "Elektrofahrzeug",
+            "batterieelektrisches Fahrzeug", "Hochspannungsleitung")
+for _t in ("Elektromotor", "Der Elektromotor der Servolenkung kann ausfallen",
+           "Elektromotor des Fensterhebers"):
+    check(f"F1b {_t!r} -> KEIN Hochvolt (Bauteilwort)", not _HV_MUSTER.search(_t))
+
 for _t in _ECHT_HV:
     check(f"F2 {_t!r} -> weiterhin Hochvolt/Elektro", bool(_HV_MUSTER.search(_t)))
 
