@@ -91,6 +91,22 @@ class IdentitaetsAufloesung:
     quellen: tuple[str, ...] = field(default_factory=tuple)
 
 
+def motorkern_teilbestaetigt(identity) -> bool:
+    """N6/N17-Fixpaket (B): der Motorkern ("5.0 V8") ist qualifiziert belegt und
+    nur eine getrennte Antriebsrad-Angabe ("Heckantrieb") der Nutzereingabe
+    blieb ungeprueft. Das Feld bleibt `user_only` und wird NICHT als Ganzes
+    bestaetigt -- das Flag setzt `VehicleIdentity` ausschliesslich unter diesen
+    Bedingungen (`_rest_nur_antriebsrad`, `kern_vollstaendig`). Ein Webkonflikt
+    am Feld hebt die Anerkennung auf."""
+    eintrag = (identity.field_evidence or {}).get("engine_name") if identity is not None else None
+    eintrag = eintrag or {}
+    return bool(getattr(identity, "engine_name", None)
+                and eintrag.get("verification_state") == "user_only"
+                and eintrag.get("motorkern_teilbestaetigt")
+                and eintrag.get("bestaetigte_teile")
+                and not eintrag.get("web_conflict"))
+
+
 def identitaet_aufloesen(identity) -> IdentitaetsAufloesung:
     fe = identity.field_evidence if identity is not None else {}
     quellen = sorted({q for e in fe.values() for q in ([e.get("primary_source")]
@@ -128,7 +144,8 @@ def identitaet_aufloesen(identity) -> IdentitaetsAufloesung:
         eintrag = fe.get(feld) or {}
         return bool(wert) and _bestaetigt(eintrag) and eintrag.get("verification_state") != "user_only"
 
-    motor_belegt = _motor_merkmal_belegt("engine_name") or _motor_merkmal_belegt("engine_code")
+    motor_belegt = (_motor_merkmal_belegt("engine_name") or _motor_merkmal_belegt("engine_code")
+                    or motorkern_teilbestaetigt(identity))
     if not motor_belegt:
         fehlend.append("Motorisierung")
     return IdentitaetsAufloesung(VERIFIED if not fehlend else PARTIAL, tuple(fehlend),
@@ -147,6 +164,10 @@ def motorisierung_beleg_text(identity) -> str:
 
     code = identity.engine_code if belegt("engine_code") else None
     name = identity.engine_name if belegt("engine_name") else None
+    if not name and not code and motorkern_teilbestaetigt(identity):
+        teile = (fe.get("engine_name") or {}).get("bestaetigte_teile") or []
+        return ("Motorkern „" + ", ".join(teile) + "“ durch Webquellen belegt; "
+                "übrige Motorangabe (Antriebsart) nicht geprüft")
     if code and name:
         return f"Motorcode {code} und Motorbezeichnung „{name}“ belegt"
     if name:

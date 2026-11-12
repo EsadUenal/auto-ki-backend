@@ -390,7 +390,14 @@ check("N6a) engine_name bleibt unbestätigt (Verhalten unverändert)",
 # Domain (auto-motor-und-sport.de) -- ADAC/CARWIKI nennen den Kern weiterhin
 # nicht, Schwelle "len(doms) >= 2 ODER Tier 1" bleibt knapp verfehlt (kein
 # Tier-1-Hersteller in diesem Fixture).
-AMS_MIT_KERN = dict(AMS, content=AMS["content"] + " Der Motor ist ein 5.0 V8.")
+# N6/N17-Fixpaket: der Kernbeleg muss denselben Satz-/Modellfilter wie die Claims
+# bestehen -- die AMS-Seite ist eine Familienuebersicht ("Lexus RC"), ein Satz
+# "Der Motor ist ein 5.0 V8." ohne Zielmodell ist dort KEIN Beleg fuer den RC F
+# (kann jede RC-Variante meinen). Fall b) nennt deshalb das Zielmodell im Satz;
+# die Aussage des Falls (ein qualifizierter Beleg auf EINER Domain, Schwelle
+# verfehlt) bleibt unveraendert. Die ungebundene Variante prueft N6c unten.
+AMS_MIT_KERN = dict(AMS, content=AMS["content"] + " Der Lexus RC F hat einen 5.0 V8.")
+AMS_KERN_OHNE_MODELL = dict(AMS, content=AMS["content"] + " Der Motor ist ein 5.0 V8.")
 zeile_schwach, feldwerte_schwach = _motorkern_log(z_rc_f, [ADAC, CARWIKI, AMS_MIT_KERN])
 check("N6b) Motorkern-Log erscheint bei vorhandenem, aber unzureichendem Kernbeleg",
       zeile_schwach is not None, str(zeile_schwach))
@@ -400,6 +407,11 @@ if zeile_schwach:
           zeile_schwach)
 check("N6b) engine_name bleibt unbestätigt (Verhalten unverändert, Schwelle verfehlt)",
       "engine_name" not in feldwerte_schwach)
+
+zeile_ungebunden, _ = _motorkern_log(z_rc_f, [ADAC, CARWIKI, AMS_KERN_OHNE_MODELL])
+check("N6c) Kern-Satz OHNE Zielmodell auf einer Familienuebersicht zaehlt nicht als Kernbeleg",
+      zeile_ungebunden is not None and "quellen_mit_kernbeleg=0" in zeile_ungebunden,
+      str(zeile_ungebunden))
 
 check("N6) a) und b) sind am Log unterscheidbar (0 vs. >=1 Kernbelege), beide bestaetigt=False",
       zeile_ohne is not None and zeile_schwach is not None

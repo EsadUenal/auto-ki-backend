@@ -2512,8 +2512,36 @@ def _rollenbeleg_eigener_teilsatz(text: str, start: int, ende: int) -> bool:
     return False
 
 
-def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
-    """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
+def _hubraum_liter_werte(text: str) -> list[tuple[str, int]]:
+    """Hubraumangaben in Litern ("5.0 V8", "5,0 Liter") als (Wert "5.0", Position)
+    -- mit den Ausschluessen fuer Nicht-Hubraum-Zahlen (Zeit/Drehzahl/Kapazitaet/
+    qt/Verbrauch). EINE Erkennung fuer die Hubraum-Claims UND die Motorkern-
+    Pruefung (N6/N17-Fixpaket), keine zweite Regel."""
+    out: list[tuple[str, int]] = []
+    for m in _RE_HUBRAUM.finditer(text):
+        if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
+            continue
+        if _RE_KAPAZITAET_UMRECHNUNG.match(text[m.end(1):]):
+            continue
+        if _RE_QT_ZAHL.match(text[m.end(1):]):        # "9.3 US qt": die Zahl IST die qt-Menge
+            continue
+        # Verbrauchsangabe ("6,5 l/100km") ist keine Hubraumangabe -- nur die
+        # blosse "l"-Abkuerzung (nicht "Liter"/"litre") kollidiert damit, und
+        # nur wenn direkt ein Bruchstrich folgt (die Verbrauchseinheit selbst).
+        if m.group(0).rstrip().lower().endswith("l") and text[m.end(0):m.end(0) + 1] == "/":
+            continue
+        out.append((m.group(1).replace(",", "."), m.start()))
+    return out
+
+
+def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
+    """Die fachlich QUALIFIZIERTE Sicht EINES ausgerichteten Treffers -- die
+    gemeinsame Vorstufe aller Identitaets-Claims UND der Motorkern-Pruefung
+    (N6/N17-Fixpaket): Tier (inkl. Regionsfremd-/Schwach-Abwertung), der an das
+    Zielmodell gebundene Text (Satz-/Segmentbindung, Geschwistermodell-Filter),
+    das Datenblatt-Zeitfenster-Urteil und die Fremdmarkt-Spannen. Reine
+    Auslagerung des bisherigen Anfangsteils von `_identitaets_claims()` --
+    keine zweite, abweichende Markt-/Zeit-/Modellpruefung."""
     url = r.get("url") or ""
     dom, tier = _domain_von(url), _tier_identitaet(url, ziel.get("marke"))
     if _ist_regionsfremd(url):
@@ -2563,9 +2591,10 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # deshalb auf Tier 3 abgewertet, weil ein gemeinsamer Pressetext
         # zweier Geschwistermodelle keines davon im Titel nennt.
         tier = tier if _marke_eigene_domain(url, ziel.get("marke")) else 3
-        text = " ".join(s for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        saetze_liste = [s for s in _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}")
                         if _satz_nennt_modell(s, ziel.get("modell"))
-                        and not _geschwistermodell_lokal(s, voll_modell))
+                        and not _geschwistermodell_lokal(s, voll_modell)]
+        text = " ".join(saetze_liste)
     else:
         # Claim-Level Vehicle Binding (Forensik-Folgeauftrag, Package A,
         # CONFIRMED Root Cause): ein Treffer, dessen TITEL das Zielmodell
@@ -2624,15 +2653,14 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
                 _text_teile.append(_SEGMENTGRENZE_SENTINEL)
             _text_teile.append(s)
         text = " ".join(_text_teile)
-    baujahr = ziel.get("baujahr")
-    claims: list[dict] = []
-
+        saetze_liste = list(lokale_saetze)
     # Zielgueltigkeits-Folgeauftrag: das DOKUMENT-eigene Modellstart/Modellende-
     # Fenster (falls vorhanden) bindet alle NICHT-Generation-Claims DIESER
     # Quelle an das Zielbaujahr -- s. `_RE_MODELLZEITRAUM_FELD`-Kommentar.
     # Immer am VOLLEN Dokumenttext geprueft (nicht am ggf. bereits
     # segmentgefilterten `text`): das Feldpaar beschreibt die GANZE Seite,
     # nicht nur den lokal an das Zielmodell gebundenen Satzausschnitt.
+    baujahr = ziel.get("baujahr")
     _datenblatt_fenster = _datenblatt_zeitraum(f"{r.get('title') or ''}. {r.get('content') or ''}")
     if _datenblatt_fenster is None:
         _datenblatt_fenster = _titel_zeitfenster(r.get("title"))
@@ -2653,6 +2681,19 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     # derselbe Text, gegen den die folgenden Claim-Regexe laufen, also
     # dieselben Zeichenpositionen wie die `m.start()`-Übergaben unten.
     _fremdmarkt = _fremdmarkt_spannen(text)
+    return {"url": url, "dom": dom, "tier": tier, "tier_vor_schwach_abwertung": tier_vor_schwach_abwertung,
+            "voll_modell": voll_modell, "grund": grund, "text": text, "saetze": saetze_liste,
+            "verwurf_grund_datenblatt": _verwurf_grund_datenblatt, "fremdmarkt": _fremdmarkt}
+
+
+def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
+    """Alle Identitäts-Claims EINES ausgerichteten Treffers."""
+    q = _qualifizierte_quelle(r, ziel)
+    url, dom, tier, tier_vor_schwach_abwertung = q["url"], q["dom"], q["tier"], q["tier_vor_schwach_abwertung"]
+    voll_modell, grund, text = q["voll_modell"], q["grund"], q["text"]
+    _verwurf_grund_datenblatt, _fremdmarkt = q["verwurf_grund_datenblatt"], q["fremdmarkt"]
+    baujahr = ziel.get("baujahr")
+    claims: list[dict] = []
 
     def add(feld, wert, *, pos=None, tier_override=None, **extra):
         if _verwurf_grund_datenblatt and feld not in ("generation", "generation_nummer"):
@@ -2758,19 +2799,8 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
             erwartet = kw * _KW_ZU_PS
             if abs(ps_kandidat - erwartet) <= max(2.0, erwartet * 0.01):
                 add("horsepower", ps_kandidat, pos=m.start())
-    for m in _RE_HUBRAUM.finditer(text):
-        if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
-            continue
-        if _RE_KAPAZITAET_UMRECHNUNG.match(text[m.end(1):]):
-            continue
-        if _RE_QT_ZAHL.match(text[m.end(1):]):        # "9.3 US qt": die Zahl IST die qt-Menge
-            continue
-        # Verbrauchsangabe ("6,5 l/100km") ist keine Hubraumangabe -- nur die
-        # blosse "l"-Abkuerzung (nicht "Liter"/"litre") kollidiert damit, und
-        # nur wenn direkt ein Bruchstrich folgt (die Verbrauchseinheit selbst).
-        if m.group(0).rstrip().lower().endswith("l") and text[m.end(0):m.end(0) + 1] == "/":
-            continue
-        add("displacement", m.group(1).replace(",", "."), pos=m.start())
+    for wert, pos in _hubraum_liter_werte(text):
+        add("displacement", wert, pos=pos)
     for m in _RE_HUBRAUM_CCM.finditer(text):
         add("displacement", _ccm_als_liter(m.group(1)), pos=m.start())
     for wert, rx in _KRAFTSTOFF_CLAIM:
@@ -3207,7 +3237,7 @@ def _generation_belege(gen_claims: list[dict], code: object) -> list[dict]:
 # ("Heckantrieb") in derselben Freitext-Nutzereingabe wie die Motorbezeichnung
 # ("5.0 V8, Heckantrieb") darf nicht automatisch als mitbestätigt gelten, nur
 # weil Motor UND Antriebsart in EINEM Feld standen und NUR der Motorteil
-# tatsächlich per Quellenabgleich (`_motor_quelle_passt` unten) geprüft wurde.
+# tatsächlich per Quellenabgleich (`_motorkern_belege` unten) geprüft wurde.
 # Die Antriebsart hat ihr eigenes, unverändertes Konsens-Feld (`drivetrain`,
 # s. `antrieb = uebernehme("drivetrain", ...)` unten) — hier wird für
 # `engine_name` nur die tatsächlich geprüfte Teilzeichenkette als bestätigter
@@ -3221,7 +3251,7 @@ _MOTOR_ANTRIEBS_ZUSATZ = re.compile(
 
 def _motor_kern_bestaetigt(motor: str) -> str:
     """Die Motorangabe OHNE eine darin enthaltene Antriebsart-Phrase — das ist
-    die Teilzeichenkette, die `_motor_quelle_passt()` tatsächlich gegen
+    die Teilzeichenkette, die `_motorkern_belege()` tatsächlich gegen
     Quellen prüft. Ohne erkennbare Antriebsart-Phrase unverändert `motor`."""
     bereinigt = _MOTOR_ANTRIEBS_ZUSATZ.sub("", motor).strip(" ,/")
     return bereinigt or motor
@@ -3439,23 +3469,67 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         hub = re.search(r"\b(\d)[.,](\d)\b", motor)
         hub_norm = f"{hub.group(1)}.{hub.group(2)}" if hub else None
 
-        def _hat_hubraum_beleg(text: str) -> bool:
-            if not hub_norm:
-                return True
-            return any(m.group(1).replace(",", ".") == hub_norm for m in _RE_HUBRAUM.finditer(text or ""))
+        # N6/N17-Fixpaket (A): die Motorkern-Belege durchlaufen DIESELBE
+        # fachliche Qualifikation wie die Claims (`_qualifizierte_quelle()`):
+        # Satz-/Segmentbindung an das Zielmodell (Geschwistermodelle raus),
+        # Verwurf ausserhalb des Datenblatt-Zeitfensters, Tier-Abwertung
+        # (regionsfremd/schwach) und Fremdmarktdeckelung an der Hubraum-
+        # Fundstelle. Bisher las diese Pruefung den UNGEFILTERTEN Volltext mit
+        # der Roh-Stufe der Domain -- eine japanische Markteinfuehrungsmeldung
+        # bestaetigte den Motorkern als Stufe 1, obwohl ihre Hubraum-/Antriebs-
+        # Claims auf Stufe 3 gedeckelt sind.
+        # Hubraum und Bauart muessen im SELBEN Satz stehen (keine Kombination
+        # fremder Zeilen/Varianten); nennt dieser Satz zusaetzlich einen ANDEREN
+        # Hubraum, ist die Zuordnung mehrdeutig und zaehlt nicht.
+        # Grenze: ein Artikeldatum allein ist kein Gueltigkeitsintervall -- ohne
+        # Datenblatt-/Titel-Zeitfenster der Quelle wird kein Zeitfenster
+        # erfunden (wie bei den Claims).
+        kern_tokens_voll = _tokens(_motor_kern_bestaetigt(motor))
 
-        def _motor_quelle_passt(r: dict) -> bool:
-            text = f"{r.get('title') or ''} {r.get('content') or ''}"
-            return kern <= _tokens(text) and _hat_hubraum_beleg(text)
+        def _motorkern_belege(r: dict) -> list[tuple[int, bool]]:
+            """(effektive Stufe, Kern vollstaendig im Satz) je qualifizierter Fundstelle."""
+            q = _qualifizierte_quelle(r, ziel)
+            if q["verwurf_grund_datenblatt"]:
+                return []
+            text, pos, out = q["text"], 0, []
+            for satz in q["saetze"]:
+                start = text.find(satz, pos)
+                if start < 0:
+                    start = text.find(satz)
+                if start < 0:
+                    continue
+                pos = start + len(satz)
+                if not kern <= _tokens(satz):
+                    continue
+                anker = start
+                if hub_norm:
+                    werte = _hubraum_liter_werte(satz)
+                    if hub_norm not in {w for w, _ in werte} or any(w != hub_norm for w, _ in werte):
+                        continue
+                    anker = start + next(p for w, p in werte if w == hub_norm)
+                eff = max(q["tier"], 3) if _in_fremdmarkt_span(anker, q["fremdmarkt"]) else q["tier"]
+                out.append((eff, kern_tokens_voll <= _tokens(satz)))
+            return out
 
-        doms = {_domain_von(r.get("url") or "") for r in claim_quellen
-                if _motor_quelle_passt(r) and _tier_identitaet(r.get("url") or "", marke) <= 2}
-        if (kern or hub_norm) and (len(doms) >= 2 or any(
-                _tier_identitaet(r.get("url") or "", marke) == 1
-                for r in claim_quellen if _motor_quelle_passt(r))):
+        belege = [(r, _motorkern_belege(r)) for r in claim_quellen]
+
+        def _kern_bestaetigt(nur_vollstaendig: bool) -> tuple[bool, set[str]]:
+            ok = [(r, b) for r, bs in belege for b in bs if (b[1] or not nur_vollstaendig)]
+            d = {_domain_von(r.get("url") or "") for r, (eff, _) in ok if eff <= 2}
+            return (len(d) >= 2 or any(eff == 1 for _, (eff, _) in ok)), d
+
+        kern_ok, doms = _kern_bestaetigt(False)
+        if (kern or hub_norm) and kern_ok:
             motor_bestaetigt = _motor_kern_bestaetigt(motor)
+            # `kern_vollstaendig`: JEDES Token des bestaetigten Motorkerns steht
+            # in qualifizierten Saetzen (Schwelle wie oben). `kern` selbst prueft
+            # nur Bezeichnungen mit Ziffer ("v8") oder lange Woerter -- ein
+            # weiteres Merkmal ("Kompressor") kaeme sonst ungeprueft mit durch.
+            # Nur das Motorisierungsgate bei Teilbestaetigung wertet dies aus.
+            voll_ok, _ = _kern_bestaetigt(True)
             feldwerte["engine_name"] = {"value": motor_bestaetigt, "confidence": "mittel",
-                                        "domains": len(doms) or 1, "domain_namen": doms}
+                                        "domains": len(doms) or 1, "domain_namen": doms,
+                                        "kern_vollstaendig": voll_ok}
         # N6-Diagnostik (ENFAL-Folgeauftrag, 2026-11): bisher gab es KEINE
         # Logzeile zur Motorkern-Prüfung -- ob `engine_name` unbestätigt
         # blieb, weil (a) keine Quelle die Kern-Tokens/den Hubraum überhaupt
@@ -3466,10 +3540,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # Tier 1" knapp verfehlt), war aus dem bestehenden Log NICHT
         # unterscheidbar (N6-Befund). Reine Beobachtbarkeit -- ändert nichts
         # an der Bestätigungsschwelle selbst.
-        anzahl_kernbeleg = sum(1 for r in claim_quellen if _motor_quelle_passt(r))
-        anzahl_tier1_kernbeleg = sum(
-            1 for r in claim_quellen
-            if _motor_quelle_passt(r) and _tier_identitaet(r.get("url") or "", marke) == 1)
+        anzahl_kernbeleg = sum(1 for _, bs in belege if bs)
+        anzahl_tier1_kernbeleg = sum(1 for _, bs in belege if any(eff == 1 for eff, _ in bs))
         log.info(
             "Motorkern-Prüfung: nutzerwert=%r kern=%s hubraum_erforderlich=%s "
             "quellen_mit_kernbeleg=%d domains_tier<=2=%d davon_tier1=%d bestaetigt=%s",

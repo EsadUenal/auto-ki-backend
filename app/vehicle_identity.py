@@ -434,6 +434,19 @@ class VehicleIdentity:
                 teile = fe.setdefault("bestaetigte_teile", [])
                 if wert not in teile:
                     teile.append(wert)
+                # N6/N17-Fixpaket (B): NUR fuer die Motorbezeichnung und NUR, wenn
+                # (1) die Recherche den GESAMTEN bestaetigten Motorkern in
+                # qualifizierten Saetzen belegt hat (`kern_vollstaendig`) UND
+                # (2) der unbestaetigte Rest der Nutzerangabe ausschliesslich eine
+                # getrennte Antriebsrad-Phrase ist. Ein weiteres Motormerkmal im
+                # Rest ("Kompressor") oder ein Webkonflikt schaltet das Flag nicht.
+                # Das Feld bleibt `user_only`; das Flag wertet nur das
+                # Motorisierungsgate aus (`empfehlungs_policy`).
+                roh_teil = (vorhanden if _ist_teilbestaetigt(feld, vorhanden, wert)
+                            else fe.get("raw_user_value"))
+                if (feld == "engine_name" and eintrag.get("kern_vollstaendig")
+                        and _rest_nur_antriebsrad(roh_teil, wert)):
+                    fe["motorkern_teilbestaetigt"] = True
                 if eintrag.get("domain_namen") and not fe.get("domain_namen"):
                     fe["domain_namen"] = sorted(eintrag["domain_namen"])
             else:
@@ -777,6 +790,19 @@ def _ist_teilbestaetigt(feld: str, vorhanden, wert) -> bool:
     if not v or not w or v == w:
         return False
     return w in v
+
+
+def _rest_nur_antriebsrad(roh, kern) -> bool:
+    """True, wenn die Nutzerangabe `roh` genau der bestaetigte Motorkern `kern`
+    PLUS eine getrennte Antriebsrad-Phrase ("Heckantrieb", "RWD", ...) ist --
+    derselbe Zusatz, den `technical_research._motor_kern_bestaetigt()` vor der
+    Quellenpruefung entfernt (eine Definition, kein zweites Muster)."""
+    from app.technical_research import _MOTOR_ANTRIEBS_ZUSATZ
+    if not roh or not kern:
+        return False
+    bereinigt = _MOTOR_ANTRIEBS_ZUSATZ.sub("", str(roh)).strip(" ,/")
+    return (_norm_wert("engine_name", bereinigt) == _norm_wert("engine_name", kern)
+            and _norm_wert("engine_name", roh) != _norm_wert("engine_name", kern))
 
 
 def _vergleiche(feld: str, user, db, raw_user, evidence) -> tuple[object, dict]:
