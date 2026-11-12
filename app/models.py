@@ -922,13 +922,17 @@ class Wartungshinweis(BaseModel):
     unverified, liegt auf Baureihen- statt Motorebene und trägt keine Quelle.
     """
     bauteil: str
-    # "naehert_sich" | "im_bereich" | "darueber" — "entfernt" erzeugt bewusst
-    # GAR KEINEN Hinweis (keine Warnung ohne Anlass).
+    # "naehert_sich" | "im_bereich" | "darueber" | "entfernt". "entfernt" erzeugt einen Hinweis NUR, wenn allein die
+    # ZEITFRAGE offen ist (Kilometerpunkt weit entfernt, oder reine Zeitregel mit unbekanntem Alter / an der
+    # Altersgrenze) -- sonst GAR KEINEN Hinweis (keine Warnung ohne Anlass).
     status: str
-    punkt_km: int                      # unterer/erster Wert des hinterlegten Intervalls
+    # Reine ZEIT-Regel (kein Kilometerpunkt in der Quelle): `punkt_km` und `differenz_km` sind dann null -- nie 0, nie
+    # ein erfundener Wert. Der Status ist bei einer Zeitregel kein Kilometerstatus: "darueber" = Zeitgrenze nach dem
+    # Baujahr belegbar erreicht, "entfernt" = nur die Zeitfrage ist offen (Alter unbekannt oder an der Grenze).
+    punkt_km: int | None = None        # unterer/erster Wert des hinterlegten Intervalls
     punkt_bis_km: int | None = None    # oberer Wert, nur bei einer Spanne ("150.000 - 250.000 km")
     # Kilometerstand minus `punkt_km`. Negativ = der Punkt liegt noch voraus.
-    differenz_km: int
+    differenz_km: int | None = None
     intervall_text: str                # der unveränderte Originaltext der Evidence
     hinweis: str                       # ausformulierter Satz — nie eine Fälligkeitsbehauptung
     herkunft: str                      # "db_wartung" | "web_wartung"

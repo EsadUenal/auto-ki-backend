@@ -2253,15 +2253,10 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
     """
     if kontext is None:
         return
-    from app.laufleistung import ist_nur_bedingt, schwelle_belegbar_erreicht_alter, zeitregel_hinweise
+    from app.laufleistung import ist_nur_bedingt, schwelle_belegbar_erreicht_alter
     nach_id = {i.id: i for i in insights or []}
     positionen = _insight_positionen(insights)
-    hinweise = list(getattr(kontext, "wartungshinweise", None) or [])
-    # Regime-Paket: eine REINE Zeit-Grundregel (kein Kilometerpunkt) hat keinen Kilometer-Hinweis und wird sonst
-    # nicht verarbeitet -- auch nicht, wenn daneben eine bedingte Kilometer-Zusatzregel steht. Eigenständig, ohne
-    # Kilometerwert aus der Zusatzregel; Rang aus derselben Schwellenlogik wie bei den Kilometer-Hinweisen.
-    hinweise += zeitregel_hinweise(kontext, insights)
-    for w in hinweise:
+    for w in getattr(kontext, "wartungshinweise", None) or []:
         # F4: STRUKTURIERTES Bauteil des zugehörigen Web-Insights als Schlüssel (derselbe wie in
         # `_aus_web_evidence`); die Präsenz-Bedingung ("Falls ... verbaut") steht davor in der Ausgabe, nicht im
         # Schlüssel -- sonst entstünde bei unbekanntem Getriebe eine zweite Aktion zum selben Punkt.

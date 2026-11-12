@@ -871,22 +871,38 @@ class _Auswertung:
                  "zeit_offen_trotz_entfernt")
 
 
-def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | None) -> "_Auswertung | None":
-    """Wertet die Fundstellen einer Aussage GETRENNT aus -- oder None (kein Kilometer-Hinweis).
+def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | None,
+                     zeit_erlaubt: bool = False) -> "_Auswertung | None":
+    """Wertet die Fundstellen einer Aussage GETRENNT aus -- oder None (kein Hinweis).
 
     `modus` "grund": mindestens eine UNBEDINGTE Regel mit Kilometerpunkt; nur unbedingte Regeln werden ausgewertet
     (eine reine Zeit-Grundregel daneben zählt für die Mehrdeutigkeit mit). "nur_bedingt": alle Regeln mit
     Kilometerpunkt sind bedingt. Mehrere VERSCHIEDENE Regeln gleicher Art sind `mehrdeutig`: Status und Punkt stammen
     dann vom FRÜHESTEN genannten Kilometerpunkt, es wird keine Regel ausgewählt und nichts kombiniert.
 
-    Gibt es UNBEDINGTE Regeln, aber KEINE davon mit Kilometerpunkt (reine Zeit-Grundregel), entsteht hier KEIN
-    Kilometer-Hinweis: der Kilometerpunkt einer bedingten Zusatzregel darf die Zeitregel nicht ersetzen. Die
-    Zeit-Grundregel wird eigenständig in `zeit_hinweise` ausgewertet."""
+    `modus` "zeit": es gibt UNBEDINGTE Regeln, aber KEINE davon mit Kilometerpunkt (reine Zeit-Grundregel) -- nur für
+    Webrecherche-Fakten (`zeit_erlaubt`). Der Kilometerpunkt einer bedingten Zusatzregel ersetzt die Zeitregel nie
+    (`von_km`/`bis_km` bleiben None); die Zusatzregel steht nur als wörtliche, ungeklärte Zusatzaussage dabei. Status:
+    "darueber" = jede Zeitgrenze belegbar erreicht, sonst "entfernt" (nur die Zeitfrage ist offen). Ist die Grenze auch
+    im ältesten Fall nicht erreicht, entsteht kein Hinweis (kein Anlass)."""
     rs = zerlege_regeln(roh)
     schwelle = [r for r in rs if r.km or r.zeit]
     grund_alle = eindeutige_regeln([r for r in schwelle if not r.bedingt])
     if grund_alle and not any(r.km for r in grund_alle):
-        return None
+        if not zeit_erlaubt:
+            return None
+        klassen = [_zeit_klasse(r.zeit, alter_jahre) for r in grund_alle]
+        if all(k == "nicht_erreicht" for k in klassen):
+            return None
+        a = _Auswertung()
+        a.modus = "zeit"
+        a.regeln = grund_alle
+        a.zusatz = list(dict.fromkeys(r.text for r in rs if r.bedingt))
+        a.mehrdeutig = len(grund_alle) > 1
+        a.von_km = a.bis_km = None
+        a.status = STATUS_DARUEBER if all(k == "erreicht" for k in klassen) else STATUS_ENTFERNT
+        a.zeit_offen_trotz_entfernt = a.status == STATUS_ENTFERNT     # nur die Zeitfrage ist offen: kein Überspringen
+        return a
     grund = grund_alle
     basis = grund if grund else eindeutige_regeln([r for r in schwelle if r.km])
     if not basis:
@@ -904,17 +920,6 @@ def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | No
         and any(r.zeit_alternative() and _zeit_klasse(r.zeit_alternative(), alter_jahre) != "nicht_erreicht"
                 for r in basis))
     return a
-
-
-class ZeitHinweis:
-    """Hinweis zu einer REINEN Zeit-Grundregel (kein Kilometerpunkt): Duck-Type von `Wartungshinweis` für die
-    Kaufaktionen, bewusst OHNE Kilometerfelder und ohne Schemaänderung (`status` ist None)."""
-    __slots__ = ("bauteil", "status", "intervall_text", "hinweis", "herkunft", "evidence_id", "taetigkeit",
-                 "technische_bedingung", "technische_bedingung_status")
-
-    def __init__(self, **kw):
-        for k in self.__slots__:
-            setattr(self, k, kw.get(k))
 
 
 def _formuliere_zeit(bauteil: str, regeln: list[WartungsRegel], alter_jahre: int | None, technik: str | None,
@@ -952,60 +957,6 @@ def _formuliere_zeit(bauteil: str, regeln: list[WartungsRegel], alter_jahre: int
                 "bestimmen und bleibt deshalb offen. Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, "
                 "und den Beleg dazu ansehen.")
     return f"{kopf}{satz}{einsatz}{_zusatz_satz(zusatz_texte, True)}{zusatz}"
-
-
-def zeit_hinweise(insights: list[Insight], kilometerstand: int | None, alter_jahre: int | None,
-                  bereits: set[str] | None = None) -> list[ZeitHinweis]:
-    """Hinweise zu Web-Wartungsfakten, deren UNBEDINGTE Grundregel nur eine Zeit nennt (kein Kilometerpunkt) --
-    eigenständig und unabhängig von einer bedingten Kilometer-Zusatzregel, deren Kilometerwert nie ersatzweise
-    verwendet wird (s. `_auswerte_regeln`). Nur Webrecherche-Fakten (die DB-Zeitzeilen bleiben unverändert).
-    Kein Hinweis ohne Anlass: ist die Zeitgrenze nach dem Baujahr auch im ältesten Fall nicht erreicht, entsteht
-    keiner. Mit `kilometerstand` None entsteht keiner (ohne Laufleistungskontext)."""
-    if not kilometerstand:
-        return []
-    gesehen = set(bereits or ())
-    out: list[ZeitHinweis] = []
-    kandidaten = _kandidaten(insights)
-    for i, beleg_id in kandidaten:
-        if _QUELLEN_KATEGORIEN.get(i.kategorie) != "web_wartung":
-            continue
-        roh = _intervall_text(i, "web_wartung")
-        rs = zerlege_regeln(roh)
-        grund = eindeutige_regeln([r for r in rs if not r.bedingt and (r.km or r.zeit)])
-        if not grund or any(r.km for r in grund):
-            continue
-        if all(_zeit_klasse(r.zeit, alter_jahre) == "nicht_erreicht" for r in grund):
-            continue           # kein Anlass
-        bauteil = _bauteil(i)
-        schluessel = norm_bauteil(bauteil)
-        if schluessel in gesehen:
-            continue
-        gesehen.add(schluessel)
-        technik = (getattr(i, "technische_bedingung", None)
-                   if getattr(i, "technische_bedingung_status", None) == "unresolved" else None)
-        praefix = ""
-        if (i.titel or "").startswith("Falls ") and ": " in i.titel:
-            praefix = i.titel.split(": ", 1)[0] + ": "
-        zusatz = list(dict.fromkeys(r.text for r in rs if r.bedingt))
-        out.append(ZeitHinweis(
-            bauteil=bauteil, status=None, intervall_text=(roh or "").strip(), herkunft="web_wartung",
-            evidence_id=beleg_id, taetigkeit=getattr(i, "taetigkeit", None),
-            technische_bedingung=getattr(i, "technische_bedingung", None),
-            technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
-            hinweis=praefix + _formuliere_zeit(bauteil, grund, alter_jahre, technik, "web_wartung", zusatz)
-            + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
-               "nicht bestätigt." if hat_quellenvorbehalt(roh) else "")))
-    return out
-
-
-def zeitregel_hinweise(ctx: Laufleistungskontext | None, insights: list[Insight] | None) -> list[ZeitHinweis]:
-    """Die Zeit-Grundregel-Hinweise zu DIESEM Kontext -- EINE Quelle für Prompt-Block und Kaufaktionen, damit beide
-    Ausgabewege dieselben Hinweise tragen. Ein Bauteil, zu dem bereits ein Kilometer-Hinweis aus einer Grundregel
-    vorliegt, bekommt keinen zweiten (die nur bedingte Kilometerregel verbraucht den Platz nicht)."""
-    if ctx is None or not ctx.kilometerstand:
-        return []
-    bereits = {norm_bauteil(w.bauteil) for w in ctx.wartungshinweise if not ist_nur_bedingt(w.intervall_text)}
-    return zeit_hinweise(insights or [], ctx.kilometerstand, ctx.fahrzeugalter_jahre, bereits)
 
 
 # ── Evidence -> Wartungshinweise ──────────────────────────────────────────────
@@ -1131,9 +1082,9 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
         # Regime-Paket (N5/N12): die Fundstellen der Aussage werden GETRENNT ausgewertet (Bedingung, Kilometer, Zeit
         # und Tätigkeit gehören zur selben Fundstelle) -- s. `_auswerte_regeln`. Gelesen wird nur das ERSTintervall:
         # "Danach ..." wird nie zum Erstintervall. Ohne Kilometerpunkt im Erstintervall entsteht kein Hinweis.
-        ausw = _auswerte_regeln(roh, kilometerstand, alter_jahre)
+        ausw = _auswerte_regeln(roh, kilometerstand, alter_jahre, zeit_erlaubt=(herkunft == "web_wartung"))
         if ausw is None:
-            continue           # zeit-/zustandsbezogen: keine Kilometerrechnung
+            continue           # zustandsbezogen, DB-Zeitzeile oder kein Anlass: kein Hinweis
         status = ausw.status
         if status == STATUS_ENTFERNT and not ausw.zeit_offen_trotz_entfernt:
             continue           # §G: kein Anlass, also keine Warnung
@@ -1159,10 +1110,13 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             status=status,
             punkt_km=ausw.von_km,
             punkt_bis_km=ausw.bis_km,
-            differenz_km=kilometerstand - ausw.von_km,
+            # Reine Zeitregel: kein Kilometerpunkt -> null (nie 0, nie ein Wert der bedingten Zusatzregel).
+            differenz_km=(kilometerstand - ausw.von_km) if ausw.von_km is not None else None,
             intervall_text=(roh or "").strip(),
-            hinweis=bedingung_praefix + _formuliere_regeln(bauteil, ausw, kilometerstand, herkunft, alter_jahre,
-                                                           technik)
+            hinweis=bedingung_praefix + (
+                _formuliere_zeit(bauteil, ausw.regeln, alter_jahre, technik, herkunft, ausw.zusatz)
+                if ausw.modus == "zeit" else
+                _formuliere_regeln(bauteil, ausw, kilometerstand, herkunft, alter_jahre, technik))
             # F3: der Marktvorbehalt der Quelle macht das Intervall nicht "bedingt" (s. `erstintervall_text`),
             # bleibt aber SICHTBAR: erreichte Schwelle und bestätigte Geltung für Deutschland sind getrennte Fragen.
             + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
@@ -1185,7 +1139,7 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
     # Eine NUR bedingte Regel (Voraussetzung ungeklärt) rangiert höchstens wie ein nahender Punkt: sie ist keine
     # belegte Grundregel und darf eine solche nicht verdrängen.
     out.sort(key=lambda p: (-(min(rang[p[1].status], 1) if p[0] else rang[p[1].status]),
-                            -abs(p[1].differenz_km), p[1].bauteil))
+                            -(abs(p[1].differenz_km) if p[1].differenz_km is not None else 0), p[1].bauteil))
     return [w for _, w in out][:MAX_HINWEISE]
 
 
@@ -1248,12 +1202,8 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
     return ctx if ctx.hat_inhalt() else None
 
 
-def prompt_block(ctx: Laufleistungskontext | None, zeitregeln: list[ZeitHinweis] | None = None) -> str:
+def prompt_block(ctx: Laufleistungskontext | None) -> str:
     """Kompakter Prompt-Abschnitt — leerer String, wenn nichts vorliegt.
-
-    `zeitregeln` (`zeitregel_hinweise`): Hinweise zu REINEN Zeit-Grundregeln. Sie haben keinen Kilometerpunkt und
-    deshalb kein `Wartungshinweis`-Objekt (der Vertrag verlangt dort Kilometerfelder, die nicht erfunden werden);
-    sie stehen trotzdem mit ihrem fertigen Text im Prompt, damit eine vorhandene Zeitinformation nicht fehlt.
 
     Der Block trägt die Verbote MIT, statt sich auf den Systemprompt zu verlassen.
     Ein Modell, das "Zahnriemen: Wartungspunkt bei 120.000 km, Fahrzeug bei
@@ -1280,8 +1230,6 @@ def prompt_block(ctx: Laufleistungskontext | None, zeitregeln: list[ZeitHinweis]
                       f"dem Baujahr).")
     for w in ctx.wartungshinweise:
         zeilen.append(f"Wartungspunkt „{w.bauteil}“ (Beleg {w.evidence_id}): {w.hinweis}")
-    for z in zeitregeln or []:
-        zeilen.append(f"Wartungspunkt „{z.bauteil}“ (Beleg {z.evidence_id}): {z.hinweis}")
     if not zeilen:
         return ""
     # Die Servicehistorie-Angabe verschiebt genau EINEN Satz dieses Blocks. Ohne sie

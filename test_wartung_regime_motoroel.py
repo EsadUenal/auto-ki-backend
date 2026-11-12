@@ -164,8 +164,12 @@ check("B3 [ECHT] 'Danach alle 15.000 km / jährlich' wird NICHT Erstintervall: 1
       rb.km == (105000, None) and rb.zeit == (6, "Jahre") and rb.verbinder == "oder")
 check("B4 [SYNTH] 'alle 15.000 km. Danach jährlich': jährlich steht nur im Folgeintervall -> keine Zeitschwelle",
       ll.WartungsRegel("Motoröl alle 15.000 km. Danach jährlich").zeit is None)
-check("B5 [SYNTH] 'alle 6 Jahre. Danach alle 15.000 km': der Kilometerwert des Folgeintervalls erzeugt keinen Hinweis",
-      hinweis_aus("Bremsflüssigkeit alle 6 Jahre. Danach alle 15.000 km", km=82000, alter=9) is None)
+# B5 (fachlich neu gefasst, Zeitregel in der Karte): "alle 6 Jahre" ist eine reine Zeit-Grundregel und erzeugt jetzt einen
+# Zeitregel-Hinweis; unverändert gilt: der Kilometerwert des FOLGEintervalls wird nie zum Erstintervall (punkt_km bleibt null).
+_b5 = hinweis_aus("Bremsflüssigkeit alle 6 Jahre. Danach alle 15.000 km", km=82000, alter=9)
+check("B5 [SYNTH] 'alle 6 Jahre. Danach alle 15.000 km': Zeitregel-Hinweis ohne Kilometerpunkt -- der Kilometerwert des "
+      "Folgeintervalls wird nicht zum Erstintervall",
+      _b5 is not None and _b5.punkt_km is None and _b5.differenz_km is None and "15.000" not in _b5.hinweis)
 check("B6 [SYNTH] UND-Verknüpfung bleibt: '30.000 km und 2 Jahre' -> beide müssen erreicht sein",
       ll.schwelle_belegbar_erreicht_alter("alle 30.000 km und 2 Jahre", 82000, 9)
       and not ll.schwelle_belegbar_erreicht_alter("alle 30.000 km und 2 Jahre", 82000, None)
@@ -513,7 +517,8 @@ beide_b = KMB + ". " + M + " " + ZEIT
 def zh(text, km=82000, alter=9, technik=None):
     i = Insight(id="z1", kategorie="web_wartung", titel="Zahnriemen: x", beschreibung=text, confidence="mittel", taetigkeit="pruefen",
                 technische_bedingung=technik, technische_bedingung_status="unresolved" if technik else None)
-    return ll.zeit_hinweise([i], km, alter), ll._wartungshinweise([i], km, alter)
+    alle = ll._wartungshinweise([i], km, alter)          # EINE Auswertung: Zeitregel-Hinweise haben punkt_km None
+    return [w for w in alle if w.punkt_km is None], [w for w in alle if w.punkt_km is not None]
 
 
 for lab, t in (("A (Zeitregel zuerst)", beide_a), ("B (Zusatzregel zuerst)", beide_b)):
@@ -588,8 +593,10 @@ for lab, text in (("A Zeitregel zuerst", ZEIT + ". " + KMB + "."), ("B Zusatzreg
           f"Kilometerregel -- kein gemischter Einzelwert",
           len(rg) == 2 and sorted((r.km is None, r.bedingt) for r in rg) == [(False, True), (True, False)]
           and not any(r.km and r.zeit for r in rg))
-    check(f"I17 {lab} [Extraktionspfad] KEIN Kilometer-Hinweis aus dem Wert der bedingten Regel (160.000 km >= 150.000 km)",
-          not [w for w in lk_i.wartungshinweise if w.bauteil == "Zahnriemen"])
+    hz_i = [w for w in lk_i.wartungshinweise if w.bauteil == "Zahnriemen"]
+    check(f"I17 {lab} [Extraktionspfad] EIN Hinweis (die Zeitregel), Kilometerfelder null: der Wert der bedingten Regel "
+          f"(160.000 km >= 150.000 km) wird nie ersatzweise verwendet",
+          len(hz_i) == 1 and hz_i[0].punkt_km is None and hz_i[0].differenz_km is None and hz_i[0].status == "darueber")
     for bereich in ("verkaeuferfragen", "dokumente"):
         spez = [a for a in getattr(ka_i, bereich).fahrzeugspezifisch if "zahnriemen" in (a.titel + a.aktion).lower()]
         za = spez[0] if spez else None
@@ -633,8 +640,8 @@ def antwort_zu(req, fk):
     ins, lk, ka = kette(fk, req)
     text = _bericht(req, VehicleIdentity.from_check_context(None, None, req), None, None, ins, ka, [], "kaufen_nach_besichtigung",
                     type("PA", (), {"label": None})(), False, lk, None, ["Inserat"])
-    zr = ll.zeitregel_hinweise(lk, ins)
-    block = ll.prompt_block(lk, zr)
+    zr = [w for w in lk.wartungshinweise if w.punkt_km is None]
+    block = ll.prompt_block(lk)
     antwort = bereinige_nutzertexte({"insights": [i.model_dump() for i in ins], "kaufaktionen": ka.model_dump(),
                                      "laufleistungskontext": lk.model_dump() if lk else None, "bericht": text})
     return ins, lk, ka, zr, block, json.loads(json.dumps(antwort, ensure_ascii=False, default=str))
@@ -649,13 +656,12 @@ FAELLE = (("A erreicht", 2017, ZEIT + ". " + KMB + ".", "bereits erreicht (Fahrz
           ("B erreicht, Zusatzregel zuerst", 2017, KMB + ". " + ZEIT + ".", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
           ("Alter unbekannt", None, ZEIT + ". " + KMB + ".", "ohne bekanntes Baujahr"),
           ("Altersgrenze unsicher", 2020, ZEIT + ". " + KMB + ".", "ohne den genauen Erstzulassungsmonat nicht bestimmen"))
-try:
-    Wartungshinweis(bauteil="Zahnriemen", status="zeit", intervall_text="alle 6 Jahre", hinweis="x", herkunft="web_wartung", evidence_id="e")
-    vertrag_verlangt_km = False
-except Exception:
-    vertrag_verlangt_km = True
-check("J0 Beleg: das Wartungshinweis-Modell verlangt Kilometerfelder (punkt_km/differenz_km) -- eine Zeitregel kann dort ohne "
-      "erfundene Werte nicht stehen", vertrag_verlangt_km)
+_zw = Wartungshinweis(bauteil="Zahnriemen", status="darueber", intervall_text="alle 6 Jahre", hinweis="x", herkunft="web_wartung",
+                      evidence_id="e")
+_zj = _zw.model_dump(mode="json")
+check("J0 Vertrag: eine reine Zeitregel hat punkt_km, punkt_bis_km und differenz_km = null (nicht 0, nicht leer)",
+      _zj["punkt_km"] is None and _zj["differenz_km"] is None and _zj["punkt_bis_km"] is None
+      and '"punkt_km": null' in json.dumps(_zj) and '"differenz_km": null' in json.dumps(_zj))
 for lab, bj, text, kern in FAELLE:
     req_j = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=bj, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[],
                              vorbesitzer=2, scheckheftgepflegt=True)
@@ -666,9 +672,12 @@ for lab, bj, text, kern in FAELLE:
     check(f"J2 {lab}: Prompt-Block trägt den Hinweis EINMAL mit Beleg-ID und behält die Fälligkeits-Verbote",
           block_j.count(zh_j) == 1 and f"(Beleg {ins_j[0].id})" in block_j and "NIEMALS" in block_j
           and "Zeitpunkt des letzten Service ist NICHT bekannt" in block_j)
-    check(f"J3 {lab}: serialisierte Antwort -- Laufleistungskontext trägt KEINEN erfundenen Kilometer-Hinweis zum Zahnriemen",
-          [w for w in ant["laufleistungskontext"]["wartungshinweise"] if w["bauteil"] == "Zahnriemen"] == []
-          and ant["laufleistungskontext"]["fahrzeugalter_jahre"] == (None if bj is None else 2026 - bj))
+    wz = [w for w in ant["laufleistungskontext"]["wartungshinweise"] if w["bauteil"] == "Zahnriemen"]
+    erw_status = "darueber" if "bereits erreicht" in kern else "entfernt"
+    check(f"J3 {lab}: serialisierte Antwort -- EIN Zahnriemen-Hinweis in der Karte, Kilometerfelder null (nie 0/erfunden), Status {erw_status}",
+          len(wz) == 1 and wz[0]["punkt_km"] is None and wz[0]["differenz_km"] is None and wz[0]["punkt_bis_km"] is None
+          and wz[0]["status"] == erw_status and wz[0]["hinweis"] == zh_j and wz[0]["evidence_id"] == ins_j[0].id
+          and ant["laufleistungskontext"]["fahrzeugalter_jahre"] == (None if bj is None else 2026 - bj), str(wz)[:300])
     za_v, za_d = zeit_aktionen(ant, "verkaeuferfragen"), zeit_aktionen(ant, "dokumente")
     check(f"J4 {lab}: serialisierte Antwort -- Verkäuferfrage UND Dokument tragen dieselbe Zeitregel samt Zusatzregel und Quelle",
           len(za_v) == 1 and len(za_d) == 1 and kern in za_v[0]["aktion"] and kern in za_d[0]["aktion"]
@@ -703,20 +712,120 @@ ins_p, lk_p, ka_p, zr_p, block_p, ant_p = antwort_zu(REQ_T, fakten_t(ZEIT + ".")
 check("J11 reine Zeitregel ohne Zusatzregel: Prompt, Frage, Dokument und Bericht tragen sie; kein Kilometer-Hinweis",
       len(zr_p) == 1 and zr_p[0].hinweis in block_p and len(zeit_aktionen(ant_p, "verkaeuferfragen")) == 1
       and len(zeit_aktionen(ant_p, "dokumente")) == 1 and "Zeitintervall (6 Jahre) ohne Kilometerangabe" in ant_p["bericht"]
-      and "bedingte Regel" not in zr_p[0].hinweis and lk_p.wartungshinweise == [])
-# Verdrahtung der produktiven Pipeline (app/kaufcheck.py) -- gleiche Quelle wie die Kaufaktionen
-quelle_kc = (HIER / "app" / "kaufcheck.py").read_text(encoding="utf-8")
-check("J12 app/kaufcheck.py übergibt die Zeitregeln an den Prompt-Block (dieselbe Funktion wie die Kaufaktionen)",
-      "zeitregel_hinweise(laufleistungskontext, insights)" in quelle_kc and "laufleistung_prompt_block(laufleistungskontext," in quelle_kc
-      and "zeitregel_hinweise(kontext, insights)" in (HIER / "app" / "kaufaktionen.py").read_text(encoding="utf-8"))
+      and "bedingte Regel" not in zr_p[0].hinweis and len(lk_p.wartungshinweise) == 1)
 if SEITEN:
-    zr_real = ll.zeitregel_hinweise(lk_h, ins_h)
-    block_real = ll.prompt_block(lk_h, zr_real)
+    zr_real = [w for w in lk_h.wartungshinweise if w.punkt_km is None]
+    block_real = ll.prompt_block(lk_h)
     check("J13 [ECHT] Lexus-Replay: keine Zeitregel (alle fünf haben Kilometer); Prompt-Block unverändert -- jeder Kilometer-Wartungspunkt genau einmal",
           zr_real == [] and len(lk_h.wartungshinweise) >= 5 and block_real.count("Wartungspunkt „") == len(lk_h.wartungshinweise)
           and all(block_real.count(f"Wartungspunkt „{w.bauteil}“") == 1 for w in lk_h.wartungshinweise)
-          and block_real == ll.prompt_block(lk_h),
+          and all(isinstance(w.punkt_km, int) and isinstance(w.differenz_km, int) for w in lk_h.wartungshinweise),
           str((len(zr_real), block_real.count("Wartungspunkt „"), [w.bauteil for w in lk_h.wartungshinweise])))
+
+# ══ K. Tatsächliche KaufCheck-Verdrahtung (run_kaufcheck, ohne LLM/Provider): Prompt abfangen, Antwort serialisieren ═══
+print("\n== K run_kaufcheck offline (Stubs), abgefangener Prompt, serialisierte Antwort ==")
+import asyncio  # noqa: E402
+import app.kaufcheck as kc  # noqa: E402
+from app.models import KaufCheckResponse, Marktanalyse  # noqa: E402
+
+_abgefangen: dict = {}
+
+
+def _kc_stubs(fakten):
+    async def _recherche(req, *a, **k):
+        return TechnischeRecherche(ausgeloest_durch="db_miss", fakten=fakten)
+
+    async def _gemini(system, user):
+        _abgefangen["user"] = user
+        return {"risiko_evidence_ids": []}
+
+    async def _tavily(*a, **k):
+        return []
+
+    async def _vertiefe(*a, **k):
+        return [], Marktanalyse(gefunden=0, verwendet=0, datenqualitaet="niedrig"), {"research_failure_grund": "data_exhausted"}
+    kc.recherchiere_technisch = _recherche
+    kc.call_gemini_json = _gemini
+    kc.tavily_search_with_fallback = _tavily
+    kc.vertiefe_marktrecherche = _vertiefe
+    kc.marktpreis_recherche_moeglich = lambda marke, modell: True
+    kc.TAVILY_API_KEY = "test-key"
+
+
+def lauf_kc(req, fakten):
+    """Der echte Pfad: run_kaufcheck -> KaufCheckResponse(**result) (wie der Router) -> JSON. Rückgabe: Prompt, Antwort-JSON."""
+    _kc_stubs(fakten)
+    _abgefangen.clear()
+    res = asyncio.run(kc.run_kaufcheck(req))
+    antwort = json.loads(KaufCheckResponse(**res).model_dump_json())
+    return _abgefangen["user"], antwort
+
+
+def wp_zeilen(prompt):
+    return [z for z in prompt.splitlines() if z.startswith("Wartungspunkt „")]
+
+
+for lab, bj, text, erwartet_status, kern in (
+        ("erreicht", 2017, ZEIT + ". " + KMB + ".", "darueber", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
+        ("erreicht, vertauschte Reihenfolge", 2017, KMB + ". " + ZEIT + ".", "darueber", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
+        ("Alter unbekannt", None, ZEIT + ". " + KMB + ".", "entfernt", "ohne bekanntes Baujahr"),
+        ("Altersgrenze unsicher", 2020, ZEIT + ". " + KMB + ".", "entfernt", "ohne den genauen Erstzulassungsmonat nicht bestimmen")):
+    req_k = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=bj, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[],
+                             vorbesitzer=2, scheckheftgepflegt=True)
+    prompt_k, ant_k = lauf_kc(req_k, fakten_t(text, bj=bj))
+    wh = ant_k["laufleistungskontext"]["wartungshinweise"]
+    z = [w for w in wh if w["bauteil"] == "Zahnriemen"]
+    zeilen = [x for x in wp_zeilen(prompt_k) if "Zahnriemen" in x]
+    check(f"K1 {lab}: abgefangener Prompt trägt die Zeitregel genau EINMAL, mit dem Wortlaut der Karte",
+          len(z) == 1 and len(zeilen) == 1 and zeilen[0].endswith(z[0]["hinweis"]) and kern in z[0]["hinweis"]
+          and "NIEMALS" in prompt_k, str(zeilen)[:200])
+    check(f"K2 {lab}: serialisierte Antwort -- Kilometerfelder null (nicht 0, nicht leer), Status {erwartet_status}, Beleg vorhanden",
+          len(z) == 1 and z[0]["punkt_km"] is None and z[0]["differenz_km"] is None and z[0]["punkt_bis_km"] is None
+          and z[0]["status"] == erwartet_status and z[0]["evidence_id"] in [i["id"] for i in ant_k["insights"]], str(z)[:300])
+    spez = [a for b_ in ("verkaeuferfragen", "dokumente") for a in ant_k["kaufaktionen"][b_]["fahrzeugspezifisch"]
+            if "Zahnriemen" in a["titel"] + a["aktion"]]
+    check(f"K3 {lab}: keine Doppelhinweise/-aktionen: ein Hinweis, je Bereich EINE Aktion, Evidenz = der Hinweis-Beleg",
+          len(spez) == 2 and all(a["evidence_ids"] == [z[0]["evidence_id"]] for a in spez)
+          and all(z[0]["hinweis"].split(".")[0] in a["aktion"] for a in spez))
+    b = " ".join(ant_k["bericht"].split())
+    check(f"K4 {lab}: Bericht -- Verkäuferfragen UND Dokumente tragen den Hinweis der Karte (Satz für Satz), Quellaussage im Risikoabschnitt",
+          b.count(" ".join(z[0]["hinweis"].split()).split(". Nach")[0]) == 2 and "Zahnriemen kontrollieren: alle 6 Jahre" in b)
+# nicht erreichte Zeitgrenze: kein Hinweis ohne Anlass
+req_n = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=2024, kilometerstand=40000, kraftstoff="Benzin", ausstattung=[],
+                         vorbesitzer=2, scheckheftgepflegt=True)
+prompt_n, ant_n = lauf_kc(req_n, fakten_t(ZEIT + ". " + KMB + ".", bj=2024))
+check("K5 Zeitgrenze nicht erreicht (Baujahr 2024): weder Karte noch Prompt noch Aktion zeigen einen Zahnriemen-Zeithinweis",
+      not [w for w in ant_n["laufleistungskontext"]["wartungshinweise"] if w["bauteil"] == "Zahnriemen"]
+      and not [x for x in wp_zeilen(prompt_n) if "Zahnriemen" in x]
+      and not [a for b_ in ("verkaeuferfragen", "dokumente") for a in ant_n["kaufaktionen"][b_]["fahrzeugspezifisch"]
+               if "Zeitintervall (6 Jahre)" in a["aktion"]])
+if SEITEN:
+    real_k = real + ("\n\n2.10. WEITERE ARBEITEN\nBeim Lexus RC F Zahnriemen kontrollieren: alle 6 Jahre. Beim Lexus RC F bei Fahrzeugen mit "
+                     "Wartungsanzeige: Zahnriemen kontrollieren, wenn die Hinweismeldung erscheint (zumindest alle 150.000 km), falls für "
+                     "Ihr Land zutreffend.")
+    fk_k = extraktion_alle(real_k)
+    prompt_l, ant_l = lauf_kc(REQ, fk_k)
+    wh_l = ant_l["laufleistungskontext"]["wartungshinweise"]
+    km_h = {w["bauteil"]: w for w in wh_l if w["punkt_km"] is not None}
+    z_l = [w for w in wh_l if w["punkt_km"] is None]
+    print("  Hinweise:", [(w["bauteil"], w["status"], w["punkt_km"], w["differenz_km"]) for w in wh_l])
+    check("K6 [ECHT+SYNTH] Motoröl-Replay und Zeitregel gemeinsam: Kilometer-Hinweise behalten Werte und Bedeutung (Motoröl 15.000 km, "
+          "82.000-15.000 = 67.000), die Zeitregel hat null",
+          km_h["Motoröl"]["punkt_km"] == 15000 and km_h["Motoröl"]["differenz_km"] == 67000 and km_h["Motoröl"]["status"] == "darueber"
+          and km_h["Hinterachsdifferenzialöl"]["punkt_km"] == 30000 and km_h["Ventilspiel"]["punkt_km"] == 90000
+          and km_h["Ventilspiel"]["differenz_km"] == -8000 and km_h["Ventilspiel"]["status"] == "im_bereich"
+          and len(z_l) == 1 and z_l[0]["bauteil"] == "Zahnriemen" and z_l[0]["differenz_km"] is None)
+    check("K7 [ECHT+SYNTH] gemeinsamer Prompt: jede Karten-Zeile genau einmal, in derselben Reihenfolge",
+          [x.split(": ", 1)[1] for x in wp_zeilen(prompt_l)] == [w["hinweis"] for w in wh_l])
+    check("K8 [ECHT+SYNTH] keine Doppelhinweise (ein Hinweis je Bauteil), Motoröl-Zusatzregel und Einsatzbereich unverändert sichtbar",
+          len({w["bauteil"] for w in wh_l}) == len(wh_l)
+          and "Zusätzlich nennt die Quelle eine bedingte Regel" in km_h["Motoröl"]["hinweis"]
+          and "Geltungsbereich laut Quelle: Für normale Einsatzbedingungen" in km_h["Motoröl"]["hinweis"]
+          and "gilt laut Quelle für normale Einsatzbedingungen" in km_h["Ventilspiel"]["hinweis"])
+    ant_l_json = json.dumps(ant_l, ensure_ascii=False)
+    check("K9 [ECHT+SYNTH] JSON: null für die Zeitregel, keine 0 und kein leerer String als Ersatz",
+          '"punkt_km": null' in ant_l_json and '"differenz_km": null' in ant_l_json
+          and '"punkt_km": 0' not in ant_l_json and '"punkt_km": ""' not in ant_l_json and '"differenz_km": ""' not in ant_l_json)
 
 # ══ G. Keine schweren Importe für die gemeinsame Konstante ═══════════════════════════════════
 print("\n== G Importe ==")
