@@ -308,7 +308,9 @@ _FOLGEINTERVALL = re.compile(r"\bdanach\b", re.IGNORECASE)
 # "bei Bedarf"). Daraus entsteht kein Vorrang -- ob die Bedingung am Fahrzeug eintrat, ist unbekannt.
 _BEDINGT = re.compile(
     r"\b(?:wenn|falls|sofern|je\s+nach|abh(?:ä|ae)ngig|nach\s+bedarf|bei\s+bedarf)\b"
-    r"|hinweismeldung|wartungsanzeige|serviceanzeige|service-?anzeige", re.IGNORECASE)
+    r"|hinweismeldung|wartungsanzeige|serviceanzeige|service-?anzeige"
+    # Erschwerte Einsatzbedingungen sind eine EIGENE, bedingte Regel (die normalen sind ein Geltungsbereich).
+    r"|erschwert\w*\s+(?:einsatz|betriebs)bedingungen|unter\s+erschwerten", re.IGNORECASE)
 
 
 # Sätze, die `app/evidence.py::_web_beschreibung` HINTER die Quellenaussage hängt (Marktvorbehalt, unbestätigte
@@ -319,6 +321,10 @@ _ANGEHAENGT = ("Die Quelle schränkt sich selbst ein", "Ob das für Ihr Fahrzeug
 # Übereinstimmend belegte Fakten (`beleglage == "uebereinstimmend_unbestaetigt"`) stehen als HÜLLE um die
 # Quellenaussage: Präfix VOR dem wörtlichen Zitat, Bestätigungsstatus dahinter. Die Hülle ist kein Anhang (ein
 # Schnitt an ihrem Präfix würde die ganze Aussage verwerfen), sie wird um das Zitat herum entfernt.
+# Trennmarker, mit dem der Erzeuger (app/technical_research.py::_wartung_gleiche_arbeit_zusammenfuehren) zwei
+# Fundstellen DESSELBEN Dokuments in einen Aussagetext legt. Hier definiert (nicht dort), weil dieses Modul leicht
+# ist und der Erzeuger es ohnehin importiert: so zieht eine gemeinsame Textkonstante keinen schweren Import nach.
+WEITERE_STELLE_MARKER = "Weitere Stelle im selben Dokument:"
 _UEBEREINSTIMMEND_PRAEFIX = "Die ausgewerteten Quellen nennen übereinstimmend: „"
 _UEBEREINSTIMMEND_SUFFIX = "“ Für dieses Fahrzeug ist diese Angabe nicht ausreichend bestätigt."
 
@@ -375,64 +381,158 @@ def _km_spanne(text: str) -> tuple[int, int] | None:
     return (m.start(), m.end()) if m else None
 
 
-def parse_zeitschwelle(text: str | None) -> tuple[int, str] | None:
-    """Erste ausdrücklich genannte Zeitangabe `(zahl, "Jahre"|"Monate")` -- oder None. Nur für die Rangfolge."""
-    m = _ZEIT_ZAHL.search(text or "")
-    if not m:
+_ZEIT_JAEHRLICH = re.compile(
+    r"(?<![\w-])(?:(?:einmal|1\s*x|1\s*mal)\s+(?:pro\s+jahr|im\s+jahr|j[äa]hrlich)|j[äa]hrlich|jedes\s+jahr)(?![\w-])",
+    re.IGNORECASE)
+# Einsatzbedingungen: "normale" Einsatzbedingungen sind ein GELTUNGSBEREICH der Angabe, "erschwerte" eine eigene,
+# bedingte Regel (`_BEDINGT`). Beides ist weder ein Marktvorbehalt noch eine technische Ausstattungsbedingung.
+_EINSATZ_NORMAL = re.compile(r"normale[nr]?\s+(?:einsatz|betriebs)bedingungen", re.IGNORECASE)
+
+
+def _zeit_treffer(text: str | None) -> tuple[int, str, int, int] | None:
+    """Erste ausdrücklich genannte Zeitangabe `(zahl, "Jahre"|"Monate", start, ende)`: Ziffernform ("6 Jahre",
+    "12 Monate") ODER "jährlich"/"einmal jährlich"/"jedes Jahr" (= 1 Jahr). Nur der frühere Treffer zählt."""
+    t = text or ""
+    kandidaten: list[tuple[int, int, int, str]] = []
+    m = _ZEIT_ZAHL.search(t)
+    if m:
+        kandidaten.append((m.start(), m.end(), int(m.group(1)),
+                           "Jahre" if m.group(2).lower().startswith("jahr") else "Monate"))
+    j = _ZEIT_JAEHRLICH.search(t)
+    if j:
+        kandidaten.append((j.start(), j.end(), 1, "Jahre"))
+    if not kandidaten:
         return None
-    return int(m.group(1)), ("Jahre" if m.group(2).lower().startswith("jahr") else "Monate")
+    start, ende, zahl, einheit = min(kandidaten)
+    return zahl, einheit, start, ende
+
+
+def parse_zeitschwelle(text: str | None) -> tuple[int, str] | None:
+    """Erste ausdrücklich genannte Zeitangabe `(zahl, "Jahre"|"Monate")` -- oder None. Nur für die Rangfolge
+    und die Regelauswertung; gelesen wird immer nur das ERSTintervall (`erstintervall_text`)."""
+    z = _zeit_treffer(text)
+    return (z[0], z[1]) if z else None
+
+
+def _zeit_klasse(zeit: tuple[int, str], alter_jahre: int | None) -> str:
+    """Lage der Zeitschwelle zum Fahrzeugalter. Aus dem Baujahr allein folgt nur ein Altersintervall
+    [alter-1, alter+1]: `erreicht` gilt im ganzen Intervall (alter-1 >= Schwelle), `band` liegt mitten darin
+    (erst hier ist der Erstzulassungsmonat entscheidend), `nicht_erreicht` gilt auch im ältesten Fall nicht,
+    `baujahr_unbekannt` ohne Baujahr."""
+    zahl, einheit = zeit
+    schwelle = zahl if einheit == "Jahre" else zahl / 12.0
+    if alter_jahre is None:
+        return "baujahr_unbekannt"
+    if alter_jahre - 1 >= schwelle:
+        return "erreicht"
+    if alter_jahre + 1 >= schwelle:
+        return "band"
+    return "nicht_erreicht"
+
+
+class WartungsRegel:
+    """EINE Fundstelle einer Wartungsaussage mit ihrer eigenen Bedingung und ihrem ERSTintervall.
+
+    Kilometer, Zeit und Bedingung gehören zur selben Fundstelle und werden nie über Fundstellen hinweg
+    gemischt. `bedingt`: eine Voraussetzung (Anzeige/Hinweismeldung, Landesbezug, "falls", erschwerte
+    Einsatzbedingungen) ist an DIESE Fundstelle geknüpft -- das ist weder der Marktvorbehalt des Dokuments
+    (`hat_quellenvorbehalt`) noch die technische Ausstattungsbedingung des Fakts (`technische_bedingung`)."""
+    __slots__ = ("text", "erst", "bedingt", "einsatz", "km", "zeit", "verbinder")
+
+    def __init__(self, text: str):
+        self.text = text
+        self.erst = _FOLGEINTERVALL.split(text, maxsplit=1)[0].strip()
+        self.bedingt = bool(_BEDINGT.search(self.erst))
+        self.einsatz = "normal" if _EINSATZ_NORMAL.search(self.erst) else None
+        self.km = parse_wartungspunkt(self.erst)
+        z = _zeit_treffer(self.erst)
+        self.zeit = (z[0], z[1]) if z else None
+        self.verbinder = None
+        if self.km and z:
+            pos = _km_spanne(self.erst)
+            if pos:
+                zwischen = self.erst[pos[1]:z[2]] if pos[0] < z[2] else self.erst[z[3]:pos[0]]
+                v = _VERBINDER_FUELL.sub(" ", zwischen).strip(" ,;:()")
+                self.verbinder = ("oder" if _VERBINDER_ODER.match(v) else
+                                  "und" if _VERBINDER_UND.match(v) else "unklar")
+            else:
+                self.verbinder = "unklar"
+
+    def signatur(self) -> tuple:
+        return (self.bedingt, self.km, self.zeit, self.verbinder)
+
+    def zeit_alternative(self) -> tuple[int, str] | None:
+        """Zeitliche ALTERNATIVE zum Kilometerpunkt (ODER). Eine UND-Zeit ist keine Alternative."""
+        return self.zeit if (self.km and self.zeit and self.verbinder == "oder") else None
+
+
+def zerlege_regeln(text: str | None) -> list[WartungsRegel]:
+    """Die einzelnen Fundstellen einer Wartungsaussage, am Trennmarker des Erzeugers
+    (`WEITERE_STELLE_MARKER`, app/technical_research.py) getrennt. Marktvorbehalt-/Hüllentext der ENFAL-
+    Auswertung (`quellenaussage`) ist vorher abgeschnitten. Jede Fundstelle behält ihren Wortlaut."""
+    out: list[WartungsRegel] = []
+    for teil in quellenaussage(text).split(WEITERE_STELLE_MARKER):
+        seg = " ".join(teil.split())
+        if seg:
+            out.append(WartungsRegel(seg))
+    return out
+
+
+def eindeutige_regeln(regeln: list[WartungsRegel]) -> list[WartungsRegel]:
+    """Gleiche Aussagen (gleiche Bedingung, Kilometer, Zeit, Verknüpfung) sind EINE Regel: zwei Fundstellen
+    desselben Dokuments sind keine unabhängigen Belege."""
+    gesehen: set[tuple] = set()
+    out: list[WartungsRegel] = []
+    for r in regeln:
+        if r.signatur() not in gesehen:
+            gesehen.add(r.signatur())
+            out.append(r)
+    return out
+
+
+def _regel_erreicht(r: WartungsRegel, kilometerstand: int | None, alter_jahre: int | None) -> bool:
+    """Ist die ERSTE Schwelle DIESER Regel belegbar erreicht? Eine Schwelle (nur Kilometer / nur Zeit): sie
+    entscheidet. Beide mit ODER: eine sicher erreichte genügt (die unbekannte andere Seite hebt sie nicht
+    auf). Beide mit UND: beide müssen sicher erreicht sein. Ohne erkennbare Verknüpfung: kein Vorrang."""
+    km_ok = bool(r.km and kilometerstand and kilometerstand > 0 and kilometerstand >= r.km[0])
+    zeit_ok = bool(r.zeit and _zeit_klasse(r.zeit, alter_jahre) == "erreicht")
+    if r.km and not r.zeit:
+        return km_ok
+    if r.zeit and not r.km:
+        return zeit_ok
+    if not r.km and not r.zeit:
+        return False
+    if r.verbinder == "oder":
+        return km_ok or zeit_ok
+    if r.verbinder == "und":
+        return km_ok and zeit_ok
+    return False
+
+
+def ist_nur_bedingt(text: str | None) -> bool:
+    """Hat die Aussage Intervalle, aber ausschließlich BEDINGTE (keine Grundregel ohne Voraussetzung)?"""
+    mit_schwelle = [r for r in zerlege_regeln(text) if r.km or r.zeit]
+    return bool(mit_schwelle) and all(r.bedingt for r in mit_schwelle)
 
 
 def schwelle_belegbar_erreicht(text: str | None, kilometerstand: int | None, baujahr: int | None,
                                *, heute_jahr: int | None = None) -> bool:
-    """True nur, wenn die Schwelle des ERSTintervalls belegbar erreicht ist.
-
-    Schwellen: Kilometer (erster Wartungspunkt, `parse_wartungspunkt`) und/oder Zeit (`parse_zeitschwelle`,
-    sicher erreicht = ganzes mögliches Altersintervall, alter-1 >= Schwelle).
-      * nur Kilometer / nur Zeit ("alle 6 Jahre"): diese eine Schwelle entscheidet;
-      * beide mit ODER ("km oder Jahre", "Jahre oder km", "km / Jahre"): eine sicher erreichte genügt, die
-        unbekannte andere Seite hebt sie nicht auf;
-      * beide mit UND ("km und Jahre"): beide müssen sicher erreicht sein -- eine unbekannte Seite = kein
-        Vorrang (UND wird nie als ODER gelesen);
-      * beide ohne erkennbaren Verbinder: mehrdeutig -> kein Vorrang.
-    Bedingte Angaben ("wenn", "falls", Hinweismeldung, ...) und alles ab einem Folgeintervall ("Danach")
-    zählen nicht. Behauptet keine Fälligkeit und keine unterlassene Wartung: gemeint ist nur "hier lohnt der
-    Nachweis der Servicehistorie"."""
+    """True nur, wenn die Schwelle des ERSTintervalls belegbar erreicht ist -- siehe
+    `schwelle_belegbar_erreicht_alter`."""
     return schwelle_belegbar_erreicht_alter(text, kilometerstand, fahrzeugalter(baujahr, heute_jahr=heute_jahr))
 
 
 def schwelle_belegbar_erreicht_alter(text: str | None, kilometerstand: int | None,
                                      alter_jahre: int | None) -> bool:
-    """Wie `schwelle_belegbar_erreicht`, aber mit bereits berechnetem Fahrzeugalter (`fahrzeugalter()`): die
-    GEMEINSAME Schwellenlogik für Auswahl-Rang und Aktionsrang."""
-    erst = erstintervall_text(text)
-    if not erst or _BEDINGT.search(erst):
-        return False
-    punkt = parse_wartungspunkt(erst)
-    zeit = parse_zeitschwelle(erst)
-    km_ok = bool(punkt and kilometerstand and kilometerstand > 0 and kilometerstand >= punkt[0])
-    zeit_ok = bool(zeit and zeitalternative_belegbar_erreicht(alter_jahre, zeit))
-    if punkt and not zeit:
-        return km_ok
-    if zeit and not punkt:
-        return zeit_ok
-    if not punkt and not zeit:
-        return False
-    # beide Schwellen genannt: Verbinder zwischen den beiden Angaben bestimmt ODER/UND
-    km_pos = _km_spanne(erst)
-    zm = _ZEIT_ZAHL.search(erst)
-    if not km_pos or not zm:
-        return False
-    if km_pos[0] < zm.start():
-        zwischen = erst[km_pos[1]:zm.start()]
-    else:
-        zwischen = erst[zm.end():km_pos[0]]
-    verbinder = _VERBINDER_FUELL.sub(" ", zwischen).strip(" ,;:()")
-    if _VERBINDER_ODER.match(verbinder):
-        return km_ok or zeit_ok
-    if _VERBINDER_UND.match(verbinder):
-        return km_ok and zeit_ok
-    return False
+    """Gemeinsame Schwellenlogik für Auswahl-Rang, Aktionsrang und Hinweis (`_regel_erreicht` je Fundstelle).
+
+    Nur UNBEDINGTE Grundregeln zählen; eine bedingte Zusatzregel (Hinweismeldung, "falls", erschwerte
+    Einsatzbedingungen) hebt eine Grundregel weder auf noch ersetzt sie. Gibt es mehrere VERSCHIEDENE
+    Grundregeln, muss jede erreicht sein (keine willkürliche Erstauswahl). Folgeintervalle ("Danach ...")
+    zählen nicht. Behauptet keine Fälligkeit und keine unterlassene Wartung: gemeint ist nur "hier lohnt der
+    Nachweis der Servicehistorie"."""
+    grund = eindeutige_regeln([r for r in zerlege_regeln(text) if not r.bedingt and (r.km or r.zeit)])
+    return bool(grund) and all(_regel_erreicht(r, kilometerstand, alter_jahre) for r in grund)
 
 
 # ── Alter / km pro Jahr (§4, §5) ──────────────────────────────────────────────
@@ -513,67 +613,95 @@ _HERKUNFT_ZUSATZ = {
 }
 
 
+def _zeit_erreicht_satz(zeitalternative: tuple[int, str], ab_jahre: int) -> str:
+    zahl, einheit = zeitalternative
+    return (f"die zeitliche Alternative (oder {zeit_anzeige(zahl, einheit)}) ist nach dem Baujahr bereits "
+            f"erreicht (Fahrzeugalter mindestens {ab_jahre} Jahre; der genaue Erstzulassungsmonat "
+            f"ist unbekannt). Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor.")
+
+
+def _zeit_technik_satz(zeitalternative: tuple[int, str], technik: str, ab_jahre: int | None) -> str:
+    """Zeit-Aussage bei UNGEKLÄRTER technischer Voraussetzung: der Grund der Offenheit ist die Voraussetzung."""
+    zahl, einheit = zeitalternative
+    satz = (f"Die Quelle nennt für diesen Wartungspunkt zusätzlich eine zeitliche Alternative "
+            f"(oder {zeit_anzeige(zahl, einheit)}); ob sie für dieses Fahrzeug überhaupt gilt, hängt von der "
+            f"ungeklärten technischen Voraussetzung ab ({technik}).")
+    if ab_jahre is not None:
+        satz += (f" Sofern die Voraussetzung zutrifft, ist die Zeitgrenze nach dem Baujahr bereits erreicht "
+                 f"(Fahrzeugalter mindestens {ab_jahre} Jahre); ob die Arbeit seitdem gemacht wurde, geht aus "
+                 f"den vorliegenden Daten nicht hervor.")
+    return satz
+
+
+def _zeit_offen_satz(klasse: str) -> str:
+    """Der tatsächliche Grund, warum die Zeitalternative offen bleibt (nicht pauschal der Erstzulassungsmonat)."""
+    if klasse == "baujahr_unbekannt":
+        return ("ob die zeitliche Alternative bereits erreicht ist, lässt sich ohne bekanntes Baujahr nicht "
+                "bestimmen und bleibt deshalb offen.")
+    if klasse == "nicht_erreicht":
+        return "nach dem Baujahr ist die zeitliche Alternative rechnerisch noch nicht erreicht."
+    return ("ob die zeitliche Alternative bereits erreicht ist, lässt sich ohne den genauen "
+            "Erstzulassungsmonat nicht bestimmen und bleibt deshalb offen.")
+
+
 def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 von_km: int, bis_km: int | None, herkunft: str,
                 zeitalternative: tuple[int, str] | None = None,
                 zeit_offen_trotz_entfernt: bool = False,
-                zeit_erreicht_ab_jahre: int | None = None) -> str:
-    """Der ausformulierte Hinweis.
+                zeit_erreicht_ab_jahre: int | None = None,
+                *, zeit_klasse: str = "band", technik: str | None = None) -> str:
+    """Der ausformulierte Hinweis für EINE unbedingte Regel.
 
     Jede Variante ist bewusst so gebaut, dass sie eine ZUSTANDSFRAGE stellt statt
     einer Zustandsbehauptung. Verboten und in keinem dieser Texte enthalten:
     "fällig", "überfällig", "versäumt", "nicht durchgeführt", "fehlt".
 
     N14-Fix (ENFAL-Reparaturpaket, RC-F-Lauf 07.11.2026): `zeitalternative`
-    (s. `parse_zeitalternative()`) macht eine im Quelltext mitgenannte
-    zeitliche Alternative ("oder 6 Jahre") sichtbar, OHNE eine zeitliche
-    Fälligkeit zu berechnen (Erstzulassungsmonat nirgends erfasst, s.
-    `fahrzeugalter()`) -- der km-Status bleibt ausdrücklich NUR ein
-    Kilometerstatus, die zeitliche Frage bleibt ausdrücklich offen genannt.
-    Kein Rückschluss aus Baujahr/Kilometerstand/Marktvorbehalt.
+    macht eine im Quelltext mitgenannte zeitliche Alternative ("oder 6 Jahre")
+    sichtbar; der km-Status bleibt ausdrücklich NUR ein Kilometerstatus.
+    `zeit_offen_trotz_entfernt` behandelt den Fall, dass der km-Status selbst
+    `entfernt` ist, die zeitliche Alternative aber trotzdem relevant oder
+    ungeklärt bleibt.
 
-    N14-Fix, Fortsetzung: `zeit_offen_trotz_entfernt` (s.
-    `_zeitalternative_trotz_entfernt_moeglich()`) behandelt den Fall, dass der
-    km-Status selbst `entfernt` ist, die zeitliche Alternative aber trotzdem
-    relevant oder ungeklärt bleibt -- hier bekommt der Hinweis einen eigenen
-    Wortlaut, der ausdrücklich sagt, dass der Kilometeranteil NICHT einschlägig
-    ist, statt (wie in den anderen Zweigen) einen Kilometerstatus zu behaupten,
-    der hier gar nicht vorliegt.
+    Regime-Paket (N5/N12): `zeit_klasse` ("erreicht" | "band" | "baujahr_unbekannt" | "nicht_erreicht",
+    s. `_zeit_klasse`) benennt den TATSÄCHLICHEN Grund, warum die Zeit offen ist. Der fehlende Erstzulassungs-
+    monat wird nur im Unsicherheitsbereich ("band") genannt, wo er entscheidend ist. `technik` (ungeklärte
+    technische Voraussetzung des Fakts) macht diese zum Grund der offenen Zeitaussage.
     """
     punkt = _punkt_text(von_km, bis_km)
     zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
-    # F3: eine SEPARAT belegte Zeitschwelle (`zeitalternative_belegbar_erreicht`: im ganzen möglichen
-    # Altersintervall überschritten, nicht bedingt) ändert den Zeittext. Ein erreichter Kilometerpunkt beweist
-    # nichts über die Zeit und kommt hier nie hinein. Die Arbeit selbst bleibt unbelegt: keine Fälligkeit,
-    # kein Versäumnis.
+    # F3: eine SEPARAT belegte Zeitschwelle (im ganzen möglichen Altersintervall überschritten, nicht bedingt)
+    # ändert den Zeittext. Ein erreichter Kilometerpunkt beweist nichts über die Zeit und kommt hier nie hinein.
     zeit_erreicht_text = ""
-    if zeitalternative and zeit_erreicht_ab_jahre is not None:
-        zahl, einheit = zeitalternative
-        zeit_erreicht_text = (
-            f"die zeitliche Alternative (oder {zeit_anzeige(zahl, einheit)}) ist nach dem Baujahr bereits "
-            f"erreicht (Fahrzeugalter mindestens {zeit_erreicht_ab_jahre} Jahre; der genaue Erstzulassungsmonat "
-            f"ist unbekannt). Ob die Arbeit seitdem gemacht wurde, geht aus den vorliegenden Daten nicht hervor.")
-    if zeit_offen_trotz_entfernt and zeitalternative and zeit_erreicht_text:
-        zahl, einheit = zeitalternative
-        return (f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine zeitliche Alternative "
-                f"hinterlegt. Der aktuelle Kilometerstand liegt weit von {punkt} entfernt -- der "
-                f"Kilometeranteil dieses Wartungspunkts ist damit nicht einschlägig; "
-                f"{zeit_erreicht_text} Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den "
-                f"Beleg dazu ansehen.") + zusatz
+    if zeitalternative and zeit_erreicht_ab_jahre is not None and not technik:
+        zeit_erreicht_text = _zeit_erreicht_satz(zeitalternative, zeit_erreicht_ab_jahre)
+    technik_satz = (_zeit_technik_satz(zeitalternative, technik, zeit_erreicht_ab_jahre)
+                    if zeitalternative and technik else "")
     if zeit_offen_trotz_entfernt and zeitalternative:
+        kopf = (f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine zeitliche Alternative "
+                f"hinterlegt. Der aktuelle Kilometerstand liegt weit von {punkt} entfernt -- der "
+                f"Kilometeranteil dieses Wartungspunkts ist damit nicht einschlägig; ")
+        schluss = (" Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den Beleg dazu ansehen.")
+        if technik_satz:
+            return kopf.rstrip("; ") + ". " + technik_satz + schluss + zusatz
+        if zeit_erreicht_text:
+            return kopf + zeit_erreicht_text + schluss + zusatz
         zahl, einheit = zeitalternative
-        kern = (
-            f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine "
-            f"zeitliche Alternative hinterlegt (oder {zeit_anzeige(zahl, einheit)}). Der aktuelle "
-            f"Kilometerstand liegt weit von {punkt} entfernt -- der Kilometeranteil "
-            f"dieses Wartungspunkts ist damit nicht einschlägig. Ohne den genauen "
-            f"Erstzulassungsmonat und ohne bekannte Servicehistorie lässt sich aber "
-            f"nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist. "
-            f"Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den "
-            f"Beleg dazu ansehen.")
-        return kern + zusatz
+        if zeit_klasse == "baujahr_unbekannt":
+            grund = ("Ohne bekanntes Baujahr und ohne bekannte Servicehistorie lässt sich nicht ausschließen, "
+                     "dass die zeitliche Alternative bereits erreicht ist.")
+        else:
+            grund = ("Ohne den genauen Erstzulassungsmonat und ohne bekannte Servicehistorie lässt sich aber "
+                     "nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist.")
+        return (f"Für „{bauteil}“ ist neben dem Kilometerpunkt ({punkt}) zusätzlich eine "
+                f"zeitliche Alternative hinterlegt (oder {zeit_anzeige(zahl, einheit)}). Der aktuelle "
+                f"Kilometerstand liegt weit von {punkt} entfernt -- der Kilometeranteil "
+                f"dieses Wartungspunkts ist damit nicht einschlägig. {grund}"
+                f"{schluss}") + zusatz
     zeit_zusatz = ""
-    if zeitalternative and zeit_erreicht_text:
+    if technik_satz:
+        zeit_zusatz = f" Der oben genannte Stand bezieht sich ausschließlich auf den Kilometerstand. {technik_satz}"
+    elif zeitalternative and zeit_erreicht_text:
         zeit_zusatz = (f" Der oben genannte Stand bezieht sich ausschließlich auf den Kilometerstand; "
                        f"{zeit_erreicht_text}")
     elif zeitalternative:
@@ -581,9 +709,7 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
         zeit_zusatz = (
             f" Die Quelle nennt für diesen Wartungspunkt zusätzlich eine zeitliche "
             f"Alternative (oder {zeit_anzeige(zahl, einheit)}): der oben genannte Stand bezieht "
-            f"sich ausschließlich auf den Kilometerstand -- ob die zeitliche "
-            f"Alternative bereits erreicht ist, lässt sich ohne den genauen "
-            f"Erstzulassungsmonat nicht bestimmen und bleibt deshalb offen.")
+            f"sich ausschließlich auf den Kilometerstand -- {_zeit_offen_satz(zeit_klasse)}")
     if status == STATUS_NAEHERT_SICH:
         rest = _km(von_km - kilometerstand)
         kern = (f"Für „{bauteil}“ ist ein Wartungspunkt bei {punkt} hinterlegt: rund "
@@ -595,27 +721,10 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
                 f"zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
                 f"vorliegenden Daten nicht hervor.")
     elif status == STATUS_DARUEBER:
-        # ENFAL-Produktionsbefund (01.11.2026, L2): die vorige Fassung rechnete
-        # `kilometerstand - von_km` aus und nannte das Ergebnis "liegt rund X km
-        # zurück" -- bei einem WIEDERKEHRENDEN Intervall (kein `bis_km`, z.B.
-        # "alle 15.000 km") ist das keine zulässige Rückstandsrechnung: ohne
-        # bekannten letzten Servicezeitpunkt weiß niemand, wie oft das Intervall
-        # seither bereits durchlaufen wurde. Bei hoher Laufleistung wird die Zahl
-        # beliebig groß und suggeriert einen konkreten, großen Rückstand, den die
-        # Daten nicht stützen -- exakt die Fälligkeitsbehauptung, die dieser
-        # Funktion laut Docstring verboten ist. KEINE Ersatzrechnung (auch eine
-        # Modulo-Rechnung kennt den letzten Service nicht) -- das Intervall bleibt
-        # genannt, der Rückstand bleibt unberechnet.
-        #
-        # N5-Fix (ENFAL-Reparaturpaket, 2026-11): die Zahl war entfernt, aber
-        # "liegt ... bereits hinter dem Fahrzeug" benennt grammatisch weiterhin
-        # EINEN einzelnen, bereits vergangenen Termin -- bei einem wiederkehrenden
-        # Intervall (z.B. alle 15.000 km, hier 82.000 km Laufleistung) wäre der
-        # Punkt rechnerisch längst mehrfach erreicht worden, nicht einmalig
-        # "vorbei". "mindestens einmal erreicht" benennt nur die Tatsache (das
-        # Intervall liegt im/unter dem aktuellen Kilometerstand), ohne eine
-        # Anzahl, ein Datum oder eine Fälligkeit zu suggerieren -- weiterhin
-        # KEINE Ersatzrechnung, kein "fällig"/"überfällig"/"versäumt".
+        # ENFAL-Produktionsbefund (01.11.2026, L2) / N5-Fix: bei einem WIEDERKEHRENDEN Intervall (kein `bis_km`)
+        # ist `kilometerstand - von_km` keine zulässige Rückstandsrechnung -- ohne bekannten letzten
+        # Servicezeitpunkt weiß niemand, wie oft das Intervall seither durchlaufen wurde. "mindestens einmal
+        # erreicht" benennt nur die Tatsache, ohne Anzahl, Datum oder Fälligkeit; KEINE Ersatzrechnung.
         kern = (f"Der hinterlegte Wartungspunkt für „{bauteil}“ ({punkt}) wurde bei "
                 f"dieser Laufleistung rein rechnerisch mindestens einmal erreicht. Ohne "
                 f"bekannten Bezug zur tatsächlichen Servicehistorie lässt sich daraus "
@@ -625,6 +734,145 @@ def _formuliere(bauteil: str, status: str, kilometerstand: int,
     else:
         return ""
     return kern + zeit_zusatz + zusatz
+
+
+def _km_bedingt_satz(status: str, kilometerstand: int, von_km: int, bis_km: int | None) -> str:
+    """Rechenstand des Kilometerpunkts UNTER VORBEHALT einer ungeklärten Voraussetzung -- nie als erreicht."""
+    punkt = _punkt_text(von_km, bis_km)
+    if status == STATUS_DARUEBER:
+        return (f"Träfe die Voraussetzung zu, wäre der Kilometerpunkt ({punkt}) bei dieser Laufleistung rein "
+                f"rechnerisch mindestens einmal erreicht; weder eine Anzahl noch ein Rückstand lässt sich daraus "
+                f"ableiten.")
+    if status == STATUS_IM_BEREICH:
+        return f"Träfe die Voraussetzung zu, läge diese Laufleistung im relevanten Bereich des Punkts ({punkt})."
+    if status == STATUS_NAEHERT_SICH:
+        return (f"Träfe die Voraussetzung zu, läge der Kilometerpunkt ({punkt}) rund "
+                f"{_km(von_km - kilometerstand)} voraus.")
+    return (f"Der aktuelle Kilometerstand liegt weit vom Kilometerpunkt ({punkt}) entfernt -- der Kilometeranteil "
+            f"ist damit nicht einschlägig.")
+
+
+def _zeit_bedingt_satz(zeit_alt: tuple[int, str] | None, klasse: str | None) -> str:
+    """Zeit-Aussage UNTER VORBEHALT einer ungeklärten Voraussetzung: nie "erreicht" als Behauptung."""
+    if not zeit_alt:
+        return ""
+    zahl, einheit = zeit_alt
+    alt = f"oder {zeit_anzeige(zahl, einheit)}"
+    if klasse == "nicht_erreicht":
+        return f" Nach dem Baujahr ist die zeitliche Alternative ({alt}) rechnerisch noch nicht erreicht."
+    return (f" Die Quelle nennt zusätzlich eine zeitliche Alternative ({alt}). Ohne Klärung der Voraussetzung lässt "
+            f"sich nicht ausschließen, dass die zeitliche Alternative bereits erreicht ist.")
+
+
+_VERNEHMBAR_KURZ = 220
+
+
+def _kurz(text: str, n: int = _VERNEHMBAR_KURZ) -> str:
+    t = " ".join((text or "").split())
+    return t if len(t) <= n else t[:n - 3].rstrip() + "..."
+
+
+def _formuliere_regeln(bauteil: str, ausw: "_Auswertung", kilometerstand: int, herkunft: str,
+                       alter_jahre: int | None, technik: str | None) -> str:
+    """Hinweistext aus der regimegetrennten Auswertung (`_auswerte_regeln`).
+
+    * EINE Grundregel (ohne Voraussetzung): eigenständig ausgewertet (`_formuliere`); jede bedingte Zusatzregel
+      steht danach WÖRTLICH mit ihrer ungeklärten Voraussetzung da, ändert aber nichts an der Grundregel.
+    * MEHRERE verschiedene Grundregeln: keine wird ausgewählt, Kilometer- und Zeitwerte verschiedener Regeln
+      werden nicht kombiniert.
+    * NUR bedingte Regeln: weder Kilometer noch Zeit werden als erreicht ausgegeben."""
+    zusatz = _HERKUNFT_ZUSATZ.get(herkunft, "")
+    regeln = ausw.regeln
+    einsatz = (" Die Angabe gilt laut Quelle für normale Einsatzbedingungen; welche Einsatzbedingungen beim "
+               "Fahrzeug vorlagen, ist unbekannt.") if any(r.einsatz == "normal" for r in regeln) else ""
+    bedingte = ""
+    if ausw.zusatz and ausw.modus == "grund":
+        zitate = "; ".join(f"„{_kurz(t, 420)}“" for t in ausw.zusatz[:3])
+        bedingte = (f" Zusätzlich nennt die Quelle eine bedingte Regel ({zitate}). Ob ihre Voraussetzung auf "
+                    f"dieses Fahrzeug zutrifft, ist ungeklärt; sie wird hier nicht ausgewertet und ändert die "
+                    f"Grundregel nicht.")
+    if ausw.modus == "grund" and not ausw.mehrdeutig:
+        r = regeln[0]
+        alt = r.zeit_alternative()
+        klasse = _zeit_klasse(alt, alter_jahre) if alt else "band"
+        ab = (alter_jahre - 1) if (alt and klasse == "erreicht" and alter_jahre is not None) else None
+        text = _formuliere(bauteil, ausw.status, kilometerstand, ausw.von_km, ausw.bis_km, herkunft,
+                           alt, zeit_offen_trotz_entfernt=ausw.zeit_offen_trotz_entfernt,
+                           zeit_erreicht_ab_jahre=ab, zeit_klasse=klasse, technik=technik)
+        if zusatz and text.endswith(zusatz):
+            text = text[:-len(zusatz)]
+        return text + einsatz + bedingte + zusatz
+    if ausw.mehrdeutig:
+        aufzaehlung = "; ".join(f"„{_kurz(r.erst, 140)}“" for r in regeln[:4])
+        bed = ("Alle diese Angaben sind an eine Voraussetzung geknüpft, deren Zutreffen ungeklärt ist. "
+               if ausw.modus == "nur_bedingt" else "")
+        frueh = _punkt_text(ausw.von_km, ausw.bis_km)
+        if ausw.modus == "nur_bedingt":
+            km_satz = _km_bedingt_satz(ausw.status, kilometerstand, ausw.von_km, ausw.bis_km)
+            km_satz = km_satz.replace("Träfe die Voraussetzung zu", "Träfe die früheste Angabe samt Voraussetzung zu")
+        elif ausw.status == STATUS_DARUEBER:
+            km_satz = (f"Der früheste genannte Kilometerpunkt ({frueh}) wurde bei dieser Laufleistung rein "
+                       f"rechnerisch mindestens einmal erreicht.")
+        elif ausw.status == STATUS_IM_BEREICH:
+            km_satz = f"Der früheste genannte Kilometerpunkt ({frueh}) liegt bei dieser Laufleistung im relevanten Bereich."
+        elif ausw.status == STATUS_NAEHERT_SICH:
+            km_satz = f"Der früheste genannte Kilometerpunkt ({frueh}) liegt rund {_km(ausw.von_km - kilometerstand)} voraus."
+        else:
+            km_satz = (f"Der aktuelle Kilometerstand liegt weit vom frühesten genannten Kilometerpunkt ({frueh}) "
+                       f"entfernt; zeitliche Alternativen lassen sich ohne Zuordnung der Angaben nicht bewerten.")
+        return (f"Die Quelle nennt für „{bauteil}“ mehrere unterschiedliche Intervalle: {aufzaehlung}. {bed}"
+                f"Welche Angabe für dieses Fahrzeug gilt, geht aus den vorliegenden Daten nicht hervor; keine wird "
+                f"ausgewählt, und Kilometer- und Zeitwerte verschiedener Angaben werden nicht kombiniert. "
+                f"{km_satz} Nachweis über die Durchführung zeigen lassen: ob die Arbeit bereits erledigt ist, "
+                f"geht aus den vorliegenden Daten nicht hervor.") + einsatz + bedingte + zusatz
+    # nur bedingte Regel(n), genau eine
+    r = regeln[0]
+    alt = r.zeit_alternative()
+    klasse = _zeit_klasse(alt, alter_jahre) if alt else None
+    punkt = _punkt_text(ausw.von_km, ausw.bis_km)
+    schluss = ("Vor dem Kauf klären, wann diese Arbeit zuletzt gemacht wurde, und den Beleg dazu ansehen."
+               if ausw.zeit_offen_trotz_entfernt else
+               "Nachweis über die Durchführung zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den "
+               "vorliegenden Daten nicht hervor.")
+    return (f"Für „{bauteil}“ nennt die Quelle ein Intervall ({punkt}) nur unter einer Voraussetzung: "
+            f"„{_kurz(r.text, 420)}“. Ob diese Voraussetzung auf dieses Fahrzeug zutrifft, ist ungeklärt; deshalb "
+            f"wird der Punkt weder als erreicht noch als nicht erreicht ausgegeben. "
+            f"{_km_bedingt_satz(ausw.status, kilometerstand, ausw.von_km, ausw.bis_km)}"
+            f"{_zeit_bedingt_satz(alt, klasse)} {schluss}") + einsatz + zusatz
+
+
+class _Auswertung:
+    """Ergebnis der regimegetrennten Auswertung einer Wartungsaussage (`_auswerte_regeln`)."""
+    __slots__ = ("modus", "regeln", "zusatz", "mehrdeutig", "status", "von_km", "bis_km",
+                 "zeit_offen_trotz_entfernt")
+
+
+def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | None) -> "_Auswertung | None":
+    """Wertet die Fundstellen einer Aussage GETRENNT aus -- oder None (kein Kilometerpunkt im Erstintervall).
+
+    Grundlage ist `modus`: "grund" (mindestens eine unbedingte Regel mit Kilometerpunkt; nur sie wird
+    ausgewertet) oder "nur_bedingt" (alle Regeln mit Kilometerpunkt sind bedingt). Mehrere VERSCHIEDENE Regeln
+    gleicher Art sind `mehrdeutig`: Status und Punkt stammen dann vom FRÜHESTEN genannten Kilometerpunkt, es wird
+    keine Regel ausgewählt und nichts kombiniert."""
+    rs = zerlege_regeln(roh)
+    mit_km = [r for r in rs if r.km]
+    if not mit_km:
+        return None
+    grund = eindeutige_regeln([r for r in mit_km if not r.bedingt])
+    basis = grund if grund else eindeutige_regeln(mit_km)
+    a = _Auswertung()
+    a.modus = "grund" if grund else "nur_bedingt"
+    a.regeln = basis
+    a.zusatz = list(dict.fromkeys(r.text for r in rs if r.bedingt)) if grund else []
+    a.mehrdeutig = len(basis) > 1
+    frueh = min(basis, key=lambda r: (r.km[0], r.km[1] if r.km[1] is not None else 0))
+    a.von_km, a.bis_km = frueh.km
+    a.status = status_zu_punkt(kilometerstand, a.von_km, a.bis_km)
+    a.zeit_offen_trotz_entfernt = (
+        a.status == STATUS_ENTFERNT
+        and any(r.zeit_alternative() and _zeit_klasse(r.zeit_alternative(), alter_jahre) != "nicht_erreicht"
+                for r in basis))
+    return a
 
 
 # ── Evidence -> Wartungshinweise ──────────────────────────────────────────────
@@ -713,7 +961,7 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
     erreicht haben könnte — s. `_zeitalternative_trotz_entfernt_moeglich()`.
     """
     gesehen: set[str] = set()
-    out: list[Wartungshinweis] = []
+    out: list[tuple[bool, Wartungshinweis]] = []
     # Root-Cause-Closing: ein Wartungseintrag kann in eine Schwachstellen-Aussage
     # zum selben Bauteil zusammengeführt sein (app/risikothemen.py). Sein
     # Intervall zählt trotzdem; als Beleg steht die ID der sichtbaren,
@@ -725,25 +973,14 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
         if herkunft is None:
             continue
         roh = _intervall_text(i, herkunft)
-        punkt = parse_wartungspunkt(roh)
-        if punkt is None:
+        # Regime-Paket (N5/N12): die Fundstellen der Aussage werden GETRENNT ausgewertet (Bedingung, Kilometer, Zeit
+        # und Tätigkeit gehören zur selben Fundstelle) -- s. `_auswerte_regeln`. Gelesen wird nur das ERSTintervall:
+        # "Danach ..." wird nie zum Erstintervall. Ohne Kilometerpunkt im Erstintervall entsteht kein Hinweis.
+        ausw = _auswerte_regeln(roh, kilometerstand, alter_jahre)
+        if ausw is None:
             continue           # zeit-/zustandsbezogen: keine Kilometerrechnung
-        von_km, bis_km = punkt
-        status = status_zu_punkt(kilometerstand, von_km, bis_km)
-        # N14-Fix: s. `parse_zeitalternative()`-Docstring -- eine im selben
-        # Text genannte Zeitalternative wird sichtbar gemacht, nicht berechnet.
-        zeitalternative = parse_zeitalternative(roh)
-        zeit_offen_trotz_entfernt = (
-            status == STATUS_ENTFERNT and zeitalternative is not None
-            and _zeitalternative_trotz_entfernt_moeglich(alter_jahre, zeitalternative)
-        )
-        # F3: Zeitschwelle SEPARAT belegt (nicht bedingt, im ganzen Altersintervall überschritten).
-        zeit_erreicht_ab = None
-        if (zeitalternative is not None and alter_jahre is not None
-                and not _BEDINGT.search(erstintervall_text(roh))
-                and zeitalternative_belegbar_erreicht(alter_jahre, zeitalternative)):
-            zeit_erreicht_ab = alter_jahre - 1
-        if status == STATUS_ENTFERNT and not zeit_offen_trotz_entfernt:
+        status = ausw.status
+        if status == STATUS_ENTFERNT and not ausw.zeit_offen_trotz_entfernt:
             continue           # §G: kein Anlass, also keine Warnung
         bauteil = _bauteil(i)
         schluessel = norm_bauteil(bauteil)
@@ -755,17 +992,17 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
         bedingung_praefix = ""
         if (i.titel or "").startswith("Falls ") and ": " in i.titel:
             bedingung_praefix = i.titel.split(": ", 1)[0] + ": "
-        out.append(Wartungshinweis(
+        technik = (getattr(i, "technische_bedingung", None)
+                   if getattr(i, "technische_bedingung_status", None) == "unresolved" else None)
+        out.append((ausw.modus == "nur_bedingt", Wartungshinweis(
             bauteil=bauteil,
             status=status,
-            punkt_km=von_km,
-            punkt_bis_km=bis_km,
-            differenz_km=kilometerstand - von_km,
+            punkt_km=ausw.von_km,
+            punkt_bis_km=ausw.bis_km,
+            differenz_km=kilometerstand - ausw.von_km,
             intervall_text=(roh or "").strip(),
-            hinweis=bedingung_praefix + _formuliere(bauteil, status, kilometerstand, von_km, bis_km, herkunft,
-                                                    zeitalternative,
-                                                    zeit_offen_trotz_entfernt=zeit_offen_trotz_entfernt,
-                                                    zeit_erreicht_ab_jahre=zeit_erreicht_ab)
+            hinweis=bedingung_praefix + _formuliere_regeln(bauteil, ausw, kilometerstand, herkunft, alter_jahre,
+                                                           technik)
             # F3: der Marktvorbehalt der Quelle macht das Intervall nicht "bedingt" (s. `erstintervall_text`),
             # bleibt aber SICHTBAR: erreichte Schwelle und bestätigte Geltung für Deutschland sind getrennte Fragen.
             + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
@@ -778,15 +1015,18 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             taetigkeit=getattr(i, "taetigkeit", None),
             technische_bedingung=getattr(i, "technische_bedingung", None),
             technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
-        ))
+        )))
 
     # STATUS_ENTFERNT taucht hier nur noch in genau einem Fall auf: km-seitig
     # entfernt, aber mit relevanter/ungeklärter Zeitalternative (s. oben) --
     # rangiert bewusst zuletzt, denn der km-Anteil ist nachweislich nicht
     # einschlägig und nur die Zeitfrage bleibt offen.
     rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1, STATUS_ENTFERNT: 0}
-    out.sort(key=lambda w: (-rang[w.status], -abs(w.differenz_km), w.bauteil))
-    return out[:MAX_HINWEISE]
+    # Eine NUR bedingte Regel (Voraussetzung ungeklärt) rangiert höchstens wie ein nahender Punkt: sie ist keine
+    # belegte Grundregel und darf eine solche nicht verdrängen.
+    out.sort(key=lambda p: (-(min(rang[p[1].status], 1) if p[0] else rang[p[1].status]),
+                            -abs(p[1].differenz_km), p[1].bauteil))
+    return [w for _, w in out][:MAX_HINWEISE]
 
 
 # Bauteilschlüssel für die Dedup. Muss dieselbe Normalisierung nutzen wie die

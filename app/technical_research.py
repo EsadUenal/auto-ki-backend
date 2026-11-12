@@ -69,6 +69,7 @@ from app.kraftstoff_powertrain import (
     scope_passt, scopes_passen,
 )
 from app.motor_applicability import _kraftstoffe as _technik_scope_begriffe
+from app.laufleistung import WEITERE_STELLE_MARKER
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
 from app.provider_control import budget_retry_abgelehnt, budget_uebersprungen
 from app.web_search import (
@@ -5614,7 +5615,7 @@ def _wartung_gleiche_arbeit_zusammenfuehren(kandidaten: dict) -> dict:
             # zutreffend") am Ende der ersten Stelle bleibt dort und läuft nicht in die zweite.
             erste = basis["aussage"].rstrip()
             trenner = "" if erste.endswith((".", "!", "?")) else "."
-            neue_aussage = f"{erste}{trenner} Weitere Stelle im selben Dokument: {e['aussage']}"
+            neue_aussage = f"{erste}{trenner} {WEITERE_STELLE_MARKER} {e['aussage']}"
             basis["abschnitt_taetigkeit"][neue_aussage] = taet
             basis["aussage"] = neue_aussage
         for r in e["treffer"]:

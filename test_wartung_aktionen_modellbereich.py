@@ -277,8 +277,16 @@ for b in ("Hinterachsdifferenzialöl", "Ventilspiel", "Nebenaggregat-Antriebsrie
           h is not None and "nach dem Baujahr bereits erreicht" in h.hinweis and "mindestens 8 Jahre" in h.hinweis
           and "bleibt deshalb offen" not in h.hinweis and "nicht ausschließen" not in h.hinweis, h.hinweis[-260:] if h else "fehlt")
 mo = hint.get("Motoröl")
-check("F3-2 Motoröl (bedingtes Intervall: Hinweismeldung/Land): Zeit bleibt OFFEN, keine Erreicht-Behauptung",
-      mo is not None and "bleibt deshalb offen" in mo.hinweis and "bereits erreicht (Fahrzeugalter" not in mo.hinweis)
+# F3-2 (fachlich neu gefasst, Regime-Paket N5/N12): Motoröl hat ZWEI Regeln -- die unbedingte Grundregel
+# ("Lexus Care-Zwischenservice: alle 15.000 km oder einmal jährlich") und die bedingte Fußnote *1 ("Bei Fahrzeugen mit
+# Ölwechsel-Managementsystem ..."). Die frühere Aussage "Zeit bleibt offen" übertrug die Bedingung der Fußnote auf die
+# ganze Aussage (und nannte dazu den fehlenden Erstzulassungsmonat, der bei Baujahr 2017 und 1 Jahr nichts entscheidet).
+# Richtig: die Grundregel wird eigenständig ausgewertet (Zeit sicher erreicht), die bedingte Zusatzregel bleibt mit
+# ihrer ungeklärten Voraussetzung sichtbar und wird NICHT ausgewertet.
+check("F3-2 Motoröl: Grundregel eigenständig (Zeit erreicht), bedingte Fußnote als ungeklärte Zusatzregel sichtbar",
+      mo is not None and "(oder 1 Jahr) ist nach dem Baujahr bereits erreicht" in mo.hinweis
+      and "bleibt deshalb offen" not in mo.hinweis and "Zusätzlich nennt die Quelle eine bedingte Regel" in mo.hinweis
+      and "Ölwechsel-Managementsystem" in mo.hinweis and "nicht ausgewertet" in mo.hinweis, mo.hinweis[-420:] if mo else "")
 atf = hint.get("Automatikgetriebeöl")
 # F3-3 (fachlich neu gefasst): die Quelle nennt für das Automatikgetriebeöl "Alle 60.000 km / 4 Jahre" -- also EINE
 # Zeitschwelle (4 Jahre) und ein Marktvorbehalt ("falls für Ihren Markt zutreffend") als ANGEHÄNGTER Satz. Bei
@@ -324,8 +332,13 @@ def neutral(km, bj, zeilen=ZEILEN):
 
 fk, ins_n, lk_n, ka_n = neutral(82000, 2017)
 hn = {w.bauteil: w for w in lk_n.wartungshinweise}
-check("F3-5 [SYNTH] 'km oder Jahre': nur km erreicht (Bremsflüssigkeit) -> Zeittext bleibt OFFEN (True wegen km beweist keine Zeit)",
-      "bleibt deshalb offen" in hn["Bremsflüssigkeit"].hinweis and "bereits erreicht (Fahrzeugalter" not in hn["Bremsflüssigkeit"].hinweis)
+# F3-5 (fachlich neu gefasst, Regime-Paket): "alle 30.000 km oder 15 Jahre" bei Baujahr 2017 (Alter höchstens 10): die
+# 15-Jahres-Grenze ist nach dem Baujahr auch im ältesten Fall nicht erreicht. Der Grund ist NICHT der fehlende
+# Erstzulassungsmonat (er entscheidet hier nichts), sondern die Rechnung selbst. Unverändert: der erreichte
+# Kilometerpunkt beweist keine Zeit -- es steht kein "Zeit erreicht" im Text.
+check("F3-5 [SYNTH] 'km oder Jahre': nur km erreicht (Bremsflüssigkeit) -> Zeit NICHT als erreicht benannt, kein Monatsvorbehalt",
+      "rechnerisch noch nicht erreicht" in hn["Bremsflüssigkeit"].hinweis and "Erstzulassungsmonat" not in hn["Bremsflüssigkeit"].hinweis
+      and "bereits erreicht (Fahrzeugalter" not in hn["Bremsflüssigkeit"].hinweis)
 check("F3-6 [SYNTH] nur Zeit erreicht (Zahnriemen, km entfernt) -> Text sagt Zeit erreicht, Kilometeranteil nicht einschlägig",
       "nach dem Baujahr bereits erreicht" in hn["Zahnriemen"].hinweis and "nicht einschlägig" in hn["Zahnriemen"].hinweis)
 check("F3-7 [SYNTH] km UND Zeit erreicht (Zündkerzen) -> km-Status bleibt, Zeit als erreicht benannt",

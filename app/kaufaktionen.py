@@ -1985,22 +1985,37 @@ def _kompakt_wartung(bauteil: str, taetigkeit: str | None, intervall_text: str |
     GETRENNT benannt: Einbau-Präsenz ("Falls ... verbaut", vor dem Bauteil), technische Anwendbarkeit (ungeklärte
     Bedingung), bedingtes Intervall (Anzeige/Hinweismeldung/Land) und Marktvorbehalt der Quelle. Keine Bewertung,
     keine Fälligkeit, keine bestätigte Anwendbarkeit."""
-    from app.laufleistung import _BEDINGT, hat_quellenvorbehalt, quellenaussage
+    from app.laufleistung import _BEDINGT, hat_quellenvorbehalt, quellenaussage, zerlege_regeln
     text = " ".join((intervall_text or "").split())
     kern = " ".join(quellenaussage(text).split())
-    if kern.lower().startswith(bauteil.lower()):
-        kern = kern[len(bauteil):].lstrip(" :-–—")          # die Bauteilnennung steht schon vor der Klammer
-    if len(kern) > 170:
-        kern = kern[:167].rstrip() + "..."
+    # Regime-Paket: mehrere Fundstellen (Grundregel UND bedingte Zusatzregel) bleiben GETRENNT sichtbar -- ein
+    # gemeinsamer, gekürzter Satz würde die Bedingung der einen Regel auf die andere übertragen.
+    alle_regeln = zerlege_regeln(text)
+    regeln = alle_regeln if len(alle_regeln) > 1 else []
+    grund = [r.text for r in regeln if not r.bedingt]
+    bedingte = [r.text for r in regeln if r.bedingt]
+    if regeln and grund:
+        kern = grund[0]
+
+    def _kuerze(t: str, n: int = 170) -> str:
+        if t.lower().startswith(bauteil.lower()):
+            t = t[len(bauteil):].lstrip(" :-–—")          # die Bauteilnennung steht schon vor der Klammer
+        return t if len(t) <= n else t[:n - 3].rstrip() + "..."
+
+    kern = _kuerze(kern)
     teile = [_KOMPAKT_TAETIGKEIT.get(taetigkeit, "Tätigkeit nicht belegt")]
     if kern:
         teile.append(f"laut Quelle: {kern}")
+    if regeln and grund and bedingte:
+        teile.append(f"zusätzlich bedingte Regel, Voraussetzung ungeklärt: {_kuerze(bedingte[0], 120)}")
     if technische_bedingung:
         # N12: bei ungeklärter Voraussetzung ZUERST die Anwendbarkeit klären, nicht nach der Durchführung fragen.
         teile.append(f"Anwendbarkeit ungeklärt, zuerst klären: {technische_bedingung}")
     if hat_quellenvorbehalt(text):
         teile.append("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt")
-    if _BEDINGT.search(kern):
+    # Mit Grundregel ist das Intervall NICHT "bedingt": die Bedingung gehört nur zur Zusatzregel (s. oben).
+    bedingt = bool(_BEDINGT.search(kern)) and not (regeln and grund)
+    if bedingt:
         teile.append("Intervall bedingt")
     return f"{falls}„{bauteil}“ ({'; '.join(teile)})"
 
@@ -2238,7 +2253,7 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
     """
     if kontext is None:
         return
-    from app.laufleistung import schwelle_belegbar_erreicht_alter
+    from app.laufleistung import ist_nur_bedingt, schwelle_belegbar_erreicht_alter
     nach_id = {i.id: i for i in insights or []}
     positionen = _insight_positionen(insights)
     for w in getattr(kontext, "wartungshinweise", None) or []:
@@ -2257,8 +2272,10 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
         schluessel = f"{_LAUF_SCHLUESSEL_PRAEFIX.get(w.herkunft, 'wartung-')}{basis}"
         # F3: Aktionsrang aus DERSELBEN Schwellenlogik wie die Wartungsauswahl: eine km-seitig "entfernte" Angabe
         # mit belegbar erreichter Zeitschwelle ist ebenso ein einlösbarer Nachweis-Wunsch wie ein erreichter Punkt.
+        # Regime-Paket: ein NUR bedingtes Intervall (ungeklärte Voraussetzung, keine Grundregel) ist kein belegt
+        # erreichter Punkt -- sein km-Status allein macht die Aktion nicht zum einlösbaren Nachweis-Wunsch.
         rang = (_R_WARTUNG_RELEVANT
-                if (w.status in ("im_bereich", "darueber")
+                if ((w.status in ("im_bereich", "darueber") and not ist_nur_bedingt(w.intervall_text))
                     or schwelle_belegbar_erreicht_alter(w.intervall_text, getattr(kontext, "kilometerstand", None),
                                                          getattr(kontext, "fahrzeugalter_jahre", None)))
                 else _R_WARTUNG)
