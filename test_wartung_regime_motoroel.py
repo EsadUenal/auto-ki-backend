@@ -827,6 +827,61 @@ if SEITEN:
           '"punkt_km": null' in ant_l_json and '"differenz_km": null' in ant_l_json
           and '"punkt_km": 0' not in ant_l_json and '"punkt_km": ""' not in ant_l_json and '"differenz_km": ""' not in ant_l_json)
 
+# ══ L. Bedeutung von status "entfernt" und Verlustfreiheit bei höchstens fünf Web-Wartungs-Insights ═══════════════════
+print("\n== L entfernt / Kartenlimit ==")
+rh = hinweis_aus("Nebenaggregat-Antriebsriemen Alle 105.000 km / 6 Jahre", km=82000, alter=9, titel="Nebenaggregat-Antriebsriemen: x")
+check("L1 Kilometer entfernt, Zeit SICHER erreicht: Status entfernt, Kilometerpunkt gesetzt, Text sagt 'Zeit erreicht' (entfernt != Zeitfrage offen)",
+      rh is not None and rh.status == "entfernt" and rh.punkt_km == 105000
+      and "bereits erreicht (Fahrzeugalter mindestens 8 Jahre" in rh.hinweis and "bleibt deshalb offen" not in rh.hinweis)
+ru = hinweis_aus("Nebenaggregat-Antriebsriemen Alle 105.000 km / 6 Jahre", km=82000, alter=None, titel="Nebenaggregat-Antriebsriemen: x")
+check("L2 Kilometer entfernt, Zeit tatsächlich unbekannt: Status entfernt, Text benennt das unbekannte Baujahr",
+      ru is not None and ru.status == "entfernt" and ru.punkt_km == 105000 and "ohne bekanntes baujahr" in ru.hinweis.lower())
+check("L3 Kilometer entfernt, KEINE Zeitangabe: gar kein Hinweis (entfernt ohne Zeitintervall wird nie ausgegeben)",
+      hinweis_aus("Nebenaggregat-Antriebsriemen Alle 105.000 km", km=82000, alter=9) is None
+      and hinweis_aus("Nebenaggregat-Antriebsriemen Alle 105.000 km", km=82000, alter=None) is None)
+z_e, _ = zh(ZEIT + ".", alter=9)
+z_u, _ = zh(ZEIT + ".", alter=None)
+check("L4 reine Zeitregel: erreicht -> darueber, Alter unbekannt -> entfernt, beide mit punkt_km null",
+      len(z_e) == 1 and z_e[0].status == "darueber" and z_e[0].punkt_km is None
+      and len(z_u) == 1 and z_u[0].status == "entfernt" and z_u[0].punkt_km is None)
+check("L5 Karte: 'Zeitfrage offen' nur bei punkt_km null -- die Unterscheidung steckt im strukturierten Feld, nicht im Freitext",
+      rh.punkt_km is not None and z_u[0].punkt_km is None)
+
+
+def verfolge(fk_x, req_x, lab):
+    ins_x, lk_x, ka_x = kette(fk_x, req_x)
+    web = [i for i in ins_x if i.kategorie == "web_wartung"]
+    namen = [i.titel.split(":")[0] for i in web]
+    hint = [w.bauteil for w in lk_x.wartungshinweise]
+    prompt = [z.split("“")[0].split("„")[1] for z in ll.prompt_block(lk_x).splitlines() if z.startswith("Wartungspunkt")]
+    aktionen = {}
+    for b_ in ("verkaeuferfragen", "dokumente"):
+        sp = [a for a in getattr(ka_x, b_).fahrzeugspezifisch if a.kategorie in ("wartung", "web_wartung")]
+        aktionen[b_] = [n for n in namen if any(n in a.titel + a.aktion for a in sp)]
+    print(f"  [{lab}] Recherche(Fakten): {[f.bauteil for f in fk_x]} | Insights: {namen} | Karte: {hint} | Prompt: {prompt} | "
+          f"Fragen: {aktionen['verkaeuferfragen']} | Dokumente: {aktionen['dokumente']}")
+    return namen, hint, prompt, aktionen, lk_x, ka_x
+
+
+if SEITEN:
+    for lab, zusatz in (("ohne Zeitregel", ""), ("mit Zeitregel", "\n\n2.10. WEITERE ARBEITEN\nBeim Lexus RC F " + ZEIT + ". Beim Lexus RC F "
+                                                  + KMB[0].lower() + KMB[1:] + ".")):
+        fk5 = extraktion(real + zusatz)[0]                       # Recherchelimit UNVERÄNDERT (5 Fakten)
+        namen, hint, prompt, aktionen, lk5, ka5 = verfolge(fk5, REQ, lab)
+        check(f"L6 {lab}: Recherchelimit (5 Fakten) wird eingehalten; Karte <= {ll.MAX_HINWEISE}, Aktionen <= {ka_mod.MAX_SPEZIFISCH_PRO_BEREICH}",
+              len(fk5) <= 5 and len(lk5.wartungshinweise) <= ll.MAX_HINWEISE
+              and all(len(getattr(ka5, b_).fahrzeugspezifisch) <= ka_mod.MAX_SPEZIFISCH_PRO_BEREICH for b_ in ("verkaeuferfragen", "dokumente")))
+        check(f"L7 {lab}: JEDE ausgewählte Web-Wartung erreicht Karte, Prompt, Verkäuferfragen UND Dokumente (kein Verlust durch das Kartenlimit)",
+              set(namen) == set(hint) == set(prompt) == set(aktionen["verkaeuferfragen"]) == set(aktionen["dokumente"]) and len(namen) >= 4,
+              str((namen, hint, prompt, aktionen)))
+        check(f"L8 {lab}: Karte und Prompt in derselben Reihenfolge, je Bauteil ein Hinweis", hint == prompt and len(set(hint)) == len(hint))
+    # Ursache der Kappung (mit Zeitregel): das RECHERCHElimit -- zwei Fakten desselben Bauteils (Zeitregel + bedingte Kilometerregel)
+    # belegen zwei der fünf Plätze und werden erst NACH der Auswahl zu einem Insight zusammengeführt
+    fk_m = extraktion(real + zusatz)[0]
+    check("L9 [Ursache offengelegt] Zahnriemen belegt im Recherchelimit zwei der fünf Plätze (zwei Fakten, ein Insight); es ist das "
+          "Recherchelimit, nicht Karten- oder Aktionslimit, das eine weitere Wartung verdrängt",
+          [f.bauteil for f in fk_m].count("Zahnriemen") == 2 and len(fk_m) == 5)
+
 # ══ G. Keine schweren Importe für die gemeinsame Konstante ═══════════════════════════════════
 print("\n== G Importe ==")
 p = subprocess.run([sys.executable, "-I", "-c",
