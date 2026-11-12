@@ -283,5 +283,41 @@ check("D5 Flag ohne bestaetigte Teile: nicht anerkannt",
 check("D6 Beleg-Text benennt Teilbestaetigung ehrlich",
       "Antriebsart) nicht geprüft" in motorisierung_beleg_text(ident(teil)))
 
+print("\n== E: Voll- und Teilbestaetigung folgen einer Regel (Zusatzmerkmale) ==")
+SYN_KOMPRESSOR = synth("Der RC F wird von einem 5,0 Liter V8 Kompressor-Motor angetrieben.")
+
+
+def zeile(motor, quellen):
+    r = voll(motor, quellen)
+    e = fe(r, "engine_name")
+    return r, e.get("verification_state"), e.get("bestaetigte_teile"), not motorisierung_luecke(r)
+
+
+TEIL_TXT = "„5.0 V8“ durch Webquellen bestätigt, übrige Angabe nicht unabhängig geprüft"
+for motor, state, teile, gate in (
+        ("5.0 V8", "user_confirmed", None, True),
+        ("5.0 V8, Heckantrieb", "user_only", ["5.0 V8"], True),
+        ("5.0 V8 Kompressor", "user_only", ["5.0 V8"], False),
+        ("5.0 V8 Kompressor, Heckantrieb", "user_only", ["5.0 V8"], False),
+        ("5.0 V8 Biturbo", "user_only", ["5.0 V8"], False)):       # neutrale Gegenprobe
+    r, st, tl, g = zeile(motor, HERSTELLER_DE)
+    print(f"     {motor!r:36s} state={st} teile={tl} gate_frei={g}")
+    check(f"E {motor!r}: Feldstatus", st == state, str(st))
+    check(f"E {motor!r}: bestaetigte Teile", tl == teile, str(tl))
+    check(f"E {motor!r}: Motorisierungsgate", g == gate, str(g))
+    if teile:
+        check(f"E {motor!r}: Anzeige nennt nur den belegten Teil", TEIL_TXT in r.bericht)
+    check(f"E {motor!r}: Zusatzmerkmal nie als bestaetigt angezeigt",
+          "Kompressor“ durch Webquellen" not in r.bericht and "Biturbo“ durch Webquellen" not in r.bericht)
+
+print("  -- belegter Zusatz (SYNTHETISCH: Text nennt Kompressor ausdruecklich)")
+for motor, state, gate in (("5.0 V8 Kompressor", "user_confirmed", True),
+                           ("5.0 V8 Kompressor, Heckantrieb", "user_only", True)):
+    r, st, tl, g = zeile(motor, [SYN_KOMPRESSOR, CARWIKI, AMS])
+    check(f"E+ {motor!r}: belegter Zusatz nicht pauschal abgelehnt (Status)", st == state, str(st))
+    check(f"E+ {motor!r}: Gate", g == gate, str(g))
+check("E+ Hubraum und Zusatz in verschiedenen Saetzen: nichts bestaetigt",
+      kern("5.0 V8 Kompressor", [SYN_GETRENNT]).motor is None)
+
 print("\nERGEBNIS:", "ALLE OK" if not FAILS else f"{len(FAILS)} FEHLER: {FAILS}")
 raise SystemExit(1 if FAILS else 0)

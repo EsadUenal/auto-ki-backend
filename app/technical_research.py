@@ -3484,10 +3484,10 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # Grenze: ein Artikeldatum allein ist kein Gueltigkeitsintervall -- ohne
         # Datenblatt-/Titel-Zeitfenster der Quelle wird kein Zeitfenster
         # erfunden (wie bei den Claims).
-        kern_tokens_voll = _tokens(_motor_kern_bestaetigt(motor))
+        kern_text = _motor_kern_bestaetigt(motor)
 
-        def _motorkern_belege(r: dict) -> list[tuple[int, bool]]:
-            """(effektive Stufe, Kern vollstaendig im Satz) je qualifizierter Fundstelle."""
+        def _motorkern_belege(r: dict) -> list[tuple[int, frozenset]]:
+            """(effektive Stufe, Tokens des Satzes) je qualifizierter Fundstelle."""
             q = _qualifizierte_quelle(r, ziel)
             if q["verwurf_grund_datenblatt"]:
                 return []
@@ -3508,28 +3508,54 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                         continue
                     anker = start + next(p for w, p in werte if w == hub_norm)
                 eff = max(q["tier"], 3) if _in_fremdmarkt_span(anker, q["fremdmarkt"]) else q["tier"]
-                out.append((eff, kern_tokens_voll <= _tokens(satz)))
+                out.append((eff, frozenset(_tokens(satz))))
             return out
 
         belege = [(r, _motorkern_belege(r)) for r in claim_quellen]
 
-        def _kern_bestaetigt(nur_vollstaendig: bool) -> tuple[bool, set[str]]:
-            ok = [(r, b) for r, bs in belege for b in bs if (b[1] or not nur_vollstaendig)]
+        def _kern_bestaetigt(pruefe) -> tuple[bool, set[str]]:
+            ok = [(r, b) for r, bs in belege for b in bs if pruefe(b[1])]
             d = {_domain_von(r.get("url") or "") for r, (eff, _) in ok if eff <= 2}
             return (len(d) >= 2 or any(eff == 1 for _, (eff, _) in ok)), d
 
-        kern_ok, doms = _kern_bestaetigt(False)
+        kern_ok, doms = _kern_bestaetigt(lambda toks: True)
         if (kern or hub_norm) and kern_ok:
-            motor_bestaetigt = _motor_kern_bestaetigt(motor)
-            # `kern_vollstaendig`: JEDES Token des bestaetigten Motorkerns steht
-            # in qualifizierten Saetzen (Schwelle wie oben). `kern` selbst prueft
-            # nur Bezeichnungen mit Ziffer ("v8") oder lange Woerter -- ein
-            # weiteres Merkmal ("Kompressor") kaeme sonst ungeprueft mit durch.
-            # Nur das Motorisierungsgate bei Teilbestaetigung wertet dies aus.
-            voll_ok, _ = _kern_bestaetigt(True)
-            feldwerte["engine_name"] = {"value": motor_bestaetigt, "confidence": "mittel",
-                                        "domains": len(doms) or 1, "domain_namen": doms,
-                                        "kern_vollstaendig": voll_ok}
+            # Voll- und Teilbestaetigung folgen EINER Regel (N6/N17-Restluecke):
+            # jedes Wort der Motorangabe (ohne Antriebsrad-Phrase) braucht selbst
+            # einen Beleg nach derselben Schwelle in qualifizierten Saetzen. Die
+            # Hubraumzahl gilt durch die Hubraum-Regel oben als belegt; reine
+            # Kraftstoff-/Fuellwoerter ("Benzin", "Diesel", "Motor") sind kein
+            # Motormerkmal und werden nicht verlangt. Ein Wort OHNE Beleg ("Kompressor"
+            # bei einem Text, der nur 5.0 V8 nennt) bleibt ungeklaert: `engine_name`
+            # traegt dann NUR den belegten Teil (-> Teilbestaetigung, Gate nicht
+            # allein freigegeben), nie die ganze Nutzerangabe. Kein Wortlisten-
+            # oder Laengenkriterium: der Beleg ist das Vorkommen im qualifizierten Satz.
+            belegt_worte, unbelegt = [], []
+            for wort in kern_text.split():
+                w = wort.strip(",;/()")
+                wt = _tokens(w)
+                if not w or not wt:
+                    continue
+                if wt <= _tokens("benzin diesel motor"):
+                    belegt_worte.append(w)          # Fuellwort, kein Motormerkmal
+                    continue
+                if hub_norm and re.fullmatch(r"\d[.,]\d", w) and w.replace(",", ".") == hub_norm:
+                    belegt_worte.append(w)
+                elif _kern_bestaetigt(lambda toks, wt=wt: wt <= toks)[0]:
+                    belegt_worte.append(w)
+                else:
+                    unbelegt.append(w)
+            motor_bestaetigt = kern_text
+            if unbelegt:
+                teil = " ".join(belegt_worte)
+                # nur ein zusammenhaengender Teil der Angabe kann als Teil gelten
+                motor_bestaetigt = (teil if teil and _norm(teil).replace(" ", "") in _norm(kern_text).replace(" ", "")
+                                    else None)
+            if motor_bestaetigt:
+                feldwerte["engine_name"] = {"value": motor_bestaetigt, "confidence": "mittel",
+                                            "domains": len(doms) or 1, "domain_namen": doms,
+                                            "kern_vollstaendig": True,
+                                            "unbelegter_rest": unbelegt}
         # N6-Diagnostik (ENFAL-Folgeauftrag, 2026-11): bisher gab es KEINE
         # Logzeile zur Motorkern-Prüfung -- ob `engine_name` unbestätigt
         # blieb, weil (a) keine Quelle die Kern-Tokens/den Hubraum überhaupt
