@@ -998,6 +998,16 @@ def zeit_hinweise(insights: list[Insight], kilometerstand: int | None, alter_jah
     return out
 
 
+def zeitregel_hinweise(ctx: Laufleistungskontext | None, insights: list[Insight] | None) -> list[ZeitHinweis]:
+    """Die Zeit-Grundregel-Hinweise zu DIESEM Kontext -- EINE Quelle für Prompt-Block und Kaufaktionen, damit beide
+    Ausgabewege dieselben Hinweise tragen. Ein Bauteil, zu dem bereits ein Kilometer-Hinweis aus einer Grundregel
+    vorliegt, bekommt keinen zweiten (die nur bedingte Kilometerregel verbraucht den Platz nicht)."""
+    if ctx is None or not ctx.kilometerstand:
+        return []
+    bereits = {norm_bauteil(w.bauteil) for w in ctx.wartungshinweise if not ist_nur_bedingt(w.intervall_text)}
+    return zeit_hinweise(insights or [], ctx.kilometerstand, ctx.fahrzeugalter_jahre, bereits)
+
+
 # ── Evidence -> Wartungshinweise ──────────────────────────────────────────────
 
 # Aus welcher Insight-Kategorie ein Hinweis entstehen darf, und wie die Herkunft
@@ -1238,8 +1248,12 @@ def build_laufleistungskontext(req, insights: list[Insight] | None,
     return ctx if ctx.hat_inhalt() else None
 
 
-def prompt_block(ctx: Laufleistungskontext | None) -> str:
+def prompt_block(ctx: Laufleistungskontext | None, zeitregeln: list[ZeitHinweis] | None = None) -> str:
     """Kompakter Prompt-Abschnitt — leerer String, wenn nichts vorliegt.
+
+    `zeitregeln` (`zeitregel_hinweise`): Hinweise zu REINEN Zeit-Grundregeln. Sie haben keinen Kilometerpunkt und
+    deshalb kein `Wartungshinweis`-Objekt (der Vertrag verlangt dort Kilometerfelder, die nicht erfunden werden);
+    sie stehen trotzdem mit ihrem fertigen Text im Prompt, damit eine vorhandene Zeitinformation nicht fehlt.
 
     Der Block trägt die Verbote MIT, statt sich auf den Systemprompt zu verlassen.
     Ein Modell, das "Zahnriemen: Wartungspunkt bei 120.000 km, Fahrzeug bei
@@ -1266,6 +1280,8 @@ def prompt_block(ctx: Laufleistungskontext | None) -> str:
                       f"dem Baujahr).")
     for w in ctx.wartungshinweise:
         zeilen.append(f"Wartungspunkt „{w.bauteil}“ (Beleg {w.evidence_id}): {w.hinweis}")
+    for z in zeitregeln or []:
+        zeilen.append(f"Wartungspunkt „{z.bauteil}“ (Beleg {z.evidence_id}): {z.hinweis}")
     if not zeilen:
         return ""
     # Die Servicehistorie-Angabe verschiebt genau EINEN Satz dieses Blocks. Ohne sie

@@ -42,7 +42,7 @@ from app.empfehlungs_floor import wende_floor_an
 from app.kaufempfehlung_sync import synchronisiere_kaufempfehlung
 from app.fahrzeugkontext import build_fahrzeugkontext
 from app.laufleistung import (
-    build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
+    build_laufleistungskontext, prompt_block as laufleistung_prompt_block, zeitregel_hinweise,
 )
 from app.technical_research import recherchiere_technisch, technical_coverage
 from app.evidence import (
@@ -434,7 +434,10 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # "Wartungspunkt 120.000 km" + "Fahrzeug 160.000 km" zuverlaessig eine
     # Faelligkeit, die durch keine Datenquelle gedeckt ist.
     laufleistungskontext = build_laufleistungskontext(req, insights)
-    laufleistung_block = laufleistung_prompt_block(laufleistungskontext)
+    # Reine Zeit-Grundregeln (kein Kilometerpunkt) tragen kein `Wartungshinweis`-Objekt; ihr Text steht trotzdem im
+    # Prompt (dieselbe Quelle wie die Kaufaktionen).
+    laufleistung_block = laufleistung_prompt_block(laufleistungskontext,
+                                                   zeitregel_hinweise(laufleistungskontext, insights))
     # PFAD A: verbindliche Markt-/Preisbloecke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt beider. Ohne ihn wuerde das
     # Modell die Preisanweisungen aus `_SYSTEM` ("leite eine grobe marktpreis_min/

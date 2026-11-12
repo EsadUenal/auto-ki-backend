@@ -620,6 +620,104 @@ check("I22 [Extraktionspfad] NUR bedingte Kilometerregel: Hinweis ausdrücklich 
       len(hn) == 1 and "nur unter einer Voraussetzung" in hn[0].hinweis and len(an) == 1 and "Zeitintervall" not in an[0].aktion
       and an[0].rang < 750 and "wurde bei dieser Laufleistung rein rechnerisch" not in an[0].aktion)
 
+# ══ J. Ausgabewege der reinen Zeitregel: Prompt-Block, Bericht, serialisierte Antwort, Fragen, Dokumente ═══════════
+print("\n== J Ausgabewege der reinen Zeitregel ==")
+from app.kaufcheck_bericht import bericht as _bericht  # noqa: E402
+from app.models import Wartungshinweis  # noqa: E402
+from app.schreibstil import bereinige_nutzertexte  # noqa: E402
+from app.vehicle_identity import VehicleIdentity  # noqa: E402
+
+
+def antwort_zu(req, fk):
+    """Wie app/kaufcheck.py: Insights -> Laufleistungskontext -> Kaufaktionen -> Bericht -> Schreibstil -> JSON."""
+    ins, lk, ka = kette(fk, req)
+    text = _bericht(req, VehicleIdentity.from_check_context(None, None, req), None, None, ins, ka, [], "kaufen_nach_besichtigung",
+                    type("PA", (), {"label": None})(), False, lk, None, ["Inserat"])
+    zr = ll.zeitregel_hinweise(lk, ins)
+    block = ll.prompt_block(lk, zr)
+    antwort = bereinige_nutzertexte({"insights": [i.model_dump() for i in ins], "kaufaktionen": ka.model_dump(),
+                                     "laufleistungskontext": lk.model_dump() if lk else None, "bericht": text})
+    return ins, lk, ka, zr, block, json.loads(json.dumps(antwort, ensure_ascii=False, default=str))
+
+
+def zeit_aktionen(antwort, bereich):
+    return [a for a in antwort["kaufaktionen"][bereich]["fahrzeugspezifisch"]
+            if "Zeitintervall (6 Jahre) ohne Kilometerangabe" in a["aktion"]]
+
+
+FAELLE = (("A erreicht", 2017, ZEIT + ". " + KMB + ".", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
+          ("B erreicht, Zusatzregel zuerst", 2017, KMB + ". " + ZEIT + ".", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
+          ("Alter unbekannt", None, ZEIT + ". " + KMB + ".", "ohne bekanntes Baujahr"),
+          ("Altersgrenze unsicher", 2020, ZEIT + ". " + KMB + ".", "ohne den genauen Erstzulassungsmonat nicht bestimmen"))
+try:
+    Wartungshinweis(bauteil="Zahnriemen", status="zeit", intervall_text="alle 6 Jahre", hinweis="x", herkunft="web_wartung", evidence_id="e")
+    vertrag_verlangt_km = False
+except Exception:
+    vertrag_verlangt_km = True
+check("J0 Beleg: das Wartungshinweis-Modell verlangt Kilometerfelder (punkt_km/differenz_km) -- eine Zeitregel kann dort ohne "
+      "erfundene Werte nicht stehen", vertrag_verlangt_km)
+for lab, bj, text, kern in FAELLE:
+    req_j = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=bj, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[],
+                             vorbesitzer=2, scheckheftgepflegt=True)
+    ins_j, lk_j, ka_j, zr_j, block_j, ant = antwort_zu(req_j, fakten_t(text, bj=bj))
+    zh_j = zr_j[0].hinweis if zr_j else ""
+    check(f"J1 {lab}: genau EIN Zeitregel-Hinweis, der Kernsatz stimmt ('{kern[:40]}...')",
+          len(zr_j) == 1 and kern in zh_j and "Zeitintervall (6 Jahre) ohne Kilometerangabe" in zh_j, zh_j[:200])
+    check(f"J2 {lab}: Prompt-Block trägt den Hinweis EINMAL mit Beleg-ID und behält die Fälligkeits-Verbote",
+          block_j.count(zh_j) == 1 and f"(Beleg {ins_j[0].id})" in block_j and "NIEMALS" in block_j
+          and "Zeitpunkt des letzten Service ist NICHT bekannt" in block_j)
+    check(f"J3 {lab}: serialisierte Antwort -- Laufleistungskontext trägt KEINEN erfundenen Kilometer-Hinweis zum Zahnriemen",
+          [w for w in ant["laufleistungskontext"]["wartungshinweise"] if w["bauteil"] == "Zahnriemen"] == []
+          and ant["laufleistungskontext"]["fahrzeugalter_jahre"] == (None if bj is None else 2026 - bj))
+    za_v, za_d = zeit_aktionen(ant, "verkaeuferfragen"), zeit_aktionen(ant, "dokumente")
+    check(f"J4 {lab}: serialisierte Antwort -- Verkäuferfrage UND Dokument tragen dieselbe Zeitregel samt Zusatzregel und Quelle",
+          len(za_v) == 1 and len(za_d) == 1 and kern in za_v[0]["aktion"] and kern in za_d[0]["aktion"]
+          and "zumindest alle 150.000 km" in za_v[0]["aktion"] and "nicht auf die Zeitregel übertragen" in za_d[0]["aktion"]
+          and "aus der Webrecherche" in za_v[0]["aktion"], str(za_v)[:200])
+    check(f"J5 {lab}: Evidenz -- jede Aktion verweist auf den zusammengeführten Insight (existiert in der Antwort)",
+          za_v[0]["evidence_ids"] == [ins_j[0].id] == za_d[0]["evidence_ids"] and ins_j[0].id in [i["id"] for i in ant["insights"]])
+    b = " ".join(ant["bericht"].split())
+    satz = " ".join(za_v[0]["aktion"].split())
+    check(f"J6 {lab}: ausführlicher Bericht -- der Hinweistext steht in Verkäuferfragen UND Dokumenten, nicht doppelt je Abschnitt",
+          b.count(satz) == 1 and b.count(" ".join(za_d[0]["aktion"].split())) == 1
+          and b.index("## Verkäuferfragen") < b.index(satz) < b.index("## Besichtigung")
+          and b.index("## Dokumente und finale Checkliste") < b.index(" ".join(za_d[0]["aktion"].split())), str(b.count(satz)))
+    check(f"J7 {lab}: Bericht -- die Quellaussage steht im Risiko-/Hinweisabschnitt, der Bericht widerspricht ihr nirgends",
+          "## Relevante Risiken und Hinweise" in b and "Zahnriemen kontrollieren: alle 6 Jahre" in b
+          and "Kilometerpunkt (150.000" not in b and "wurde bei dieser Laufleistung rein rechnerisch" not in b
+          and sauber(" ".join(a["aktion"] for a in za_v + za_d)))
+    check(f"J8 {lab}: die vier Kanäle (Prompt, Frage, Dokument, Bericht) tragen dieselben Kernsätze",
+          all(k in block_j and k in za_v[0]["aktion"] and k in za_d[0]["aktion"] and k in b
+              for k in (kern, "Zeitintervall (6 Jahre) ohne Kilometerangabe", "Zusätzlich nennt die Quelle eine bedingte Regel",
+                        "zumindest alle 150.000 km")))
+    check(f"J9 {lab}: unbekannte letzte Durchführung / keine Fälligkeit in jedem Kanal",
+          all(sauber(t) for t in (block_j.split("Wartungspunkt")[-1], za_v[0]["aktion"], za_d[0]["aktion"])))
+# Rang der Zeitregel in der Antwort
+ant_a = antwort_zu(REQ_T, fakten_t(ZEIT + ". " + KMB + "."))[5]
+ant_u = antwort_zu(KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=None, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[],
+                                    vorbesitzer=2, scheckheftgepflegt=True), fakten_t(ZEIT + ". " + KMB + ".", bj=None))[5]
+check("J10 Rang in der Antwort: erreichte Zeitgrenze 750, unbekanntes Alter darunter",
+      zeit_aktionen(ant_a, "verkaeuferfragen")[0]["rang"] == 750 and zeit_aktionen(ant_u, "verkaeuferfragen")[0]["rang"] < 750)
+# reine Zeitregel OHNE bedingte Zusatzregel: dieselben Kanäle
+ins_p, lk_p, ka_p, zr_p, block_p, ant_p = antwort_zu(REQ_T, fakten_t(ZEIT + "."))
+check("J11 reine Zeitregel ohne Zusatzregel: Prompt, Frage, Dokument und Bericht tragen sie; kein Kilometer-Hinweis",
+      len(zr_p) == 1 and zr_p[0].hinweis in block_p and len(zeit_aktionen(ant_p, "verkaeuferfragen")) == 1
+      and len(zeit_aktionen(ant_p, "dokumente")) == 1 and "Zeitintervall (6 Jahre) ohne Kilometerangabe" in ant_p["bericht"]
+      and "bedingte Regel" not in zr_p[0].hinweis and lk_p.wartungshinweise == [])
+# Verdrahtung der produktiven Pipeline (app/kaufcheck.py) -- gleiche Quelle wie die Kaufaktionen
+quelle_kc = (HIER / "app" / "kaufcheck.py").read_text(encoding="utf-8")
+check("J12 app/kaufcheck.py übergibt die Zeitregeln an den Prompt-Block (dieselbe Funktion wie die Kaufaktionen)",
+      "zeitregel_hinweise(laufleistungskontext, insights)" in quelle_kc and "laufleistung_prompt_block(laufleistungskontext," in quelle_kc
+      and "zeitregel_hinweise(kontext, insights)" in (HIER / "app" / "kaufaktionen.py").read_text(encoding="utf-8"))
+if SEITEN:
+    zr_real = ll.zeitregel_hinweise(lk_h, ins_h)
+    block_real = ll.prompt_block(lk_h, zr_real)
+    check("J13 [ECHT] Lexus-Replay: keine Zeitregel (alle fünf haben Kilometer); Prompt-Block unverändert -- jeder Kilometer-Wartungspunkt genau einmal",
+          zr_real == [] and len(lk_h.wartungshinweise) >= 5 and block_real.count("Wartungspunkt „") == len(lk_h.wartungshinweise)
+          and all(block_real.count(f"Wartungspunkt „{w.bauteil}“") == 1 for w in lk_h.wartungshinweise)
+          and block_real == ll.prompt_block(lk_h),
+          str((len(zr_real), block_real.count("Wartungspunkt „"), [w.bauteil for w in lk_h.wartungshinweise])))
+
 # ══ G. Keine schweren Importe für die gemeinsame Konstante ═══════════════════════════════════
 print("\n== G Importe ==")
 p = subprocess.run([sys.executable, "-I", "-c",
