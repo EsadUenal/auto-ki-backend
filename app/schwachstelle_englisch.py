@@ -391,7 +391,8 @@ def hat_bauteil(satz: str) -> bool:
 # ── Zeitraum ──────────────────────────────────────────────────────────────────────────────────────
 
 _J = r"((?:19|20)\d{2})"
-_RE_Z_BEREICH = re.compile(_J + r"\s*(?:-|–|to|through|thru|until|till)\s*" + _J, re.IGNORECASE)
+_RE_Z_BEREICH = re.compile(_J + r"\s*(?:-|–|to|through|thru|until|till)\s*" + _J
+                           + r"|\bbetween\s+" + _J + r"\s+and\s+" + _J, re.IGNORECASE)
 _RE_Z_AB = re.compile(r"\b(?:from|since|starting(?:\s+(?:in|from))?|beginning(?:\s+in)?)\s+" + _J
                       + r"|\b" + _J + r"\s*(?:onwards?|and\s+(?:later|newer|up)|\+)", re.IGNORECASE)
 _RE_Z_BIS = re.compile(r"\b(?:before|prior\s+to|up\s+to|until|through|pre[- ]?)\s*" + _J, re.IGNORECASE)
@@ -404,7 +405,8 @@ def zeitraum(text: str) -> tuple[int | None, int | None] | None:
     t = text or ""
     m = _RE_Z_BEREICH.search(t)
     if m:
-        return int(m.group(1)), int(m.group(2))
+        jahre = [int(g) for g in m.groups() if g]
+        return jahre[0], jahre[1]
     ab, bis = _RE_Z_AB.search(t), _RE_Z_BIS.search(t)
     if ab or bis:
         von = int(next(g for g in ab.groups() if g)) if ab else None
@@ -496,8 +498,8 @@ def _kraftstoff_klasse(wort: str) -> tuple[str | None, str | None]:
     return None, "BEV"       # electric / BEV / EV
 
 
-def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
-    """("ok"|"abweichend"|"unbelegt", Grund). `ziel`: hubraum (str "5.0"), fuel ("benzin"/"diesel"/"elektro"),
+def variante_detail(text: str, ziel: dict | None) -> tuple[str, str | None, list[str]]:
+    """("ok"|"abweichend"|"unbelegt", Grund, uebereinstimmende Achsen). `ziel`: hubraum (str "5.0"), fuel ("benzin"/"diesel"/"elektro"),
     powertrains (frozenset), motor (Freitext). Unbekanntes Ziel -> "unbelegt", nie "ok". Leistungsangaben
     (hp/bhp/PS/kW) werden NICHT verglichen und nie als PS gelesen: sie belegen nichts."""
     ziel = ziel or {}
@@ -505,6 +507,7 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
     motor = (ziel.get("motor") or "")
     abweichend: list[str] = []
     unbelegt: list[str] = []
+    passend: list[str] = []      # Achsen, die die Aussage NENNT und die zum Ziel passen
 
     for m in _RE_HUBRAUM.finditer(t):
         wert = float((m.group(1) or m.group(2)).replace(",", "."))
@@ -516,6 +519,8 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
             unbelegt.append("hubraum")
         elif abs(wert - ziel_h) > 0.06:
             abweichend.append("hubraum")
+        else:
+            passend.append("hubraum")
 
     for m in _RE_ZYLINDER.finditer(t):
         zahl = next(g for g in m.groups() if g)
@@ -524,11 +529,15 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
             unbelegt.append("zylinder")
         elif next(g for g in konfig.groups() if g) != zahl:
             abweichend.append("zylinder")
+        else:
+            passend.append("zylinder")
 
     for m in _RE_MOTORCODE.finditer(t):
         code = re.sub(r"\s", "", next(g for g in m.groups() if g)).lower()
         if code not in re.sub(r"\s", "", motor.lower()):
             unbelegt.append("motorcode")
+        else:
+            passend.append("motorcode")
 
     fuel_ziel, pts = ziel.get("fuel"), ziel.get("powertrains")
     for m in _RE_KRAFTSTOFF.finditer(t):
@@ -538,6 +547,8 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
                 unbelegt.append("kraftstoff")
             elif fuel_ziel != fuel:
                 abweichend.append("kraftstoff")
+            else:
+                passend.append("kraftstoff")
         else:
             if not pts:
                 unbelegt.append("antrieb")
@@ -546,6 +557,10 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
                     abweichend.append("antrieb")
             elif pt not in pts:
                 abweichend.append("antrieb")
+            else:
+                passend.append("antrieb")
+        if fuel is None and pt == "HYBRID" and pts and (set(pts) & {"MHEV", "PHEV", "HEV"}):
+            passend.append("antrieb")
 
     if _RE_FACELIFT.search(t):
         unbelegt.append("modellpflege")
@@ -553,10 +568,16 @@ def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
         unbelegt.append("leistung")          # offen: hp/bhp/PS/kW werden nicht verglichen
 
     if abweichend:
-        return "abweichend", "+".join(sorted(set(abweichend)))
+        return "abweichend", "+".join(sorted(set(abweichend))), []
     if unbelegt:
-        return "unbelegt", "+".join(sorted(set(unbelegt)))
-    return "ok", None
+        return "unbelegt", "+".join(sorted(set(unbelegt))), []
+    return "ok", None, sorted(set(passend))
+
+
+def variante(text: str, ziel: dict | None) -> tuple[str, str | None]:
+    """Wie `variante_detail`, ohne die uebereinstimmenden Achsen."""
+    status, grund, _passend = variante_detail(text, ziel)
+    return status, grund
 
 
 # ── Fehlertyp (Gegenstueck zu `_schwachstelle_failure_mode`, gleiche Namen/Reihenfolge) ──────────
@@ -583,3 +604,70 @@ def failure_mode(claim: str) -> str | None:
         if rx.search(claim or ""):
             return name
     return None
+
+
+# ── Uebertragung auf das Zielfahrzeug (Beziehung Bauteil/Ausfuehrung/Zeitraum/Ziel) ──────────────
+
+# Ausdrueckliche Aussage, dass DASSELBE Teil/Design in anderen Maerkten/Varianten verbaut ist. Nur sie macht
+# eine Marktangabe (z. B. "UK") fuer ein anderes Zielgebiet relevant; eine Marktangabe allein ist nur die
+# Reichweite der QUELLE, kein Beleg fuer die konkrete Geltung des Mangels.
+_RE_UEBERTRAGUNG = re.compile(
+    r"\b(?:same|identical)\s+(?:[\w-]+\s+){0,3}?(?:parts?|pumps?|engines?|units?|designs?|components?|assembl(?:y|ies)|"
+    r"platforms?|hardware|specifications?|specs?|items?|chains?|turbos?|gearbox(?:es)?|transmissions?)\b"
+    r"|\bshared\s+(?:with|across|between)\b"
+    r"|\b(?:all|every|both)\s+(?:markets?|regions?)\b|\bregardless\s+of\s+(?:the\s+)?(?:market|region|country)\b"
+    r"|\bnot\s+(?:market|region)[- ]specific\b"
+    r"|\b(?:also|equally)\s+(?:affects?|applies\s+to|found\s+(?:on|in))\s+(?:the\s+)?(?:european|german|eu)\b",
+    re.IGNORECASE)
+_RE_UEBERTRAGUNG_NEG = re.compile(
+    r"\bnot\s+(?:the\s+)?(?:same|identical|shared)\b|\b(?:different|differing)\s+(?:[\w-]+\s+){0,2}"
+    r"(?:parts?|pumps?|engines?|units?|designs?|specs?|specification)\b|\bunique\s+to\b", re.IGNORECASE)
+
+
+def hat_uebertragungsbeleg(text: str) -> bool:
+    """Die Aussage selbst belegt ausdruecklich, dass dasselbe Teil/Design auch bei anderen Maerkten/Varianten
+    verbaut ist. Fehlender Widerspruch ist kein Beleg; eine Verneinung ("not the same") hebt ihn auf."""
+    t = _glatt(text)
+    return bool(_RE_UEBERTRAGUNG.search(t)) and not _RE_UEBERTRAGUNG_NEG.search(t)
+
+
+def generation_passt(text: str, codes: list[str] | None) -> bool:
+    """Die Aussage nennt ausdruecklich eine BELEGTE Generation des Zielfahrzeugs (Wortgrenze, kein Teilstring)."""
+    for c in codes or []:
+        if c and re.search(r"(?<![\w-])" + re.escape(str(c)) + r"(?![\w-])", text or "", re.IGNORECASE):
+            return True
+    return False
+
+
+# ── Seitentyp und Unabhaengigkeit englischer Quellen (sprachneutrale Struktur, kein Titelwort allein) ──
+
+_RE_SELBSTBESCHREIBUNG = re.compile(
+    r"\b(?:common\s+(?:problems?|faults?|issues?|failures?)|known\s+(?:problems?|faults?|issues?|weaknesses)|"
+    r"problems?|faults?|reliability|weak(?:ness(?:es)?|\s+points?)|buy(?:er'?s|ing)\s+guide|"
+    r"what\s+to\s+look\s+(?:for|out\s+for)|used\s+(?:car\s+)?(?:guide|review))\b", re.IGNORECASE)
+_RE_FORUM_TITEL = re.compile(r"\b(?:forum|thread|discussion|q&a|ask|reddit|club|community)\b", re.IGNORECASE)
+_RE_KOMMERZ_TITEL = re.compile(r"\b(?:for\s+sale|prices?|leas(?:e|ing)|deals?|buy\s+(?:now|online)|shop|parts?\s+store)\b",
+                               re.IGNORECASE)
+_RE_FORUM_URL = re.compile(
+    r"(?:^|[/.])(?:forums?|community|communities|boards?|discuss\w*|answers?)(?:[/.]|$)"
+    r"|/(?:threads?|topics?|viewtopic|showthread|questions?|comments?|t|r)/|[?&](?:t|tid|topic|threadid)=",
+    re.IGNORECASE)
+
+
+def seitentyp_artikel(url: str, title: str | None) -> bool:
+    """Die Seite beschreibt sich als Beitrag ueber Probleme/Zuverlaessigkeit (Titel) UND ist weder Forum/
+    Nutzerbeitrag noch kommerzielle Angebotsseite (Titel, URL). Das ist ein SEITENTYP-Hinweis, kein Qualitaets-
+    beleg: er genuegt nie allein (siehe `_quellenrolle_en`)."""
+    t = title or ""
+    return bool(_RE_SELBSTBESCHREIBUNG.search(t) and not _RE_FORUM_TITEL.search(t)
+                and not _RE_KOMMERZ_TITEL.search(t) and not _RE_FORUM_URL.search(url or ""))
+
+
+def fast_gleich(a: str, b: str, schwelle: float = 0.8) -> bool:
+    """Nahezu identische Aussage (abgeschrieben/syndiziert): zwei Quellen mit demselben Satz sind keine
+    unabhaengigen Belege."""
+    ta = set(re.findall(r"[a-z0-9]{3,}", (a or "").lower()))
+    tb = set(re.findall(r"[a-z0-9]{3,}", (b or "").lower()))
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / len(ta | tb) >= schwelle

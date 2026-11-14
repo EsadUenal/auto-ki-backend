@@ -122,14 +122,19 @@ check("B5 spezifisches Bauteil schlaegt 'engine'",
       en.bauteil("The engine of the car has a timing chain problem") == ("Steuerkette", "steuerkette"))
 check("B6 nur 'engine' -> generisch Motor", en.bauteil("The engine is noisy") == ("Motor", "motor"))
 
-print("=== C) Positiv: allgemeiner englischer Befund mit belegter Anwendbarkeit (SYNTHETISCH) ===")
-POS = ("In Europe, the water pump on the Lexus RC F is a common failure and many owners report coolant leaks.")
+print("=== C) Positiv: allgemeiner englischer Befund mit TRAGENDER Evidenz fuer das Zielfahrzeug (SYNTHETISCH) ===")
+# T2: zum Ziel passende technische Ausfuehrung (5.0-Liter, V8) UND passender Zeitraum (2015-2018 schliesst 2017 ein),
+# Zielmodell genannt, Markt (Europa) als Reichweite der Quelle, allgemeine Reichweite (Population).
+T2 = "the 5.0-litre V8 in the Lexus RC F built between 2015 and 2018"
+POS = f"In Europe, {T2} has a common water pump failure, and many owners report coolant leaks."
 f, ab = einzel(POS)
-check("C1 Fakt Wasserpumpe aus englischem Satz", [x.bauteil for x in f] == ["Wasserpumpe"], f"{f} {gruende(ab)}")
+check("C1 Fakt Wasserpumpe aus englischem Satz mit Ausfuehrung + Zeitraum", [x.bauteil for x in f] == ["Wasserpumpe"],
+      f"{f} {gruende(ab)}")
 if f:
-    check("C2 gekennzeichnetes englisches Originalzitat mit belegtem Marktbezug",
+    check("C2 gekennzeichnetes englisches Originalzitat; Markt- und Geltungsangaben bleiben im Befund erhalten",
           "englischsprachiges Originalzitat" in f[0].aussage and "Europa" in f[0].aussage
-          and "water pump" in f[0].aussage, f[0].aussage)
+          and "water pump" in f[0].aussage and "Geltung laut Quelle" in f[0].aussage
+          and "Zeitraum 2015–2018" in f[0].aussage, f[0].aussage)
     check("C3 kein unresolved-Pfad: bestaetigter Fakt ohne offene Geltung",
           f[0].geltung_fuer_fahrzeug in (None, "covered"), str(f[0].geltung_fuer_fahrzeug))
     f_de, _ = einzel("Bei vielen Lexus RC F fällt die Wasserpumpe häufig aus, eine bekannte Schwachstelle des "
@@ -137,10 +142,64 @@ if f:
     check("C4 keine pauschale Konfidenzobergrenze: gleiche Quelle, gleiche Confidence wie der deutsche Befund",
           bool(f_de) and f[0].confidence == f_de[0].confidence,
           f"{f[0].confidence} vs {f_de[0].confidence if f_de else None}")
-f2, _ = einzel("In the UK, owners of the Lexus RC F often report that the thermostat fails and the timing "
-               "chain is a known weak point.")
-check("C5 mehrere Befunde in einem Satz, beide mit Wortgrenze", {x.bauteil for x in f2} >= {"Thermostat"},
+f2, _ = einzel("In Europe, owners of the 5.0-litre V8 Lexus RC F built between 2015 and 2018 often report that the "
+               "thermostat fails and the timing chain is a known weak point.")
+check("C5 mehrere Befunde in einem Satz, Teilsatz mit Evidenz bleibt bestaetigt", {x.bauteil for x in f2} >= {"Thermostat"},
       str([x.bauteil for x in f2]))
+
+print("=== C') Marktreichweite allein und Modellnennung allein tragen die Anwendung NICHT (SYNTHETISCH) ===")
+for name, text, grund in [
+    ("EU-Marker + Zielmodell, keine tragende Beziehung",
+     "In Europe, the water pump on the Lexus RC F is a common failure and many owners report coolant leaks.",
+     "en_relation_unbelegt"),
+    ("Deutschland-Marker + Zielmodell, keine tragende Beziehung",
+     "In Germany the water pump on the Lexus RC F is a common failure for many owners.", "en_relation_unbelegt"),
+    ("weltweit + Zielmodell, keine tragende Beziehung",
+     "Worldwide, the water pump on the Lexus RC F is a common failure for many owners.", "en_relation_unbelegt"),
+    ("gleicher Motor (Hubraum/V8 des Ziels) allein, Zielmodell genannt",
+     "In Europe the 5.0-litre V8 in the Lexus RC F is known for a common water pump failure; many owners report leaks.",
+     "en_relation_unbelegt"),
+    ("gleicher Motorcode des Ziels allein, Zielmodell genannt",
+     "In Europe the 2UR-GSE in the Lexus RC F is known for a common water pump failure; many owners report leaks.",
+     "en_relation_unbelegt"),
+    ("gleiche Generation allein, Zielmodell genannt",
+     "In Europe the UXC1 Lexus RC F is known for a common water pump failure; many owners report leaks.",
+     "en_relation_unbelegt"),
+    ("Zeitraum allein, Zielmodell genannt",
+     "In Europe on 2015 to 2017 models of the Lexus RC F the water pump is a common failure for many owners.",
+     "en_relation_unbelegt"),
+]:
+    kw = dict(motor="5.0 V8 2UR-GSE") if "2UR-GSE" in text else {}
+    f, ab = einzel(text, **kw)
+    check(f"C' {name}: unbestaetigt ({grund})", not f and grund in gruende(ab), f"{[x.aussage for x in f]} {gruende(ab)}")
+    nach = [a for a in ab if a.get("grund") == grund]
+    check(f"C' {name}: gesammelte Evidenz bleibt im gespeicherten Kandidaten erhalten",
+          bool(nach) and "markt" in nach[0].get("evidenz", {}) and "ausfuehrung" in nach[0].get("evidenz", {}),
+          str(nach[:1]))
+
+print("=== C'') UK: Quellenreichweite ist kein Beleg fuer den deutschen Markt (SYNTHETISCH) ===")
+f, ab = einzel(f"In the UK, {T2} has a common water pump failure, and many owners report coolant leaks.")
+check("C''1 UK-only mit Ausfuehrung + Zeitraum, OHNE Uebertragungsbeleg: unbestaetigt",
+      not f and "en_uk_ohne_uebertragung" in gruende(ab), f"{[x.aussage for x in f]} {gruende(ab)}")
+f, ab = einzel("In the UK, the water pump on the Lexus RC F is a common failure for many owners. "
+               "It is the same pump that is fitted to European cars.")
+check("C''2 UK mit ausdruecklichem Beleg 'dasselbe Teil bei europaeischen Fahrzeugen': positiv",
+      [x.bauteil for x in f] == ["Wasserpumpe"] and "Übertragung" in f[0].aussage, f"{gruende(ab)}")
+f, ab = einzel("In the UK, the water pump on the Lexus RC F is a common failure for many owners. "
+               "It is not the same pump that is fitted to European cars.")
+check("C''3 verneinter Uebertragungsbeleg ('not the same pump') hebt ihn auf", not f, gruende(ab))
+f, ab = einzel("In Europe, the water pump on the Lexus RC F is a common failure for many owners. "
+               "It is the same pump in all markets.")
+check("C''4 Belegte Uebertragbarkeit (dasselbe Teil in allen Maerkten) kann positiv funktionieren",
+      [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
+f, ab = einzel("In the UK, the water pump on the Lexus RC F is a common failure for many owners.")
+check("C''5 UK-only ohne jeden Beleg: unbestaetigt", not f and "en_uk_ohne_uebertragung" in gruende(ab), gruende(ab))
+f, ab = einzel("In Europe, the UXC1 5.0-litre V8 Lexus RC F has a common water pump failure for many owners.")
+check("C''6 Ausfuehrung + belegte Generation (ohne Zeitfenster) traegt die Beziehung",
+      [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
+check("C''7 gleicher Motor + fehlender Widerspruch + Zeitraum ausserhalb: kein Fakt",
+      not einzel("In Europe the 5.0-litre V8 in the Lexus RC F built between 2010 and 2014 has a common water "
+                 "pump failure and many owners report leaks.")[0])
 
 print("=== D) Negativ: Verneinung/Relativierung (SYNTHETISCH) ===")
 for name, text in [
@@ -169,7 +228,8 @@ for name, text in [
 ]:
     f, ab = einzel(text)
     check(f"E {name}: kein Fakt", not f, f"{[x.aussage for x in f]} {gruende(ab)}")
-f, ab = einzel("In the UK the water pump failure on my Lexus RC F is a common problem that many owners report.")
+f, ab = einzel(f"In Europe the water pump failure on my 5.0-litre Lexus RC F built between 2015 and 2018 is a "
+               "common problem that many owners report.")
 check("E6 ausdrueckliche Population im selben Satz hebt den Einzelbezug des Sprechers auf",
       [x.bauteil for x in f] == ["Wasserpumpe"], f"{gruende(ab)}")
 f, ab = einzel("In Europe, the water pump on the Lexus RC F fails.")
@@ -177,8 +237,9 @@ check("E7 ohne Populationsbeleg: reichweite_unbelegt", not f and "reichweite_unb
 
 print("=== F) Fremdmodellabschnitt und Zielabschnitt (SYNTHETISCH) ===")
 text = ("Overview of the sporty Lexus coupes and sedans sold in Europe.\n\nLexus GS F\n\nIn Europe the water pump is a common failure and many owners report coolant leaks.\n\n"
-        "Lexus RC F\n\nIn Europe the timing chain is a common problem on this model and many owners report rattling.")
-f, ab = einzel(text, titel="Lexus RC F")
+        "Lexus RC F\n\nIn Europe the timing chain on the 5.0-litre V8 built between 2015 and 2018 is a common problem on "
+        "this model and many owners report rattling.")
+f, ab = einzel(text, titel="Lexus coupes in Europe: RC F and GS F")
 check("F1 GS-F-Abschnitt liefert keinen RC-F-Fakt, RC-F-Abschnitt schon",
       [x.bauteil for x in f] == ["Steuerkette"], f"{[x.bauteil for x in f]} {gruende(ab)}")
 
@@ -193,16 +254,17 @@ for name, text in [
     f, ab = einzel(text)
     check(f"G {name}: unbestaetigt", not f, f"{[x.aussage for x in f]} {gruende(ab)}")
 f, ab = einzel("In the US the water pump on the Lexus RC F is a common failure for many owners. "
-               "In Germany the thermostat on the Lexus RC F is a common failure for many owners.")
+               f"In Germany the thermostat on {T2} is a common failure for many owners.")
 check("G6 fremder Marktmarker sperrt nur seinen Satz, nicht die Seite",
       [x.bauteil for x in f] == ["Thermostat"], f"{[x.bauteil for x in f]} {gruende(ab)}")
-f, ab = einzel("In Europe the water pump on the Lexus RC F is a common failure for many owners.", titel="Lexus RC F America")
+f, ab = einzel(f"In Europe the water pump on {T2} is a common failure for many owners.", titel="Lexus RC F America")
 check("G7 Marktmarker im Titel allein sperrt nichts", [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
 check("G8 'mph'/'miles' sind kein Fremdmarkt-Marker",
       en.markt("In the UK the pump fails after 60,000 miles at 70 mph")[0] == "ok")
 check("G9 'German engineering' ist kein Marktbeleg", en.markt("Unlike German engineering the pump fails")[0] == "unbelegt")
 f, ab = einzel("Common problems of the Lexus RC F in Europe include the following.\n\n"
-               "The water pump is a common failure and many owners report leaks.")
+               "The water pump on the 5.0-litre V8 built between 2015 and 2018 is a common failure and many owners "
+               "report leaks.")
 check("G10 Marktbeleg im Rahmensatz derselben Aussage genuegt", [x.bauteil for x in f] == ["Wasserpumpe"],
       f"{[x.bauteil for x in f]} {gruende(ab)}")
 
@@ -231,7 +293,11 @@ for name, text, kw in [
     check(f"H {name}: kein bestaetigter Fahrzeugmangel", not f, f"{[x.aussage for x in f]} {gruende(ab)}")
 f, ab = einzel("In Europe the 5.0-litre V8 in the Lexus RC F is known for a common water pump failure; many owners "
                "report leaks.")
-check("H12 passender Hubraum UND Modell im Satz: bestaetigt", [x.bauteil for x in f] == ["Wasserpumpe"],
+check("H12 passender Hubraum UND Modell im Satz ohne Zeitraum/Generation/Uebertragung: NICHT bestaetigt",
+      not f and "en_relation_unbelegt" in gruende(ab), f"{gruende(ab)}")
+f, ab = einzel("In Europe the 5.0-litre V8 in the Lexus RC F built between 2015 and 2018 is known for a common "
+               "water pump failure; many owners report leaks.")
+check("H12b passende Ausfuehrung UND passender Zeitraum: bestaetigt", [x.bauteil for x in f] == ["Wasserpumpe"],
       f"{gruende(ab)}")
 check("H13 hp wird nie als PS gelesen oder verglichen",
       en.variante("the 477 hp car", {"hubraum": "5.0"})[0] == "unbelegt"
@@ -240,13 +306,19 @@ check("H13 hp wird nie als PS gelesen oder verglichen",
 print("=== I) Baujahr/Zeitraum englisch (SYNTHETISCH) ===")
 f, ab = einzel("In Europe from 2018 onwards the water pump on the Lexus RC F is a common failure for many owners.")
 check("I1 ab 2018 betrifft Baujahr 2017 nicht", not f and "baujahr_ausserhalb" in gruende(ab), gruende(ab))
-f, ab = einzel("In Europe on 2015 to 2017 models of the Lexus RC F the water pump is a common failure for many owners.")
-check("I2 2015 to 2017 schliesst 2017 ein", [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
+f, ab = einzel("In Europe on 2015 to 2017 models of the 5.0-litre V8 Lexus RC F the water pump is a common failure "
+               "for many owners.")
+check("I2 2015 to 2017 schliesst 2017 ein (mit passender Ausfuehrung)", [x.bauteil for x in f] == ["Wasserpumpe"],
+      gruende(ab))
+f, ab = einzel("In Europe the 5.0-litre V8 in the Lexus RC F between 2015 and 2018 has a common water pump failure "
+               "for many owners.")
+check("I2b 'between 2015 and 2018' wird als Zeitraum gelesen", [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
 f, ab = einzel("In Europe on early cars the water pump on the Lexus RC F is a common failure for many owners.")
 check("I3 'early cars' ohne Beleg bleibt unbestaetigt", not f and "en_geltung_unbelegt" in gruende(ab), gruende(ab))
-f, ab = einzel("In Europe on 2015 to 2017 models of the Lexus RC F the water pump is a common failure for many owners.",
-               baujahr=None)
-check("I4 Zeitfenster bei unbekanntem Baujahr bleibt unbestaetigt", not f, gruende(ab))
+f, ab = einzel("In Europe on 2015 to 2017 models of the 5.0-litre V8 Lexus RC F the water pump is a common failure "
+               "for many owners.", baujahr=None)
+check("I4 Zeitfenster bei unbekanntem Baujahr bleibt unbestaetigt", not f and "en_geltung_unbelegt" in gruende(ab),
+      gruende(ab))
 
 print("=== J) Kurze/gemischte Aussagen erhalten die Schutzregeln (SYNTHETISCH) ===")
 for name, text in [
@@ -282,53 +354,115 @@ if adac.exists():
     check("K6 echter ADAC-Volltext (deutsch, negativ): weiterhin kein Schwachstellenfakt", not f_alt,
           str([x.bauteil for x in f_alt]))
 
-print("=== L) Candidate-Pfad: Quellenfamilien, Titelwoerter, Anker (SYNTHETISCH) ===")
+print("=== L) Candidate-Pfad: ECHTE Quellenqualifikation (ohne Stub), Familien, Anker, gleiche Evidenzgrenzen ===")
+# Synthetische Quellen auf unbekannten Domains (.example): kein Eintrag in einer Domainliste. Es wird NICHTS gestubbt:
+# die Quellenrolle kommt aus `_quellenrolle_en` (Domain-Einstufung, sonst Seitentyp + konkrete Aussage).
 FAM = ["https://www.en-eins.example/rcf", "https://www.en-zwei.example/rcf", "https://www.en-drei.example/rcf"]
-CL = "In Europe the water pump on the Lexus RC F fails often and many owners report leaks."
+TITEL_OK = "Lexus RC F common problems and reliability"
+CL_TEXTE = [
+    "In Europe, the 5.0-litre V8 in the Lexus RC F built between 2015 and 2018 often leaks coolant from the water "
+    "pump; many owners report it.",
+    "Owners across Europe say the water pump on the 5.0-litre V8 Lexus RC F made from 2015 to 2018 is a common "
+    "source of leaks.",
+    "Many European owners of the 5.0-litre Lexus RC F (2015–2018) report that the water pump tends to leak.",
+]
+ZI = dict(baujahr=2017, hubraum="5.0", fuel="benzin", powertrains=frozenset({"ICE"}), motor="5.0 V8")
 
 
-def cand(titel, urls=FAM, texte=None, **kw):
-    tr_ = [hit(u, titel, (texte or [CL] * len(urls))[i]) for i, u in enumerate(urls)]
-    return _schwachstelle_candidate_fakten(tr_, marke="Lexus", modell="RC F", generation=None, haupt_fakten=[],
-                                           erlaube_multi_source=True,
-                                           ziel_info=dict(baujahr=2017, hubraum="5.0", fuel="benzin",
-                                                          powertrains=frozenset({"ICE"}), motor="5.0 V8"), **kw)
+def cand(titel=TITEL_OK, urls=FAM, texte=None, haupt=None, **kw):
+    tr_ = [hit(u, titel, (texte or CL_TEXTE)[i]) for i, u in enumerate(urls)]
+    return _schwachstelle_candidate_fakten(tr_, marke="Lexus", modell="RC F", generation="UXC1",
+                                           haupt_fakten=haupt or [], erlaube_multi_source=True,
+                                           ziel_info=dict(ZI), **kw)
 
 
-fk, ab, _esk = cand("Workshop repair service guide: Lexus RC F")
-check("L1 Titelwoerter workshop/repair/service qualifizieren keine englische Quelle", not fk, f"{gruende(ab)}")
-check("L2 Quellen bleiben 'unknown'",
-      all(tr._quellenrolle_en(hit(u, "Workshop repair service Lexus RC F", CL)) == tr.WARTUNG_SOURCE_UNKNOWN
-          for u in FAM))
-_orig_label = tr._qualitaets_label
-tr._qualitaets_label = lambda url, marke=None: "Fachmedien" if "en-" in (url or "") else _orig_label(url, marke)
-try:
-    fk, ab, _esk = cand("Lexus RC F reliability")
-    check("L3 drei fachlich qualifizierte unabhaengige englische Familien: Mehrquellen-Fakt (Domain-Einstufung "
-          "gestubbt, SYNTHETISCH)",
-          len(fk) == 1 and fk[0].beleglage == "mehrfach_unabhaengig" and fk[0].bauteil == "Wasserpumpe",
-          f"{[(x.bauteil, x.beleglage) for x in fk]} {gruende(ab)}")
-    if fk:
-        check("L4 Zitat gekennzeichnet, Marktbezug belegt, nie 'verified'/'hoch'",
-              "englischsprachiges Originalzitat" in fk[0].aussage and "Europa" in fk[0].aussage
-              and fk[0].confidence == "mittel", fk[0].aussage)
-    fk, ab, _esk = cand("Lexus RC F reliability", texte=[CL, CL, "The water pump on the Lexus RC F fails often "
-                                                          "and many owners report leaks."])
-    check("L5 eine Familie ohne Marktbeleg: nur zwei qualifizierte Familien, kein Mehrquellen-Fakt",
-          not fk, f"{[x.bauteil for x in fk]}")
-    fk, ab, _esk = cand("Lexus RC F reliability", texte=[CL, CL, "In the US the water pump on the Lexus RC F fails "
-                                                          "often and many owners report leaks."])
-    check("L6 fremder Markt in einer Familie: zwei Familien, kein Mehrquellen-Fakt", not fk, f"{gruende(ab)}")
-finally:
-    tr._qualitaets_label = _orig_label
-f, ab = fakten([hit(HERSTELLER, "Lexus RC F", "In Europe the water pump on the Lexus RC F is a common failure for "
-                    "many owners.")])
+def rolle(url, titel, claim="The water pump leaks often on the Lexus RC F.", konkret=True):
+    return tr._quellenrolle_en(hit(url, titel, claim), konkret=konkret)
+
+
+print("--- L-a) Quellenqualifikation der tatsaechlichen Funktion ---")
+check("L1 Wikipedia (bestehende Domain-Einstufung) qualifiziert real", rolle(
+    "https://en.wikipedia.org/wiki/Lexus_RC", "Lexus RC - Wikipedia") == tr.WARTUNG_SOURCE_SECONDARY)
+check("L2 englische Quelle mit Seitentyp 'Probleme/Zuverlaessigkeit' + konkreter Aussage qualifiziert real",
+      rolle(FAM[0], TITEL_OK) == tr.WARTUNG_SOURCE_SECONDARY)
+for name, url, titel, konkret in [
+    ("nur workshop/repair/service im Titel", FAM[0], "Workshop repair service guide: Lexus RC F", True),
+    ("Titel passt, aber Forum-Titel", FAM[0], "Lexus RC F problems forum thread", True),
+    ("Titel passt, aber Forum-URL", "https://www.en-eins.example/forum/threads/rcf-water-pump", TITEL_OK, True),
+    ("Titel passt, aber Angebotsseite", FAM[0], "Lexus RC F problems used prices for sale", True),
+    ("Titel passt, aber unkonkrete Aussage", FAM[0], TITEL_OK, False),
+    ("Titel passt, aber Kategorie-/Suchseite", "https://www.en-eins.example/cars/list?make=lexus&model=rcf",
+     TITEL_OK, True),
+    ("Fahrzeugmarktplatz", "https://www.mobile.de/lexus-rc-f", TITEL_OK, True),
+    ("Community-Domain (bestehende Einstufung)", "https://www.reddit.com/r/LexusRC/comments/abc", TITEL_OK, True),
+]:
+    check(f"L3 {name}: nicht 'secondary' (unknown bleibt unknown)",
+          rolle(url, titel, konkret=konkret) != tr.WARTUNG_SOURCE_SECONDARY,
+          rolle(url, titel, konkret=konkret))
+
+print("--- L-b) Mehrquellen-Fakt aus drei real qualifizierten, unabhaengigen englischen Familien ---")
+fk, ab, _esk = cand()
+check("L4 drei qualifizierte, nicht abgeschriebene Familien mit tragender Evidenz: Mehrquellen-Fakt (kein Stub)",
+      len(fk) == 1 and fk[0].beleglage == "mehrfach_unabhaengig" and fk[0].bauteil == "Wasserpumpe",
+      f"{[(x.bauteil, x.beleglage) for x in fk]} {gruende(ab)}")
+if fk:
+    check("L5 Zitat gekennzeichnet, Markt-/Geltungsangaben erhalten, nie 'hoch'",
+          "englischsprachiges Originalzitat" in fk[0].aussage and "Marktbezug laut Quelle" in fk[0].aussage
+          and "Geltung laut Quelle" in fk[0].aussage and fk[0].confidence == "mittel", fk[0].aussage)
+fk, ab, _esk = cand(titel="Workshop repair service guide: Lexus RC F")
+check("L6 nur Titelwoerter workshop/repair/service: kein Fakt", not fk, f"{gruende(ab)}")
+fk, ab, _esk = cand(texte=[CL_TEXTE[0]] * 3)
+check("L7 dieselbe Aussage wortgleich in drei Quellen (abgeschrieben): eine Familie, kein Mehrquellen-Fakt",
+      not fk, f"{[x.bauteil for x in fk]}")
+fk, ab, _esk = cand(texte=[CL_TEXTE[0], CL_TEXTE[1], "In the US the water pump on the Lexus RC F fails often and "
+                                                      "many owners report leaks."])
+check("L8 eine Familie mit fremdem Markt: nur zwei Familien, kein Mehrquellen-Fakt", not fk, f"{gruende(ab)}")
+fk, ab, _esk = cand(urls=FAM[:2], texte=CL_TEXTE[:2])
+check("L9 nur zwei qualifizierte Familien: kein Mehrquellen-Fakt (Schwelle unveraendert)", not fk)
+fk, ab, _esk = cand(urls=[FAM[0], FAM[1], "https://www.en-eins.example/other"], texte=CL_TEXTE)
+check("L10 zwei URLs derselben Quellenfamilie zaehlen einmal", not fk, f"{[x.bauteil for x in fk]}")
+
+print("--- L-c) Haupt- und Candidate-Pfad: dieselben Evidenzgrenzen ---")
+PARITAET = [
+    ("EU + Modell ohne Beziehung", "In Europe the water pump on the Lexus RC F is a common failure for many owners.", False),
+    ("UK-only mit Ausfuehrung + Zeitraum, ohne Uebertragung",
+     f"In the UK, {T2} has a common water pump failure for many owners.", False),
+    ("gleicher Motor allein", "In Europe the 5.0-litre V8 in the Lexus RC F has a common water pump failure for many "
+                              "owners.", False),
+    ("Einzelbericht", f"In Europe my {T2.replace('the ', '')} had a water pump failure.", False),
+    ("Verneinung", f"In Europe {T2} has no known water pump problems according to many owners.", False),
+    ("fremder Markt", f"In the US {T2} has a common water pump failure for many owners.", False),
+    ("Ausfuehrung + Zeitraum", f"In Europe, {T2} has a common water pump failure for many owners.", True),
+    ("UK mit Uebertragungsbeleg", "In the UK the water pump on the Lexus RC F is a common failure for many owners. "
+                                  "It is the same pump that is fitted to European cars.", True),
+]
+from app.models import WebFakt  # noqa: E402
+
+for name, text, erwartet in PARITAET:
+    f_haupt, _ = einzel(text)
+    # Candidate-Pfad: ein bestehender Hauptpfad-Fakt als Anker; die Anreicherung um die Quelle ist nur bei tragender
+    # Evidenz erlaubt (gleiche Gates wie im Hauptpfad).
+    anker_k = WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe", aussage="Anker",
+                      quellen=tr._quellen_aus([hit(HERSTELLER, "Lexus RC F", "x")]))
+    vorher = len(anker_k.quellen)
+    _schwachstelle_candidate_fakten([hit(FAM[0], TITEL_OK, text)], marke="Lexus", modell="RC F", generation="UXC1",
+                                    haupt_fakten=[anker_k], ziel_info=dict(ZI))
+    angereichert = len(anker_k.quellen) > vorher
+    check(f"L11 {name}: Hauptpfad={'Fakt' if erwartet else 'kein Fakt'}, Candidate-Pfad gleich",
+          bool(f_haupt) == erwartet and angereichert == erwartet, f"haupt={bool(f_haupt)} cand={angereichert}")
+
+print("--- L-d) Anker: Candidate reichert nur an ---")
+f, ab = fakten([hit(HERSTELLER, "Lexus RC F", f"In Europe, {T2} has a common water pump failure for many owners.")])
 anker = f
 fk, ab, _esk = _schwachstelle_candidate_fakten(
-    [hit(FAM[0], "Lexus RC F", CL)], marke="Lexus", modell="RC F", generation=None, haupt_fakten=anker,
-    ziel_info=dict(baujahr=2017, hubraum="5.0", fuel="benzin", powertrains=frozenset({"ICE"}), motor="5.0 V8"))
-check("L7 englischer Candidate reichert einen bestehenden Hauptpfad-Fakt nur um die Quelle an (kein neuer Fakt)",
+    [hit(FAM[0], TITEL_OK, CL_TEXTE[0])], marke="Lexus", modell="RC F", generation="UXC1", haupt_fakten=anker,
+    ziel_info=dict(ZI))
+check("L12 englischer Candidate reichert einen bestehenden Hauptpfad-Fakt nur um die Quelle an (kein neuer Fakt)",
       not fk and len(anker[0].quellen) == 2, f"{len(anker[0].quellen) if anker else None}")
+fk, ab, _esk = _schwachstelle_candidate_fakten(
+    [hit(FAM[0], TITEL_OK, "In Europe the water pump on the Lexus RC F is a common failure for many owners.")],
+    marke="Lexus", modell="RC F", generation="UXC1", haupt_fakten=anker, ziel_info=dict(ZI))
+check("L13 Candidate ohne tragende Evidenz reichert den Anker NICHT an", len(anker[0].quellen) == 2)
 
 print("=== M) Haupt-/Candidate-Pfad bis Bericht, Verkaeuferfragen, Dokumente (SYNTHETISCH) ===")
 import asyncio  # noqa: E402
@@ -416,8 +550,14 @@ def sw(r):
     return [i for i in r.insights if i.kategorie in ("web_schwachstelle", "schwachstelle")]
 
 
-POS_E2E = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
-                   "In Europe the water pump on the Lexus RC F is a common failure and many owners report leaks.")
+POS_E2E = treffer_(HOCH, "Lexus RC F Gebrauchtwagen", POS)
+NEG_E2E_EU = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                      "In Europe the water pump on the Lexus RC F is a common failure and many owners report leaks.")
+NEG_E2E_UK = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                      f"In the UK, {T2} has a common water pump failure, and many owners report coolant leaks.")
+NEG_E2E_MOTOR = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                         "In Europe the 5.0-litre V8 in the Lexus RC F has a common water pump failure for many "
+                         "owners.")
 NEG_E2E_US = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
                       "In the US the water pump on the Lexus RC F is a common failure and many owners report leaks.")
 NEG_E2E_EINZEL = treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
@@ -433,7 +573,8 @@ async def e2e():
         i = insight[0]
         check("M2 Insight traegt gekennzeichnetes englisches Originalzitat und Marktbezug",
               "englischsprachiges Originalzitat" in i.beschreibung and "water pump" in i.beschreibung
-              and "Europa" in i.beschreibung, i.beschreibung)
+              and "Europa" in i.beschreibung and "Geltung laut Quelle" in i.beschreibung
+              and "Zeitraum 2015–2018" in i.beschreibung, i.beschreibung)
         check("M3 bestaetigter Fakt: kein 'Geltung nicht belegt'-Pfad",
               "nicht belegt" not in i.titel and i.geltung_fuer_fahrzeug in (None, "covered"),
               f"{i.titel} {i.geltung_fuer_fahrzeug}")
@@ -441,7 +582,10 @@ async def e2e():
     check("M4 Bauteil in Verkaeuferfragen/Pruefpunkten (deutsches Label)", "Wasserpumpe" in vis, vis[:300])
     check("M5 keine zusaetzliche Suchanfrage durch die Englischverarbeitung",
           len([c for c in calls1 if "bekannte Probleme Schwachstellen" in c]) == 1, str(calls1))
-    for name, treffer in (("US-Markt", NEG_E2E_US), ("Einzelbericht", NEG_E2E_EINZEL)):
+    for name, treffer in (("US-Markt", NEG_E2E_US), ("Einzelbericht", NEG_E2E_EINZEL),
+                          ("EU-Marker + Zielmodell ohne tragende Beziehung", NEG_E2E_EU),
+                          ("UK-only ohne Uebertragungsbeleg", NEG_E2E_UK),
+                          ("gleicher Motor allein", NEG_E2E_MOTOR)):
         r, _ = await lauf([treffer])
         check(f"M6 {name}: unbestaetigt -> nichts in Insights, Bericht, Fragen, Dokumenten",
               not [i for i in sw(r) if "Wasserpumpe" in i.titel] and "Wasserpumpe" not in sichtbar(r),

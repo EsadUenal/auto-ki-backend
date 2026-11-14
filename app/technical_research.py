@@ -79,7 +79,7 @@ from app.web_search import (
     _domain_von, _marke_eigene_domain, _markenlabel, _pressedomain_gehoert_marke, _psl_teile,
     _qualitaets_label,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
-    ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
+    ist_abruf_gesperrt, ist_kategorieseite, registrable_domain, score_domain, tavily_search,
     bereinige_steuerzeichen, bereinige_treffer,
 )
 
@@ -4190,12 +4190,25 @@ def _fremd_pruefer(satz_liste: list[str], marke: str | None, modell: str | None)
 def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str], koepfe: frozenset[str],
                         marke: str | None, modell: str | None, ziel_info: dict | None,
                         abgelehnt: list[dict], url: str) -> dict | None:
-    """Alle Gates fuer EINE eindeutig englische Aussage. `None`: unbestaetigter Kandidat (Grund steht in
-    `abgelehnt`). Sonst {"label", "schluessel", "markt", "z", "passt"}."""
-    ziel_info = ziel_info or {}
+    """Alle Gates fuer EINE eindeutig englische Aussage. `None`: unbestaetigter Kandidat (Grund und gesammelte
+    Evidenz stehen in `abgelehnt`). Sonst {"label", "schluessel", "markt", "beleg", "z", "passt"}.
 
-    def ab(grund: str):
-        abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": grund, "satz": claim[:120]})
+    Getrennt geprueft: Sprache (Vorstufe), Reichweite der Aussage (Population), Bauteil, Marktreichweite der
+    QUELLE, technische Ausfuehrung, Zeitraum und die BEZIEHUNG zum Zielfahrzeug. Eine Marktangabe
+    (Europa/EU/UK/Deutschland/weltweit) ist nur eine Reichweitenangabe der Quelle; ein UK-Bezug ist kein Beleg
+    fuer den deutschen Markt. Bestaetigt wird erst, wenn die Evidenz die Beziehung zwischen Bauteil, technischer
+    Ausfuehrung, Zeitraum und Zielfahrzeug TRAEGT: entweder (T1) die Aussage belegt ausdruecklich dasselbe
+    Teil/Design bei anderen Maerkten/Varianten, oder (T2) sie nennt eine zum Ziel passende technische Ausfuehrung
+    UND einen zum Ziel passenden Zeitraum bzw. eine belegte Generation. Zielmodellnennung, gleicher Motor oder
+    gleiche Generation allein und fehlender Widerspruch genuegen nicht; keine Kennung ist universell Pflicht."""
+    ziel_info = ziel_info or {}
+    evidenz: dict = {}
+
+    def ab(grund: str, **extra):
+        eintrag = {"url": url, "kategorie": "schwachstelle", "grund": grund, "satz": claim[:120],
+                   "evidenz": dict(evidenz)}
+        eintrag.update(extra)
+        abgelehnt.append(eintrag)
         return None
 
     if _en.ist_rueckverweis(claim):
@@ -4223,7 +4236,9 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
     bt = _en.bauteil(claim)
     if not bt:
         return ab("no_component")
+    evidenz["bauteil"] = bt[0]
     markt_status, markt_name = _en.markt(claim, rahmen)
+    evidenz["markt"] = markt_name or markt_status
     if markt_status != "ok":
         return ab("en_markt_" + markt_status)
     kontext_text = " ".join([claim, *rahmen])
@@ -4231,31 +4246,77 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
     # selbst in Satz oder Rahmen nennen (ein geerbter Seitentitel genuegt dafuer nicht).
     if _en.hat_technikbezug(kontext_text) and not any(_satz_nennt_modell(t, modell) for t in [claim, *rahmen]):
         return ab("en_uebertragbarkeit_unbelegt")
-    var_status, var_grund = _en.variante(kontext_text, ziel_info)
+    var_status, var_grund, var_passend = _en.variante_detail(kontext_text, ziel_info)
+    evidenz["ausfuehrung"] = var_passend
     if var_status != "ok":
-        abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": f"en_variante_{var_status}",
-                          "satz": claim[:120], "detail": var_grund})
-        return None
+        return ab(f"en_variante_{var_status}", detail=var_grund)
     baujahr = ziel_info.get("baujahr")
     z = _zeitraum_aussage(claim) or _en.zeitraum(claim)
     passt = _im_zeitraum(baujahr, z)
+    evidenz["zeitraum"] = (f"{z[0] or ''}–{z[1] or 'heute'}" if z else None)
     if passt is False:
         return ab("baujahr_ausserhalb")
     if (_RE_VAGE.search(claim) or z is not None) and passt is not True:
         return ab("en_geltung_unbelegt")
-    return {"label": bt[0], "schluessel": bt[1], "markt": markt_name, "z": z, "passt": passt}
+    # Beziehung zum Zielfahrzeug: T1 (ausdruecklich dasselbe Teil/Design anderswo) im Satz, im Rahmen oder im
+    # unmittelbar rueckverweisenden Folgesatz; T2 (passende Ausfuehrung UND Zeitraum/Generation).
+    folge = ""
+    try:
+        i = satz_liste.index(satz)
+        if i + 1 < len(satz_liste) and _en.ist_rueckverweis(satz_liste[i + 1]):
+            folge = satz_liste[i + 1]
+    except ValueError:
+        pass
+    t1 = _en.hat_uebertragungsbeleg(" ".join([satz, *rahmen, folge]))
+    gen_ok = _en.generation_passt(kontext_text, ziel_info.get("generation_codes"))
+    achse_ausf, achse_zeit = bool(var_passend), passt is True
+    t2 = achse_ausf and (achse_zeit or gen_ok)
+    evidenz.update({"generation": gen_ok, "uebertragung_dasselbe_teil": t1, "ausfuehrung_und_zeit_oder_generation": t2})
+    if markt_name == "UK" and not t1:
+        return ab("en_uk_ohne_uebertragung")
+    if not (t1 or t2):
+        return ab("en_relation_unbelegt")
+    teile = [f"Marktbezug laut Quelle: {markt_name}"]
+    geltung = []
+    if achse_ausf:
+        geltung.append("Ausführung " + "/".join(var_passend))
+    if achse_zeit:
+        geltung.append(f"Zeitraum {z[0] or ''}–{z[1] or 'heute'} schließt das Baujahr ein")
+    if gen_ok:
+        geltung.append("Generation laut Quelle genannt")
+    if geltung:
+        teile.append("Geltung laut Quelle: " + ", ".join(geltung))
+    if t1:
+        teile.append("Übertragung: Quelle belegt dasselbe Teil bei anderen Märkten/Varianten")
+    return {"label": bt[0], "schluessel": bt[1], "markt": markt_name, "beleg": "; ".join(teile),
+            "z": z, "passt": passt}
 
 
-def _en_zitat(claim: str, markt_name: str | None) -> str:
-    """Gekennzeichnetes englisches Originalzitat mit dem tatsaechlich belegten Marktbezug."""
-    return f"„{claim}“ (englischsprachiges Originalzitat; Marktbezug laut Quelle: {markt_name or 'nicht belegt'})"
+def _en_zitat(claim: str, beleg: str | None) -> str:
+    """Gekennzeichnetes englisches Originalzitat mit den tatsaechlich belegten Markt-/Geltungsangaben."""
+    return f"„{claim}“ (englischsprachiges Originalzitat; {beleg or 'Marktbezug nicht belegt'})"
 
 
-def _quellenrolle_en(r: dict) -> str:
-    """Quellenrolle fuer ENGLISCHE Schwachstellenaussagen: nur die bestehende Domain-Einstufung
-    (`_qualitaets_label`). KEIN Titelwort ("workshop", "repair", "service") qualifiziert oder belegt
-    Unabhaengigkeit; unbekannt bleibt unbekannt. `_wartung_source_type` (Wartung/Deutsch) bleibt unveraendert."""
-    return _WARTUNG_SOURCE_TYPE_MAP.get(_qualitaets_label(r.get("url") or "")) or WARTUNG_SOURCE_UNKNOWN
+def _quellenrolle_en(r: dict, *, konkret: bool = False) -> str:
+    """Quellenrolle fuer ENGLISCHE Schwachstellenaussagen. Sprachneutrale Kriterien:
+      1. bestehende Domain-Einstufung (`_qualitaets_label`: Amtlich/Hersteller/Fachmedien/Technik/Nachschlagewerk/
+         Community) wie bisher;
+      2. sonst nur, wenn ALLE Strukturkriterien zugleich erfuellt sind: Seite beschreibt sich als Beitrag ueber
+         Probleme/Zuverlaessigkeit UND ist kein Forum/Nutzerbeitrag/Angebot (Titel, URL), keine Kategorie-/
+         Such-/Marktplatzseite (`ist_kategorieseite`, Domain-Einstufung) UND die Aussage ist konkret
+         (bestimmbarer Fehlertyp, spezifisches Bauteil).
+    Ein Titelwort allein qualifiziert nie; alles andere bleibt "unknown". Unabhaengigkeit prueft der Aufrufer
+    (Quellenfamilie, Kopie-Erkennung, >= 3 Familien). `_wartung_source_type` bleibt unveraendert."""
+    url = r.get("url") or ""
+    label = _qualitaets_label(url)
+    mapped = _WARTUNG_SOURCE_TYPE_MAP.get(label)
+    if mapped:
+        return mapped
+    if label == "Marktplatz" or not konkret or ist_kategorieseite(url, r.get("title")):
+        return WARTUNG_SOURCE_UNKNOWN
+    if _en.seitentyp_artikel(url, r.get("title")):
+        return WARTUNG_SOURCE_SECONDARY
+    return WARTUNG_SOURCE_UNKNOWN
 
 
 def _ist_einzelbericht(claim: str, kontext_einzelfahrzeug: bool = False) -> bool:
@@ -6694,7 +6755,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                             claim, r=r, satz=satz, satz_liste=satz_liste, koepfe=koepfe, marke=marke,
                             modell=modell, abgelehnt=abgelehnt, url=url,
                             ziel_info={"baujahr": baujahr, "hubraum": hubraum, "fuel": fuel_ziel,
-                                       "powertrains": powertrains_ziel, "motor": motor})
+                                       "powertrains": powertrains_ziel, "motor": motor,
+                                       "generation_codes": [c for c in [generation, *(generation_cluster or [])]
+                                                            if c]})
                         if en_info is None:
                             continue
                     elif _en.ist_benign(claim) or (_spr != "de" and (_en.ist_frage(claim)
@@ -6874,7 +6937,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     if claim in abschnitt_von_claim:
                         eintrag["abschnitt_taetigkeit"][claim] = abschnitt_von_claim[claim]
                     if en_info is not None:
-                        eintrag.setdefault("en", {})[claim] = en_info["markt"]
+                        eintrag.setdefault("en", {})[claim] = en_info["beleg"]
                     if muster:
                         eintrag.setdefault("muster", set()).add(muster)
                     if kategorie == "rueckruf":
@@ -7943,13 +8006,18 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                     # Englisch: dieselbe vollstaendige Pruefkette wie im Hauptpfad.
                     en_info = _en_aussage_pruefen(
                         claim, r=r, satz=satz, satz_liste=satz_liste, koepfe=koepfe, marke=marke,
-                        modell=modell, ziel_info=ziel_info, abgelehnt=abgelehnt, url=url)
+                        modell=modell, abgelehnt=abgelehnt, url=url,
+                        ziel_info={**(ziel_info or {}),
+                                   "generation_codes": [c for c in [generation, *(generation_cluster or [])]
+                                                        if c]})
                     if en_info is None:
                         continue
+                    fm = _en.failure_mode(claim)
                     kandidaten.append({"bauteil_key": en_info["schluessel"], "bauteil": en_info["label"],
-                                       "failure_mode": _en.failure_mode(claim), "family": family,
-                                       "source_type": _quellenrolle_en(r), "url": url, "claim": claim,
-                                       "treffer": r, "en": en_info["markt"]})
+                                       "failure_mode": fm, "family": family,
+                                       "source_type": _quellenrolle_en(
+                                           r, konkret=bool(fm) and en_info["schluessel"] != "motor"),
+                                       "url": url, "claim": claim, "treffer": r, "en": en_info["beleg"]})
                     continue
                 if _en.ist_benign(claim) or (_spr != "de" and (_en.ist_frage(claim) or _en.ist_bedingt(claim))):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
@@ -8041,6 +8109,16 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
         # bereits etablierte Kategorie-Mindestqualität (§6 Auftrag "Kategorie-
         # spezifische Mindestqualität"): UNKNOWN (nicht klassifizierbare
         # Quelle) zählt ebenfalls nicht als eigenständige Family.
+        # Unabhaengigkeit: eine nahezu wortgleiche englische Aussage in einer weiteren Quelle (abgeschrieben/
+        # syndiziert) zaehlt zur Familie der ersten, nicht als eigener Beleg.
+        for idx_k, k in enumerate(gruppe):
+            if "en" not in k:
+                continue
+            for k_frueher in gruppe[:idx_k]:
+                if ("en" in k_frueher and k_frueher["family"] != k["family"]
+                        and _en.fast_gleich(k["claim"], k_frueher["claim"])):
+                    k["family"] = k_frueher["family"]
+                    break
         nicht_community = [k for k in gruppe
                           if k["source_type"] not in (WARTUNG_SOURCE_COMMUNITY, WARTUNG_SOURCE_UNKNOWN)]
         families = {k["family"] for k in nicht_community}
