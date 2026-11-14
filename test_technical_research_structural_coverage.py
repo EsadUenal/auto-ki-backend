@@ -58,7 +58,9 @@ _ACCEPT = [
     ("D Spiel mit Erwerbs-Verb",
      "Die Querlenkerbuchsen bekommen frueh Spiel."),
     ("E Verschleiss-Veraenderung (porös/undicht)",
-     "Die Dichtung wird mit der Zeit poroes und kann undicht werden."),
+     # N19-Abnahme: echtes Vokabular-Bauteil statt 'Dichtung' -- vorher wurde diese Zeile nur ueber
+     # den Alteintrag `undicht -> dach_fenster` (Defektwort als Bauteil) akzeptiert.
+     "Die Wasserpumpe wird mit der Zeit poroes und kann undicht werden."),
     ("F Funktionsverlust/Ursache-Folge (klassisches Problemwort 'Ausfall')",
      "Ein Ausfall der Kraftstoffpumpe kann zum Motorstillstand fuehren."),
 ]

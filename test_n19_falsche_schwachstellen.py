@@ -156,10 +156,25 @@ check("C2 … und der Grund ist als 'einzelbericht' sichtbar protokolliert",
 check("C3 SYNTHETISCH: ausdrücklich wiederkehrende Aussage -> Fakt",
       bauteile("Beim Lexus RC F ist die Wasserpumpe häufig undicht.") == ["Wasserpumpe"]
       and bauteile("Beim Lexus RC F ist die undichte Wasserpumpe ein bekanntes Problem.") == ["Wasserpumpe"])
-check("C4 SYNTHETISCH: Einzelbericht MIT ausdrücklicher Wiederholungsaussage -> Fakt",
-      bauteile("Bei meinem Lexus RC F war die Wasserpumpe undicht, ein bekanntes Problem.") == ["Wasserpumpe"])
+# Korrigiert (Abnahme): ein Sprecher-/Einzelfahrzeug-Bezug plus Wiederholungs- oder Bekanntheitswort
+# ("bekanntes Problem", "häufig", "dreimal") belegt KEINE Eigenschaft der Modellpopulation. Erst eine
+# ausdrückliche Reichweite ("bei vielen", "bei diesem Modell") hebt den Einzelfahrzeug-Bezug auf.
+check("C4 SYNTHETISCH: Ich-Bericht + 'bekanntes Problem' / 'häufig' / 'dreimal' -> KEIN Fakt (Wiederholung "
+      "am eigenen Auto != Modellproblem)",
+      all(bauteile(t) == [] for t in (
+          "Bei meinem Lexus RC F war die Wasserpumpe undicht, ein bekanntes Problem.",
+          "Bei meinem Auto war die Wasserpumpe undicht, ein bekanntes Problem.",
+          "Bei meinem Fahrzeug war die Wasserpumpe dreimal undicht.",
+          "Bei meinem Lexus RC F war die Wasserpumpe schon wieder häufig undicht.",
+          "Der Testwagen Lexus RC F hatte dreimal eine undichte Wasserpumpe.")))
+check("C4b SYNTHETISCH: Ich-Bericht MIT ausdrücklicher Reichweite über die Modellpopulation -> Fakt",
+      bauteile("Bei meinem Lexus RC F war die Wasserpumpe undicht; bei vielen RC F ist das ein bekanntes "
+               "Problem.") == ["Wasserpumpe"]
+      and bauteile("Beim Lexus RC F ist die Wasserpumpe bei diesem Modell häufig undicht.") == ["Wasserpumpe"])
 check("C5 SYNTHETISCH: Erkennung",
       _ist_einzelbericht("Bei mir war die Pumpe defekt.") and _ist_einzelbericht("Ein Leser berichtet von einem Defekt.")
+      and _ist_einzelbericht("Bei meinem Auto ist das ein bekanntes Problem.")
+      and not _ist_einzelbericht("Bei meinem Auto war sie defekt, bei vielen Modellen ist das bekannt.")
       and not _ist_einzelbericht("Die Pumpe ist häufig defekt.")
       and not _ist_einzelbericht("Die Wasserpumpe des RC F ist undicht."))
 check("C6 SYNTHETISCH: Negation -> kein Fakt",
@@ -167,6 +182,54 @@ check("C6 SYNTHETISCH: Negation -> kein Fakt",
 check("C7 SYNTHETISCH: fremdes Modell (GS F) -> kein Fakt",
       bauteile("Beim Lexus GS F ist die Wasserpumpe häufig undicht.", url=HOCH.replace("rc-f", "gs-f"),
                titel="Lexus GS F Gebrauchtwagen") == [])
+
+# ── D) Abnahme-Gegenproben ──────────────────────────────────────────────────────────────────────
+print("\n=== D) Abnahme: Dauerangaben, Bauteilbindung, Umbruch, reale Textproben ===")
+check("D1 SYNTHETISCH: Schaden mit Zeit-/Dauerangabe wird NICHT wegen der Dauer verworfen",
+      all(_hat_materialschaden(t) for t in (
+          "Durchrostung nach zwölf Jahren festgestellt.", "Rost seit zwei Jahren an der Karosserie.",
+          "Durchrostung nach 12 Jahren.", "Seit zwei Jahren zeigt sich Rost.")))
+check("D2 SYNTHETISCH: Garantiedauer ohne Schaden (auch als Wort/Markdown-Tabelle) bleibt kein Fakt",
+      not any(_hat_materialschaden(t) for t in (
+          "Durchrostung zwölf Jahre", "| Durchrostung | 12 Jahre |", "Lackgarantie 3 Jahre Durchrostung 12 Jahre"))
+      and bauteile("Der Lexus RC F hat zwölf Jahre Garantie gegen Durchrostung der Karosserie.") == [])
+check("D3 SYNTHETISCH: Defektzeile nur 'undicht' neben fremder Ausstattung erfindet kein Bauteil "
+      "(vorher: 'Undicht' bzw. Dach/Fenster)",
+      bauteile("Spurhalteassistent\nSerie\nSpurwechselassistent\nSerie\nVerkehrsschild-Erkennung\nSerie\n"
+               "undicht\nFernlichtassistent\nSerie") == []
+      and bauteile("Der Lexus RC F ist häufig undicht.") == [])
+check("D4 SYNTHETISCH: ein echtes Bauteil neben 'undicht' bleibt Bauteil (auch Schiebedach)",
+      bauteile("Beim Lexus RC F ist das Schiebedach häufig undicht.") == ["Schiebedach"])
+FLIESS = "Beim Lexus RC F ist die Wasserpumpe bei hoher Laufleistung häufig undicht und defekt."
+UMBRUCH = "Beim Lexus RC F\nist die Wasserpumpe\nbei hoher\nLaufleistung\nhäufig\nundicht\nund defekt."
+check("D5 SYNTHETISCH: derselbe Defekttext als Fließtext und mit kurzen Zeilenumbrüchen -> gleiches Bauteil",
+      bauteile(FLIESS) == bauteile(UMBRUCH) == ["Wasserpumpe"], f"{bauteile(FLIESS)} vs {bauteile(UMBRUCH)}")
+check("D6 Tabellenblock-Erkennung: umbrochener Fließtext mit Prädikat ist keine Tabelle",
+      not _ist_tabellenblock(UMBRUCH) and _ist_tabellenblock(TABELLE))
+
+# REAL: weitere vorhandene Texte (Fixtures vom 08.11.2026), jeweils Volltext UND Snippet-Ausschnitt
+_rb = __import__("json").loads((Path(__file__).parent / "tests" / "fixtures"
+                                / "live_rollenbeleg_treffer_2026-11-08.json").read_text(encoding="utf-8"))
+_wj = __import__("json").loads((Path(__file__).parent / "tests" / "fixtures"
+                                / "live_wartung_treffer_2026-11-08.json").read_text(encoding="utf-8"))
+_rd = (Path(__file__).parent / "tests" / "fixtures"
+       / "lexus_rettungsdatenblaetter_extract_2026-11-08.txt").read_text(encoding="utf-8")
+check("D7 ECHT: ADAC-Seite im Markdown-Tabellenformat (Rollenbeleg-Extrakt) -> keine Schwachstelle "
+      "(vorher: 'Durchrostung' aus '| Durchrostung | 12 Jahre |')",
+      fakten(_rb["extrakt"], url=_rb["kandidat"], titel=ADAC_TITEL)[0] == [])
+check("D8 ECHT: Rettungsdatenblatt-Extrakt -> keine Schwachstelle",
+      fakten(_rd, url="https://www.lexus.de/rettungskarte.pdf", titel="Lexus RC F Rettungskarte")[0] == [])
+check("D9 ECHT: alle 16 echten Tavily-Snippets der Wartungsanfragen -> keine Schwachstelle",
+      all(fakten(h["content"], url=h["url"], titel=h.get("title") or "")[0] == []
+          for h in _wj["ohne UXC1"] + _wj["mit UXC1"]))
+_zeile = ADAC_TEXT.replace("Spurhalteassistent\nSerie\n", "Spurhalteassistent\nSerie\nWasserpumpe\nundicht\n", 1)
+check("D10 ECHT+SYNTHETISCH: echte ADAC-Seite mit EINGEFÜGTER Defektzeile -> genau das eingefügte Bauteil, "
+      "nicht 'Spurhalteassistent'/'Durchrostung'",
+      bauteile(_zeile, url=ADAC_URL, titel=ADAC_TITEL) == ["Wasserpumpe"],
+      str(bauteile(_zeile, url=ADAC_URL, titel=ADAC_TITEL)))
+check("D11 ECHT+SYNTHETISCH: dieselbe Seite mit nur 'undicht' -> kein erfundenes Bauteil",
+      bauteile(ADAC_TEXT.replace("Spurhalteassistent\nSerie\n", "Spurhalteassistent\nSerie\nundicht\n", 1),
+               url=ADAC_URL, titel=ADAC_TITEL) == [])
 
 # ── Bis zum Bericht (echter run_kaufcheck-Pfad, gestubbte Suche/LLM) ────────────────────────────
 print("\n=== Bericht, Verkäuferfragen und Dokumente (gestubbter run_kaufcheck) ===")

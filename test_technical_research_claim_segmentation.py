@@ -43,21 +43,25 @@ def _pruefe(satz: str) -> tuple[list[str], list[tuple]]:
 
 
 print("\n=== Multi-Claim Matrix A-H ===")
+# N19-Abnahme: der Defektclaim nennt jetzt ein echtes Vokabular-Bauteil (Wasserpumpe). Vorher hiess
+# der Claim "die Dichtung ist undicht" und erwartet war das "Bauteil" ['Undicht'] -- das war der
+# Alt-Vokabulareintrag `undicht -> dach_fenster`, ein Defektwort als Bauteil (Dach/Fenster-Fakt ohne
+# Bauteilbeleg). Segmentierung und Signalpruefung bleiben identisch geprueft.
 _MULTI_CLAIM = [
     ("A benign -> defect",
-     "Korrosion ist nicht feststellbar, aber die Dichtung ist undicht.",
-     ["Undicht"]),
+     "Korrosion ist nicht feststellbar, aber die Wasserpumpe ist undicht.",
+     ["Wasserpumpe"]),
     ("B defect -> benign",
-     "Die Dichtung ist undicht, aber Korrosion ist nicht feststellbar.",
-     ["Undicht"]),
+     "Die Wasserpumpe ist undicht, aber Korrosion ist nicht feststellbar.",
+     ["Wasserpumpe"]),
     ("C benign -> defect -> benign",
-     "Kein Rost ist vorhanden, aber die Dichtung ist undicht, jedoch ist das "
+     "Kein Rost ist vorhanden, aber die Wasserpumpe ist undicht, jedoch ist das "
      "leichte Geraeusch konstruktionsbedingt normal.",
-     ["Undicht"]),
+     ["Wasserpumpe"]),
     ("E benign -> defect -> defect",
      "Korrosion ist nicht feststellbar, aber die Querlenkerbuchsen haben Spiel "
-     "und die Dichtung ist undicht.",
-     ["Querlenkerbuchsen", "Undicht"]),
+     "und die Wasserpumpe ist undicht.",
+     ["Querlenkerbuchsen", "Wasserpumpe"]),
 ]
 for name, satz, erwartet in _MULTI_CLAIM:
     bauteile, gruende = _pruefe(satz)
@@ -97,7 +101,7 @@ for name, satz, erwartete_segmentzahl, erwartete_bauteile in _PARTIAL:
 print("\n=== No-False-Split Matrix I-M ===")
 _NO_SPLIT = [
     ("I Adjektiv-Konjunktion bleibt EIN Claim",
-     "Die Dichtung wird poroes und undicht.", 1, ["Undicht"]),
+     "Die Wasserpumpe wird poroes und undicht.", 1, ["Wasserpumpe"]),
     ("J gekoppelte benigne Claims, kein Defekt",
      "Rost und Korrosion sind nicht feststellbar.", 1, []),
     ("K zusammengesetztes Subjekt vor gemeinsamem Praedikat bleibt EIN Claim",
@@ -229,10 +233,13 @@ fakten_d = _extrahiere_fakten(t_d, "schwachstelle", baujahr=2019, abgelehnt=abge
 check(f"D identische Aussage zweimal -> weiterhin 1 Fakt: {len(fakten_d)} Fakten",
       len(fakten_d) == 1)
 
-bauteile, _ = _pruefe("Kein Rost ist sichtbar, aber die Dichtung ist undicht.")
+bauteile, _ = _pruefe("Kein Rost ist sichtbar, aber die Wasserpumpe ist undicht.")
 check(f"E gleiche-Satz-Ebene benign+defect getrennter Komponenten: "
       f"bauteile={bauteile} (benign verworfen, Defekt akzeptiert)",
-      bauteile == ["Undicht"])
+      bauteile == ["Wasserpumpe"])
+bauteile, _ = _pruefe("Kein Rost ist sichtbar, aber die Dichtung ist undicht.")
+check(f"E2 N19: 'Dichtung' ist kein Vokabular-Bauteil und 'undicht' allein kein Bauteil -> kein Fakt "
+      f"(vorher: erfundenes Bauteil 'Undicht'): bauteile={bauteile}", bauteile == [])
 
 print("\n=== Recall-Scope-Isolation (Package A bleibt unveraendert) ===")
 rueckruf_satz = ("Fuer das Modell besteht ein Rueckruf wegen der Kraftstoffleitung, "
@@ -378,10 +385,10 @@ check(f"E VERSCHLEISS VS AUSFALL: Segmentierung isoliert beide Claims korrekt "
       f"NICHT an Dedupe: {[a.get('grund') for a in abgelehnt]}",
       all(g == "no_problem_signal" for g, in [(a.get("grund"),) for a in abgelehnt]))
 
-fakten, _ = _zwei_claims_eine_quelle("Die Dichtung wird mit der Zeit poroes",
-                                    "ist die Dichtung bereits undicht")
-check(f"F MATERIAL VS FUNKTION: 'porös' (no_component, bare Dichtung-Luecke) "
-      f"und 'undicht' bleiben getrennt, kein Dedupe-Zusammenfall erzwungen: "
+fakten, _ = _zwei_claims_eine_quelle("Die Wasserpumpe wird mit der Zeit poroes",
+                                    "ist die Wasserpumpe bereits undicht")
+check(f"F MATERIAL VS FUNKTION: 'porös' und 'undicht' (echtes Bauteil Wasserpumpe) "
+      f"bleiben getrennt, kein Dedupe-Zusammenfall erzwungen: "
       f"{len(fakten)} Fakt(en)", len(fakten) >= 1)
 
 fakten, _ = _zwei_quellen("Die Wasserpumpe am Fahrzeug ist undicht.",
