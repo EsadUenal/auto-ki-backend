@@ -40,7 +40,14 @@ ZIEL = dict(marke="Testmarke", modell="Modellz", generation=None)
 
 print("=== 1) Low-Trust-Candidate OHNE Hauptpfad-Anker -> bleibt Observability, "
       "wird NIE eigenstaendiger Fakt ===")
+# N19 (Reichweite): die Ablehnungs-/Anreicherungsregeln dieses Tests gelten fuer eine allgemeine
+# Aussage einer schwachen Quelle. Ein Ich-/Einzelereignis-Bericht darf sie NICHT umgehen -- er wird
+# weder angereichert noch als Quelle gezaehlt (siehe `einzel_quelle` und Abschnitt 5 unten).
 niedrige_quelle = [
+    treffer("https://forum.beispiel-autos.de/thread/123", "Testmarke Modellz Erfahrungen",
+            "Bei der Testmarke Modellz wird die Wasserpumpe häufig undicht."),
+]
+einzel_quelle = [
     treffer("https://forum.beispiel-autos.de/thread/123", "Testmarke Modellz Erfahrungen",
             "Bei meiner Testmarke Modellz hatte ich Probleme mit der Wasserpumpe, die "
             "undicht wurde."),
@@ -94,6 +101,31 @@ fakten4, abgelehnt4, _esk4 = _schwachstelle_candidate_fakten(
     haupt_fakten=[])
 check("4a High-Trust-Treffer wird von dieser Schicht komplett ignoriert "
       "(weder Fakt noch Reject von hier)", fakten4 == [] and abgelehnt4 == [])
+
+print("\n=== 5) N19: ein Einzelereignis-Candidate umgeht die Reichweitenregel NICHT (kein Anreichern, "
+      "keine Mehrquellen-Zaehlung) ===")
+anker5 = WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe",
+                 aussage="Die Wasserpumpe der Testmarke Modellz gilt als Schwachstelle.",
+                 confidence="mittel",
+                 quellen=[EvidenceQuelle(typ="web_technik", url="https://www.fachmedium.de/a",
+                                         titel="Fachmedium", qualitaet="Fachmedien")])
+fakten5, abgelehnt5, _e5 = _schwachstelle_candidate_fakten(
+    einzel_quelle, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
+    haupt_fakten=[anker5])
+check("5a Ich-Bericht einer schwachen Quelle reichert den Hauptpfad-Anker NICHT an",
+      not any("forum.beispiel-autos.de" in q.url for q in anker5.quellen) and fakten5 == [])
+check("5b … und ist mit eigenem Grund 'einzelbericht' protokolliert",
+      any(a.get("grund") == "einzelbericht" for a in abgelehnt5))
+drei_einzel = [
+    treffer(f"https://forum{i}.beispiel.de/t{i}", "Testmarke Modellz",
+            f"Die Wasserpumpe der Testmarke Modellz war nach {80 + i}.000 km undicht.")
+    for i in (1, 2, 3)
+]
+fakten5c, abgelehnt5c, _e5c = _schwachstelle_candidate_fakten(
+    drei_einzel, marke=ZIEL["marke"], modell=ZIEL["modell"], generation=ZIEL["generation"],
+    haupt_fakten=[], erlaube_multi_source=True)
+check("5c drei schwache Einzelereignis-Berichte werden auch mit erlaubter Mehrquellen-Stufe kein Fakt "
+      "(jeder einzeln verworfen, nichts gezaehlt)", fakten5c == [])
 
 print()
 if _FEHLER:

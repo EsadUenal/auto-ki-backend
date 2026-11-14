@@ -3830,6 +3830,8 @@ _RE_MODELLPOPULATION = re.compile(
     r"exemplare|fahrzeuge|autos|modelle|nutzer)\b"
     r"|\b(?:bei|an|beim)\s+(?:diesem|dieser|diesen|dem|der|den)\s+(?:modell|modellreihe|baureihe|"
     r"fahrzeugtyp|motor|generation|serie|variante)\w*"
+    r"|\bbei\s+(?:fr(?:ü|ue)hen|fr(?:ü|ue)heren|(?:ä|ae)lteren|einigen|manchen|bestimmten)\s+(?:\w+\s+){0,1}"
+    r"(?:modellen|exemplaren|fahrzeugen|baujahren|versionen|varianten)\b"
     r"|\bmodelltypisch\w*|\bserientypisch\w*"
     r"|\btypisch\s+f(?:ü|ue)r\s+(?:das|dieses|diesen?|die|diese)\s+(?:modell|modellreihe|baureihe|fahrzeug|"
     r"motor|auto)\w*"
@@ -3837,11 +3839,58 @@ _RE_MODELLPOPULATION = re.compile(
     re.IGNORECASE)
 
 
-def _ist_einzelbericht(claim: str) -> bool:
-    """True, wenn das Segment sich auf ein einzelnes Fahrzeug/einen Sprecher bezieht und KEINE
-    ausdrückliche Reichweite über die Modellpopulation nennt."""
+# Reichweiten-Nachtrag: auch OHNE Ich-/Mein-Marker kann eine Aussage ein einzelnes Schadensereignis
+# sein ("Die Pumpe war dreimal undicht", "... nach 90.000 km undicht"). Ein Ereignis ist EPISODISCH:
+# Zählung ("dreimal"), konkreter Anker (Laufleistung/Zeitraum) oder Vergangenheitsform. Ein
+# allgemeiner Modellbefund ist dagegen eine Aussage im Präsens über die Eigenschaft ("neigt zu",
+# "ist häufig undicht", "typische Schwachstelle") und braucht weder "ich" noch "viele".
+#  * Zählung/Anker: Einzelereignis, nur eine ausdrückliche Populationsreichweite hebt das auf
+#    (auch "bekanntes Problem" nicht: bloß behauptete Bekanntheit am Einzelfall).
+#  * Bloße Vergangenheitsform: Einzelereignis, außer die Aussage nennt selbst Häufigkeit/Typik
+#    ("war häufig undicht") oder eine Populationsreichweite.
+# Einzelfahrzeug-Bezug kann auch aus Überschrift oder Nachbarsätzen kommen (Testwagen, Leser,
+# "unser ...") -- dann gilt dieselbe Regel für den Satz.
+_RE_EREIGNIS_ANKER = re.compile(
+    r"\b(?:ein|zwei|drei|vier|f(?:ü|ue)nf|sechs|\d+)\s*-?\s*mal\b|\b(?:einmal|zweimal|dreimal|viermal|"
+    r"mehrmals|einmalig)\b"
+    r"|\b(?:nach|bei|ab|mit|ca\.?|rund)\s+\d[\d.,]*\s*(?:km|kilometern|tkm)\b"
+    r"|\bseit\s+(?:\w+\s+){0,2}(?:jahren|monaten|wochen|tagen)\b|\bschon\s+wieder\b"
+    r"|\b(?:im|seit)\s+(?:januar|februar|m(?:ä|ae)rz|april|mai|juni|juli|august|september|oktober|"
+    r"november|dezember|winter|sommer|herbst|fr(?:ü|ue)hjahr)\s*\d{0,4}\b",
+    re.IGNORECASE)
+_RE_VERGANGENHEIT = re.compile(
+    r"\b(?:war|waren|hatte|hatten|fiel|fielen|wurde|wurden|musste|mussten|trat|traten|zeigte|zeigten|"
+    r"bekam|bekamen|ging|gingen|riss|gab)\b", re.IGNORECASE)
+_RE_ALLGEMEINBEFUND = re.compile(
+    r"\bh(?:ä|ae)ufig\w*|\boft\b|\btypisch\w*|\bneigt\b|\bneigen\b|\banf(?:ä|ae)llig\w*|\bverbreitet\w*|"
+    r"\bserientypisch\w*|\bschwachpunkt\w*|\bschwachstelle\w*|\bimmer\s+wieder\b|\bregelm(?:ä|ae)(?:ß|ss)ig\w*",
+    re.IGNORECASE)
+
+
+def _einzelkontext(titel: str | None, satz_liste: list[str], satz: str) -> bool:
+    """True, wenn Überschrift oder ein unmittelbarer Nachbarsatz einen Einzelfahrzeug-/Sprecher-
+    Bezug trägt (Testwagen, Leser, "unser ...", "bei meinem ...")."""
+    texte = [titel or ""]
+    try:
+        i = satz_liste.index(satz)
+    except ValueError:
+        i = -1
+    if i >= 0:
+        texte += satz_liste[max(0, i - 1):i] + satz_liste[i + 1:i + 2]
+    return any(_RE_EINZELFAHRZEUG.search(t) for t in texte)
+
+
+def _ist_einzelbericht(claim: str, kontext_einzelfahrzeug: bool = False) -> bool:
+    """True, wenn die Aussage ein einzelnes Fahrzeug/Ereignis beschreibt und KEINE ausreichende
+    Reichweite über die Modellpopulation trägt (siehe oben)."""
     c = claim or ""
-    return bool(_RE_EINZELFAHRZEUG.search(c)) and not _RE_MODELLPOPULATION.search(c)
+    if _RE_MODELLPOPULATION.search(c):
+        return False
+    if kontext_einzelfahrzeug or _RE_EINZELFAHRZEUG.search(c):
+        return True
+    if _RE_EREIGNIS_ANKER.search(c):
+        return True
+    return bool(_RE_VERGANGENHEIT.search(c)) and not _RE_ALLGEMEINBEFUND.search(c)
 
 
 # RC-W3: generische Verneinung ÜBER jedes bekannte Defekt-/Verschleisswort
@@ -6251,12 +6300,6 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue
-                if kategorie == "schwachstelle" and _ist_einzelbericht(claim):
-                    # N19: ein Erfahrungsbericht belegt einen Fall, keine Modellschwachstelle
-                    # -- unabhängig vom Vertrauen in die Domain (Reichweite != Quellenvertrauen).
-                    abgelehnt.append({"url": url, "kategorie": kategorie,
-                                      "grund": "einzelbericht", "satz": claim[:120]})
-                    continue
                 if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
                     # RC-W3 (struktureller Coverage-Fix): ohne klassisches
                     # Problemwort zählt zusätzlich das kleine, geschlossene
@@ -6272,6 +6315,14 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "no_problem_signal", "satz": claim[:120]})
                         continue
+                if kategorie == "schwachstelle" and _ist_einzelbericht(
+                        claim, _einzelkontext(r.get("title"), satz_liste, satz)):
+                    # N19: ein Einzelereignis/Erfahrungsbericht belegt einen Fall, keine
+                    # Modellschwachstelle -- unabhängig vom Vertrauen in die Domain (Reichweite !=
+                    # Quellenvertrauen). Nach dem Problemsignal: Nicht-Defekte behalten ihren Grund.
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "einzelbericht", "satz": claim[:120]})
+                    continue
                 if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "no_recall_signal", "satz": claim[:120]})
@@ -7460,6 +7511,12 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                 if not any(w in n for w in _PROBLEM_WORTE) and not _hat_strukturelles_defektsignal(n, claim):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "no_problem_signal", "satz": claim[:120]})
+                    continue
+                if _ist_einzelbericht(claim, _einzelkontext(r.get("title"), satz_liste, satz)):
+                    # Auch ein schwacher Kandidat darf die Reichweitenregel nicht umgehen: ein
+                    # Einzelereignis weder anreichern noch zur Mehrquellen-Gruppe zaehlen lassen.
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "einzelbericht", "satz": claim[:120]})
                     continue
                 treffer_voc = _schwachstellen_bauteil_treffer(n, vokabular)
                 if not treffer_voc:

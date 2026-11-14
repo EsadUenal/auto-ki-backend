@@ -121,10 +121,17 @@ check("A7 SYNTHETISCH: echter Rost-/Durchrostungsschaden bleibt Schaden",
 check("A8 SYNTHETISCH: Schaden MIT Garantiekontext bleibt Schaden",
       _hat_materialschaden("Nach fünf Jahren Durchrostung festgestellt, Garantie abgelehnt.")
       and _hat_materialschaden("Die Garantie greift nicht: Durchrostung ist an den Schwellern aufgetreten."))
-f_a8, _ = fakten("Beim Lexus RC F wurde nach fünf Jahren Durchrostung an der Karosserie festgestellt, "
-                 "die Garantie wurde abgelehnt.")
-check("A9 SYNTHETISCH: Durchrostungsschaden mit Garantieangabe ergibt über den Pfad einen Fakt",
+f_a8, _ = fakten("Beim Lexus RC F tritt nach fünf Jahren Durchrostung an der Karosserie auf, "
+                 "die Garantie wird häufig abgelehnt.")
+check("A9 SYNTHETISCH: allgemein formulierter Durchrostungsbefund mit Garantieangabe ergibt über den Pfad "
+      "einen Fakt (Defektsignal trotz Garantiekontext)",
       len(f_a8) == 1, str([(x.bauteil, x.aussage[:60]) for x in f_a8]))
+# Reichweiten-Nachtrag: dieselbe Aussage als EINZELEREIGNIS ("wurde festgestellt ... abgelehnt") ist ein
+# echter Schaden (A8), aber keine Modellschwachstelle -- vorher hier faelschlich als Fakt erwartet.
+f_a9b, ab_a9b = fakten("Beim Lexus RC F wurde nach fünf Jahren Durchrostung an der Karosserie festgestellt, "
+                       "die Garantie wurde abgelehnt.")
+check("A9b SYNTHETISCH: derselbe Befund als Einzelereignis -> kein Modell-Fakt, Grund 'einzelbericht'",
+      f_a9b == [] and any(a.get("grund") == "einzelbericht" for a in ab_a9b))
 check("A10 SYNTHETISCH: Frostschutz-Satz erzeugt keinen Fakt",
       bauteile("Der Frostschutz im Kühlsystem des Lexus RC F wurde geprüft.") == [])
 
@@ -231,6 +238,44 @@ check("D11 ECHT+SYNTHETISCH: dieselbe Seite mit nur 'undicht' -> kein erfundenes
       bauteile(ADAC_TEXT.replace("Spurhalteassistent\nSerie\n", "Spurhalteassistent\nSerie\nundicht\n", 1),
                url=ADAC_URL, titel=ADAC_TITEL) == [])
 
+# ── E) Reichweite ohne Ich-Marker: Einzelereignis != Modellbefund ───────────────────────────────
+print("\n=== E) Einzelereignis ohne Ich-Marker, Einzelfahrzeug-Kontext, allgemeiner Modellbefund ===")
+M = "des Lexus RC F"   # Satzlaenge: sehr kurze Saetze verwirft `_saetze` ohnehin (Altverhalten)
+
+
+def bt(text, titel="Lexus RC F"):
+    return bauteile(text, titel=titel)
+
+
+check("E1 SYNTHETISCH: 'Die Wasserpumpe war dreimal undicht' ohne Reichweitenevidenz -> kein Modell-Fakt",
+      bt(f"Die Wasserpumpe {M} war dreimal undicht.") == []
+      and bt(f"Die Wasserpumpe {M} war nach 90.000 km undicht.") == []
+      and bt(f"Die Wasserpumpe {M} war undicht.") == [])
+check("E2 SYNTHETISCH: derselbe Satz im Testwagen-/Einzelfahrzeug-Kontext (Titel oder Nachbarsatz), "
+      "auch im Praesens und mit 'haeufig' -> kein Fakt",
+      bt(f"Die Wasserpumpe {M} ist undicht.", "Lexus RC F im Dauertest") == []
+      and bt(f"Die Wasserpumpe {M} ist häufig undicht.", "Testwagen Lexus RC F") == []
+      and bt(f"Bei unserem Lexus RC F gab es Ärger. Die Wasserpumpe {M} ist undicht.") == []
+      and bt(f"Der Redaktionswagen Lexus RC F fiel auf. Die Wasserpumpe {M} ist undicht. "
+             "Unser Testwagen stand danach zwei Tage in der Werkstatt.") == [])
+check("E3 SYNTHETISCH: klarer allgemeiner Modellbefund OHNE 'ich' und OHNE 'viele' bleibt Fakt",
+      bt(f"Die Wasserpumpe {M} neigt zu Undichtigkeit.") == ["Wasserpumpe"]
+      and bt("Beim Lexus RC F ist die Wasserpumpe häufig undicht.") == ["Wasserpumpe"]
+      and bt("Typische Schwachstelle des Lexus RC F: die Wasserpumpe wird undicht.") == ["Wasserpumpe"]
+      and bt(f"Die Wasserpumpe {M} ist ein bekanntes Problem.") == ["Wasserpumpe"])
+check("E4 SYNTHETISCH: Einzelereignis mit bloß behauptetem 'bekannten Problem' -> kein Fakt",
+      bt(f"Die Wasserpumpe {M} war undicht, ein bekanntes Problem.") == []
+      and bt(f"Die Wasserpumpe {M} war dreimal undicht, ein bekanntes Problem.") == [])
+check("E5 SYNTHETISCH: Vergangenheit MIT Haeufigkeit/Typik oder Populationsreichweite bleibt Fakt",
+      bt("Beim Lexus RC F war die Wasserpumpe häufig undicht.") == ["Wasserpumpe"]
+      and bt("Bei frühen Modellen des Lexus RC F war die Wasserpumpe undicht.") == ["Wasserpumpe"])
+check("E6 Unterscheidung (Funktion): Ereignis/Anker -> Einzelbericht, Modellbefund -> nicht",
+      _ist_einzelbericht(f"Die Wasserpumpe {M} war dreimal undicht.")
+      and _ist_einzelbericht("Die Pumpe wurde nach 80.000 km ersetzt und war undicht.")
+      and _ist_einzelbericht(f"Die Wasserpumpe {M} ist undicht.", True)
+      and not _ist_einzelbericht(f"Die Wasserpumpe {M} ist undicht.", False)
+      and not _ist_einzelbericht("Bei vielen Fahrzeugen war die Pumpe dreimal undicht."))
+
 # ── Bis zum Bericht (echter run_kaufcheck-Pfad, gestubbte Suche/LLM) ────────────────────────────
 print("\n=== Bericht, Verkäuferfragen und Dokumente (gestubbter run_kaufcheck) ===")
 treffer_ = lambda u, t, c: {"url": u, "title": t, "content": c}   # noqa: E731
@@ -327,6 +372,20 @@ async def pfad():
           any("Wasserpumpe" in i.titel for i in sw_insights(r2)) and "Wasserpumpe" in r2.bericht,
           str([i.titel for i in sw_insights(r2)]))
     check("P6 … mit Frage/Nachweis zur Wasserpumpe", "Wasserpumpe" in sichtbar(r2))
+    # Reichweiten-Nachtrag: Einzelereignis ohne Ich-Marker -> nichts Sichtbares; Modellbefund -> sichtbar
+    r3 = await lauf([treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                              "Die Wasserpumpe des Lexus RC F war nach 90.000 km dreimal undicht.")])
+    check("P8 SYNTHETISCH: Einzelereignis ohne Ich-Marker -> kein Insight, keine Frage, kein Dokument-Nachweis",
+          sw_insights(r3) == [] and "Wasserpumpe" not in sichtbar(r3), str([i.titel for i in sw_insights(r3)]))
+    r4 = await lauf([treffer_(HOCH, "Lexus RC F im Dauertest",
+                              "Die Wasserpumpe des Lexus RC F ist häufig undicht.")])
+    check("P9 SYNTHETISCH: dieselbe Aussage im Testwagen-Kontext (Titel) -> nichts Sichtbares",
+          sw_insights(r4) == [] and "Wasserpumpe" not in sichtbar(r4))
+    r5 = await lauf([treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                              "Die Wasserpumpe des Lexus RC F neigt zu Undichtigkeit.")])
+    check("P10 SYNTHETISCH: allgemeiner Modellbefund ohne 'ich'/'viele' -> Insight, Bericht, Frage/Nachweis",
+          any("Wasserpumpe" in i.titel for i in sw_insights(r5)) and "Wasserpumpe" in r5.bericht
+          and "Wasserpumpe" in sichtbar(r5), str([i.titel for i in sw_insights(r5)]))
     check("P7 Empfehlung/Status in allen Läufen unberührt von diesem Paket (gleiche Stufe ohne Fakt)",
           (r0.empfehlung, r0.recommendation_state) == (r1.empfehlung, r1.recommendation_state),
           f"{(r0.empfehlung, r0.recommendation_state)} vs {(r1.empfehlung, r1.recommendation_state)}")
