@@ -63,6 +63,7 @@ import re
 from typing import Protocol
 from urllib.parse import unquote, urljoin, urlsplit
 
+from app import schwachstelle_englisch as _en
 from app.config import IDENTITY_DEBUG
 from app.kraftstoff_powertrain import (
     FUEL_ELEKTRO, POWERTRAIN_BEV, fuel_aus_freitext, powertrain_aus_freitext,
@@ -4164,6 +4165,99 @@ def _reichweite(claim: str, kontext: tuple[bool, bool] = (False, False)) -> str:
     return "unbelegt"
 
 
+# ── Englische Schwachstellen-Aussagen (Paket "Englisch") ─────────────────────────────────────────
+#
+# Sprache, Quellenqualitaet, Modellreichweite, technische Passung und Marktgeltung sind GETRENNTE Fragen.
+# Eine eindeutig englische Aussage (`_en.sprache == "en"`) durchlaeuft `_en_aussage_pruefen`; deutsche,
+# gemischte und unklare Aussagen behalten die deutsche Pruefkette (gemischt/unklar zusaetzlich mit den
+# englischen SCHUTZregeln: Verneinung, Frage, Bedingung, Einzelfahrzeug). Nur eine Aussage mit POSITIVEM
+# Beleg fuer Bauteil, Populationsreichweite, Markt, technische Passung und Baujahr wird bestaetigt; alles
+# andere bleibt ein unbestaetigter Kandidat (Eintrag in `abgelehnt`, kein Fakt, keine Ausgabe). Dadurch
+# braucht die Ausgabe keinen eigenen "unresolved"-Pfad fuer englische Aussagen.
+
+def _fremd_pruefer(satz_liste: list[str], marke: str | None, modell: str | None):
+    """Prueft, ob ein Satz zu einem ANDEREN Modell/Abschnitt gehoert (wie in `_reichweiten_kontext`)."""
+    bekannt = _fremdmodell_bezeichnungen(satz_liste, marke, modell)
+
+    def _fremd(t: str) -> bool:
+        if (marke or modell) and _claim_widerspricht_fahrzeug_lokal(t, marke, modell):
+            return True
+        return (_nennt_fremdes_modell_derselben_marke(t, marke, modell)
+                or _fremdmodell_kopf(t, marke, modell, bekannt))
+    return _fremd
+
+
+def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str], koepfe: frozenset[str],
+                        marke: str | None, modell: str | None, ziel_info: dict | None,
+                        abgelehnt: list[dict], url: str) -> dict | None:
+    """Alle Gates fuer EINE eindeutig englische Aussage. `None`: unbestaetigter Kandidat (Grund steht in
+    `abgelehnt`). Sonst {"label", "schluessel", "markt", "z", "passt"}."""
+    ziel_info = ziel_info or {}
+
+    def ab(grund: str):
+        abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": grund, "satz": claim[:120]})
+        return None
+
+    if _en.ist_rueckverweis(claim):
+        return ab("en_kontextabhaengig")        # "It also fails ..." ohne eigenes Subjekt: kein eigener Claim
+    if _en.ist_frage(claim):
+        return ab("en_frage")
+    if _en.ist_bedingt(claim):
+        return ab("en_bedingt")
+    if _ist_benign_relativiert(claim) or _en.ist_benign(claim):
+        return ab("benign_relativiert")
+    if _ist_rueckrufabschnitt(claim) or _en.ist_rueckrufdatensatz(claim):
+        return ab("rueckrufabschnitt")
+    if _en.ist_garantie_oder_spezifikation(claim):
+        return ab("en_garantie_spezifikation")
+    if not _en.hat_problem(claim):
+        return ab("no_problem_signal")
+    if _claim_zu_lang(r, claim):
+        return ab("claim_zu_lang")
+    einzel, allgemein, rahmen = _en.reichweiten_kontext(
+        r.get("title"), satz_liste, satz, fremd=_fremd_pruefer(satz_liste, marke, modell), koepfe=koepfe,
+        hat_bauteil=_en.hat_bauteil)
+    rw = _en.reichweite(claim, (einzel, allgemein))
+    if rw != "allgemein":
+        return ab("einzelbericht" if rw == "einzel" else "reichweite_unbelegt")
+    bt = _en.bauteil(claim)
+    if not bt:
+        return ab("no_component")
+    markt_status, markt_name = _en.markt(claim, rahmen)
+    if markt_status != "ok":
+        return ab("en_markt_" + markt_status)
+    kontext_text = " ".join([claim, *rahmen])
+    # Motor-/Leistungs-/Generationsbezug allein traegt keine Uebertragbarkeit: die Aussage muss das Zielmodell
+    # selbst in Satz oder Rahmen nennen (ein geerbter Seitentitel genuegt dafuer nicht).
+    if _en.hat_technikbezug(kontext_text) and not any(_satz_nennt_modell(t, modell) for t in [claim, *rahmen]):
+        return ab("en_uebertragbarkeit_unbelegt")
+    var_status, var_grund = _en.variante(kontext_text, ziel_info)
+    if var_status != "ok":
+        abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": f"en_variante_{var_status}",
+                          "satz": claim[:120], "detail": var_grund})
+        return None
+    baujahr = ziel_info.get("baujahr")
+    z = _zeitraum_aussage(claim) or _en.zeitraum(claim)
+    passt = _im_zeitraum(baujahr, z)
+    if passt is False:
+        return ab("baujahr_ausserhalb")
+    if (_RE_VAGE.search(claim) or z is not None) and passt is not True:
+        return ab("en_geltung_unbelegt")
+    return {"label": bt[0], "schluessel": bt[1], "markt": markt_name, "z": z, "passt": passt}
+
+
+def _en_zitat(claim: str, markt_name: str | None) -> str:
+    """Gekennzeichnetes englisches Originalzitat mit dem tatsaechlich belegten Marktbezug."""
+    return f"„{claim}“ (englischsprachiges Originalzitat; Marktbezug laut Quelle: {markt_name or 'nicht belegt'})"
+
+
+def _quellenrolle_en(r: dict) -> str:
+    """Quellenrolle fuer ENGLISCHE Schwachstellenaussagen: nur die bestehende Domain-Einstufung
+    (`_qualitaets_label`). KEIN Titelwort ("workshop", "repair", "service") qualifiziert oder belegt
+    Unabhaengigkeit; unbekannt bleibt unbekannt. `_wartung_source_type` (Wartung/Deutsch) bleibt unveraendert."""
+    return _WARTUNG_SOURCE_TYPE_MAP.get(_qualitaets_label(r.get("url") or "")) or WARTUNG_SOURCE_UNKNOWN
+
+
 def _ist_einzelbericht(claim: str, kontext_einzelfahrzeug: bool = False) -> bool:
     """Kompatibel: True, wenn die Aussage ein Einzelfall ist (ohne Populationsreichweite)."""
     return _reichweite(claim, (kontext_einzelfahrzeug, False)) == "einzel"
@@ -6378,7 +6472,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                        leistung_ps: int | None = None,
                        fuel_ziel: str | None = None,
                        powertrains_ziel: frozenset | None = None,
-                       kilometerstand: int | None = None) -> list[WebFakt]:
+                       kilometerstand: int | None = None,
+                       motor: str | None = None) -> list[WebFakt]:
     """Strukturierte Fakten aus Snippets — je Bauteil höchstens einer.
 
     Jeder Treffer muss das Zielfahrzeug betreffen (Entity-Alignment, inkl.
@@ -6556,6 +6651,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             claim_segmente = (_segmentiere_claims(satz)
                               if kategorie in _CLAIM_SEGMENTIERUNG_KATEGORIEN
                               else [satz])
+            if kategorie == "schwachstelle":
+                # Englische Teilsaetze ("..., but ...", "... and the X fails") trennen; deutsche unveraendert.
+                claim_segmente = [t for seg in claim_segmente
+                                  for t in (_en.segmentiere(seg) if _en.sprache(seg) == "en" else [seg])]
             # N2/N3/N7-Fix: NUR für "wartung" — ein tabellenartiges, von
             # `_segmentiere_claims()` unverändert als EIN Claim belassenes
             # Segment (kein finites Verb, kein Satzzeichen-Trenner) wird
@@ -6585,16 +6684,36 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 n = _norm(claim)
                 # Datensatz-Aussage: Bauteil nur aus Anlass/Zusatz DESSELBEN Datensatzes lesen.
                 bt_text = datensatz_bauteiltext.get(claim, claim) if kategorie == "rueckruf" else claim
-                if kategorie == "schwachstelle" and _ist_benign_relativiert(claim):
+                # Englisch: eigene, vollstaendige Pruefkette (`_en_aussage_pruefen`); nur ein positiv belegter
+                # Befund kommt weiter. Sonst unbestaetigter Kandidat (Grund in `abgelehnt`).
+                _spr, en_info = None, None
+                if kategorie == "schwachstelle":
+                    _spr = _en.sprache(claim)
+                    if _spr == "en":
+                        en_info = _en_aussage_pruefen(
+                            claim, r=r, satz=satz, satz_liste=satz_liste, koepfe=koepfe, marke=marke,
+                            modell=modell, abgelehnt=abgelehnt, url=url,
+                            ziel_info={"baujahr": baujahr, "hubraum": hubraum, "fuel": fuel_ziel,
+                                       "powertrains": powertrains_ziel, "motor": motor})
+                        if en_info is None:
+                            continue
+                    elif _en.ist_benign(claim) or (_spr != "de" and (_en.ist_frage(claim)
+                                                                       or _en.ist_bedingt(claim))):
+                        # Kurze/gemischte Aussage: die englischen Schutzregeln gelten trotzdem
+                        # (Verneinung auch in sonst deutschem Satz mit eingestreutem Englisch).
+                        abgelehnt.append({"url": url, "kategorie": kategorie,
+                                          "grund": "benign_relativiert", "satz": claim[:120]})
+                        continue
+                if kategorie == "schwachstelle" and en_info is None and _ist_benign_relativiert(claim):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "benign_relativiert", "satz": claim[:120]})
                     continue
-                if kategorie == "schwachstelle" and (_ist_rueckrufabschnitt(claim)
-                                                     or _im_rueckruf_zusatz(claim, rr_zusatz)):
+                if kategorie == "schwachstelle" and en_info is None and (
+                        _ist_rueckrufabschnitt(claim) or _im_rueckruf_zusatz(claim, rr_zusatz)):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue
-                if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
+                if kategorie == "schwachstelle" and en_info is None and not any(w in n for w in _PROBLEM_WORTE):
                     # RC-W3 (struktureller Coverage-Fix): ohne klassisches
                     # Problemwort zählt zusätzlich das kleine, geschlossene
                     # Struktursignal-Set (Material/Zustand, Verschleiss-
@@ -6609,17 +6728,20 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "no_problem_signal", "satz": claim[:120]})
                         continue
-                if kategorie == "schwachstelle" and _claim_zu_lang(r, claim):
+                if kategorie == "schwachstelle" and en_info is None and _claim_zu_lang(r, claim):
                     abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "claim_zu_lang",
                                       "satz": claim[:120]})
                     continue
-                if kategorie == "schwachstelle":
+                if kategorie == "schwachstelle" and en_info is None:
                     # N19: eine Modellschwachstelle braucht tragende Reichweitenevidenz (Satz oder
                     # eindeutig zugehöriger Kontext) -- unabhängig vom Vertrauen in die Domain.
                     # Nach dem Problemsignal: Nicht-Defekte behalten ihren eigenen Grund.
                     _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
                                                                   marke=marke, modell=modell,
                                                                   koepfe=koepfe))
+                    if (_rw == "allgemein" and _spr != "de"
+                            and _en.reichweite(claim) == "einzel"):
+                        _rw = "einzel"       # kurze/gemischte Aussage: Einzelfahrzeug-Schutz gilt auch englisch
                     if _rw != "allgemein":
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "einzelbericht" if _rw == "einzel" else "reichweite_unbelegt",
@@ -6676,6 +6798,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     continue
                 z = _zeitraum_aussage(claim) if kategorie != "wartung" else None
                 passt = _im_zeitraum(baujahr, z)
+                if en_info is not None:
+                    z, passt = en_info["z"], en_info["passt"]    # bereits in `_en_aussage_pruefen` geprueft
                 if passt is None and artikel_passt is True:
                     # Das Claim-Segment selbst nennt kein Fenster, der Artikel schon.
                     passt, z = True, artikel_fenster
@@ -6688,6 +6812,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 n_bt = _norm(_defekt_lokaler_text(bt_text) if kategorie == "schwachstelle" else bt_text)
                 treffer_voc = (_schwachstellen_bauteil_treffer(n_bt, vokabular) if kategorie == "schwachstelle"
                                else [(m, s) for m, s in vokabular.items() if m in n_bt][:1])
+                if en_info is not None:
+                    # Englisches Bauteil auf den BESTEHENDEN deutschen Schluessel abgebildet (Wortgrenzen).
+                    treffer_voc = [(_norm(en_info["label"]), en_info["schluessel"])]
                 if not treffer_voc and kategorie == "rueckruf":
                     # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
                     # ("Kraftstoffleitung"). Ein Rückruf darf daran nicht verloren
@@ -6715,7 +6842,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                               "grund": "rueckruf_thema_bereits_ausgeschlossen",
                                               "satz": claim[:120]})
                             continue
-                    bauteil_claim = (_anzeige_bauteil(bt_text, muster) if muster
+                    bauteil_claim = (en_info["label"] if en_info is not None
+                                     else _anzeige_bauteil(bt_text, muster) if muster
                                      else _rueckruf_bauteil(bt_text))
                     kandidat_key = (
                         _kandidat_schluessel_fuer_risiko(kandidaten, schluessel, claim,
@@ -6745,6 +6873,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "abschnitt_taetigkeit": {}})
                     if claim in abschnitt_von_claim:
                         eintrag["abschnitt_taetigkeit"][claim] = abschnitt_von_claim[claim]
+                    if en_info is not None:
+                        eintrag.setdefault("en", {})[claim] = en_info["markt"]
                     if muster:
                         eintrag.setdefault("muster", set()).add(muster)
                     if kategorie == "rueckruf":
@@ -6861,7 +6991,9 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             taetigkeit_roh = (e.get("abschnitt_taetigkeit") or {}).get(e["aussage"], "unbestimmt")
         taetigkeit = taetigkeit_roh if taetigkeit_roh in ("ersetzen", "pruefen") else None
         fakten.append(WebFakt(
-            kategorie=kategorie, bauteil=bauteil_anzeige, aussage=e["aussage"],
+            kategorie=kategorie, bauteil=bauteil_anzeige,
+            aussage=(_en_zitat(e["aussage"], e["en"][e["aussage"]])
+                     if e.get("en") and e["aussage"] in e["en"] else e["aussage"]),
             confidence=confidence, applicability=applicability, quellen=quellen,
             geltungsbereich=bereich, geltung_fuer_fahrzeug=geltung, scope_text=scope_text,
             rueckruf_datensatz=(dict(datensatz_von_aussage[e["aussage"]])
@@ -7756,6 +7888,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                                     generation_cluster: list[str] | None = None,
                                     haupt_fakten: list[WebFakt] | None = None,
                                     erlaube_multi_source: bool = False,
+                                    ziel_info: dict | None = None,
                                     ) -> tuple[list[WebFakt], list[dict], bool]:
     """Candidate-Evidence-Pfad NUR für Treffer UNTERHALB von MIN_SCORE_FAKT
     (siehe Modulkommentar oben). Mit `erlaube_multi_source=False` (Default,
@@ -7802,8 +7935,26 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
             abgelehnt=abgelehnt, url=url, kategorie="schwachstelle", fremdabschnitt_sperre=True)
         lokale = [sa for sa in lokale if sa not in koepfe]
         for satz in lokale:
-            for claim in _segmentiere_claims(satz):
+            for claim in [t for seg in _segmentiere_claims(satz)
+                          for t in (_en.segmentiere(seg) if _en.sprache(seg) == "en" else [seg])]:
                 n = _norm(claim)
+                _spr = _en.sprache(claim)
+                if _spr == "en":
+                    # Englisch: dieselbe vollstaendige Pruefkette wie im Hauptpfad.
+                    en_info = _en_aussage_pruefen(
+                        claim, r=r, satz=satz, satz_liste=satz_liste, koepfe=koepfe, marke=marke,
+                        modell=modell, ziel_info=ziel_info, abgelehnt=abgelehnt, url=url)
+                    if en_info is None:
+                        continue
+                    kandidaten.append({"bauteil_key": en_info["schluessel"], "bauteil": en_info["label"],
+                                       "failure_mode": _en.failure_mode(claim), "family": family,
+                                       "source_type": _quellenrolle_en(r), "url": url, "claim": claim,
+                                       "treffer": r, "en": en_info["markt"]})
+                    continue
+                if _en.ist_benign(claim) or (_spr != "de" and (_en.ist_frage(claim) or _en.ist_bedingt(claim))):
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle",
+                                      "grund": "benign_relativiert", "satz": claim[:120]})
+                    continue
                 if _ist_benign_relativiert(claim):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "benign_relativiert", "satz": claim[:120]})
@@ -7822,6 +7973,8 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                     continue
                 _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
                                                               marke=marke, modell=modell, koepfe=koepfe))
+                if _rw == "allgemein" and _spr != "de" and _en.reichweite(claim) == "einzel":
+                    _rw = "einzel"           # kurze/gemischte Aussage: Einzelfahrzeug-Schutz gilt auch englisch
                 if _rw != "allgemein":
                     # Auch ein schwacher Kandidat darf die Reichweitenregel nicht umgehen: weder
                     # anreichern noch zur Mehrquellen-Gruppe zaehlen lassen.
@@ -7894,7 +8047,9 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
         if len(families) >= MIN_FAMILIES_MULTI_SOURCE and erlaube_multi_source:
             beitraege = [k for k in nicht_community if k["family"] in families]
             fakten.append(WebFakt(
-                kategorie="schwachstelle", bauteil=bauteil_text, aussage=beitraege[0]["claim"],
+                kategorie="schwachstelle", bauteil=bauteil_text,
+                aussage=(_en_zitat(beitraege[0]["claim"], beitraege[0]["en"])
+                         if "en" in beitraege[0] else beitraege[0]["claim"]),
                 confidence="mittel", beleglage="mehrfach_unabhaengig",
                 quellen=_quellen_aus([k["treffer"] for k in beitraege], marke=marke)))
             continue
@@ -8029,7 +8184,7 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                      abgelehnt=abgelehnt, hubraum=ziel.get("hubraum"),
                                      leistung_ps=ziel.get("leistung_ps"),
                                      fuel_ziel=fuel_ziel, powertrains_ziel=powertrains_ziel,
-                                     kilometerstand=ziel.get("kilometerstand"))
+                                     kilometerstand=ziel.get("kilometerstand"), motor=ziel.get("motor"))
         if kategorie == "wartung":
             # Source-Trust-Fix (Scope: NUR wartung) -- siehe Moduldocstring
             # oben. Rein additiv: verarbeitet ausschliesslich Treffer, die
@@ -8054,7 +8209,9 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                 generation=identitaet.generation or ziel.get("generation"),
                 generation_cluster=gen_cluster,
                 haupt_fakten=[f for f in fakten if f.kategorie == "schwachstelle"],
-                erlaube_multi_source="schwachstelle" in erlaube_multi_source)
+                erlaube_multi_source="schwachstelle" in erlaube_multi_source,
+                ziel_info={"baujahr": ziel.get("baujahr"), "hubraum": ziel.get("hubraum"),
+                           "fuel": fuel_ziel, "powertrains": powertrains_ziel, "motor": ziel.get("motor")})
             fakten += cand_fakten
             abgelehnt += cand_abgelehnt
             eskalierbar["schwachstelle"] = cand_eskalierbar
