@@ -985,6 +985,83 @@ def _wartung_nachlade_kandidaten(treffer: list[dict], *, marke: str | None = Non
     return kandidaten
 
 
+# ── Schwachstellen-Originaltext (Volltext-Paket) ────────────────────────────────────────────────
+#
+# Die Schwachstellen-Suchen fordern den Seitentext mit der Suche selbst an (`include_raw_content`,
+# KEIN Extract-Aufruf, keine zusätzliche Anfrage). Der Provider liefert ihn nur unzuverlässig; deshalb
+# gilt: angefordert != geliefert. Brauchbarer Originaltext ERSETZT `content` desselben Treffers
+# (Snippet und Original sind dieselbe Quelle, kein zweiter Beleg, und ein fachlich abgelehnter
+# Volltext kann nicht über sein Snippet doch bestätigt werden). Ohne brauchbaren Originaltext bleibt
+# das Snippet unverändert. Brauchbar = >= `_MIN_RAW_CONTENT_LEN` Zeichen UND nicht kürzer als das
+# Snippet (ein kürzerer "Volltext" ist eine abweichende/abgeschnittene Extraktion). Die Länge ist
+# begrenzt (`_ORIGINALTEXT_MAX_ZEICHEN`); eine Kürzung geschieht am Absatz-/Satzende und wird gezählt
+# und protokolliert -- nie still. Die Reichweite einer Aussage wird weiterhin NUR aus Satz und
+# zugehörigem Kontext bestimmt (N19), nicht aus der Existenz des Volltexts.
+_ORIGINALTEXT_MAX_ZEICHEN = 40_000
+_MAX_CLAIM_ZEICHEN_VOLLTEXT = 800
+
+
+def _url_schluessel(url: str) -> str:
+    u = (url or "").strip().lower()
+    u = re.sub(r"^https?://(?:www\.)?", "", u)
+    return u.split("#")[0].rstrip("/")
+
+
+def _kuerze_originaltext(text: str) -> tuple[str, bool]:
+    if len(text) <= _ORIGINALTEXT_MAX_ZEICHEN:
+        return text, False
+    kopf = text[:_ORIGINALTEXT_MAX_ZEICHEN]
+    ab = max(kopf.rfind("\n\n"), kopf.rfind(". "))
+    if ab >= int(_ORIGINALTEXT_MAX_ZEICHEN * 0.8):
+        kopf = kopf[:ab + 1]
+    return kopf, True
+
+
+def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Setzt brauchbaren, mit der Suche gelieferten Originaltext als `content` (siehe oben). Rein, ohne
+    Netzwerk. Ein bereits verarbeiteter Treffer (`_ot`) wird nicht erneut gezählt. Dieselbe URL, die in
+    einer anderen Anfrage nur als Snippet kam, bekommt den Originaltext der anderen (eine Quelle)."""
+    stat = {"treffer": 0, "volltext": 0, "snippet_fallback": 0, "gekuerzt": 0}
+    original: dict[str, str] = {}
+    for r in treffer:
+        if r.get("_ot") == "volltext" or not hat_brauchbaren_raw_content(r):
+            continue
+        raw = (r.get("raw_content") or "").strip()
+        if len(raw) >= len((r.get("content") or "").strip()):
+            original.setdefault(_url_schluessel(r.get("url") or ""), raw)
+    ergebnis: list[dict] = []
+    for r in treffer:
+        if r.get("_ot") in ("volltext", "snippet"):
+            ergebnis.append(r)
+            continue
+        stat["treffer"] += 1
+        raw = original.get(_url_schluessel(r.get("url") or ""))
+        if raw:
+            text, gekuerzt = _kuerze_originaltext(raw)
+            stat["volltext"] += 1
+            stat["gekuerzt"] += int(gekuerzt)
+            ergebnis.append({**r, "content": text, "_ot": "volltext"})
+        else:
+            stat["snippet_fallback"] += 1
+            ergebnis.append({**r, "_ot": "snippet"})
+    return ergebnis, stat
+
+
+def _log_originaltext(kategorie: str, runde: int, stat: dict[str, int], *, angefordert: int) -> None:
+    """Diagnose je Runde. `angefordert` = Anzahl der Suchanfragen MIT Originaltext-Anforderung (nicht
+    der Nachweis, dass er geliefert wurde). Nie Seitentext, nie Secrets im Log."""
+    log.info("research_phase=%s_volltext round=%d angefordert_anfragen=%d treffer=%d volltext_brauchbar=%d "
+             "snippet_fallback=%d gekuerzt=%d", kategorie, runde, angefordert, stat["treffer"],
+             stat["volltext"], stat["snippet_fallback"], stat["gekuerzt"])
+
+
+def _claim_zu_lang(r: dict, claim: str) -> bool:
+    """Ein einzelner Claim aus Originaltext, der länger als `_MAX_CLAIM_ZEICHEN_VOLLTEXT` ist, ist fast
+    immer ein unpunktierter Tabellen-/Navigationsblock und kein Satz; er wird protokolliert verworfen
+    statt als Aussage gekürzt oder ganz ausgegeben. Snippets behalten ihr bisheriges Verhalten."""
+    return r.get("_ot") == "volltext" and len(claim or "") > _MAX_CLAIM_ZEICHEN_VOLLTEXT
+
+
 def _treffer_mit_volltext(treffer: list[dict], voller_text: dict[str, str]) -> list[dict]:
     """Merged nachgeladenen Volltext (von `hole_raw_content()`) in `content` --
     reine, isoliert testbare Funktion, kein Netzwerk. Generisch (L1-
@@ -3896,6 +3973,28 @@ def _rahmende_zeile(satz: str) -> bool:
     return not _schwachstellen_bauteil_treffer(_norm(s), _bauteil_vokabular())
 
 
+def _ist_kopfartig(satz: str) -> bool:
+    """Kurze Überschriftenzeile ohne Prädikat."""
+    s = (satz or "").strip()
+    return 0 < len(s) <= 120 and not _RE_FINITES_VERB_ANKER.search(s)
+
+
+def _nennt_fremdes_modell_derselben_marke(satz: str, marke: str | None, modell: str | None) -> bool:
+    """Satz nennt die Zielmarke gefolgt von einer Modellbezeichnung (Kürzel mit Ziffer oder 1-3 Großbuchstaben)
+    und NICHT das Zielmodell: "Typische Schwachstellen des Lexus GS F". Ein bloßes "Lexus Gebrauchtwagen-Check"
+    ist kein Fremdmodell. Ohne bekanntes Zielmodell/Marke: False."""
+    if not marke or not modell or _satz_nennt_modell(satz, modell):
+        return False
+    for m in re.finditer(r"\b" + re.escape(marke) + r"\b", satz or "", re.IGNORECASE):
+        folge = _RE_GROSSGESCHRIEBENE_FOLGE.match(satz[m.end():])
+        if not folge:
+            continue
+        erstes = folge.group(1).split()[0]
+        if any(c.isdigit() for c in erstes) or (erstes.isupper() and len(erstes) <= 3):
+            return True
+    return False
+
+
 def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
                          marke: str | None, modell: str | None) -> tuple[bool, bool]:
     """(einzelfahrzeug, allgemein) aus dem verfügbaren Kontext DESSELBEN Treffers. Die Überschrift
@@ -3913,9 +4012,9 @@ def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
     def _fremd(t: str) -> bool:
         if (marke or modell) and _claim_widerspricht_fahrzeug_lokal(t, marke, modell):
             return True
-        # Nennt der Satz die Marke, aber nicht das Zielmodell ("Typische Schwachstellen des Lexus GS F"),
-        # gehört er nicht zum Zielmodell.
-        return bool(marke and modell and _norm(marke) in _norm(t).split() and not _satz_nennt_modell(t, modell))
+        # Nennt der Satz die Marke mit einer anderen Modellbezeichnung ("Typische Schwachstellen des
+        # Lexus GS F"), gehört er nicht zum Zielmodell.
+        return _nennt_fremdes_modell_derselben_marke(t, marke, modell)
 
     titel_norm = _norm(titel or "")
 
@@ -5475,7 +5574,8 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
                             titel_stark: bool, pruefe_widerspruch_bei_titel_stark: bool = True,
                             segment_marker: list[bool] | None = None,
                             abgelehnt: list[dict] | None = None,
-                            url: str | None = None, kategorie: str | None = None
+                            url: str | None = None, kategorie: str | None = None,
+                            fremdabschnitt_sperre: bool = False
                             ) -> list[str]:
     """Liefert die Sätze EINES Treffers, die lokalen Fahrzeugkontext haben --
     entweder durch eigene Modellnennung oder durch Vererbung innerhalb des
@@ -5514,9 +5614,13 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
     erbfaehig = _rueckwaerts_erbfaehige_indizes(satz_liste, modell=modell,
                                                 segment_marker=segment_marker)
     ergebnis: list[str] = []
+    # Volltext-Paket (nur Schwachstellen): eine Überschrift, die ein ANDERES Modell derselben Marke nennt,
+    # eröffnet einen Fremdabschnitt. Der Absatzwechsel danach gibt den Titel-Kontext NICHT zurück, bis ein Satz
+    # das Zielmodell selbst nennt -- sonst gälte der Absatz unter "Lexus GS F" für einen RC-F-Titel.
+    fremd_abschnitt = False
     for idx in range(len(satz_liste)):
         if segment_marker and segment_marker[idx]:
-            kontext_aktiv = titel_stark
+            kontext_aktiv = titel_stark and not fremd_abschnitt
         satz = _kontext_aufloesen(satz_liste, idx)
         if satz is None:
             if abgelehnt is not None:
@@ -5527,7 +5631,11 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
         if not pruefe_widerspruch:
             ergebnis.append(satz)
             continue
-        if _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
+        _kopf_fremd = (fremdabschnitt_sperre and _ist_kopfartig(satz)
+                       and _nennt_fremdes_modell_derselben_marke(satz, marke, modell))
+        if _kopf_fremd:
+            fremd_abschnitt = True
+        if _kopf_fremd or _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
             # Expliziter Widerspruch schlägt geerbten ODER Titel-Kontext IMMER
             # und beendet das aktuelle Segment -- erst eine erneute explizite
             # Modellnennung darf wieder erben (kein "sticky" Modellbezug über
@@ -5539,6 +5647,7 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
             continue
         if _satz_nennt_modell(satz, modell):
             kontext_aktiv = True
+            fremd_abschnitt = False
             ergebnis.append(satz)
             continue
         if kontext_aktiv:
@@ -6286,7 +6395,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 pruefe_widerspruch_bei_titel_stark=(kategorie == "schwachstelle"
                                                     and bool(marke or modell)),
                 segment_marker=[m for _, m in satz_markiert],
-                abgelehnt=abgelehnt, url=url, kategorie=kategorie)
+                abgelehnt=abgelehnt, url=url, kategorie=kategorie,
+                fremdabschnitt_sperre=(kategorie == "schwachstelle"))
             if kategorie == "wartung":
                 # F10-Folgefund (s. `_wartung_vorgangs_rueckreferenz_saetze()`):
                 # NUR zusätzliche Kandidatensätze, die Original-Sätze bleiben
@@ -6383,6 +6493,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "no_problem_signal", "satz": claim[:120]})
                         continue
+                if kategorie == "schwachstelle" and _claim_zu_lang(r, claim):
+                    abgelehnt.append({"url": url, "kategorie": kategorie, "grund": "claim_zu_lang",
+                                      "satz": claim[:120]})
+                    continue
                 if kategorie == "schwachstelle":
                     # N19: eine Modellschwachstelle braucht tragende Reichweitenevidenz (Satz oder
                     # eindeutig zugehöriger Kontext) -- unabhängig vom Vertrauen in die Domain.
@@ -7567,7 +7681,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
         satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
         lokale = _segment_kontext_saetze(
             satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
-            abgelehnt=abgelehnt, url=url, kategorie="schwachstelle")
+            abgelehnt=abgelehnt, url=url, kategorie="schwachstelle", fremdabschnitt_sperre=True)
         for satz in lokale:
             for claim in _segmentiere_claims(satz):
                 n = _norm(claim)
@@ -7582,6 +7696,10 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                 if not any(w in n for w in _PROBLEM_WORTE) and not _hat_strukturelles_defektsignal(n, claim):
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "no_problem_signal", "satz": claim[:120]})
+                    continue
+                if _claim_zu_lang(r, claim):
+                    abgelehnt.append({"url": url, "kategorie": "schwachstelle", "grund": "claim_zu_lang",
+                                      "satz": claim[:120]})
                     continue
                 _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
                                                               marke=marke, modell=modell))
@@ -8398,10 +8516,13 @@ class TavilyTechnicalResearchProvider:
             anfragen += 1
             anf_gesamt[phase] += 1
             exclude = _exclude_domains_fuer(phase, kw.get("include_domains"))
+            # Volltext-Paket: der Seitentext wird NUR fuer die Schwachstellen-Suchen mit angefordert und nur
+            # dann als Argument uebergeben (alle anderen Aufrufe bleiben unveraendert).
+            zusatz = {"include_raw_content": True} if kw.get("include_raw_content") else {}
             try:
                 return await tavily_search(query, count=self._count,
                                            exclude_domains=exclude,
-                                           include_domains=kw.get("include_domains"))
+                                           include_domains=kw.get("include_domains"), **zusatz)
             except Exception as exc:                    # pragma: no cover — Schutznetz
                 log.warning("Technische Teilrecherche fehlgeschlagen (%s)", type(exc).__name__)
                 fehler = True
@@ -8719,7 +8840,8 @@ class TavilyTechnicalResearchProvider:
         )
         technik_intents = sw_intents + wa_intents
         technik_treffer_je_intent = await suche_runde(
-            "technik", 1, [(q, {}) for _, q in technik_intents])
+            "technik", 1, [(q, {"include_raw_content": True} if i < len(sw_intents) else {})
+                           for i, (_, q) in enumerate(technik_intents)])
         sw_treffer_je_intent = technik_treffer_je_intent[:len(sw_intents)]
         wa_treffer_je_intent = technik_treffer_je_intent[len(sw_intents):]
         # Observability (nur log.debug — keine User-UI, keine zweite
@@ -8740,6 +8862,8 @@ class TavilyTechnicalResearchProvider:
             log.debug("Wartung-Intent '%s' (%r): %d Rohtreffer, %d High-Quality-Domains",
                      intent, q, len(treffer), hoch)
         roh["schwachstelle"] = [r for treffer in sw_treffer_je_intent for r in treffer]
+        roh["schwachstelle"], _ot_stat = _mit_originaltext(roh["schwachstelle"])
+        _log_originaltext("schwachstelle", 1, _ot_stat, angefordert=len(sw_intents))
         roh["wartung"] = [r for treffer in wa_treffer_je_intent for r in treffer]
 
         # L3 (s. Moduldocstring bei `_wartung_nachlade_kandidaten()`): Volltext
@@ -8812,7 +8936,8 @@ class TavilyTechnicalResearchProvider:
                 _skip_vorher = budget_uebersprungen("tavily")
                 _retry_vorher = budget_retry_abgelehnt("tavily")
                 esk_treffer_je_intent = await asyncio.gather(
-                    *[suche(q, phase="technik") for _, q in esk_intents])
+                    *[suche(q, phase="technik", include_raw_content=(kat == "schwachstelle"))
+                      for _, q in esk_intents])
                 geplant_n = len(esk_intents)
                 retry_abgelehnt_n = max(0, budget_retry_abgelehnt("tavily") - _retry_vorher)
                 uebersprungen_n = min(geplant_n, max(0, budget_uebersprungen("tavily") - _skip_vorher))
@@ -8823,6 +8948,10 @@ class TavilyTechnicalResearchProvider:
                         "budget_uebersprungen": uebersprungen_n})
                 neue_treffer = [r for treffer in esk_treffer_je_intent for r in treffer]
                 roh[kat] = roh[kat] + neue_treffer
+                if kat == "schwachstelle":
+                    roh[kat], _ot_stat = _mit_originaltext(roh[kat])
+                    _log_originaltext(kat, runde_nr, _ot_stat,
+                                      angefordert=geplant_n - uebersprungen_n)
                 fakten = [f for f in fakten if f.kategorie != kat]
                 runde_fakten = phase_fakten({kat: roh[kat]}, z, identitaet, (kat,), abgelehnt,
                                             stats=fakten_stats, erlaube_multi_source=frozenset({kat}))

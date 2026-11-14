@@ -139,7 +139,7 @@ class _FakeProvider:
         self.search_calls: list[str] = []
         self.extract_calls: list[list[str]] = []
 
-    async def search(self, query, *, count=8, exclude_domains=None, include_domains=None):
+    async def search(self, query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         self.search_calls.append(query)
         for substr, treffer_liste in self.routing.items():
             if substr in query:
@@ -457,7 +457,7 @@ async def test_grenzfall_globale_abrufobergrenze():
         tavily_extract_calls.append(list(urls))
         return [{"url": u, "raw_content": "Voller Dokumenttext " * 100, "erfolg": True} for u in urls]
 
-    async def fake_search(query, *, count=8, exclude_domains=None, include_domains=None):
+    async def fake_search(query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         if "technische Daten" in query:
             return [_ADAC]
         if "Generation Baureihe Bauzeitraum" in query:

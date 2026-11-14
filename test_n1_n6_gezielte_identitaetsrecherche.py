@@ -137,7 +137,7 @@ class _FakeProvider:
         self.search_calls: list[str] = []
         self.extract_calls: list[list[str]] = []
 
-    async def search(self, query, *, count=8, exclude_domains=None, include_domains=None):
+    async def search(self, query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         self.search_calls.append(query)
         for substr, treffer_liste in self.routing:
             if substr in query:

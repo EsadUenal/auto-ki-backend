@@ -213,7 +213,7 @@ import app.technical_research as tr
 _AUFGEZEICHNETE_QUERIES: list[str] = []
 
 
-async def _fake_tavily_search(query, *, count=8, exclude_domains=None, include_domains=None):
+async def _fake_tavily_search(query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
     _AUFGEZEICHNETE_QUERIES.append(query)
     if "technische Daten" in query:
         return [{"url": "https://www.adac.de/lexus-rc-f-diagnose",

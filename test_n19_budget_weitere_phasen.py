@@ -241,7 +241,7 @@ async def lauf(*, tavily_budget=None, fehler_bei=None, nachsuche_treffer=None, h
     queries: list[str] = []
     ausgefuehrt: list[str] = []
 
-    async def search(query, *, count=8, exclude_domains=None, include_domains=None):
+    async def search(query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         queries.append(query)
         # Spiegel von web_search: der Budget-Claim passiert VOR dem Call; ist es erschöpft,
         # kommt [] zurück (ProviderCallLimitExceeded wird dort abgefangen).

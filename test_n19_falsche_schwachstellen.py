@@ -382,7 +382,7 @@ async def lauf(schwachstellen_treffer):
                "technische Daten": [ADAC_ID], "Generation Baureihe Bauzeitraum": [AMS],
                "bekannte Probleme Schwachstellen": schwachstellen_treffer}
 
-    async def search(query, *, count=8, exclude_domains=None, include_domains=None):
+    async def search(query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         for teil, liste in routing.items():
             if teil in query:
                 return [dict(h) for h in liste]

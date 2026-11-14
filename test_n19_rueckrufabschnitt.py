@@ -147,7 +147,7 @@ async def lauf(extra=""):
                "technische Daten": [ADAC_ID], "Generation Baureihe Bauzeitraum": [AMS],
                "bekannte Probleme Schwachstellen": [hit(extra)]}
 
-    async def search(query, *, count=8, exclude_domains=None, include_domains=None):
+    async def search(query, *, count=8, exclude_domains=None, include_domains=None, **_kw):
         for teil, liste in routing.items():
             if teil in query:
                 return [dict(h) for h in liste]
