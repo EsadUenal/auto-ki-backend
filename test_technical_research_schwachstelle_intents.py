@@ -76,7 +76,7 @@ GETRIEBE_FAKT = _treffer(
     "Das Getriebe neigt zu Defekten und macht sich durch Rucken bemerkbar.")
 WASSERPUMPE_FAKT = _treffer(
     "https://www.autobild.de/mazda-mx-5-nd-wasserpumpe", "Mazda MX-5 ND Gebrauchtwagen-Check",
-    "Die Wasserpumpe kann bei hoher Laufleistung undicht werden.")
+    "Die Wasserpumpe wird bei hoher Laufleistung häufig undicht.")  # N19: Reichweite im Satz (Pruefziel hier: Intent-Ausfuehrung, nicht Reichweite)
 KUPPLUNG_FAKT = _treffer(
     "https://www.auto-motor-und-sport.de/mazda-mx-5-nd-kupplung", "Mazda MX-5 ND Kupplungsschäden",
     "Die Kupplung verschleißt bei Vielfahrern deutlich schneller als angegeben.")
@@ -146,8 +146,8 @@ async def test_beide_intents_immer_ausgefuehrt():
     check("F) beide Intents liefern zusammen beide Fakten",
           _sw_fakten(recherche) == sorted([("Getriebe", "Das Getriebe neigt zu Defekten und "
                                            "macht sich durch Rucken bemerkbar"),
-                                          ("Wasserpumpe", "Die Wasserpumpe kann bei hoher "
-                                           "Laufleistung undicht werden")]))
+                                          ("Wasserpumpe", "Die Wasserpumpe wird bei hoher "
+                                           "Laufleistung häufig undicht")]))
 
 
 # ── C) keine bloßen Synonym-Duplikate -- die zwei Query-Strings unterscheiden

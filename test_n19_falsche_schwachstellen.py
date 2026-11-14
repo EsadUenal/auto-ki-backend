@@ -63,8 +63,8 @@ import app.kaufcheck as kc  # noqa: E402
 import app.technical_research as tr  # noqa: E402
 from app.models import KaufCheckRequest, KaufCheckResponse  # noqa: E402
 from app.technical_research import (  # noqa: E402
-    _extrahiere_fakten, _hat_materialschaden, _hat_strukturelles_defektsignal, _ist_einzelbericht,
-    _ist_tabellenblock)
+    _defekt_lokaler_text, _extrahiere_fakten, _hat_materialschaden, _hat_strukturelles_defektsignal,
+    _ist_einzelbericht, _ist_tabellenblock, _reichweite, _schwachstelle_candidate_fakten)
 
 _FEHLER: list[str] = []
 
@@ -126,24 +126,28 @@ f_a8, _ = fakten("Beim Lexus RC F tritt nach fünf Jahren Durchrostung an der Ka
 check("A9 SYNTHETISCH: allgemein formulierter Durchrostungsbefund mit Garantieangabe ergibt über den Pfad "
       "einen Fakt (Defektsignal trotz Garantiekontext)",
       len(f_a8) == 1, str([(x.bauteil, x.aussage[:60]) for x in f_a8]))
-# Reichweiten-Nachtrag: dieselbe Aussage als EINZELEREIGNIS ("wurde festgestellt ... abgelehnt") ist ein
-# echter Schaden (A8), aber keine Modellschwachstelle -- vorher hier faelschlich als Fakt erwartet.
+# Reichweite (N19-Abschluss): derselbe Schaden OHNE Aussage über Verbreitung ist ein echter Schaden (A8),
+# aber keine belegte Modellschwachstelle -- unbestaetigt mit eigenem Grund. Nicht die Vergangenheitsform
+# entscheidet das (vorher hier als 'einzelbericht' erwartet), sondern die fehlende Reichweitenevidenz.
 f_a9b, ab_a9b = fakten("Beim Lexus RC F wurde nach fünf Jahren Durchrostung an der Karosserie festgestellt, "
                        "die Garantie wurde abgelehnt.")
-check("A9b SYNTHETISCH: derselbe Befund als Einzelereignis -> kein Modell-Fakt, Grund 'einzelbericht'",
-      f_a9b == [] and any(a.get("grund") == "einzelbericht" for a in ab_a9b))
+check("A9b SYNTHETISCH: derselbe Schaden ohne Reichweitenevidenz -> kein Modell-Fakt, Grund 'reichweite_unbelegt'",
+      f_a9b == [] and any(a.get("grund") == "reichweite_unbelegt" for a in ab_a9b))
 check("A10 SYNTHETISCH: Frostschutz-Satz erzeugt keinen Fakt",
       bauteile("Der Frostschutz im Kühlsystem des Lexus RC F wurde geprüft.") == [])
 
 # ── B) Fremdes Bauteil aus Nachbarzeilen ───────────────────────────────────────────────────────
 print("\n=== B) Bauteil nur aus der Defektzeile ===")
+# Die Defektzeile traegt "haeufig" (Reichweite); geprueft wird hier die Bauteilbindung.
 TABELLE = ("Spurhalteassistent\nSerie\nSpurwechselassistent\nSerie\nVerkehrsschild-Erkennung\nSerie\n"
-           "Wasserpumpe\nundicht\nFernlichtassistent\nSerie\nKlimaanlage\nSerie")
+           "Wasserpumpe\nhäufig undicht\nFernlichtassistent\nSerie\nKlimaanlage\nSerie")
 check("B0 Der Block wird als Tabelle erkannt, Fließtext nicht",
       _ist_tabellenblock(TABELLE) and not _ist_tabellenblock("Beim RC F wird die Wasserpumpe häufig undicht."))
 b1 = bauteile(TABELLE)
-check("B1 SYNTHETISCH: Defektzeile 'undicht' in fremder Ausstattungstabelle -> kein 'Spurhalteassistent'",
+check("B1 SYNTHETISCH: Defektzeile in fremder Ausstattungstabelle -> Bauteil der Defektzeile, kein 'Spurhalteassistent'",
       b1 == ["Wasserpumpe"], str(b1))
+check("B1b Bauteilbindung (Funktion): lokaler Text der Defektzeile enthält Zeilenlabel, keine Fremdzeile",
+      "Wasserpumpe" in _defekt_lokaler_text(TABELLE) and "Spurhalteassistent" not in _defekt_lokaler_text(TABELLE))
 check("B2 SYNTHETISCH: Tabellenzeile ohne eigenes Bauteil in der Defektzeile erzeugt keinen Fremd-Fakt",
       bauteile("Spurhalteassistent\nSerie\nSpurwechselassistent\nSerie\nVerkehrsschild-Erkennung\nSerie\n"
                "Fernlichtassistent\nSerie\nDefekt möglich\nSerie\nKlimaanlage\nSerie") == [])
@@ -229,7 +233,7 @@ check("D8 ECHT: Rettungsdatenblatt-Extrakt -> keine Schwachstelle",
 check("D9 ECHT: alle 16 echten Tavily-Snippets der Wartungsanfragen -> keine Schwachstelle",
       all(fakten(h["content"], url=h["url"], titel=h.get("title") or "")[0] == []
           for h in _wj["ohne UXC1"] + _wj["mit UXC1"]))
-_zeile = ADAC_TEXT.replace("Spurhalteassistent\nSerie\n", "Spurhalteassistent\nSerie\nWasserpumpe\nundicht\n", 1)
+_zeile = ADAC_TEXT.replace("Spurhalteassistent\nSerie\n", "Spurhalteassistent\nSerie\nWasserpumpe\nhäufig undicht\n", 1)
 check("D10 ECHT+SYNTHETISCH: echte ADAC-Seite mit EINGEFÜGTER Defektzeile -> genau das eingefügte Bauteil, "
       "nicht 'Spurhalteassistent'/'Durchrostung'",
       bauteile(_zeile, url=ADAC_URL, titel=ADAC_TITEL) == ["Wasserpumpe"],
@@ -263,18 +267,89 @@ check("E3 SYNTHETISCH: klarer allgemeiner Modellbefund OHNE 'ich' und OHNE 'viel
       and bt("Beim Lexus RC F ist die Wasserpumpe häufig undicht.") == ["Wasserpumpe"]
       and bt("Typische Schwachstelle des Lexus RC F: die Wasserpumpe wird undicht.") == ["Wasserpumpe"]
       and bt(f"Die Wasserpumpe {M} ist ein bekanntes Problem.") == ["Wasserpumpe"])
-check("E4 SYNTHETISCH: Einzelereignis mit bloß behauptetem 'bekannten Problem' -> kein Fakt",
-      bt(f"Die Wasserpumpe {M} war undicht, ein bekanntes Problem.") == []
-      and bt(f"Die Wasserpumpe {M} war dreimal undicht, ein bekanntes Problem.") == [])
+check("E4 SYNTHETISCH: tatsächlicher Einzelbericht (Zählung am Fahrzeug / Sprecher) mit bloß behauptetem "
+      "'bekannten Problem' -> kein Fakt",
+      bt(f"Die Wasserpumpe {M} war dreimal undicht, ein bekanntes Problem.") == []
+      and bt("Bei meinem Lexus RC F war die Wasserpumpe undicht, ein bekanntes Problem.") == [])
+# Korrigiert (N19-Abschluss): ohne Einzelfahrzeug-Bezug traegt "ein bekanntes Problem" die allgemeine
+# Aussage im Satz selbst; die Vergangenheitsform ist kein Gegenbeleg (vorher hier als kein Fakt erwartet).
+check("E4b SYNTHETISCH: 'war undicht, ein bekanntes Problem' ohne Einzelfahrzeug-Bezug -> Fakt",
+      bt(f"Die Wasserpumpe {M} war undicht, ein bekanntes Problem.") == ["Wasserpumpe"])
 check("E5 SYNTHETISCH: Vergangenheit MIT Haeufigkeit/Typik oder Populationsreichweite bleibt Fakt",
       bt("Beim Lexus RC F war die Wasserpumpe häufig undicht.") == ["Wasserpumpe"]
       and bt("Bei frühen Modellen des Lexus RC F war die Wasserpumpe undicht.") == ["Wasserpumpe"])
-check("E6 Unterscheidung (Funktion): Ereignis/Anker -> Einzelbericht, Modellbefund -> nicht",
-      _ist_einzelbericht(f"Die Wasserpumpe {M} war dreimal undicht.")
-      and _ist_einzelbericht("Die Pumpe wurde nach 80.000 km ersetzt und war undicht.")
-      and _ist_einzelbericht(f"Die Wasserpumpe {M} ist undicht.", True)
-      and not _ist_einzelbericht(f"Die Wasserpumpe {M} ist undicht.", False)
-      and not _ist_einzelbericht("Bei vielen Fahrzeugen war die Pumpe dreimal undicht."))
+check("E6 Reichweite (Funktion): einzel / allgemein / unbelegt -- Zeitform und km-Anker entscheiden nicht",
+      _reichweite(f"Die Wasserpumpe {M} war dreimal undicht.") == "einzel"
+      and _reichweite(f"Die Wasserpumpe {M} ist undicht.", (True, False)) == "einzel"
+      and _reichweite(f"Die Wasserpumpe {M} ist undicht.") == "unbelegt"
+      and _reichweite("Die Pumpe wurde nach 80.000 km ersetzt und war undicht.") == "unbelegt"
+      and _reichweite(f"Die Wasserpumpe {M} ist undicht.", (False, True)) == "allgemein"
+      and _reichweite("Bei diesem Modell tritt der Defekt häufig nach 90.000 km auf.") == "allgemein"
+      and _reichweite("Bei vielen Fahrzeugen war die Pumpe dreimal undicht.") == "allgemein")
+
+# ── F) N19-Abschluss: tragende Reichweitenevidenz aus Satz ODER zugehörigem Kontext ──────────────
+print("\n=== F) Reichweitenevidenz: bare Aussage, Einzelkontext, Modellkontext, km-Anker, historisch ===")
+BARE = f"Die Wasserpumpe {M} ist undicht."
+f_bare, ab_bare = fakten(BARE)
+check("F1 SYNTHETISCH: unklare bare-Präsensaussage ohne Kontext (hohe Domain) -> kein bestätigter Fakt, "
+      "Grund 'reichweite_unbelegt'",
+      f_bare == [] and any(a.get("grund") == "reichweite_unbelegt" for a in ab_bare))
+check("F2 SYNTHETISCH: derselbe Satz mit eindeutigem Einzelfahrzeug-Kontext -> kein Fakt ('einzelbericht')",
+      fakten("Unser Testwagen Lexus RC F stand zwei Tage in der Werkstatt. " + BARE)[0] == []
+      and any(a.get("grund") == "einzelbericht"
+              for a in fakten("Unser Testwagen Lexus RC F stand zwei Tage in der Werkstatt. " + BARE)[1]))
+check("F3 SYNTHETISCH: derselbe Satz mit tragendem Modellproblem-Kontext -> Fakt",
+      bt("Typische Schwachstellen des Lexus RC F:\n\n" + BARE) == ["Wasserpumpe"]
+      and bt("Beim Lexus RC F treten einige bekannte Probleme auf. " + BARE) == ["Wasserpumpe"]
+      and bt(BARE + " Das ist ein bekanntes Problem dieses Modells.") == ["Wasserpumpe"])
+check("F4 SYNTHETISCH: Kontext muss zu Defekt und Zielmodell gehören",
+      bt("Typische Schwachstellen des Lexus GS F:\n\n" + BARE) == []
+      and bt("Beim Lexus RC F treten einige bekannte Probleme auf. Der Lexus GS F ist anders aufgebaut. " + BARE) == []
+      and bt("Beim Lexus RC F ist das häufig unproblematisch. " + BARE) == []
+      and bt(BARE + " Das ist beim Lexus GS F ein bekanntes Problem.") == [])
+check("F5 SYNTHETISCH: Seitenüberschrift oder Domainstufe allein tragen keine Reichweite",
+      bt(BARE, "Typische Schwachstellen des Lexus RC F") == []
+      and bauteile(BARE, url="https://www.adac.de/lexus-rc-f-maengel") == [])
+check("F6 SYNTHETISCH: allgemeiner wiederkehrender Defekt MIT Kilometerangabe -> Fakt (Anker macht kein Einzelereignis)",
+      bt("Beim Lexus RC F wird die Wasserpumpe bei diesem Modell häufig nach 90.000 km undicht.") == ["Wasserpumpe"]
+      and bt(f"Die Wasserpumpe {M} wird typischerweise ab 80.000 km undicht.") == ["Wasserpumpe"])
+check("F7 SYNTHETISCH: allgemeiner historischer Modellbefund -> Fakt",
+      bt("Bei den ersten Baujahren des Lexus RC F war die Wasserpumpe undicht.") == ["Wasserpumpe"]
+      and bt("Vor dem Facelift war beim Lexus RC F die Wasserpumpe undicht.") == ["Wasserpumpe"])
+check("F8 SYNTHETISCH: Snippet ohne den Rahmen (nur der Satz) bleibt unbelegt, derselbe Satz MIT im Snippet "
+      "enthaltenem Rahmen wird Fakt -- kein Kontext wird ergänzt, der nicht im Treffer steht",
+      bt(BARE) == [] and bt("Typische Schwachstellen des Lexus RC F:\n\n" + BARE) == ["Wasserpumpe"])
+
+# ── G) Candidate-Pfad: Reichweitenregel und echte Mehrquellen-Gegenprobe ──────────────────────────
+print("\n=== G) Candidate-Pfad (Quellen unter der Schwelle), qualifizierende unabhängige Familien ===")
+# Drei verschiedene Familien unter MIN_SCORE_FAKT, per Werkstatt-Titel als 'secondary' klassifiziert
+# (NICHT community/unknown) -- zaehlen also tatsaechlich fuer MIN_FAMILIES_MULTI_SOURCE.
+FAM = ["https://www.werkstatt-eins.example/rc-f", "https://www.reparatur-zwei.example/rc-f",
+       "https://www.kfz-drei.example/rc-f"]
+def cand(texte, anker=None):
+    tr_ = [{"url": u, "title": "Lexus RC F Werkstatt-Ratgeber", "content": t} for u, t in zip(FAM, texte)]
+    return _schwachstelle_candidate_fakten(tr_, marke="Lexus", modell="RC F", generation=None,
+                                           haupt_fakten=anker or [], erlaube_multi_source=True)
+check("G0 Gegenprobe ist echt: die drei Familien sind qualifizierend (secondary, verschiedene Familien, unter der Schwelle)",
+      all(tr._wartung_source_type({"url": u, "title": "Lexus RC F Werkstatt-Ratgeber"}) == "secondary" for u in FAM)
+      and len({tr._source_family(u) for u in FAM}) == 3
+      and all(tr._score_domain_fuer_marke(u, tr.KATEGORIE_SCHWACHSTELLEN, "Lexus") < tr.MIN_SCORE_FAKT for u in FAM))
+fg1, _, _ = cand(["Beim Lexus RC F ist die Wasserpumpe häufig undicht."] * 3)
+check("G1 POSITIVKONTROLLE: drei qualifizierende Familien mit allgemeiner Aussage -> Mehrquellen-Fakt",
+      len(fg1) == 1 and fg1[0].beleglage == "mehrfach_unabhaengig", str([(x.bauteil, x.beleglage) for x in fg1]))
+fg2, ab2, _ = cand([BARE] * 3)
+check("G2 drei qualifizierende Familien mit bare-Aussage ohne Reichweite -> KEIN Fakt, Grund 'reichweite_unbelegt'",
+      fg2 == [] and sum(1 for a in ab2 if a.get("grund") == "reichweite_unbelegt") == 3)
+fg3, ab3, _ = cand([f"Die Wasserpumpe {M} war dreimal undicht, ein bekanntes Problem."] * 3)
+check("G3 drei qualifizierende Familien mit Einzelberichten -> KEIN Fakt, Grund 'einzelbericht'",
+      fg3 == [] and sum(1 for a in ab3 if a.get("grund") == "einzelbericht") == 3)
+_anker = tr.WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe",
+                    aussage="Beim Lexus RC F ist die Wasserpumpe häufig undicht.", confidence="mittel",
+                    quellen=[tr.EvidenceQuelle(typ="web_technik", url="https://www.fachmedium.de/a",
+                                               titel="Fachmedium", qualitaet="Fachmedien")])
+cand([BARE, f"Die Wasserpumpe {M} war dreimal undicht.", BARE], anker=[_anker])
+check("G4 ein schwacher bare-/Einzel-Kandidat reichert einen Hauptpfad-Anker NICHT an",
+      [q.url for q in _anker.quellen] == ["https://www.fachmedium.de/a"])
 
 # ── Bis zum Bericht (echter run_kaufcheck-Pfad, gestubbte Suche/LLM) ────────────────────────────
 print("\n=== Bericht, Verkäuferfragen und Dokumente (gestubbter run_kaufcheck) ===")
@@ -386,6 +461,14 @@ async def pfad():
     check("P10 SYNTHETISCH: allgemeiner Modellbefund ohne 'ich'/'viele' -> Insight, Bericht, Frage/Nachweis",
           any("Wasserpumpe" in i.titel for i in sw_insights(r5)) and "Wasserpumpe" in r5.bericht
           and "Wasserpumpe" in sichtbar(r5), str([i.titel for i in sw_insights(r5)]))
+    r6 = await lauf([treffer_(HOCH, "Lexus RC F Gebrauchtwagen", "Die Wasserpumpe des Lexus RC F ist undicht.")])
+    check("P11 SYNTHETISCH: bare-Aussage ohne Reichweitenevidenz -> kein Insight, keine Frage, kein Dokument-Nachweis",
+          sw_insights(r6) == [] and "Wasserpumpe" not in sichtbar(r6), str([i.titel for i in sw_insights(r6)]))
+    r7 = await lauf([treffer_(HOCH, "Lexus RC F Gebrauchtwagen",
+                              "Typische Schwachstellen des Lexus RC F:\n\nDie Wasserpumpe des Lexus RC F ist undicht.")])
+    check("P12 SYNTHETISCH: derselbe Satz unter tragendem Modellproblem-Rahmen -> Insight, Bericht, Frage/Nachweis",
+          any("Wasserpumpe" in i.titel for i in sw_insights(r7)) and "Wasserpumpe" in r7.bericht
+          and "Wasserpumpe" in sichtbar(r7), str([i.titel for i in sw_insights(r7)]))
     check("P7 Empfehlung/Status in allen Läufen unberührt von diesem Paket (gleiche Stufe ohne Fakt)",
           (r0.empfehlung, r0.recommendation_state) == (r1.empfehlung, r1.recommendation_state),
           f"{(r0.empfehlung, r0.recommendation_state)} vs {(r1.empfehlung, r1.recommendation_state)}")

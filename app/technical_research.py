@@ -3832,6 +3832,10 @@ _RE_MODELLPOPULATION = re.compile(
     r"fahrzeugtyp|motor|generation|serie|variante)\w*"
     r"|\bbei\s+(?:fr(?:ü|ue)hen|fr(?:ü|ue)heren|(?:ä|ae)lteren|einigen|manchen|bestimmten)\s+(?:\w+\s+){0,1}"
     r"(?:modellen|exemplaren|fahrzeugen|baujahren|versionen|varianten)\b"
+    r"|\bbei\s+den\s+(?:ersten|fr(?:ü|ue)hen|fr(?:ü|ue)heren|(?:ä|ae)lteren|sp(?:ä|ae)teren)\s+(?:\w+\s+){0,2}"
+    r"(?:[\w-]*generationen|baujahren|modellen|exemplaren|serien|jahrg(?:ä|ae)ngen)\b"
+    r"|\b(?:vor|bis\s+zur?)\s+(?:dem\s+|der\s+)?(?:facelift|modellpflege)\b"
+    r"|\bbei\s+(?:viel|wenig|kurzstrecken|langstrecken|sport)fahrern\b"
     r"|\bmodelltypisch\w*|\bserientypisch\w*"
     r"|\btypisch\s+f(?:ü|ue)r\s+(?:das|dieses|diesen?|die|diese)\s+(?:modell|modellreihe|baureihe|fahrzeug|"
     r"motor|auto)\w*"
@@ -3839,58 +3843,122 @@ _RE_MODELLPOPULATION = re.compile(
     re.IGNORECASE)
 
 
-# Reichweiten-Nachtrag: auch OHNE Ich-/Mein-Marker kann eine Aussage ein einzelnes Schadensereignis
-# sein ("Die Pumpe war dreimal undicht", "... nach 90.000 km undicht"). Ein Ereignis ist EPISODISCH:
-# Zählung ("dreimal"), konkreter Anker (Laufleistung/Zeitraum) oder Vergangenheitsform. Ein
-# allgemeiner Modellbefund ist dagegen eine Aussage im Präsens über die Eigenschaft ("neigt zu",
-# "ist häufig undicht", "typische Schwachstelle") und braucht weder "ich" noch "viele".
-#  * Zählung/Anker: Einzelereignis, nur eine ausdrückliche Populationsreichweite hebt das auf
-#    (auch "bekanntes Problem" nicht: bloß behauptete Bekanntheit am Einzelfall).
-#  * Bloße Vergangenheitsform: Einzelereignis, außer die Aussage nennt selbst Häufigkeit/Typik
-#    ("war häufig undicht") oder eine Populationsreichweite.
-# Einzelfahrzeug-Bezug kann auch aus Überschrift oder Nachbarsätzen kommen (Testwagen, Leser,
-# "unser ...") -- dann gilt dieselbe Regel für den Satz.
-_RE_EREIGNIS_ANKER = re.compile(
-    r"\b(?:ein|zwei|drei|vier|f(?:ü|ue)nf|sechs|\d+)\s*-?\s*mal\b|\b(?:einmal|zweimal|dreimal|viermal|"
-    r"mehrmals|einmalig)\b"
-    r"|\b(?:nach|bei|ab|mit|ca\.?|rund)\s+\d[\d.,]*\s*(?:km|kilometern|tkm)\b"
-    r"|\bseit\s+(?:\w+\s+){0,2}(?:jahren|monaten|wochen|tagen)\b|\bschon\s+wieder\b"
-    r"|\b(?:im|seit)\s+(?:januar|februar|m(?:ä|ae)rz|april|mai|juni|juli|august|september|oktober|"
-    r"november|dezember|winter|sommer|herbst|fr(?:ü|ue)hjahr)\s*\d{0,4}\b",
+# N19-Abschluss (Reichweite): eine bestätigte MODELLschwachstelle braucht tragende Evidenz dafür, dass
+# die Aussage über die Modellpopulation spricht -- im Satz selbst oder im eindeutig zugehörigen
+# Kontext. Weder Präsens/Vergangenheit noch eine Kilometer-/Zeitangabe entscheiden das; eine
+# Domainstufe oder die Seitenüberschrift allein auch nicht. Drei Ergebnisse:
+#   "einzel"    -- Aussage über EIN Fahrzeug (Sprecher, Testwagen/Leser, Zählung am Einzelfahrzeug
+#                  wie "dreimal"/"schon wieder"), ohne ausdrückliche Populationsreichweite. Ein
+#                  Bekanntheits-/Häufigkeitswort hebt das nicht auf.
+#   "allgemein" -- der Satz trägt selbst eine Aussage über Verbreitung/Typik/Population ("neigt zu",
+#                  "häufig", "typische Schwachstelle", "bei diesem Modell", "gilt als", "bekanntes
+#                  Problem" ...) ODER ein eindeutig zugehöriger Kontext DESSELBEN Treffers tut es:
+#                  ein Rahmensatz bis zu 5 Sätze davor ("Typische Schwachstellen des RC F:", "Beim
+#                  Golf treten typische Probleme auf.") -- problembezogen, ohne eigenes Bauteil, nicht
+#                  relativierend -- oder ein rückverweisender Folgesatz ("Das ist ein bekanntes Problem
+#                  dieses Modells."). Ein Fremdmodell- oder Einzelfahrzeugsatz bricht den Rahmen; der
+#                  Treffer-Titel zählt nie als Rahmen.
+#   "unbelegt"  -- weder noch ("Die Wasserpumpe des Lexus RC F ist undicht."): bleibt unbestätigt.
+_RE_EINZELWIEDERHOLUNG = re.compile(
+    r"\b(?:ein|zwei|drei|vier|f(?:ü|ue)nf|sechs|\d+)\s*-?\s*mal\b|\b(?:zweimal|dreimal|viermal|mehrmals)\b"
+    r"|\bschon\s+wieder\b|\berneut\b", re.IGNORECASE)
+_RE_ALLGEMEINE_REICHWEITE = re.compile(
+    r"\bh(?:ä|ae)ufig\w*|\boft(?:mals)?\b|\btypisch\w*|\bneig(?:t|en)\s+(?:\w+\s+){0,3}zu\w*|\banf(?:ä|ae)llig\w*"
+    r"|\bverbreitet\w*|\bschwachpunkt\w*|\bschwachstelle\w*|\bschwachstellen\b|\bimmer\s+wieder\b"
+    r"|\bregelm(?:ä|ae)(?:ß|ss)ig\w*|\bgeh(?:ä|ae)uft\w*|\bvermehrt\w*|\bkinderkrankheit\w*|\bber(?:ü|ue)chtigt\w*"
+    r"|\bgilt\s+als\b|\bbekannt\s+f(?:ü|ue)r\b|\bin\s+der\s+regel\b|\bmeist(?:ens)?\b"
+    r"|\bbekannt(?:e|en|er|es)?\s+(?:\w+\s+){0,1}(?:problem\w*|m(?:ä|ae)ngel\w*|mangel\w*|defekt\w*|"
+    r"schw(?:ä|ae)che\w*|fehler\w*|thema|krankheit\w*|leiden|\w*erscheinung\w*|\w*schw(?:ä|ae)chen)",
     re.IGNORECASE)
-_RE_VERGANGENHEIT = re.compile(
-    r"\b(?:war|waren|hatte|hatten|fiel|fielen|wurde|wurden|musste|mussten|trat|traten|zeigte|zeigten|"
-    r"bekam|bekamen|ging|gingen|riss|gab)\b", re.IGNORECASE)
-_RE_ALLGEMEINBEFUND = re.compile(
-    r"\bh(?:ä|ae)ufig\w*|\boft\b|\btypisch\w*|\bneigt\b|\bneigen\b|\banf(?:ä|ae)llig\w*|\bverbreitet\w*|"
-    r"\bserientypisch\w*|\bschwachpunkt\w*|\bschwachstelle\w*|\bimmer\s+wieder\b|\bregelm(?:ä|ae)(?:ß|ss)ig\w*",
+_RE_RUECKVERWEIS_ANFANG = re.compile(
+    r"^\s*(?:das|dies|dieser|diese|dieses|der\s+(?:defekt|fehler|schaden|mangel)|das\s+problem|es)\b",
     re.IGNORECASE)
 
 
-def _einzelkontext(titel: str | None, satz_liste: list[str], satz: str) -> bool:
-    """True, wenn Überschrift oder ein unmittelbarer Nachbarsatz einen Einzelfahrzeug-/Sprecher-
-    Bezug trägt (Testwagen, Leser, "unser ...", "bei meinem ...")."""
-    texte = [titel or ""]
+def _traegt_allgemeine_reichweite(text: str) -> bool:
+    return bool(_RE_MODELLPOPULATION.search(text or "") or _RE_ALLGEMEINE_REICHWEITE.search(text or ""))
+
+
+_RE_PROBLEMRAHMEN = re.compile(
+    r"problem\w*|schwach\w*|m(?:ä|ae)ngel\w*|defekt\w*|(?:ä|ae)rger\w*|kinderkrankheit\w*|fehler\w*|"
+    r"sorgenkind\w*|schw(?:ä|ae)che\w*|baustelle\w*|\w*erscheinung\w*", re.IGNORECASE)
+
+
+def _rahmende_zeile(satz: str) -> bool:
+    """Rahmensatz/Abschnittskopf, der die folgenden Punkte als allgemeine Befunde einleitet ("Typische
+    Schwachstellen des RC F:", "Beim Golf treten typische Probleme auf."): trägt selbst Reichweite,
+    ist problembezogen und nennt KEIN eigenes Bauteil (sonst ist er selbst ein Befund, kein Rahmen)."""
+    s = (satz or "").strip()
+    if not _traegt_allgemeine_reichweite(s) or _RE_EINZELFAHRZEUG.search(s):
+        return False
+    if not _RE_PROBLEMRAHMEN.search(s) or _ist_benign_relativiert(s):
+        return False          # "Das ist häufig unproblematisch." rahmt nichts
+    return not _schwachstellen_bauteil_treffer(_norm(s), _bauteil_vokabular())
+
+
+def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
+                         marke: str | None, modell: str | None) -> tuple[bool, bool]:
+    """(einzelfahrzeug, allgemein) aus dem verfügbaren Kontext DESSELBEN Treffers. Die Überschrift
+    zählt nur als Einzelfahrzeug-Hinweis (Testwagen/Leser), nie als Beleg für Allgemeinheit."""
+    einzel = bool(_RE_EINZELFAHRZEUG.search(titel or ""))
+    allgemein = False
     try:
         i = satz_liste.index(satz)
     except ValueError:
-        i = -1
-    if i >= 0:
-        texte += satz_liste[max(0, i - 1):i] + satz_liste[i + 1:i + 2]
-    return any(_RE_EINZELFAHRZEUG.search(t) for t in texte)
+        return einzel, False
+    nachbarn = satz_liste[max(0, i - 1):i] + satz_liste[i + 1:i + 2]
+    if any(_RE_EINZELFAHRZEUG.search(t) for t in nachbarn):
+        einzel = True
+
+    def _fremd(t: str) -> bool:
+        if (marke or modell) and _claim_widerspricht_fahrzeug_lokal(t, marke, modell):
+            return True
+        # Nennt der Satz die Marke, aber nicht das Zielmodell ("Typische Schwachstellen des Lexus GS F"),
+        # gehört er nicht zum Zielmodell.
+        return bool(marke and modell and _norm(marke) in _norm(t).split() and not _satz_nennt_modell(t, modell))
+
+    titel_norm = _norm(titel or "")
+
+    def _ist_titel(t: str) -> bool:
+        # Der Treffer-Titel steht im Pfad als erster "Satz" vor dem Inhalt; er beweist allein nichts.
+        return bool(titel_norm) and _norm(t) == titel_norm
+
+    # Rahmensatz davor (höchstens 5 Sätze zurück). Dazwischen dürfen weitere Punkte derselben Liste
+    # oder neutrale Brückensätze stehen; ein Fremdmodell- oder Einzelfahrzeugsatz bricht den Rahmen.
+    for j in range(i - 1, max(-1, i - 6), -1):
+        vorher = satz_liste[j]
+        if _ist_titel(vorher):
+            continue
+        if _fremd(vorher) or _RE_EINZELFAHRZEUG.search(vorher):
+            break
+        if _rahmende_zeile(vorher):
+            allgemein = True
+            break
+    # Rückverweisender Folgesatz ("Das ist ein bekanntes Problem dieses Modells.").
+    if not allgemein and i + 1 < len(satz_liste):
+        folge = satz_liste[i + 1]
+        if (_RE_RUECKVERWEIS_ANFANG.search(folge) and _traegt_allgemeine_reichweite(folge)
+                and not _RE_EINZELFAHRZEUG.search(folge) and not _fremd(folge)):
+            allgemein = True
+    return einzel, allgemein
+
+
+def _reichweite(claim: str, kontext: tuple[bool, bool] = (False, False)) -> str:
+    """"einzel" / "allgemein" / "unbelegt" (siehe oben)."""
+    c = claim or ""
+    kontext_einzel, kontext_allgemein = kontext
+    if _RE_MODELLPOPULATION.search(c):
+        return "allgemein"
+    if kontext_einzel or _RE_EINZELFAHRZEUG.search(c) or _RE_EINZELWIEDERHOLUNG.search(c):
+        return "einzel"
+    if _RE_ALLGEMEINE_REICHWEITE.search(c) or kontext_allgemein:
+        return "allgemein"
+    return "unbelegt"
 
 
 def _ist_einzelbericht(claim: str, kontext_einzelfahrzeug: bool = False) -> bool:
-    """True, wenn die Aussage ein einzelnes Fahrzeug/Ereignis beschreibt und KEINE ausreichende
-    Reichweite über die Modellpopulation trägt (siehe oben)."""
-    c = claim or ""
-    if _RE_MODELLPOPULATION.search(c):
-        return False
-    if kontext_einzelfahrzeug or _RE_EINZELFAHRZEUG.search(c):
-        return True
-    if _RE_EREIGNIS_ANKER.search(c):
-        return True
-    return bool(_RE_VERGANGENHEIT.search(c)) and not _RE_ALLGEMEINBEFUND.search(c)
+    """Kompatibel: True, wenn die Aussage ein Einzelfall ist (ohne Populationsreichweite)."""
+    return _reichweite(claim, (kontext_einzelfahrzeug, False)) == "einzel"
 
 
 # RC-W3: generische Verneinung ÜBER jedes bekannte Defekt-/Verschleisswort
@@ -6315,14 +6383,17 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "no_problem_signal", "satz": claim[:120]})
                         continue
-                if kategorie == "schwachstelle" and _ist_einzelbericht(
-                        claim, _einzelkontext(r.get("title"), satz_liste, satz)):
-                    # N19: ein Einzelereignis/Erfahrungsbericht belegt einen Fall, keine
-                    # Modellschwachstelle -- unabhängig vom Vertrauen in die Domain (Reichweite !=
-                    # Quellenvertrauen). Nach dem Problemsignal: Nicht-Defekte behalten ihren Grund.
-                    abgelehnt.append({"url": url, "kategorie": kategorie,
-                                      "grund": "einzelbericht", "satz": claim[:120]})
-                    continue
+                if kategorie == "schwachstelle":
+                    # N19: eine Modellschwachstelle braucht tragende Reichweitenevidenz (Satz oder
+                    # eindeutig zugehöriger Kontext) -- unabhängig vom Vertrauen in die Domain.
+                    # Nach dem Problemsignal: Nicht-Defekte behalten ihren eigenen Grund.
+                    _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
+                                                                  marke=marke, modell=modell))
+                    if _rw != "allgemein":
+                        abgelehnt.append({"url": url, "kategorie": kategorie,
+                                          "grund": "einzelbericht" if _rw == "einzel" else "reichweite_unbelegt",
+                                          "satz": claim[:120]})
+                        continue
                 if kategorie == "rueckruf" and not any(w in n for w in _RUECKRUF_WORTE):
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "no_recall_signal", "satz": claim[:120]})
@@ -7512,11 +7583,14 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
                                       "grund": "no_problem_signal", "satz": claim[:120]})
                     continue
-                if _ist_einzelbericht(claim, _einzelkontext(r.get("title"), satz_liste, satz)):
-                    # Auch ein schwacher Kandidat darf die Reichweitenregel nicht umgehen: ein
-                    # Einzelereignis weder anreichern noch zur Mehrquellen-Gruppe zaehlen lassen.
+                _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
+                                                              marke=marke, modell=modell))
+                if _rw != "allgemein":
+                    # Auch ein schwacher Kandidat darf die Reichweitenregel nicht umgehen: weder
+                    # anreichern noch zur Mehrquellen-Gruppe zaehlen lassen.
                     abgelehnt.append({"url": url, "kategorie": "schwachstelle",
-                                      "grund": "einzelbericht", "satz": claim[:120]})
+                                      "grund": "einzelbericht" if _rw == "einzel" else "reichweite_unbelegt",
+                                      "satz": claim[:120]})
                     continue
                 treffer_voc = _schwachstellen_bauteil_treffer(n, vokabular)
                 if not treffer_voc:

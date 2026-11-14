@@ -79,7 +79,7 @@ check("A) Modell im Claim selbst -> ACCEPT",
 # B) Modell NUR im Titel, Claim ohne Modell -> ACCEPT (unverändert, grund=None)
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-golf-b", "VW Golf Wartung",
-             "Die Wasserpumpe kann undicht werden."),
+             "Die Wasserpumpe wird häufig undicht."),  # N19: Reichweite im Satz (Pruefziel hier: Modellzuordnung ueber Titel)
     "VW", "Golf")
 check("B) Modell nur im Titel -> ACCEPT (stark ausgerichtet, unverändert)",
       len(f) == 1 and f[0].bauteil == "Wasserpumpe")
@@ -134,7 +134,7 @@ check("G) Passat-Satz explizit als schwach_ausgerichtet_ohne_modellnennung abgel
 # H) Golf-Kontext -> Passat-Satz -> neutraler Folgesatz darf NICHT wieder Golf erben
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-h", TITEL_SCHWACH,
-             "Beim Golf tritt eine undichte Wasserpumpe auf. "
+             "Beim Golf tritt häufig eine undichte Wasserpumpe auf. "  # N19: Reichweite im Satz (Pruefziel hier: Modellwechsel)
              "Beim Passat ist hingegen die Steuerkette auffällig. "
              "Auch die Kupplung verschleißt früh."),
     "VW", "Golf")
@@ -167,7 +167,7 @@ check("J) generische Herstellerseite ohne lokalen Modellkontext -> REJECT",
 # K) Titel/Snippet mehrere Modelle -> Claim nur dem lokal genannten Modell zugeordnet
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-k", TITEL_SCHWACH,
-             "Beim Golf kann die Wasserpumpe undicht werden. "
+             "Beim Golf wird die Wasserpumpe häufig undicht. "  # N19: Reichweite im Satz (Pruefziel hier: Mehrmodell-Zuordnung)
              "Beim Touran gibt es Probleme mit dem Fensterheber."),
     "VW", "Golf")
 bauteile = {x.bauteil for x in f}
@@ -215,7 +215,7 @@ print("=" * 78)
 # O) Golf-Satz -> DIREKT Wasserpumpen-Claim -> ACCEPT
 f, a = _fakten_und_gruende(
     _treffer("https://www.adac.de/vw-wartung-o", TITEL_SCHWACH,
-             "Beim Golf treten Alterungsprobleme auf. "
+             "Beim Golf treten typische Alterungsprobleme auf. "  # N19: Reichweite im Satz (Pruefziel hier: Kontext ueber direkten Folgesatz)
              "Die Wasserpumpe kann undicht werden."),
     "VW", "Golf")
 check("O) direkt nächster Satz -> ACCEPT",

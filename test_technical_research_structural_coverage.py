@@ -40,11 +40,20 @@ def _treffer(url, titel, inhalt):
     return {"url": url, "title": titel, "content": inhalt}
 
 
+# N19 (Reichweite): eine Modellschwachstelle braucht tragende Evidenz fuer die allgemeine Aussage. Die
+# Fixtures dieses Tests pruefen Segmentierung/Signal, nicht Reichweite -- sie stehen deshalb wie in echten
+# Schwachstellenartikeln unter einem Rahmensatz (`_RAHMEN`). Ohne Rahmen bleibt derselbe nackte Satz
+# unbestaetigt (`reichweite_unbelegt`, geprueft in test_n19_falsche_schwachstellen.py).
+_RAHMEN = "Beim Testmodell treten typische Probleme auf. "
+
+
 def _pruefe(satz: str, kategorie: str = "schwachstelle") -> tuple[bool, list[str]]:
     abgelehnt: list[dict] = []
-    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber", satz)]
+    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber",
+                  (_RAHMEN if kategorie == "schwachstelle" else "") + satz)]
     fakten = _extrahiere_fakten(t, kategorie, baujahr=2019, abgelehnt=abgelehnt)
-    return bool(fakten), [a.get("grund") for a in abgelehnt]
+    # Der Rahmensatz selbst (kein Bauteil) wird nicht mitbewertet -- nur der gepruefte Satz.
+    return bool(fakten), [a.get("grund") for a in [a for a in abgelehnt if not (a.get("satz") or "").startswith(_RAHMEN.strip()[:20])]]
 
 
 print("\n=== MUSS ACCEPT (echte technische Claims) ===")
@@ -122,7 +131,8 @@ check("bloßes Symptom ohne Defektbezug bleibt VERWORFEN (no_problem_signal)",
 print("\n=== Mixed Context: echter Struktur-Claim + benigner Satz im selben Treffer ===")
 treffer_mixed = [_treffer(
     "https://www.autobild.de/mazda-mx-5-ratgeber", "Mazda MX-5 ND Gebrauchtwagen-Ratgeber",
-    "Ein schief stehendes Lenkrad muss nicht unbedingt auf einen Unfallschaden hindeuten. "
+    # N19: Rahmensatz muss zum Zielmodell gehoeren (ein "Testmodell"-Rahmen waere hier Fremdfahrzeug).
+    "Beim Mazda MX-5 treten typische Probleme auf. Ein schief stehendes Lenkrad muss nicht unbedingt auf einen Unfallschaden hindeuten. "
     "Das ist haeufig unproblematisch. "
     "Bei hoeheren Laufleistungen kann die Steuerkette deutlich laenger werden, eine "
     "Probefahrt ist dringend empfehlenswert.")]

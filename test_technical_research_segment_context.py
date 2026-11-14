@@ -126,14 +126,14 @@ f, a = _fakten_und_gruende(_treffer(
     "https://www.adac.de/f", TITEL_SCHWACH,
     "Beim Golf treten mehrere typische Alterungsprobleme auf. "
     "Der Passat zeigt dagegen andere Schwachstellen. "
-    "Beim Golf kann außerdem die Kupplung früh verschleißen."))
+    "Beim Golf kann außerdem die Kupplung häufig früh verschleißen."))  # N19: Reichweite im Satz (Pruefziel hier: neuer Golf-Kontext nach Modellwechsel)
 check("F) Golf -> Passat -> später wieder Golf -> neuer Golf-Kontext aktiv",
       "Kupplung" in _bauteile(f), str(_bauteile(f)))
 
 # G) starker Golf-Titel -> neutraler Golf-Claim -> ACCEPT
 f, a = _fakten_und_gruende(_treffer(
     "https://www.adac.de/g", TITEL_STARK,
-    "Die Wasserpumpe kann undicht werden."))
+    "Die Wasserpumpe wird häufig undicht."))  # N19: Reichweite im Satz (Pruefziel hier: Modellzuordnung ueber starken Titel)
 check("G) starker Golf-Titel -> neutraler Claim -> ACCEPT",
       "Wasserpumpe" in _bauteile(f), str(_bauteile(f)))
 
@@ -148,7 +148,7 @@ check("H) starker Golf-Titel -> expliziter Passat-Claim -> REJECT",
 # I) Sammelartikel mit Golf-/Passat-/Tiguan-Passagen -> nur Golf
 f, a = _fakten_und_gruende(_treffer(
     "https://www.adac.de/i", TITEL_SCHWACH,
-    "Beim Golf kann die Wasserpumpe undicht werden. "
+    "Beim Golf wird die Wasserpumpe häufig undicht. "  # N19: Reichweite im Satz (Pruefziel hier: Sammelartikel-Zuordnung)
     "Der Passat zeigt dagegen häufiger einen Kupplungsschaden. "
     "Der Tiguan wiederum hat öfter Probleme mit dem Fensterheber."))
 bauteile_i = _bauteile(f)

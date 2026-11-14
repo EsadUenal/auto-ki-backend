@@ -29,16 +29,24 @@ def check(name: str, bedingung: bool) -> None:
         _FEHLER.append(name)
 
 
+# N19 (Reichweite): eine Modellschwachstelle braucht tragende Evidenz fuer die allgemeine Aussage. Die
+# Fixtures dieses Tests pruefen Segmentierung/Signal, nicht Reichweite -- sie stehen deshalb wie in echten
+# Schwachstellenartikeln unter einem Rahmensatz (`_RAHMEN`). Ohne Rahmen bleibt derselbe nackte Satz
+# unbestaetigt (`reichweite_unbelegt`, geprueft in test_n19_falsche_schwachstellen.py).
+_RAHMEN = "Beim Testmodell treten typische Probleme auf. "
+
+
 def _treffer(url, titel, inhalt):
     return {"url": url, "title": titel, "content": inhalt}
 
 
 def _pruefe(satz: str) -> tuple[list[str], list[tuple]]:
     abgelehnt: list[dict] = []
-    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber", satz)]
+    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber", _RAHMEN + satz)]
     fakten = _extrahiere_fakten(t, "schwachstelle", baujahr=2019, abgelehnt=abgelehnt)
     bauteile = sorted(f.bauteil for f in fakten)
-    gruende = [(a.get("grund"), (a.get("satz") or "")[:60]) for a in abgelehnt]
+    # Der Rahmensatz selbst (kein Bauteil) wird nicht mitbewertet -- nur der gepruefte Satz.
+    gruende = [(a.get("grund"), (a.get("satz") or "")[:60]) for a in [a for a in abgelehnt if not (a.get("satz") or "").startswith(_RAHMEN.strip()[:20])]]
     return bauteile, gruende
 
 
@@ -215,7 +223,7 @@ print("\n=== Dedupe-Matrix A-E (Release-Review Risiko 3) ===")
 # da `kandidaten.setdefault()` ausschliesslich ueber die Komponente dedupte).
 abgelehnt_a: list[dict] = []
 t_a = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber",
-               "Die Wasserpumpe ist undicht, ausserdem hat die Wasserpumpe einen "
+               _RAHMEN + "Die Wasserpumpe ist undicht, ausserdem hat die Wasserpumpe einen "
                "Lagerschaden.")]
 fakten_a = _extrahiere_fakten(t_a, "schwachstelle", baujahr=2019, abgelehnt=abgelehnt_a)
 check(f"A zwei VERSCHIEDENE Wasserpumpe-Risiken bleiben BEIDE erhalten: "
@@ -227,7 +235,7 @@ check(f"A zwei VERSCHIEDENE Wasserpumpe-Risiken bleiben BEIDE erhalten: "
 # Risiko" und merged wie bisher).
 abgelehnt_d: list[dict] = []
 t_d = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber",
-               "Die Wasserpumpe faellt haeufig aus, ausserdem faellt die "
+               _RAHMEN + "Die Wasserpumpe faellt haeufig aus, ausserdem faellt die "
                "Wasserpumpe haeufig aus.")]
 fakten_d = _extrahiere_fakten(t_d, "schwachstelle", baujahr=2019, abgelehnt=abgelehnt_d)
 check(f"D identische Aussage zweimal -> weiterhin 1 Fakt: {len(fakten_d)} Fakten",
@@ -334,15 +342,17 @@ print("\n=== Technische Dedupe-Matrix A-H (Release-Review: Dedupe-Semantik) ==="
 def _zwei_claims_eine_quelle(satz1: str, satz2: str, kategorie: str = "schwachstelle"):
     satz = f"{satz1}, ausserdem {satz2[0].lower()}{satz2[1:]}"
     abgelehnt: list[dict] = []
-    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber", satz)]
+    t = [_treffer("https://www.autobild.de/test", "Testmodell Ratgeber",
+                  (_RAHMEN if kategorie == "schwachstelle" else "") + satz)]
     fakten = _extrahiere_fakten(t, kategorie, baujahr=2019, abgelehnt=abgelehnt)
-    return fakten, abgelehnt
+    return fakten, [a for a in abgelehnt if not (a.get("satz") or "").startswith(_RAHMEN.strip()[:20])]
 
 
 def _zwei_quellen(satz1: str, satz2: str, kategorie: str = "schwachstelle"):
     abgelehnt: list[dict] = []
-    t = [_treffer("https://www.autobild.de/quelle-a", "Testmodell Ratgeber A", satz1),
-         _treffer("https://www.auto-motor-und-sport.de/quelle-b", "Testmodell Ratgeber B", satz2)]
+    r = _RAHMEN if kategorie == "schwachstelle" else ""
+    t = [_treffer("https://www.autobild.de/quelle-a", "Testmodell Ratgeber A", r + satz1),
+         _treffer("https://www.auto-motor-und-sport.de/quelle-b", "Testmodell Ratgeber B", r + satz2)]
     fakten = _extrahiere_fakten(t, kategorie, baujahr=2019, abgelehnt=abgelehnt)
     return fakten, abgelehnt
 
