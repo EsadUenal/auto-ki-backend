@@ -3702,13 +3702,108 @@ _RE_STRUKTUR_SPIEL = re.compile(
     r"\b(?:bekomm\w*|hat|haben|zeig\w*|entwickel\w*)\s+(?:\w+\s+){0,2}spiel\b", re.IGNORECASE)
 
 
+# N19 (falsche Schwachstellen): das Material-Signal war eine reine Teilstring-Suche
+# ("rost" in "Frostschutz") und zählte auch eine Garantie-/Spezifikationszeile
+# ("Durchrostung 12 Jahre") als beobachteten Schaden. Jetzt zählt ein Vorkommen nur, wenn
+#  (1) es ein eigenes Wort bzw. ein Kompositum mit bekanntem Vorderglied ist (kein "Frost"),
+#  (2) das Wort selbst keinen Schutz/keine Garantie benennt ("Korrosionsschutz",
+#      "rostfrei", "Durchrostungsgarantie") und
+#  (3) es nicht als Angabe mit Dauer steht ("Durchrostung 12 Jahre") bzw. unmittelbar hinter
+#      einem Garantiebegriff ohne Beobachtungsverb. "Durchrostung nach 12 Jahren" und
+#      "Nach fünf Jahren Durchrostung festgestellt, Garantie abgelehnt" bleiben Schäden.
+_RE_MATERIALWORT = re.compile(
+    r"\b(?:korrosion|(?:durch|unter|unterboden|ver|an|ab|loch|flug|kanten)?rost)\w*", re.IGNORECASE)
+_RE_MATERIALWORT_KEIN_SCHADEN = re.compile(
+    r"schutz|frei\b|freie|fest\b|best(?:ä|ae)ndig|inhibit|vorsorg|garantie|gew(?:ä|ae)hr|versiegel|"
+    r"behandl|wachs|entfern|sanier", re.IGNORECASE)
+_RE_NACH_MATERIAL_DAUER = re.compile(
+    r"^[\s:;,\-–(]*\d+[.,]?\d*\s*(?:jahre?n?|monate?n?|km)\b", re.IGNORECASE)
+_RE_VOR_MATERIAL_GARANTIE = re.compile(
+    r"(?:garantie\w*|gew(?:ä|ae)hrleistung\w*)[\s:;,\-–(]*(?:\w+\s+){0,2}$", re.IGNORECASE)
+_RE_BEOBACHTUNGSVERB = re.compile(
+    r"festgestellt|aufgetreten|\btritt\b|\btrat\b|zeigt\w*|\bgab\b|\bgibt\b|entdeckt|bemerkt|"
+    r"sichtbar|entstanden|bildet\w*|erkennbar|\bwar\b|\bwaren\b|\bist\b|\bsind\b",
+    re.IGNORECASE)
+
+
+def _hat_materialschaden(satz: str) -> bool:
+    """True, wenn `satz` ein Material-Schadenwort als BEOBACHTUNG enthält (siehe oben)."""
+    for m in _RE_MATERIALWORT.finditer(satz or ""):
+        if _RE_MATERIALWORT_KEIN_SCHADEN.search(m.group(0)):
+            continue
+        danach = satz[m.end():m.end() + 40]
+        if _RE_NACH_MATERIAL_DAUER.search(danach):
+            continue          # Angabe mit Dauer ("Durchrostung 12 Jahre"), kein Befund
+        davor = satz[max(0, m.start() - 40):m.start()]
+        if _RE_VOR_MATERIAL_GARANTIE.search(davor) and not _RE_BEOBACHTUNGSVERB.search(danach):
+            continue          # "Garantie gegen Durchrostung" ohne beobachtetes Auftreten
+        return True
+    return False
+
+
 def _hat_strukturelles_defektsignal(n: str, satz: str) -> bool:
     """True, wenn der Satz eines der oben genannten, kleinen strukturellen
     Signale enthält — zusätzlich zu, nicht statt, `_PROBLEM_WORTE`. `n` ist
     die bereits normalisierte Form des Satzes (siehe `_norm`)."""
-    return (any(w in n for w in _STRUKTUR_MATERIAL_WORTE)
+    return (_hat_materialschaden(satz)
             or bool(_RE_STRUKTUR_VERSCHLEISS.search(satz))
             or bool(_RE_STRUKTUR_SPIEL.search(satz)))
+
+
+# N19: Bauteil und Defektaussage müssen zusammengehören. Ein flach extrahierter Tabellenblock
+# (viele kurze Zeilen, kaum Satzzeichen) hat KEINEN Satzzusammenhang: ein Bauteilwort aus einer
+# Nachbarzeile gehört dann nicht zur Defektaussage. Für solche Blöcke wird das Bauteil nur in den
+# Zeilen gesucht, die das Defektsignal selbst tragen. Fließtext bleibt unverändert.
+def _ist_tabellenblock(claim: str) -> bool:
+    zeilen = [z.strip() for z in (claim or "").split("\n") if z.strip()]
+    if len(zeilen) < 4:
+        return False
+    laengen = sorted(len(z) for z in zeilen)
+    median = laengen[len(laengen) // 2]
+    mit_satzende = sum(1 for z in zeilen if z.endswith((".", "!", "?")))
+    return median < 45 and mit_satzende / len(zeilen) < 0.25
+
+
+def _defekt_lokaler_text(claim: str) -> str:
+    """Text, in dem das Bauteil der Defektaussage gesucht wird. Bei einem Tabellenblock nur die
+    Zeilen mit Defektsignal (leer, wenn keine Zeile selbst eines trägt); sonst der Claim."""
+    if not _ist_tabellenblock(claim):
+        return claim
+    zeilen = [z for z in claim.split("\n") if z.strip()]
+    treffer: list[str] = []
+    for i, z in enumerate(zeilen):
+        if any(w in _norm(z) for w in _PROBLEM_WORTE) or _hat_strukturelles_defektsignal(_norm(z), z):
+            # Die unmittelbar vorangehende Zeile ist das Zeilenlabel ("Wasserpumpe" / "undicht");
+            # weiter entfernte Zeilen gehören zu anderen Tabellenabschnitten.
+            for teil in ((zeilen[i - 1] if i else None), z):
+                if teil is not None and teil not in treffer:
+                    treffer.append(teil)
+    return "\n".join(treffer)
+
+
+# N19: Reichweite einer Aussage ist etwas anderes als das Vertrauen in die Quelle. Ein
+# Erfahrungsbericht ("bei meinem ...", "bei mir ...") belegt EINEN Fall; auch auf einer
+# hochwertigen Domain wird daraus keine wiederkehrende Modellschwachstelle. Nur eine
+# AUSDRÜCKLICHE Aussage über Wiederholung/Verbreitung im selben Segment hebt das auf.
+_RE_EINZELBERICHT = re.compile(
+    r"\bbei\s+(?:meinem|meiner|meinen|unserem|unserer|unserem|mir|uns)\b"
+    r"|\b(?:ich|wir)\s+(?:hatte|hatten|habe|haben|musste|mussten|bekam|bekamen)\b"
+    r"|\bmein(?:e|em|en|er|es)?\s+(?:\w+\s+){0,2}(?:hatte|hat|war|musste|bekam)\b"
+    r"|\b(?:ein|unser)\s+leser\b|\bleser(?:in)?\s+berichte\w*|\bforumsbeitrag\b|\berfahrungsbericht\b",
+    re.IGNORECASE)
+_RE_WIEDERKEHREND = re.compile(
+    r"\bh(?:ä|ae)ufig\w*|\boft\b|\bverbreitet\w*|\btypisch\w*|\bbekannt(?:e|es|en|er)?\s+"
+    r"(?:schwachstelle|problem|m(?:ä|ae)ngel|schwäche)\w*|\bwiederkehrend\w*|\bwiederholt\w*|"
+    r"\bbei\s+(?:vielen|zahlreichen|mehreren)\b|\bmehrfach\b|\bregelm(?:ä|ae)(?:ß|ss)ig\w*|"
+    r"\bserientypisch\w*|\bimmer\s+wieder\b|\banf(?:ä|ae)llig\w*",
+    re.IGNORECASE)
+
+
+def _ist_einzelbericht(claim: str) -> bool:
+    """True, wenn das Segment ein Einzelfall-Erfahrungsbericht ohne ausdrückliche Aussage über
+    Wiederholung/Verbreitung ist."""
+    c = claim or ""
+    return bool(_RE_EINZELBERICHT.search(c)) and not _RE_WIEDERKEHREND.search(c)
 
 
 # RC-W3: generische Verneinung ÜBER jedes bekannte Defekt-/Verschleisswort
@@ -6118,6 +6213,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     abgelehnt.append({"url": url, "kategorie": kategorie,
                                       "grund": "rueckrufabschnitt", "satz": claim[:120]})
                     continue
+                if kategorie == "schwachstelle" and _ist_einzelbericht(claim):
+                    # N19: ein Erfahrungsbericht belegt einen Fall, keine Modellschwachstelle
+                    # -- unabhängig vom Vertrauen in die Domain (Reichweite != Quellenvertrauen).
+                    abgelehnt.append({"url": url, "kategorie": kategorie,
+                                      "grund": "einzelbericht", "satz": claim[:120]})
+                    continue
                 if kategorie == "schwachstelle" and not any(w in n for w in _PROBLEM_WORTE):
                     # RC-W3 (struktureller Coverage-Fix): ohne klassisches
                     # Problemwort zählt zusätzlich das kleine, geschlossene
@@ -6192,7 +6293,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                                       "satz": claim[:120]})
                     continue
                 vage = _RE_VAGE.search(claim) if kategorie != "rueckruf" else None
-                n_bt = _norm(bt_text)
+                # N19: bei einem Tabellenblock gehört nur ein Bauteil der Defektzeile zur Aussage.
+                n_bt = _norm(_defekt_lokaler_text(bt_text) if kategorie == "schwachstelle" else bt_text)
                 treffer_voc = [(m, s) for m, s in vokabular.items() if m in n_bt][:1]
                 if not treffer_voc and kategorie == "rueckruf":
                     # Rückrufe betreffen oft Teile außerhalb des Prüfplan-Vokabulars
