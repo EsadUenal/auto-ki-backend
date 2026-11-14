@@ -180,7 +180,7 @@ check("D7 rueckruf_scope liefert nie 'confirmed_by_vin' (FIN-Betroffenheit separ
       "confirmed_by_vin" not in {rueckruf_scope(x, ident(p))[0] for x in (R_BAUTEIL, R_BEV, R_HEV)
                                 for p in ("ICE", "HEV", None)})
 
-print("\n== E: Scope-Matrix ueber den echten Rueckrufpfad (rueckruf_applicability / gefilterte_rueckrufe) ==")
+print("\n== E: Klassen-Scope-Matrix ueber den echten Rueckrufpfad (rueckruf_applicability / gefilterte_rueckrufe) ==")
 from app.recall_filter import gefilterte_rueckrufe, rueckruf_applicability
 
 
@@ -196,32 +196,45 @@ def ident_kl(pt, state="web_only"):
 E_RUECKRUFE = {
     "BEV-exklusiv": dict(eingrenzung_amtlich="Betroffen sind ausschließlich batterieelektrische Fahrzeuge."),
     "Elektrofzg-unklar": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Elektrofahrzeuge."),
+    "HEV-exklusiv": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Fahrzeuge als Vollhybrid."),
+    "PHEV-exklusiv": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge."),
+    "HEV+PHEV": dict(eingrenzung_amtlich="Betroffen sind Vollhybrid- und Plug-in-Hybrid-Fahrzeuge."),
+    "PHEV+BEV": dict(eingrenzung_amtlich="Betroffen sind Plug-in-Hybrid-Fahrzeuge und batterieelektrische Fahrzeuge."),
+    "Hybrid-generisch": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Hybridfahrzeuge."),
+    "BEV+Hybrid-generisch": dict(eingrenzung_amtlich="Betroffen sind batterieelektrische Fahrzeuge und Hybridfahrzeuge."),
     "Hochvolt-allg": dict(mangel="An der Hochvolt-Batterie kann ein Kurzschluss auftreten."),
     "Qualifier(Elektro)": dict(betroffene_baujahre="2020-2022 (Elektro)", mangel="Ein Steuergerät kann ausfallen."),
-    "HEV-spez": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Fahrzeuge als Vollhybrid."),
-    "PHEV-spez": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge."),
-    "negiert": dict(eingrenzung_amtlich="Batterieelektrische Fahrzeuge sind nicht betroffen."),
-    "mehrere": dict(eingrenzung_amtlich="Betroffen sind Plug-in-Hybrid-Fahrzeuge und batterieelektrische Fahrzeuge."),
-    "BEV+Hybrid-Erlaeut": dict(eingrenzung_amtlich="Betroffen sind ausschließlich batterieelektrische Fahrzeuge. "
-                                                   "Hybridfahrzeuge mit demselben Bauteil sind nicht betroffen."),
+    "BEV-verneint": dict(eingrenzung_amtlich="Batterieelektrische Fahrzeuge sind nicht betroffen."),
+    "PHEV-verneint": dict(eingrenzung_amtlich="Plug-in-Hybrid-Fahrzeuge sind nicht betroffen."),
+    "HEV-excl+PHEV-Erlaeut": dict(eingrenzung_amtlich="Betroffen sind ausschließlich Vollhybrid-Fahrzeuge. "
+                                                      "Plug-in-Hybride sind nicht betroffen."),
+    "BEV-excl+Hybrid-Erlaeut": dict(eingrenzung_amtlich="Betroffen sind ausschließlich batterieelektrische Fahrzeuge. "
+                                                        "Hybridfahrzeuge mit demselben Bauteil sind nicht betroffen."),
     "Bauteil-Elektromotor": dict(mangel="Der Elektromotor der Servolenkung kann ausfallen; die Lenkunterstützung entfällt."),
+    "Bauteil-Elektromigration": dict(mangel="Durch Elektromigration auf der Leiterplatte kann die Zusatzpumpe ausfallen."),
 }
 S, U, I = "series_only", "unclear", "incompatible"
-#              BEV  HEV  PHEV ICE  UNKNOWN BEV/nur-Nutzer
+#                          BEV HEV PHEV MHEV ICE UNKN BEV/nur-Nutzer
+E_KLASSEN = [("BEV", "web_only"), ("HEV", "web_only"), ("PHEV", "web_only"), ("MHEV", "web_only"),
+             ("ICE", "web_only"), (None, None), ("BEV", "user_only")]
 E_ERWARTET = {
-    "BEV-exklusiv":         (S, I, I, I, U, U),
-    "Elektrofzg-unklar":    (S, U, U, I, U, U),
-    "Hochvolt-allg":        (S, S, S, I, U, S),   # allgemeiner Hochvolt-Scope NICHT auf BEV verengt
-    "Qualifier(Elektro)":   (S, U, U, I, U, U),
-    "HEV-spez":             (S, S, S, I, U, S),   # unveraendert (Hochvolt-Gruppe), s. Grenze im Bericht
-    "PHEV-spez":            (S, S, S, I, U, S),   # unveraendert
-    "negiert":              (S, S, S, S, S, S),   # Ausnahme-Satz ist kein Scope
-    "mehrere":              (S, U, S, I, U, S),
-    "BEV+Hybrid-Erlaeut":   (S, I, I, I, U, U),   # Hybrid in Erlaeuterung erweitert den Scope nicht
-    "Bauteil-Elektromotor": (S, S, S, S, S, S),   # Bauteil ist kein Antriebs-Scope
+    "BEV-exklusiv":            (S, I, I, I, I, U, U),
+    "Elektrofzg-unklar":       (S, U, U, I, I, U, U),
+    "HEV-exklusiv":            (I, S, I, I, I, U, U),
+    "PHEV-exklusiv":           (I, I, S, I, I, U, U),
+    "HEV+PHEV":                (I, S, S, I, I, U, U),
+    "PHEV+BEV":                (S, I, S, I, I, U, U),
+    "Hybrid-generisch":        (U, U, U, U, U, U, U),   # generischer Hybrid != HEV: offen (unveraendert)
+    "BEV+Hybrid-generisch":    (S, U, U, U, I, U, U),
+    "Hochvolt-allg":           (S, S, S, I, I, U, S),   # klassenuebergreifend, nicht auf BEV verengt
+    "Qualifier(Elektro)":      (S, U, U, I, I, U, U),
+    "BEV-verneint":            (S, S, S, S, S, S, S),   # Ausnahme-Satz ist kein Scope
+    "PHEV-verneint":           (S, S, S, S, S, S, S),
+    "HEV-excl+PHEV-Erlaeut":   (I, S, I, I, I, U, U),
+    "BEV-excl+Hybrid-Erlaeut": (S, I, I, I, I, U, U),
+    "Bauteil-Elektromotor":    (S, S, S, S, S, S, S),
+    "Bauteil-Elektromigration": (S, S, S, S, S, S, S),
 }
-E_KLASSEN = [("BEV", "web_only"), ("HEV", "web_only"), ("PHEV", "web_only"), ("ICE", "web_only"),
-             (None, None), ("BEV", "user_only")]
 for name, felder in E_RUECKRUFE.items():
     r = {"betroffene_baujahre": "2020-2022", "kba_referenz": None, "mangel": "Ein Bauteil kann ausfallen.", **felder}
     for (kl, st), soll in zip(E_KLASSEN, E_ERWARTET[name]):
@@ -236,6 +249,29 @@ for name, felder in E_RUECKRUFE.items():
             check(f"E {name} x {label}: Ausgabe verlangt FIN-Pruefung, keine FIN-Bestaetigung",
                   "per FIN prüfen" in txt and "per FIN bestätigt" not in txt, txt)
             check(f"E {name} x {label}: nie confirmed_by_vin", sichtbar[0]["applicability"] != "confirmed_by_vin")
+        elif soll == I:
+            ausgeschl = rueckruf_scope(r, idn)
+            check(f"E {name} x {label}: sichtbare Begruendung des Ausschlusses nennt die Klasse",
+                  ausgeschl[0] == RECALL_NOT_APPLICABLE and bool(ausgeschl[1]) or
+                  rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=idn)[3] != "",
+                  str(ausgeschl))
+
+print("\n== F: Seed-Rueckrufe 5098-5101 (Elektromigration, Zusatzkuehlmittelpumpe) bleiben sichtbar ==")
+import os
+import sqlite3
+
+_con = sqlite3.connect(os.environ["AUTO_KI_DB_PATH"])
+_con.row_factory = sqlite3.Row
+for _id in (5098, 5099, 5100, 5101):
+    _row = _con.execute("select * from rueckruf where id=?", (_id,)).fetchone()
+    check(f"F Seedzeile {_id} vorhanden", _row is not None)
+    if _row is None:
+        continue
+    _r = dict(_row)
+    for _pt in ("ICE", "HEV", "PHEV", "BEV", None):
+        _sichtbar = gefilterte_rueckrufe([_r], None, None, marke=None, identity=ident_kl(_pt, "web_only" if _pt else "unknown"))
+        check(f"F {_id} x {_pt or 'UNKNOWN'}: sichtbar (Bauteilwort/Elektromigration ist kein Hochvolt)",
+              bool(_sichtbar) or rueckruf_applicability(_r, None, "", None, identity=ident_kl(_pt))[0] != "incompatible")
 
 print("\nERGEBNIS:", "ALLE OK" if not FAILS else f"{len(FAILS)} FEHLER: {FAILS}")
 raise SystemExit(1 if FAILS else 0)

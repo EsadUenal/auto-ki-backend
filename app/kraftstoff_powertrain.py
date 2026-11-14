@@ -392,6 +392,17 @@ def scope_passt(scope: str | None, fuel: str | None, powertrains: frozenset | No
             if POWERTRAIN_MHEV not in powertrains:
                 return False
         return None
+    if scope in (SCOPE_HEV_EXKLUSIV, SCOPE_PHEV_EXKLUSIV):
+        # Ausdrücklich genau EINE Hybridklasse (Vollhybrid bzw. Plug-in-Hybrid):
+        # Hochvolt allein genügt NICHT; jede andere bestätigte Klasse (BEV, die
+        # jeweils andere Hybridklasse, MHEV, ICE) ist ausgeschlossen.
+        klasse = "HEV" if scope == SCOPE_HEV_EXKLUSIV else POWERTRAIN_PHEV
+        if powertrains:
+            if powertrains <= {klasse}:
+                return True
+            if klasse not in powertrains:
+                return False
+        return None
     if scope == SCOPE_BEV_EXKLUSIV:
         # Ausdrücklich batterieelektrisch: Hochvolt allein genügt NICHT.
         if powertrains:
@@ -459,6 +470,8 @@ _AUSNAHME_SATZ = re.compile(r"\bnicht\b[^.;!?]*\bbetroffen|\bausgenommen\b", re.
 
 SCOPE_BEV_EXKLUSIV = "bev"
 SCOPE_ELEKTRO_KLASSE = "elektro_klasse"
+SCOPE_HEV_EXKLUSIV = "hev_exklusiv"
+SCOPE_PHEV_EXKLUSIV = "phev_exklusiv"
 
 
 def scope_klassen(text: str | None) -> tuple[frozenset, bool, bool]:
@@ -482,17 +495,18 @@ def scope_klassen(text: str | None) -> tuple[frozenset, bool, bool]:
 
 def klassen_scope_passt(klassen: frozenset, generisch_hybrid: bool,
                         powertrains: frozenset | None) -> bool | None:
-    """Mehrere ausdrücklich genannte Klassen (oder BEV neben einem generischen
-    Hybridbezug): passt nur eine GENANNTE Klasse; ein klarer Nicht-Hochvolt-
-    Antrieb ist ausgeschlossen; jede andere Hochvolt-Klasse bleibt offen."""
+    """Mehrere ausdrücklich genannte Klassen = ERLAUBTE MENGE: das Fahrzeug passt,
+    wenn alle möglichen Antriebsarten darin liegen; liegt keine darin, ist es
+    ausgeschlossen (z.B. HEV bei {PHEV, BEV}); eine nur teilweise Überschneidung
+    (mehrdeutige Fahrzeugklasse) bleibt offen. Kommt zu den genannten Klassen ein
+    GENERISCHER Hybridbezug ohne Unterklasse hinzu, kann dieser jede Hybridklasse
+    meinen: nur ein klarer Verbrenner ist dann ausgeschlossen."""
     if not powertrains:
         return None
     if powertrains <= klassen:
         return True
     if powertrains & klassen:
         return None
-    if powertrains <= {POWERTRAIN_ICE}:
-        return False
-    if powertrains <= {POWERTRAIN_MHEV} and klassen <= HOCHVOLT_POWERTRAINS and not generisch_hybrid:
-        return False
-    return None
+    if generisch_hybrid:
+        return False if powertrains <= {POWERTRAIN_ICE} else None
+    return False
