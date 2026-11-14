@@ -256,6 +256,103 @@ for name, felder in E_RUECKRUFE.items():
                   rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=idn)[3] != "",
                   str(ausgeschl))
 
+print("\n== G: dieselbe Aussage ueber alle drei Eingaenge (amtlich / Qualifier / Mangeltext) ==")
+# (amtlicher Satz, Qualifier-Klammer, Zeile der Matrix E mit den erwarteten Ergebnissen)
+G_AUSSAGEN = (
+    ("Betroffen sind ausschließlich batterieelektrische Fahrzeuge.", "batterieelektrisch", "BEV-exklusiv"),
+    ("Betroffen sind ausschließlich Elektrofahrzeuge.", "Elektrofahrzeuge", "Elektrofzg-unklar"),
+    ("Betroffen sind ausschließlich Fahrzeuge als Vollhybrid.", "Vollhybrid", "HEV-exklusiv"),
+    ("Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge.", "Plug-in-Hybrid", "PHEV-exklusiv"),
+    ("Betroffen sind Vollhybrid- und Plug-in-Hybrid-Fahrzeuge.", "Vollhybrid und Plug-in-Hybrid", "HEV+PHEV"),
+    ("Betroffen sind Plug-in-Hybrid-Fahrzeuge und batterieelektrische Fahrzeuge.",
+     "Plug-in-Hybrid und batterieelektrisch", "PHEV+BEV"),
+)
+BASIS = {"betroffene_baujahre": "2020-2022", "kba_referenz": None, "mangel": "Ein Bauteil kann ausfallen."}
+
+
+def eingaenge(satz, klammer):
+    return {
+        "amtlich": {**BASIS, "eingrenzung_amtlich": satz},
+        "Qualifier": {**BASIS, "betroffene_baujahre": f"2020-2022 ({klammer})"},
+        "Mangeltext": {**BASIS, "mangel": satz},
+    }
+
+
+for satz, klammer, zeile_e in G_AUSSAGEN:
+    for eingang, r in eingaenge(satz, klammer).items():
+        for (kl, st), soll in zip(E_KLASSEN, E_ERWARTET[zeile_e]):
+            idn = ident_kl(kl, st or "unknown")
+            ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=idn)[0]
+            label = f"{kl or 'UNKNOWN'}{'/nur Nutzer' if st == 'user_only' else ''}"
+            check(f"G {zeile_e} via {eingang} x {label}: {soll}", ist == soll, ist)
+
+print("\n  -- generischer Hybrid / Hochvolt allgemein: keine explizite Klasse wird ausgeschlossen")
+G_GENERISCH = {
+    "amtlich": {**BASIS, "eingrenzung_amtlich": "Betroffen sind ausschließlich Hybridfahrzeuge."},
+    "Qualifier": {**BASIS, "betroffene_baujahre": "2020-2022 (Hybrid)"},
+    "Mangeltext": {**BASIS, "mangel": "Betroffen sind ausschließlich Hybridfahrzeuge."},
+    "Mangel-Hochvoltsystem": {**BASIS, "mangel": "An der Hochvolt-Batterie kann ein Kurzschluss auftreten."},
+}
+for eingang, r in G_GENERISCH.items():
+    for kl in ("BEV", "HEV", "PHEV"):
+        ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=ident_kl(kl))[0]
+        check(f"G generisch via {eingang} x {kl}: nicht ausgeblendet", ist != I, ist)
+    check(f"G generisch via {eingang} x UNKNOWN: unklar", rueckruf_applicability(
+        r, True, "", None, marke="Testmarke", identity=ident_kl(None, "unknown"))[0] == U)
+
+print("\n  -- Negation / Ausnahme ueber alle drei Eingaenge: kein Scope")
+for eingang, r in {
+        "amtlich": {**BASIS, "eingrenzung_amtlich": "Plug-in-Hybrid-Fahrzeuge sind nicht betroffen."},
+        "Qualifier": {**BASIS, "betroffene_baujahre": "2020-2022 (ausgenommen Plug-in-Hybrid)"},
+        "Mangeltext": {**BASIS, "mangel": "Plug-in-Hybrid-Fahrzeuge sind nicht betroffen."}}.items():
+    for kl in ("BEV", "HEV", "PHEV", "ICE"):
+        ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=ident_kl(kl))[0]
+        check(f"G Ausnahme via {eingang} x {kl}: kein Scope -> {S}", ist == S, ist)
+
+print("\n  -- beilaeufig erwaehnte Klasse im Mangeltext ohne Scope-Wirkung")
+for name, mangel in {
+        "Elektrofahrzeug": "Der Mangel betrifft die Servolenkung. Dasselbe Bauteil wird auch im Elektrofahrzeug verbaut.",
+        "Plug-in-Hybrid": "Die Lenkung kann ausfallen. Eine aehnliche Meldung gab es zuvor fuer Plug-in-Hybride.",
+        "Hybrid additiv": "Betroffen ist die Bremse; betroffen sind auch Hybridfahrzeuge."}.items():
+    r = {**BASIS, "mangel": mangel}
+    for kl in ("BEV", "HEV", "PHEV", "ICE"):
+        ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=ident_kl(kl))[0]
+        check(f"G beilaeufig ({name}) x {kl}: kein Scope -> {S}", ist == S, ist)
+
+print("\n  -- widersprüchliche Eingaenge: keine unbelegte sichere Zuordnung, kein unbelegtes Ausblenden")
+G_WIDERSPRUCH = {
+    "amtlich BEV / Qualifier HEV": {**BASIS, "betroffene_baujahre": "2020-2022 (Vollhybrid)",
+                                    "eingrenzung_amtlich": "Betroffen sind ausschließlich batterieelektrische Fahrzeuge."},
+    "amtlich BEV / Mangeltext PHEV": {**BASIS, "mangel": "Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge.",
+                                      "eingrenzung_amtlich": "Betroffen sind ausschließlich batterieelektrische Fahrzeuge."},
+    "Qualifier HEV / Mangeltext PHEV": {**BASIS, "betroffene_baujahre": "2020-2022 (Vollhybrid)",
+                                        "mangel": "Betroffen sind ausschließlich Plug-in-Hybrid-Fahrzeuge."},
+}
+for name, r in G_WIDERSPRUCH.items():
+    for kl in ("BEV", "HEV", "PHEV", "ICE"):
+        ist = rueckruf_applicability(r, True, "", None, marke="Testmarke", identity=ident_kl(kl))[0]
+        check(f"G Widerspruch ({name}) x {kl}: offen statt bestaetigt/ausgeblendet", ist == U, ist)
+        if "Mangeltext" not in name:   # rueckruf_scope liest den Mangeltext bewusst nicht (Web-Rueckrufe)
+            scope, _b = rueckruf_scope(r, ident_kl(kl))
+            check(f"G Widerspruch ({name}) x {kl}: rueckruf_scope nicht NOT_APPLICABLE", scope != RECALL_NOT_APPLICABLE, scope)
+    check(f"G Widerspruch ({name}): sichtbar", bool(gefilterte_rueckrufe([r], None, 2021, marke="Testmarke",
+                                                                      identity=ident_kl("BEV"))))
+# Uebereinstimmung ist KEIN Widerspruch; eine genaue Klasse verfeinert einen allgemeinen Hochvolt-Hinweis.
+r_ok = {**BASIS, "betroffene_baujahre": "2020-2022 (batterieelektrisch)",
+        "eingrenzung_amtlich": "Betroffen sind ausschließlich batterieelektrische Fahrzeuge."}
+check("G gleiche Klasse in zwei Eingaengen: BEV passt", rueckruf_applicability(
+    r_ok, True, "", None, marke="Testmarke", identity=ident_kl("BEV"))[0] == S)
+check("G gleiche Klasse in zwei Eingaengen: HEV ausgeschlossen", rueckruf_applicability(
+    r_ok, True, "", None, marke="Testmarke", identity=ident_kl("HEV"))[0] == I)
+r_ref = {**BASIS, "mangel": "An der Hochvolt-Batterie kann ein Kurzschluss auftreten.",
+         "eingrenzung_amtlich": "Betroffen sind ausschließlich Fahrzeuge als Vollhybrid."}
+for kl, soll in (("HEV", S), ("BEV", I), ("PHEV", I), ("ICE", I)):
+    check(f"G Hochvolt-Mangel + amtlich Vollhybrid x {kl}: {soll} (Klasse verfeinert, nicht vereinigt)",
+          rueckruf_applicability(r_ref, True, "", None, marke="Testmarke", identity=ident_kl(kl))[0] == soll)
+for kl in ("BEV", "HEV", "PHEV", "ICE"):
+    ist = rueckruf_applicability(r_ref, True, "", None, marke="Testmarke", identity=ident_kl(kl))
+    check(f"G x {kl}: nie FIN-Bestaetigung im Ausgabetext", "per FIN bestätigt" not in ist[2] and ist[0] != "confirmed_by_vin")
+
 print("\n== F: Seed-Rueckrufe 5098-5101 (Elektromigration, Zusatzkuehlmittelpumpe) bleiben sichtbar ==")
 import os
 import sqlite3
