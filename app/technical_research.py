@@ -79,7 +79,7 @@ from app.web_search import (
     _domain_von, _marke_eigene_domain, _markenlabel, _pressedomain_gehoert_marke, _psl_teile,
     _qualitaets_label,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
-    ist_abruf_gesperrt, ist_kategorieseite, registrable_domain, score_domain, tavily_search,
+    ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
     bereinige_steuerzeichen, bereinige_treffer,
 )
 
@@ -4297,26 +4297,15 @@ def _en_zitat(claim: str, beleg: str | None) -> str:
     return f"„{claim}“ (englischsprachiges Originalzitat; {beleg or 'Marktbezug nicht belegt'})"
 
 
-def _quellenrolle_en(r: dict, *, konkret: bool = False) -> str:
-    """Quellenrolle fuer ENGLISCHE Schwachstellenaussagen. Sprachneutrale Kriterien:
-      1. bestehende Domain-Einstufung (`_qualitaets_label`: Amtlich/Hersteller/Fachmedien/Technik/Nachschlagewerk/
-         Community) wie bisher;
-      2. sonst nur, wenn ALLE Strukturkriterien zugleich erfuellt sind: Seite beschreibt sich als Beitrag ueber
-         Probleme/Zuverlaessigkeit UND ist kein Forum/Nutzerbeitrag/Angebot (Titel, URL), keine Kategorie-/
-         Such-/Marktplatzseite (`ist_kategorieseite`, Domain-Einstufung) UND die Aussage ist konkret
-         (bestimmbarer Fehlertyp, spezifisches Bauteil).
-    Ein Titelwort allein qualifiziert nie; alles andere bleibt "unknown". Unabhaengigkeit prueft der Aufrufer
-    (Quellenfamilie, Kopie-Erkennung, >= 3 Familien). `_wartung_source_type` bleibt unveraendert."""
-    url = r.get("url") or ""
-    label = _qualitaets_label(url)
-    mapped = _WARTUNG_SOURCE_TYPE_MAP.get(label)
-    if mapped:
-        return mapped
-    if label == "Marktplatz" or not konkret or ist_kategorieseite(url, r.get("title")):
-        return WARTUNG_SOURCE_UNKNOWN
-    if _en.seitentyp_artikel(url, r.get("title")):
-        return WARTUNG_SOURCE_SECONDARY
-    return WARTUNG_SOURCE_UNKNOWN
+def _quellenrolle_en(r: dict) -> str:
+    """Quellenrolle fuer ENGLISCHE Schwachstellenaussagen = NUR die bestehende, belegbare Domain-Einstufung
+    (`_qualitaets_label` -> `_WARTUNG_SOURCE_TYPE_MAP`: Amtlich, Hersteller, Fachmedien, Technik-Hersteller,
+    Nachschlagewerk, Community). Das ist die einzige Qualitaetsgrundlage, die der Pfad fuer eine Quelle tatsaechlich
+    traegt. Seitentyp, Titelwoerter, Selbstdarstellung der Seite, konkrete Problemaussage oder die Anzahl
+    unbekannter Hosts qualifizieren NICHT: ohne Einstufung bleibt die Quelle "unknown". Qualitaet (diese Funktion),
+    Aussagekonkretheit (Fehlertyp/Bauteil) und Unabhaengigkeit (Familie, Kopie-Erkennung im Aufrufer) sind
+    getrennte Fragen. `_wartung_source_type` (Wartung/Deutsch, mit Titelsignal) bleibt unveraendert."""
+    return _WARTUNG_SOURCE_TYPE_MAP.get(_qualitaets_label(r.get("url") or "")) or WARTUNG_SOURCE_UNKNOWN
 
 
 def _ist_einzelbericht(claim: str, kontext_einzelfahrzeug: bool = False) -> bool:
@@ -8012,11 +8001,9 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                                                         if c]})
                     if en_info is None:
                         continue
-                    fm = _en.failure_mode(claim)
                     kandidaten.append({"bauteil_key": en_info["schluessel"], "bauteil": en_info["label"],
-                                       "failure_mode": fm, "family": family,
-                                       "source_type": _quellenrolle_en(
-                                           r, konkret=bool(fm) and en_info["schluessel"] != "motor"),
+                                       "failure_mode": _en.failure_mode(claim), "family": family,
+                                       "source_type": _quellenrolle_en(r),
                                        "url": url, "claim": claim, "treffer": r, "en": en_info["beleg"]})
                     continue
                 if _en.ist_benign(claim) or (_spr != "de" and (_en.ist_frage(claim) or _en.ist_bedingt(claim))):
@@ -8095,7 +8082,16 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                                    and _schwachstelle_failure_mode(f.aussage) != failure_mode)),
                          None)
         if ziel_fakt is not None:
-            neue_quellen = _quellen_aus([k["treffer"] for k in gruppe], marke=marke)
+            # Englische Aussagen aus einer UNQUALIFIZIERTEN Quelle (unknown) bleiben unbestaetigte Kandidaten und
+            # reichern keinen bestaetigten Fakt an; deutsche Kandidaten verhalten sich unveraendert.
+            for k in gruppe:
+                if "en" in k and k["source_type"] == WARTUNG_SOURCE_UNKNOWN:
+                    abgelehnt.append({"url": k["url"], "kategorie": "schwachstelle",
+                                      "grund": "en_quelle_unqualifiziert", "satz": k["claim"][:120],
+                                      "source_type": k["source_type"], "bauteil": bauteil_text})
+            anreicherer = [k for k in gruppe
+                           if not ("en" in k and k["source_type"] == WARTUNG_SOURCE_UNKNOWN)]
+            neue_quellen = _quellen_aus([k["treffer"] for k in anreicherer], marke=marke)
             vorhandene_urls = {q.url for q in ziel_fakt.quellen}
             for q in neue_quellen:
                 if q.url not in vorhandene_urls:

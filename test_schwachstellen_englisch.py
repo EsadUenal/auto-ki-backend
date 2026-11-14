@@ -354,11 +354,13 @@ if adac.exists():
     check("K6 echter ADAC-Volltext (deutsch, negativ): weiterhin kein Schwachstellenfakt", not f_alt,
           str([x.bauteil for x in f_alt]))
 
-print("=== L) Candidate-Pfad: ECHTE Quellenqualifikation (ohne Stub), Familien, Anker, gleiche Evidenzgrenzen ===")
-# Synthetische Quellen auf unbekannten Domains (.example): kein Eintrag in einer Domainliste. Es wird NICHTS gestubbt:
-# die Quellenrolle kommt aus `_quellenrolle_en` (Domain-Einstufung, sonst Seitentyp + konkrete Aussage).
+print("=== L) Quellenqualifikation (nur belegbare Domain-Einstufung), Unabhaengigkeit, Candidate-Pfad ===")
+# Qualitaet (`_quellenrolle_en`), Aussagekonkretheit (Fehlertyp/Bauteil) und Unabhaengigkeit (Familie, Kopien) sind
+# GETRENNTE Fragen. Unbekannte Domains (.example) tragen keinerlei Qualitaetsbeleg: synthetische Testquellen.
 FAM = ["https://www.en-eins.example/rcf", "https://www.en-zwei.example/rcf", "https://www.en-drei.example/rcf"]
 TITEL_OK = "Lexus RC F common problems and reliability"
+WIKI = "https://en.wikipedia.org/wiki/Lexus_RC"
+WIKI_TITEL = "Lexus RC F - Wikipedia"
 CL_TEXTE = [
     "In Europe, the 5.0-litre V8 in the Lexus RC F built between 2015 and 2018 often leaks coolant from the water "
     "pump; many owners report it.",
@@ -376,53 +378,64 @@ def cand(titel=TITEL_OK, urls=FAM, texte=None, haupt=None, **kw):
                                            ziel_info=dict(ZI), **kw)
 
 
-def rolle(url, titel, claim="The water pump leaks often on the Lexus RC F.", konkret=True):
-    return tr._quellenrolle_en(hit(url, titel, claim), konkret=konkret)
+def rolle(url, titel="Lexus RC F common problems and reliability"):
+    return tr._quellenrolle_en(hit(url, titel, "The water pump leaks often on the Lexus RC F."))
 
 
-print("--- L-a) Quellenqualifikation der tatsaechlichen Funktion ---")
-check("L1 Wikipedia (bestehende Domain-Einstufung) qualifiziert real", rolle(
-    "https://en.wikipedia.org/wiki/Lexus_RC", "Lexus RC - Wikipedia") == tr.WARTUNG_SOURCE_SECONDARY)
-check("L2 englische Quelle mit Seitentyp 'Probleme/Zuverlaessigkeit' + konkreter Aussage qualifiziert real",
-      rolle(FAM[0], TITEL_OK) == tr.WARTUNG_SOURCE_SECONDARY)
-for name, url, titel, konkret in [
-    ("nur workshop/repair/service im Titel", FAM[0], "Workshop repair service guide: Lexus RC F", True),
-    ("Titel passt, aber Forum-Titel", FAM[0], "Lexus RC F problems forum thread", True),
-    ("Titel passt, aber Forum-URL", "https://www.en-eins.example/forum/threads/rcf-water-pump", TITEL_OK, True),
-    ("Titel passt, aber Angebotsseite", FAM[0], "Lexus RC F problems used prices for sale", True),
-    ("Titel passt, aber unkonkrete Aussage", FAM[0], TITEL_OK, False),
-    ("Titel passt, aber Kategorie-/Suchseite", "https://www.en-eins.example/cars/list?make=lexus&model=rcf",
-     TITEL_OK, True),
-    ("Fahrzeugmarktplatz", "https://www.mobile.de/lexus-rc-f", TITEL_OK, True),
-    ("Community-Domain (bestehende Einstufung)", "https://www.reddit.com/r/LexusRC/comments/abc", TITEL_OK, True),
+print("--- L-a) Qualifikation: tatsaechliche Funktion, kein Stub ---")
+check("L1 Wikipedia (bestehende Domain-Einstufung 'Nachschlagewerk') qualifiziert real",
+      rolle(WIKI, WIKI_TITEL) == tr.WARTUNG_SOURCE_SECONDARY)
+check("L1b Fachmedium (ADAC) und Pruefstelle (KBA) qualifizieren real ueber dieselbe Einstufung",
+      rolle("https://www.adac.de/rc-f") == tr.WARTUNG_SOURCE_STRONG_SECONDARY
+      and rolle("https://www.kba.de/x") == tr.WARTUNG_SOURCE_PRIMARY)
+for name, url, titel in [
+    ("unbekannte Problemseite, Titel 'common problems and reliability', konkrete Aussage", FAM[0], TITEL_OK),
+    ("nur workshop/repair/service im Titel", FAM[0], "Workshop repair service guide: Lexus RC F"),
+    ("Titel 'buyer's guide' / 'what to look for'", FAM[0], "Lexus RC F buyer's guide: what to look for"),
+    ("Forum-URL", "https://www.en-eins.example/forum/threads/rcf-water-pump", TITEL_OK),
+    ("Fahrzeugmarktplatz", "https://www.mobile.de/lexus-rc-f", TITEL_OK),
 ]:
-    check(f"L3 {name}: nicht 'secondary' (unknown bleibt unknown)",
-          rolle(url, titel, konkret=konkret) != tr.WARTUNG_SOURCE_SECONDARY,
-          rolle(url, titel, konkret=konkret))
+    check(f"L2 {name}: bleibt unknown", rolle(url, titel) == tr.WARTUNG_SOURCE_UNKNOWN, rolle(url, titel))
+check("L2b Community-Domain bleibt 'community' (bestehende Einstufung)",
+      rolle("https://www.reddit.com/r/LexusRC/comments/abc") == tr.WARTUNG_SOURCE_COMMUNITY)
 
-print("--- L-b) Mehrquellen-Fakt aus drei real qualifizierten, unabhaengigen englischen Familien ---")
+print("--- L-b) Drei unabhaengige UNBEKANNTE Quellen ersetzen keine qualifizierten Familien ---")
 fk, ab, _esk = cand()
-check("L4 drei qualifizierte, nicht abgeschriebene Familien mit tragender Evidenz: Mehrquellen-Fakt (kein Stub)",
-      len(fk) == 1 and fk[0].beleglage == "mehrfach_unabhaengig" and fk[0].bauteil == "Wasserpumpe",
-      f"{[(x.bauteil, x.beleglage) for x in fk]} {gruende(ab)}")
-if fk:
-    check("L5 Zitat gekennzeichnet, Markt-/Geltungsangaben erhalten, nie 'hoch'",
-          "englischsprachiges Originalzitat" in fk[0].aussage and "Marktbezug laut Quelle" in fk[0].aussage
-          and "Geltung laut Quelle" in fk[0].aussage and fk[0].confidence == "mittel", fk[0].aussage)
-fk, ab, _esk = cand(titel="Workshop repair service guide: Lexus RC F")
-check("L6 nur Titelwoerter workshop/repair/service: kein Fakt", not fk, f"{gruende(ab)}")
-fk, ab, _esk = cand(texte=[CL_TEXTE[0]] * 3)
-check("L7 dieselbe Aussage wortgleich in drei Quellen (abgeschrieben): eine Familie, kein Mehrquellen-Fakt",
-      not fk, f"{[x.bauteil for x in fk]}")
-fk, ab, _esk = cand(texte=[CL_TEXTE[0], CL_TEXTE[1], "In the US the water pump on the Lexus RC F fails often and "
-                                                      "many owners report leaks."])
-check("L8 eine Familie mit fremdem Markt: nur zwei Familien, kein Mehrquellen-Fakt", not fk, f"{gruende(ab)}")
-fk, ab, _esk = cand(urls=FAM[:2], texte=CL_TEXTE[:2])
-check("L9 nur zwei qualifizierte Familien: kein Mehrquellen-Fakt (Schwelle unveraendert)", not fk)
-fk, ab, _esk = cand(urls=[FAM[0], FAM[1], "https://www.en-eins.example/other"], texte=CL_TEXTE)
-check("L10 zwei URLs derselben Quellenfamilie zaehlen einmal", not fk, f"{[x.bauteil for x in fk]}")
+check("L3 drei unabhaengige unbekannte Problemseiten mit konkreten, tragenden Aussagen: KEIN bestaetigter Fakt "
+      "(der bisherige .example-Positivfall ist jetzt ein Negativfall)",
+      not fk, f"{[(x.bauteil, x.beleglage) for x in fk]}")
+check("L3b die unbestaetigten Kandidaten bleiben erhalten (ohne Hauptpfad-Anker, mit Quellenrolle unknown)",
+      sum(1 for a in ab if a.get("grund") == "schwachstelle_candidate_ohne_hauptpfad_anker"
+          and a.get("source_type") == tr.WARTUNG_SOURCE_UNKNOWN) == 3, gruende(ab))
+fk, ab, _esk = cand(urls=[WIKI, FAM[0], FAM[1]], titel="Lexus RC F")
+check("L4 eine qualifizierte (Wikipedia) + zwei unbekannte Familien: kein Mehrquellen-Fakt", not fk, gruende(ab))
+fk, ab, _esk = cand(urls=[WIKI, "https://de.wikipedia.org/wiki/Lexus_RC", "https://simple.wikipedia.org/wiki/Lexus"],
+                    titel="Lexus RC F - Wikipedia")
+check("L5 Qualifikation allein genuegt nicht: drei Wikipedia-Hosts sind EINE Quellenfamilie, kein Mehrquellen-Fakt",
+      not fk, gruende(ab))
+check("L5b dieselbe Familie fuer alle Wikipedia-Hosts", len({tr._source_family(u) for u in (
+    WIKI, "https://de.wikipedia.org/wiki/Lexus_RC", "https://simple.wikipedia.org/wiki/Lexus")}) == 1)
 
-print("--- L-c) Haupt- und Candidate-Pfad: dieselben Evidenzgrenzen ---")
+print("--- L-c) Mechanik-Test der Unabhaengigkeit (Qualifikation hier GESTUBBT -- kein Qualifikationsnachweis) ---")
+_orig_label = tr._qualitaets_label
+tr._qualitaets_label = lambda url, marke=None: "Fachmedien" if "en-" in (url or "") else _orig_label(url, marke)
+try:
+    fk, ab, _esk = cand()
+    check("L6 (Stub) drei qualifizierte, nicht abgeschriebene Familien: Mehrquellen-Mechanik funktioniert",
+          len(fk) == 1 and fk[0].beleglage == "mehrfach_unabhaengig", f"{gruende(ab)}")
+    fk, ab, _esk = cand(texte=[CL_TEXTE[0]] * 3)
+    check("L7 (Stub) dieselbe Aussage wortgleich in drei qualifizierten Quellen: eine Familie, kein Fakt",
+          not fk, f"{[x.bauteil for x in fk]}")
+    fk, ab, _esk = cand(urls=[FAM[0], FAM[1], "https://www.en-eins.example/other"], texte=CL_TEXTE)
+    check("L8 (Stub) zwei URLs desselben Hosts zaehlen einmal", not fk, f"{[x.bauteil for x in fk]}")
+    fk, ab, _esk = cand(urls=FAM[:2], texte=CL_TEXTE[:2])
+    check("L9 (Stub) nur zwei qualifizierte Familien: kein Fakt (Schwelle unveraendert)", not fk)
+finally:
+    tr._qualitaets_label = _orig_label
+
+print("--- L-d) Haupt- und Candidate-Pfad: dieselben Evidenzgrenzen, reale Qualifikation ---")
+from app.models import WebFakt  # noqa: E402
+
 PARITAET = [
     ("EU + Modell ohne Beziehung", "In Europe the water pump on the Lexus RC F is a common failure for many owners.", False),
     ("UK-only mit Ausfuehrung + Zeitraum, ohne Uebertragung",
@@ -436,33 +449,39 @@ PARITAET = [
     ("UK mit Uebertragungsbeleg", "In the UK the water pump on the Lexus RC F is a common failure for many owners. "
                                   "It is the same pump that is fitted to European cars.", True),
 ]
-from app.models import WebFakt  # noqa: E402
+
+
+def anker():
+    return WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe", aussage="Anker",
+                   quellen=tr._quellen_aus([hit(HERSTELLER, "Lexus RC F", "x")]))
+
 
 for name, text, erwartet in PARITAET:
-    f_haupt, _ = einzel(text)
-    # Candidate-Pfad: ein bestehender Hauptpfad-Fakt als Anker; die Anreicherung um die Quelle ist nur bei tragender
-    # Evidenz erlaubt (gleiche Gates wie im Hauptpfad).
-    anker_k = WebFakt(kategorie="schwachstelle", bauteil="Wasserpumpe", aussage="Anker",
-                      quellen=tr._quellen_aus([hit(HERSTELLER, "Lexus RC F", "x")]))
-    vorher = len(anker_k.quellen)
-    _schwachstelle_candidate_fakten([hit(FAM[0], TITEL_OK, text)], marke="Lexus", modell="RC F", generation="UXC1",
-                                    haupt_fakten=[anker_k], ziel_info=dict(ZI))
-    angereichert = len(anker_k.quellen) > vorher
-    check(f"L11 {name}: Hauptpfad={'Fakt' if erwartet else 'kein Fakt'}, Candidate-Pfad gleich",
+    f_haupt, _ = einzel(text)                                     # Hauptpfad, Herstellerdomain (reale Einstufung)
+    a_k = anker()
+    vorher = len(a_k.quellen)
+    _schwachstelle_candidate_fakten([hit(WIKI, WIKI_TITEL, text)], marke="Lexus", modell="RC F", generation="UXC1",
+                                    haupt_fakten=[a_k], ziel_info=dict(ZI))    # Candidate, qualifizierte Quelle
+    angereichert = len(a_k.quellen) > vorher
+    check(f"L10 {name}: Hauptpfad={'Fakt' if erwartet else 'kein Fakt'}, Candidate-Pfad gleich",
           bool(f_haupt) == erwartet and angereichert == erwartet, f"haupt={bool(f_haupt)} cand={angereichert}")
-
-print("--- L-d) Anker: Candidate reichert nur an ---")
-f, ab = fakten([hit(HERSTELLER, "Lexus RC F", f"In Europe, {T2} has a common water pump failure for many owners.")])
-anker = f
-fk, ab, _esk = _schwachstelle_candidate_fakten(
-    [hit(FAM[0], TITEL_OK, CL_TEXTE[0])], marke="Lexus", modell="RC F", generation="UXC1", haupt_fakten=anker,
-    ziel_info=dict(ZI))
-check("L12 englischer Candidate reichert einen bestehenden Hauptpfad-Fakt nur um die Quelle an (kein neuer Fakt)",
-      not fk and len(anker[0].quellen) == 2, f"{len(anker[0].quellen) if anker else None}")
-fk, ab, _esk = _schwachstelle_candidate_fakten(
-    [hit(FAM[0], TITEL_OK, "In Europe the water pump on the Lexus RC F is a common failure for many owners.")],
-    marke="Lexus", modell="RC F", generation="UXC1", haupt_fakten=anker, ziel_info=dict(ZI))
-check("L13 Candidate ohne tragende Evidenz reichert den Anker NICHT an", len(anker[0].quellen) == 2)
+a_k = anker()
+_schwachstelle_candidate_fakten([hit(FAM[0], TITEL_OK, CL_TEXTE[0])], marke="Lexus", modell="RC F", generation="UXC1",
+                                haupt_fakten=[a_k], ziel_info=dict(ZI))
+check("L11 dieselbe tragende Aussage aus UNBEKANNTER Quelle reichert den bestaetigten Fakt NICHT an",
+      len(a_k.quellen) == 1)
+fk, ab_u, _e = _schwachstelle_candidate_fakten([hit(FAM[0], TITEL_OK, CL_TEXTE[0])], marke="Lexus", modell="RC F",
+                                               generation="UXC1", haupt_fakten=[anker()], ziel_info=dict(ZI))
+check("L12 ... und bleibt als unbestaetigter Kandidat 'en_quelle_unqualifiziert' erhalten",
+      not fk and any(a.get("grund") == "en_quelle_unqualifiziert" for a in ab_u), gruende(ab_u))
+for name, url in [("Herstellerdomain", HERSTELLER), ("Fachmedium (ADAC)", FACH),
+                  ("Fachmedium (auto motor und sport)", "https://www.auto-motor-und-sport.de/lexus-rc-f/")]:
+    f, ab = einzel(POS, url=url)
+    check(f"L13 Hauptpfad-Positivfall nutzt die reale Domain-Einstufung ({name}), kein Stub",
+          [x.bauteil for x in f] == ["Wasserpumpe"], gruende(ab))
+f, ab = einzel(POS, url=FAM[0], titel=TITEL_OK)
+check("L14 derselbe Positivsatz aus unbekannter Quelle im Hauptpfad: source_quality, kein Fakt",
+      not f and "source_quality" in gruende(ab), gruende(ab))
 
 print("=== M) Haupt-/Candidate-Pfad bis Bericht, Verkaeuferfragen, Dokumente (SYNTHETISCH) ===")
 import asyncio  # noqa: E402
@@ -588,6 +607,18 @@ async def e2e():
                           ("gleicher Motor allein", NEG_E2E_MOTOR)):
         r, _ = await lauf([treffer])
         check(f"M6 {name}: unbestaetigt -> nichts in Insights, Bericht, Fragen, Dokumenten",
+              not [i for i in sw(r) if "Wasserpumpe" in i.titel] and "Wasserpumpe" not in sichtbar(r),
+              str([i.titel for i in sw(r)]))
+    # Unqualifizierte Quellen: weder Insight noch Bericht, Verkaeuferfragen, Besichtigung, Probefahrt, Dokumente.
+    for name, treffer in (
+            ("drei unabhaengige UNBEKANNTE Problemseiten mit tragenden Aussagen",
+             [treffer_(u, TITEL_OK, t) for u, t in zip(FAM, CL_TEXTE)]),
+            ("eine qualifizierte Quelle (Wikipedia) ohne weitere Familie und ohne Anker",
+             [treffer_(WIKI, WIKI_TITEL, CL_TEXTE[0])]),
+            ("unbekannte Quelle mit dem Positivsatz",
+             [treffer_(FAM[0], TITEL_OK, POS)])):
+        r, _ = await lauf(treffer)
+        check(f"M7 {name}: keine bestaetigte Ausgabe",
               not [i for i in sw(r) if "Wasserpumpe" in i.titel] and "Wasserpumpe" not in sichtbar(r),
               str([i.titel for i in sw(r)]))
 

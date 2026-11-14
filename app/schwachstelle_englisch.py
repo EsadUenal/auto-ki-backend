@@ -639,28 +639,7 @@ def generation_passt(text: str, codes: list[str] | None) -> bool:
     return False
 
 
-# ── Seitentyp und Unabhaengigkeit englischer Quellen (sprachneutrale Struktur, kein Titelwort allein) ──
-
-_RE_SELBSTBESCHREIBUNG = re.compile(
-    r"\b(?:common\s+(?:problems?|faults?|issues?|failures?)|known\s+(?:problems?|faults?|issues?|weaknesses)|"
-    r"problems?|faults?|reliability|weak(?:ness(?:es)?|\s+points?)|buy(?:er'?s|ing)\s+guide|"
-    r"what\s+to\s+look\s+(?:for|out\s+for)|used\s+(?:car\s+)?(?:guide|review))\b", re.IGNORECASE)
-_RE_FORUM_TITEL = re.compile(r"\b(?:forum|thread|discussion|q&a|ask|reddit|club|community)\b", re.IGNORECASE)
-_RE_KOMMERZ_TITEL = re.compile(r"\b(?:for\s+sale|prices?|leas(?:e|ing)|deals?|buy\s+(?:now|online)|shop|parts?\s+store)\b",
-                               re.IGNORECASE)
-_RE_FORUM_URL = re.compile(
-    r"(?:^|[/.])(?:forums?|community|communities|boards?|discuss\w*|answers?)(?:[/.]|$)"
-    r"|/(?:threads?|topics?|viewtopic|showthread|questions?|comments?|t|r)/|[?&](?:t|tid|topic|threadid)=",
-    re.IGNORECASE)
-
-
-def seitentyp_artikel(url: str, title: str | None) -> bool:
-    """Die Seite beschreibt sich als Beitrag ueber Probleme/Zuverlaessigkeit (Titel) UND ist weder Forum/
-    Nutzerbeitrag noch kommerzielle Angebotsseite (Titel, URL). Das ist ein SEITENTYP-Hinweis, kein Qualitaets-
-    beleg: er genuegt nie allein (siehe `_quellenrolle_en`)."""
-    t = title or ""
-    return bool(_RE_SELBSTBESCHREIBUNG.search(t) and not _RE_FORUM_TITEL.search(t)
-                and not _RE_KOMMERZ_TITEL.search(t) and not _RE_FORUM_URL.search(url or ""))
+# ── Unabhaengigkeit (Kopie-Erkennung) ────────────────────────────────────────────────────────────
 
 
 def fast_gleich(a: str, b: str, schwelle: float = 0.8) -> bool:
