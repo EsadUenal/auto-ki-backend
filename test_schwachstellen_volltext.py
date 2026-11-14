@@ -113,13 +113,21 @@ snip = "Lexus RC F Gebrauchtwagen: Überblick zu Motor, Fahrwerk und Ausstattung
 t1, s1 = _mit_originaltext([hit(HOCH, "Lexus RC F", snip, FUELL + RAHMEN)])
 check("A1 brauchbarer Originaltext ersetzt das Snippet (eine Quelle, kein zweiter Beleg)",
       len(t1) == 1 and t1[0]["content"].startswith("Der Lexus RC F") and snip not in t1[0]["content"]
-      and s1 == {"treffer": 1, "volltext": 1, "snippet_fallback": 0, "gekuerzt": 0}, str(s1))
-unbrauchbar = [hit(HOCH + "/a", "A", snip, None), hit(HOCH + "/b", "B", snip, ""), hit(HOCH + "/c", "C", snip, "kurz " * 20),
-               hit(HOCH + "/d", "D", snip + " x" * 300, "y" * 450)]       # Volltext kuerzer als Snippet
+      and (s1["treffer"], s1["volltext"], s1["snippet_fallback"], s1["gekuerzt"]) == (1, 1, 0, 0), str(s1))
+# Korrigiert (Volltext-Korrektur): Laenge allein entscheidet nicht. Vorher galten "zu kurz" und "kuerzer als das
+# Snippet" als unbrauchbar; jetzt nur noch fehlender bzw. technisch unbrauchbarer Text (leer, kaum Woerter,
+# Abruf-Fehlerseite, ein einzelnes Riesenwort).
+unbrauchbar = [hit(HOCH + "/a", "A", snip, None), hit(HOCH + "/b", "B", snip, ""), hit(HOCH + "/c", "C", snip, "  \n  "),
+               hit(HOCH + "/d", "D", snip, "Access denied. Please enable JavaScript and cookies to continue."),
+               hit(HOCH + "/e", "E", snip, "y" * 450), hit(HOCH + "/f", "F", snip, "OK")]
 t2, s2 = _mit_originaltext(unbrauchbar)
-check("A2 fehlend / leer / zu kurz / kuerzer als das Snippet -> Snippet bleibt, als Fallback gezaehlt",
-      [x["content"] for x in t2] == [x["content"] for x in unbrauchbar] and s2["snippet_fallback"] == 4
-      and s2["volltext"] == 0, str(s2))
+check("A2 fehlend / leer / Fehlerseite / kein Text -> Snippet bleibt, als Fallback gezaehlt (getrennt nach fehlt/unbrauchbar)",
+      [x["content"] for x in t2] == [x["content"] for x in unbrauchbar] and s2["snippet_fallback"] == 6
+      and s2["volltext"] == 0 and s2["fallback_fehlt"] == 3 and s2["fallback_unbrauchbar"] == 3, str(s2))
+KURZ = f"{RAHMEN} {BARE}"
+t2b, s2b = _mit_originaltext([hit(HOCH + "/k", "K", "Lexus RC F Gebrauchtwagen: " + "Überblick zu Motor und Ausstattung. " * 6, KURZ)])
+check("A2b SYNTHETISCH: kurzer, kuerzerer Originaltext (< 400 Zeichen, kuerzer als das Snippet) ist verwertbar und ersetzt",
+      s2b["volltext"] == 1 and t2b[0]["content"] == KURZ and len(KURZ) < 400, str(s2b))
 t3, s3 = _mit_originaltext([hit(HOCH, "Lexus RC F", snip, "Absatz eins. " * 50 + "\n\n" + "x " * _ORIGINALTEXT_MAX_ZEICHEN)])
 check("A3 Kuerzung nur ueber der Grenze, gezaehlt und nicht still; Anfang bleibt erhalten",
       s3["gekuerzt"] == 1 and len(t3[0]["content"]) <= _ORIGINALTEXT_MAX_ZEICHEN
@@ -172,6 +180,50 @@ check("B9 SYNTHETISCH: ein einzelner Claim aus Volltext ueber 800 Zeichen wird p
 b10, _ = bauteile_aus(hit("https://www.caranddriver.example/lexus-rc-f", "Lexus RC F review", "Lexus RC F review overview and specs for buyers.",
                          "The Lexus RC F is powered by a 5.0-liter V8. " * 12 + "\n\nTypical weaknesses of the Lexus RC F:\n\n"
                          "The water pump of the Lexus RC F leaks often.\n\n"))
+# Volltext-Korrektur A: kurze Originaltexte
+SNIP_POS2 = f"Die Wasserpumpe {M} ist häufig undicht [...] mehr dazu im Gebrauchtwagen-Check zum Lexus RC F"
+REL_KURZ = f"Eine häufig undichte Wasserpumpe {M} ist kein bekanntes Problem."
+b11, ab11 = bauteile_aus(hit(HOCH, "Lexus RC F", SNIP_POS2, REL_KURZ))
+check("B11 SYNTHETISCH: positives Snippet, kuerzerer relativierender Originaltext (< 400 Zeichen, kuerzer als das Snippet) "
+      "-> kein Fakt (kein Snippet-Retry); das Snippet allein traegt einen Fakt",
+      b11 == [] and any(a.get("grund") == "benign_relativiert" for a in ab11)
+      and bauteile_aus(hit(HOCH, "Lexus RC F", SNIP_POS2))[0] == ["Wasserpumpe"], str(b11))
+b12, _ = bauteile_aus(hit(HOCH, "Lexus RC F", "Typische Schwachstellen des Lexus RC F: die Wasserpumpe ist undicht [...] "
+                          "Mehr dazu im Gebrauchtwagen-Check zum Lexus RC F", KURZ))
+check("B12 SYNTHETISCH: kurzer verwertbarer allgemeiner Befund (Rahmen + Satz, < 400 Zeichen) wird verarbeitet",
+      b12 == ["Wasserpumpe"], str(b12))
+b13, _ = bauteile_aus(hit(HOCH, "Lexus RC F", f"Die Wasserpumpe {M} ist häufig undicht",
+                          "Access denied. Please enable JavaScript and cookies to continue."))
+check("B13 SYNTHETISCH: technisch unbrauchbarer Text (Fehlerseite) -> echter Snippet-Fallback bleibt erhalten",
+      b13 == ["Wasserpumpe"], str(b13))
+
+# Volltext-Korrektur B: Fremdmodell-Ueberschriften ohne Marke
+FREMD_ABSATZ = "Die Wasserpumpe ist häufig undicht und muss oft getauscht werden."
+
+
+def abschnitt(ueberschrift, davor=""):
+    return hit(HOCH, "Lexus RC F Gebrauchtwagen", snip, FUELL + davor + f"\n\n{ueberschrift}\n\n{FREMD_ABSATZ}\n\n" + FUELL)
+
+
+mit_marke = bauteile_aus(abschnitt("Typische Schwachstellen des Lexus GS F"))[0]
+ohne_marke = bauteile_aus(abschnitt("Typische Schwachstellen GS F"))[0]
+check("B14 SYNTHETISCH: derselbe belegte Fremdabschnitt mit und ohne Markenname -> kein Zielfakt",
+      mit_marke == [] and ohne_marke == [], f"{mit_marke} / {ohne_marke}")
+check("B14b SYNTHETISCH: Fremdmodell auf der Seite hinter der Marke belegt, Ueberschrift nur mit Kuerzel -> kein Zielfakt",
+      bauteile_aus(abschnitt("Typische Schwachstellen RX", davor="\n\nDer Lexus RX im Vergleich"))[0] == []
+      and bauteile_aus(abschnitt("Typische Schwachstellen GS F", davor="\n\nLexus GS F im Vergleich"))[0] == [])
+check("B14c SYNTHETISCH: Ueberschrift mit Buchstaben+Ziffern-Bezeichnung (mehrdeutig, nicht belegt) erbt dem Abschnitt "
+      "den Titelkontext nicht", bauteile_aus(abschnitt("Typische Schwachstellen LC 500"))[0] == [])
+check("B15 SYNTHETISCH: Abkuerzungen und Motorangaben in Ueberschriften sind keine Fremdmodelle (Befund bleibt)",
+      bauteile_aus(abschnitt("Typische Schwachstellen ABS ESP"))[0] == ["Wasserpumpe"]
+      and bauteile_aus(abschnitt("Typische Schwachstellen 5.0 V8"))[0] == ["Wasserpumpe"])
+nach_fremd = bauteile_aus(hit(HOCH, "Lexus RC F Gebrauchtwagen", snip,
+                              FUELL + f"\n\nTypische Schwachstellen GS F\n\n{FREMD_ABSATZ}\n\nLexus RC F\n\n"
+                              "Die Wasserpumpe ist häufig undicht und muss oft getauscht werden.\n\n" + FUELL))[0]
+check("B16 SYNTHETISCH: auf den Fremdabschnitt folgt eine eindeutige Zielmodell-Ueberschrift ('Lexus RC F') -> Befund moeglich",
+      nach_fremd == ["Wasserpumpe"], str(nach_fremd))
+check("B16b SYNTHETISCH: Zielmodell-Ueberschrift auch ohne Marke ('RC F Schwachstellen') -> Befund",
+      bauteile_aus(abschnitt("RC F Schwachstellen"))[0] == ["Wasserpumpe"])
 check("B10 SYNTHETISCH: englischer Volltext erhaelt durch dieses Paket keine neue Freigabe (keine deutsche "
       "Marktgeltung behauptet, aber auch keine Auswertung)", b10 == [])
 
@@ -217,6 +269,16 @@ check("D3 SYNTHETISCH: Einzelberichte im Volltext -> KEIN Fakt (einzelbericht)",
 f4, _, _ = cand([FUELL + f"Eine häufig undichte Wasserpumpe {M} ist kein bekanntes Problem.\n\n" + FUELL] * 3,
                 snippets=[f"Die Wasserpumpe {M} ist häufig undicht."] * 3)
 check("D4 SYNTHETISCH: positives Snippet, relativierender Volltext in allen drei Familien -> KEIN Fakt", f4 == [])
+
+f5, _, _ = cand([FUELL + "\n\nTypische Schwachstellen GS F\n\nDie Wasserpumpe ist häufig undicht und muss oft getauscht werden.\n\n" + FUELL] * 3)
+check("D5 SYNTHETISCH: Fremdabschnitt ohne Markenname im Volltext, drei Familien -> KEIN Fakt",
+      f5 == [])
+f6, _, _ = cand([FUELL + "\n\nLexus RC F\n\nDie Wasserpumpe ist häufig undicht und muss oft getauscht werden.\n\n" + FUELL] * 3)
+check("D6 SYNTHETISCH: derselbe Aufbau unter eindeutiger Zielmodell-Ueberschrift -> Befund moeglich (Positivkontrolle)",
+      len(f6) == 1, str([(x.bauteil, x.beleglage) for x in f6]))
+f7, _, _ = cand([REL_KURZ] * 3, snippets=[SNIP_POS2] * 3)
+check("D7 SYNTHETISCH: positives Snippet, kuerzerer relativierender Originaltext in allen drei Familien -> KEIN Fakt",
+      f7 == [])
 
 print("\n=== E) Provider-Ebene: Anfragefolge, Extract, Diagnose, Sichtbarkeit (gestubbter run_kaufcheck) ===")
 treffer_ = lambda u, t, c: {"url": u, "title": t, "content": c}   # noqa: E731
@@ -371,6 +433,28 @@ async def pfad():
     r10, *_ = await lauf(sw_a=[hit(ADAC_URL, "Lexus RC F | ADAC", snip, ADAC_TEXT)])
     check("E10 ECHT: ADAC-Volltext -> kein Schwachstellen-Insight, kein Spurhalteassistent in Bericht/Fragen/Dokumenten",
           sw(r10) == [] and "Spurhalteassistent" not in sichtbar(r10))
+    # Volltext-Korrektur: kurze Originaltexte und Fremdabschnitte ohne Marke bis Bericht/Fragen/Dokumente
+    r12, *_ = await lauf(sw_a=[hit(HOCH, "Lexus RC F", SNIP_POS2, REL_KURZ)])
+    check("E12 SYNTHETISCH: positives Snippet + kuerzerer relativierender Originaltext -> nichts Sichtbares",
+          sw(r12) == [] and "Wasserpumpe" not in sichtbar(r12))
+    r13, *_, log13 = await lauf(sw_a=[hit(HOCH, "Lexus RC F", "Lexus RC F im Ueberblick fuer Kaufinteressenten und Besitzer.", KURZ)])
+    check("E13 SYNTHETISCH: kurzer verwertbarer allgemeiner Befund (< 400 Zeichen) erreicht Insight, Bericht, Frage, Nachweis",
+          any("Wasserpumpe" in i.titel for i in sw(r13)) and "Wasserpumpe" in r13.bericht and "Wasserpumpe" in sichtbar(r13),
+          str([i.titel for i in sw(r13)]))
+    r14, *_, log14 = await lauf(sw_a=[hit(HOCH, "Lexus RC F Gebrauchtwagen", "Die Wasserpumpe des Lexus RC F ist häufig undicht",
+                                          "Access denied. Please enable JavaScript and cookies to continue.")])
+    check("E14 SYNTHETISCH: technisch unbrauchbarer Text -> Snippet-Fallback (Befund aus dem Snippet bleibt sichtbar), Diagnose "
+          "nennt den Grund", any("Wasserpumpe" in i.titel for i in sw(r14))
+          and any("snippet_fallback=1 (fehlt=0 unbrauchbar=1)" in z for z in log14 if "schwachstelle_volltext" in z),
+          str([z for z in log14 if "schwachstelle_volltext" in z]))
+    for name, ueber in (("Fremdabschnitt MIT Marke", "Typische Schwachstellen des Lexus GS F"),
+                        ("Fremdabschnitt OHNE Marke", "Typische Schwachstellen GS F")):
+        r, *_ = await lauf(sw_a=[abschnitt(ueber)])
+        check(f"E15 SYNTHETISCH: {name} -> bis Bericht, Fragen und Dokumente kein Zielfakt",
+              sw(r) == [] and "Wasserpumpe" not in sichtbar(r), str([i.titel for i in sw(r)]))
+    r16, *_ = await lauf(sw_a=[abschnitt("Lexus RC F")])
+    check("E16 SYNTHETISCH: eindeutiger Zielmodell-Abschnitt -> Befund bleibt moeglich (Insight, Bericht, Frage/Nachweis)",
+          any("Wasserpumpe" in i.titel for i in sw(r16)) and "Wasserpumpe" in sichtbar(r16), str([i.titel for i in sw(r16)]))
     # 11) Nachsuche: Seitentext wird auch dort angefordert und genutzt
     r11, calls11, ext11, log11 = await lauf(
         sw_a=[hit(HOCH, "Lexus RC F Gebrauchtwagen", "Lexus RC F Gebrauchtwagen im Überblick für Kaufinteressenten.")],

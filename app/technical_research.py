@@ -992,10 +992,14 @@ def _wartung_nachlade_kandidaten(treffer: list[dict], *, marke: str | None = Non
 # gilt: angefordert != geliefert. Brauchbarer Originaltext ERSETZT `content` desselben Treffers
 # (Snippet und Original sind dieselbe Quelle, kein zweiter Beleg, und ein fachlich abgelehnter
 # Volltext kann nicht über sein Snippet doch bestätigt werden). Ohne brauchbaren Originaltext bleibt
-# das Snippet unverändert. Brauchbar = >= `_MIN_RAW_CONTENT_LEN` Zeichen UND nicht kürzer als das
-# Snippet (ein kürzerer "Volltext" ist eine abweichende/abgeschnittene Extraktion). Die Länge ist
-# begrenzt (`_ORIGINALTEXT_MAX_ZEICHEN`); eine Kürzung geschieht am Absatz-/Satzende und wird gezählt
-# und protokolliert -- nie still. Die Reichweite einer Aussage wird weiterhin NUR aus Satz und
+# das Snippet unverändert. Länge allein entscheidet NICHT: auch ein kurzer Originaltext kann vollständig
+# und fachlich entscheidend sein (oder ein Snippet relativieren). Zu unterscheiden ist (siehe
+# `_originaltext_pruefung`): fehlend / technisch unbrauchbar (leer, kaum Text, Abruf-Fehlerseite) ->
+# Snippet-Fallback; sonst verwertbar und ersetzend -- auch wenn er kürzer als das Snippet ist (ein
+# widersprechender oder relativierender Kurztext darf keine positive Snippet-Bestätigung ermöglichen; ein
+# unvollständiger Originaltext führt höchstens zu WENIGER Befunden, nie zu einem aus dem Snippet geretteten).
+# Die Länge ist begrenzt (`_ORIGINALTEXT_MAX_ZEICHEN`); eine Kürzung geschieht am Absatz-/Satzende und
+# wird gezählt und protokolliert -- nie still. Die Reichweite einer Aussage wird weiterhin NUR aus Satz und
 # zugehörigem Kontext bestimmt (N19), nicht aus der Existenz des Volltexts.
 _ORIGINALTEXT_MAX_ZEICHEN = 40_000
 _MAX_CLAIM_ZEICHEN_VOLLTEXT = 800
@@ -1017,24 +1021,49 @@ def _kuerze_originaltext(text: str) -> tuple[str, bool]:
     return kopf, True
 
 
+_MIN_ORIGINALTEXT_ZEICHEN = 40
+_MIN_ORIGINALTEXT_WOERTER = 6
+# Typische Fehler-/Sperrseiten, die ein Abruf statt des Seitentextes liefert. Nur bei KURZEN Texten
+# (< 600 Zeichen) ein Ausschlussgrund: eine lange Seite, die "Cookies" erwähnt, ist verwertbarer Text.
+_RE_ABRUF_FEHLERSEITE = re.compile(
+    r"(?:enable|aktivier\w*)\s+javascript|access\s+denied|zugriff\s+verweigert|403\s+forbidden|"
+    r"404\s+(?:not\s+found|nicht\s+gefunden)|captcha|verify\s+you\s+are\s+(?:a\s+)?human|"
+    r"just\s+a\s+moment|attention\s+required|cookies?\s+(?:akzeptieren|aktivieren|enable)", re.IGNORECASE)
+
+
+def _originaltext_pruefung(raw, snippet: str = "") -> str:
+    """"ok" | "fehlt" | "unbrauchbar" -- Länge allein entscheidet nicht (siehe oben); `snippet` bleibt
+    ohne Einfluss."""
+    if not isinstance(raw, str) or not raw.strip():
+        return "fehlt"
+    t = raw.strip()
+    woerter = len(re.findall(r"[^\W\d_]{2,}", t))
+    buchstaben = sum(1 for c in t if c.isalpha())
+    if (len(t) < _MIN_ORIGINALTEXT_ZEICHEN or woerter < _MIN_ORIGINALTEXT_WOERTER
+            or buchstaben < 0.3 * len(t) or (len(t) < 600 and _RE_ABRUF_FEHLERSEITE.search(t))):
+        return "unbrauchbar"
+    return "ok"
+
+
 def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
-    """Setzt brauchbaren, mit der Suche gelieferten Originaltext als `content` (siehe oben). Rein, ohne
+    """Setzt verwertbaren, mit der Suche gelieferten Originaltext als `content` (siehe oben). Rein, ohne
     Netzwerk. Ein bereits verarbeiteter Treffer (`_ot`) wird nicht erneut gezählt. Dieselbe URL, die in
     einer anderen Anfrage nur als Snippet kam, bekommt den Originaltext der anderen (eine Quelle)."""
-    stat = {"treffer": 0, "volltext": 0, "snippet_fallback": 0, "gekuerzt": 0}
+    stat = {"treffer": 0, "volltext": 0, "snippet_fallback": 0, "gekuerzt": 0,
+            "fallback_fehlt": 0, "fallback_unbrauchbar": 0}
     original: dict[str, str] = {}
     for r in treffer:
-        if r.get("_ot") == "volltext" or not hat_brauchbaren_raw_content(r):
+        if r.get("_ot") == "volltext":
             continue
-        raw = (r.get("raw_content") or "").strip()
-        if len(raw) >= len((r.get("content") or "").strip()):
-            original.setdefault(_url_schluessel(r.get("url") or ""), raw)
+        if _originaltext_pruefung(r.get("raw_content")) == "ok":
+            original.setdefault(_url_schluessel(r.get("url") or ""), r["raw_content"].strip())
     ergebnis: list[dict] = []
     for r in treffer:
         if r.get("_ot") in ("volltext", "snippet"):
             ergebnis.append(r)
             continue
         stat["treffer"] += 1
+        eigen = _originaltext_pruefung(r.get("raw_content"))
         raw = original.get(_url_schluessel(r.get("url") or ""))
         if raw:
             text, gekuerzt = _kuerze_originaltext(raw)
@@ -1043,6 +1072,7 @@ def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
             ergebnis.append({**r, "content": text, "_ot": "volltext"})
         else:
             stat["snippet_fallback"] += 1
+            stat["fallback_" + (eigen if eigen != "ok" else "fehlt")] += 1
             ergebnis.append({**r, "_ot": "snippet"})
     return ergebnis, stat
 
@@ -1051,8 +1081,9 @@ def _log_originaltext(kategorie: str, runde: int, stat: dict[str, int], *, angef
     """Diagnose je Runde. `angefordert` = Anzahl der Suchanfragen MIT Originaltext-Anforderung (nicht
     der Nachweis, dass er geliefert wurde). Nie Seitentext, nie Secrets im Log."""
     log.info("research_phase=%s_volltext round=%d angefordert_anfragen=%d treffer=%d volltext_brauchbar=%d "
-             "snippet_fallback=%d gekuerzt=%d", kategorie, runde, angefordert, stat["treffer"],
-             stat["volltext"], stat["snippet_fallback"], stat["gekuerzt"])
+             "snippet_fallback=%d (fehlt=%d unbrauchbar=%d) gekuerzt=%d", kategorie, runde,
+             angefordert, stat["treffer"], stat["volltext"], stat["snippet_fallback"], stat["fallback_fehlt"],
+             stat["fallback_unbrauchbar"], stat["gekuerzt"])
 
 
 def _claim_zu_lang(r: dict, claim: str) -> bool:
@@ -3995,8 +4026,82 @@ def _nennt_fremdes_modell_derselben_marke(satz: str, marke: str | None, modell: 
     return False
 
 
+# Fremdmodell-Überschrift OHNE erneute Markennennung ("Typische Schwachstellen GS F"). Zwei Erkennungen, beide
+# ohne Fahrzeugliste: (1) die Bezeichnung ist im SELBEN Treffer hinter der Zielmarke belegt ("Lexus GS F" an
+# anderer Stelle); (2) die Überschrift trägt strukturell eine Modellbezeichnung (Kürzelgruppe wie "GS F" oder
+# Buchstaben+Ziffern wie "LC 500"), die nicht das Zielmodell ist. Allgemeine Abkürzungen (ABS, ESP, TÜV ...)
+# und Motorangaben ("5.0 V8") sind keine Modelle. Auch eine nur strukturell erkannte (mehrdeutige) Überschrift
+# erbt dem folgenden Abschnitt den Titelkontext NICHT; erst ein Satz mit dem Zielmodell stellt ihn wieder her.
+_RE_BEZEICHNER_GRUPPE = re.compile(
+    r"\b(?:[A-Z]{1,3}[ -][A-Z0-9]{1,3}[a-z]?|[A-Z]{1,3}[ -]?\d{2,4}[a-z]{0,2})\b")
+_KEIN_MODELL_BEZEICHNER = frozenset({
+    "abs", "esp", "asr", "dsg", "led", "usb", "tuv", "adac", "kba", "hu", "au", "eu", "ps", "kw", "co",
+    "tdi", "tsi", "gps", "pkw", "suv", "dpf", "agr", "egr", "ecu", "cd", "dvd", "hd", "uv", "sos"})
+
+
+def _saetze_mit_koepfen(text: str) -> tuple[list[tuple[str, bool]], frozenset[str]]:
+    """Wie `_saetze_mit_segmentgrenze`, behält aber kurze Überschriftenzeilen (unter 5 Wörter), die `_saetze`
+    stillschweigend verwirft: gerade "Lexus GS F" oder "Typische Schwachstellen GS F" sind Abschnittsgrenzen.
+    Zweiter Rückgabewert: diese Überschriften. Sie dienen NUR der Abschnitts-/Fremdmodell-Erkennung; der
+    Aufrufer entfernt sie vor der Claim-Auswertung wieder (sie sind keine Claims und kein Rahmen)."""
+    out: list[tuple[str, bool]] = []
+    koepfe: set[str] = set()
+    for i, chunk in enumerate(_ABSATZ_ODER_UEBERSCHRIFT_TRENNER.split(text or "")):
+        saetze = _saetze(chunk, max_len=None)
+        if not saetze:
+            c = chunk.strip()
+            if 3 <= len(c) <= 120 and len(c.split()) >= 2 and c[-1] not in ".!?" and _ist_kopfartig(c):
+                out.append((c, i > 0))
+                koepfe.add(c)
+            continue
+        for j, sa in enumerate(saetze):
+            out.append((sa, i > 0 and j == 0))
+    return out, frozenset(koepfe)
+
+
+def _fremdmodell_bezeichnungen(satz_liste: list[str], marke: str | None, modell: str | None) -> set[str]:
+    """Modellbezeichnungen, die im Treffer selbst hinter der Zielmarke stehen (nicht das Zielmodell)."""
+    bekannt: set[str] = set()
+    if not marke or not modell:
+        return bekannt
+    ziel = set(_norm(modell).split())
+    for s in satz_liste:
+        for m in re.finditer(r"\b" + re.escape(marke) + r"\b", s or "", re.IGNORECASE):
+            folge = _RE_GROSSGESCHRIEBENE_FOLGE.match(s[m.end():])
+            if not folge:
+                continue
+            teile = []
+            for tok in folge.group(1).split():
+                if any(c.isdigit() for c in tok) or (tok.isupper() and len(tok) <= 3):
+                    teile.append(tok)
+                else:
+                    break
+            norm = _norm(" ".join(teile))
+            if norm and not set(norm.split()) <= ziel and not (set(norm.split()) & _KEIN_MODELL_BEZEICHNER):
+                bekannt.add(norm)
+    return bekannt
+
+
+def _fremdmodell_kopf(satz: str, marke: str | None, modell: str | None, bekannt: set[str]) -> bool:
+    """Überschriftenzeile, die ein ANDERES Modell nennt -- mit oder ohne Markennamen (siehe oben)."""
+    if not modell or not _ist_kopfartig(satz) or _satz_nennt_modell(satz, modell):
+        return False
+    if _nennt_fremdes_modell_derselben_marke(satz, marke, modell):
+        return True
+    n = _norm(satz)
+    if any(b and re.search(r"\b" + re.escape(b) + r"\b", n) for b in bekannt):
+        return True
+    ziel = set(_norm(modell).split())
+    for g in _RE_BEZEICHNER_GRUPPE.findall(satz):
+        toks = set(_norm(g).split())
+        if toks and not (toks & _KEIN_MODELL_BEZEICHNER) and not toks <= ziel:
+            return True
+    return False
+
+
 def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
-                         marke: str | None, modell: str | None) -> tuple[bool, bool]:
+                         marke: str | None, modell: str | None,
+                         koepfe: frozenset[str] = frozenset()) -> tuple[bool, bool]:
     """(einzelfahrzeug, allgemein) aus dem verfügbaren Kontext DESSELBEN Treffers. Die Überschrift
     zählt nur als Einzelfahrzeug-Hinweis (Testwagen/Leser), nie als Beleg für Allgemeinheit."""
     einzel = bool(_RE_EINZELFAHRZEUG.search(titel or ""))
@@ -4008,13 +4113,15 @@ def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
     nachbarn = satz_liste[max(0, i - 1):i] + satz_liste[i + 1:i + 2]
     if any(_RE_EINZELFAHRZEUG.search(t) for t in nachbarn):
         einzel = True
+    bekannt = _fremdmodell_bezeichnungen(satz_liste, marke, modell)
 
     def _fremd(t: str) -> bool:
         if (marke or modell) and _claim_widerspricht_fahrzeug_lokal(t, marke, modell):
             return True
         # Nennt der Satz die Marke mit einer anderen Modellbezeichnung ("Typische Schwachstellen des
-        # Lexus GS F"), gehört er nicht zum Zielmodell.
-        return _nennt_fremdes_modell_derselben_marke(t, marke, modell)
+        # Lexus GS F") oder ist er eine Fremdmodell-Überschrift (auch ohne Marke), gehört er nicht zum Ziel.
+        return (_nennt_fremdes_modell_derselben_marke(t, marke, modell)
+                or _fremdmodell_kopf(t, marke, modell, bekannt))
 
     titel_norm = _norm(titel or "")
 
@@ -4030,6 +4137,8 @@ def _reichweiten_kontext(titel: str | None, satz_liste: list[str], satz: str, *,
             continue
         if _fremd(vorher) or _RE_EINZELFAHRZEUG.search(vorher):
             break
+        if vorher in koepfe:
+            continue                  # kurze Überschrift: nie ein Rahmen (Rahmen sind echte Sätze, wie bisher)
         if _rahmende_zeile(vorher):
             allgemein = True
             break
@@ -5618,6 +5727,8 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
     # eröffnet einen Fremdabschnitt. Der Absatzwechsel danach gibt den Titel-Kontext NICHT zurück, bis ein Satz
     # das Zielmodell selbst nennt -- sonst gälte der Absatz unter "Lexus GS F" für einen RC-F-Titel.
     fremd_abschnitt = False
+    bekannte_fremdmodelle = (_fremdmodell_bezeichnungen(satz_liste, marke, modell)
+                             if fremdabschnitt_sperre else set())
     for idx in range(len(satz_liste)):
         if segment_marker and segment_marker[idx]:
             kontext_aktiv = titel_stark and not fremd_abschnitt
@@ -5631,8 +5742,8 @@ def _segment_kontext_saetze(satz_liste: list[str], *, marke: str | None, modell:
         if not pruefe_widerspruch:
             ergebnis.append(satz)
             continue
-        _kopf_fremd = (fremdabschnitt_sperre and _ist_kopfartig(satz)
-                       and _nennt_fremdes_modell_derselben_marke(satz, marke, modell))
+        _kopf_fremd = (fremdabschnitt_sperre
+                       and _fremdmodell_kopf(satz, marke, modell, bekannte_fremdmodelle))
         if _kopf_fremd:
             fremd_abschnitt = True
         if _kopf_fremd or _claim_widerspricht_fahrzeug_lokal(satz, marke, modell):
@@ -6373,7 +6484,10 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             if kategorie == "wartung":
                 # F1: Abschnitte, die laut "Für <Modellliste>"-Überschrift ein ANDERES Modell betreffen, entfallen.
                 _roh = _entferne_fremde_modellbereiche(_roh, modell, url=url, abgelehnt=abgelehnt, kategorie=kategorie)
-            satz_markiert = _saetze_mit_segmentgrenze(_roh)
+            if kategorie == "schwachstelle":
+                satz_markiert, koepfe = _saetze_mit_koepfen(_roh)
+            else:
+                satz_markiert, koepfe = _saetze_mit_segmentgrenze(_roh), frozenset()
             satz_liste = [s for s, _ in satz_markiert]
             # Einsatzbereich: Überschrift-Reichweiten im ganzen Text und die Position jedes Satzes darin (die
             # Sätze sind der Reihe nach exakte Teilstrings von `_roh`; nicht auffindbare/ergänzte Sätze: kein Bereich).
@@ -6397,6 +6511,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                 segment_marker=[m for _, m in satz_markiert],
                 abgelehnt=abgelehnt, url=url, kategorie=kategorie,
                 fremdabschnitt_sperre=(kategorie == "schwachstelle"))
+            if koepfe:
+                erlaubte_saetze = [s for s in erlaubte_saetze if s not in koepfe]
             if kategorie == "wartung":
                 # F10-Folgefund (s. `_wartung_vorgangs_rueckreferenz_saetze()`):
                 # NUR zusätzliche Kandidatensätze, die Original-Sätze bleiben
@@ -6502,7 +6618,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     # eindeutig zugehöriger Kontext) -- unabhängig vom Vertrauen in die Domain.
                     # Nach dem Problemsignal: Nicht-Defekte behalten ihren eigenen Grund.
                     _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
-                                                                  marke=marke, modell=modell))
+                                                                  marke=marke, modell=modell,
+                                                                  koepfe=koepfe))
                     if _rw != "allgemein":
                         abgelehnt.append({"url": url, "kategorie": kategorie,
                                           "grund": "einzelbericht" if _rw == "einzel" else "reichweite_unbelegt",
@@ -7678,10 +7795,12 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
             continue
         family = _source_family(url)
         rr_zusatz = _rueckruf_zusatz_normen(r.get("content") or "")
-        satz_liste = _saetze(f"{r.get('title') or ''}. {r.get('content') or ''}", max_len=None)
+        _sm, koepfe = _saetze_mit_koepfen(f"{r.get('title') or ''}. {r.get('content') or ''}")
+        satz_liste = [sa for sa, _ in _sm]
         lokale = _segment_kontext_saetze(
             satz_liste, marke=marke, modell=modell, titel_stark=(grund != "schwach"),
             abgelehnt=abgelehnt, url=url, kategorie="schwachstelle", fremdabschnitt_sperre=True)
+        lokale = [sa for sa in lokale if sa not in koepfe]
         for satz in lokale:
             for claim in _segmentiere_claims(satz):
                 n = _norm(claim)
@@ -7702,7 +7821,7 @@ def _schwachstelle_candidate_fakten(treffer: list[dict], *, marke: str | None, m
                                       "satz": claim[:120]})
                     continue
                 _rw = _reichweite(claim, _reichweiten_kontext(r.get("title"), satz_liste, satz,
-                                                              marke=marke, modell=modell))
+                                                              marke=marke, modell=modell, koepfe=koepfe))
                 if _rw != "allgemein":
                     # Auch ein schwacher Kandidat darf die Reichweitenregel nicht umgehen: weder
                     # anreichern noch zur Mehrquellen-Gruppe zaehlen lassen.
