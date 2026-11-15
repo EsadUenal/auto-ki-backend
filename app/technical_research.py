@@ -720,36 +720,89 @@ def _pdf_text(daten: bytes) -> str:
         return ""
 
 
+# N1/N16 (Nutzerfreigabe 14.11.2026): genau EIN zusätzlicher Abruf NUR in diesem Fallback. Ohne ihn konnte
+# nach einer ersten Übersicht ohne passenden Link keine weitere Übersicht samt PDF geprüft werden (Übersicht +
+# PDF = 2 = das gesamte Identitäts-Abrufbudget). Höchstens 3 Abrufe in diesem Pfad; keine neue Suche.
+_UEBERSICHT_FALLBACK_ZUSATZ = 1
+
+
+def _url_ohne_query(url: str) -> tuple[str, str]:
+    """(Host, Pfad) ohne Query/Fragment -- nur für Diagnose und Duplikaterkennung."""
+    teile = urlsplit(url or "")
+    host = (teile.hostname or "").lower()
+    return (host[4:] if host.startswith("www.") else host), (teile.path or "/")
+
+
 async def _uebersicht_fallback(treffer: list[dict], *, marke: str | None, modell: str | None,
                                budget: int) -> list[dict]:
     """Übersicht -> verlinkte PDF -> Treffer für die BESTEHENDE Identitätsprüfung.
-    Zählt gegen das gemeinsame Identitäts-Abrufbudget: 1 Tavily-Abruf für die
-    Übersicht + 1 eigener PDF-Download (`budget` muss >= 2 sein). Der Treffer trägt
-    `verlinkt_von_herstellerseite` -- nur eine Herkunftsaussage (Dokumenttyp);
-    Rollen-, Zeit- und Modellprüfung bleiben unverändert."""
+
+    Prüft die zulässigen Übersichtskandidaten (`_uebersicht_kandidaten`, unveränderte Regeln und Reihenfolge)
+    nacheinander, bis eine verlinkte PDF Text liefert. Budget: der vom Aufrufer übergebene Rest des
+    Identitäts-Abrufbudgets plus `_UEBERSICHT_FALLBACK_ZUSATZ`; jede abgerufene Übersicht und jeder
+    PDF-Download zählt als ein Abruf. Eine weitere Übersicht wird nur geprüft, wenn danach noch Platz für ihren
+    PDF-Download bleibt. Abbruch bei geladenem PDF-Text, Budgetende oder erschöpften Kandidaten. Dieselbe
+    Übersicht (Host+Pfad) und dieselbe PDF werden nie zweimal abgerufen. Der Treffer trägt
+    `verlinkt_von_herstellerseite` -- nur eine Herkunftsaussage (Dokumenttyp); ein Link oder eine geladene PDF
+    bestätigt KEINE Generation: Rollen-, Zeit-, Markt- und Modellprüfung bleiben unverändert."""
     if budget < 2:
+        log.info("research_phase=identitaet_uebersicht_fallback ende=budget_zu_klein abrufe=0 budget=%d", budget)
         return []
-    kandidaten = _uebersicht_kandidaten(treffer, marke=marke)
+    budget_fallback = budget + _UEBERSICHT_FALLBACK_ZUSATZ
+    kandidaten: list[str] = []
+    gesehen: set[tuple[str, str]] = set()
+    for u in _uebersicht_kandidaten(treffer, marke=marke):
+        schluessel = _url_ohne_query(u)
+        schluessel = (schluessel[0], schluessel[1].rstrip("/").lower())
+        if schluessel not in gesehen:
+            gesehen.add(schluessel)
+            kandidaten.append(u)
+    log.info("research_phase=identitaet_uebersicht_fallback kandidaten=%d budget=%d liste=%s",
+             len(kandidaten), budget_fallback,
+             "|".join("".join(_url_ohne_query(u)) for u in kandidaten[:10]) or "-")
     if not kandidaten:
+        log.info("research_phase=identitaet_uebersicht_fallback ende=keine_kandidaten abrufe=0 budget=%d",
+                 budget_fallback)
         return []
-    uebersicht = kandidaten[0]
-    texte, _ = await _sicheres_nachladen([uebersicht])
-    links = _uebersicht_pdf_links(texte.get(uebersicht, ""), uebersicht_url=uebersicht,
-                                  marke=marke, modell=modell)
-    log.info("research_phase=identitaet_uebersicht_fallback uebersicht_abgerufen=%s pdf_links_passend=%d",
-             bool(texte.get(uebersicht)), len(links))
-    if not links:
-        return []
-    # Genau EIN PDF-Download (zweiter Budgetplatz), erster passender Link.
-    pdf_url, label = links[0]
-    geladen = await _lade_pdf_bytes(pdf_url, marke)
-    text = _pdf_text(geladen[0]) if geladen else ""
-    log.info("research_phase=identitaet_uebersicht_fallback pdf_geladen=%s text_vorhanden=%s",
-             bool(geladen), bool(text))
-    if not text:
-        return []
-    return [{"url": geladen[1], "title": label, "content": text,
-             "verlinkt_von_herstellerseite": uebersicht}]
+    abrufe = 0
+    geprueft = 0
+    versuchte_pdfs: set[str] = set()
+    ende = "kandidaten_erschoepft"
+    for pos, uebersicht in enumerate(kandidaten, 1):
+        if abrufe + 2 > budget_fallback:          # Übersicht + PDF müssen beide noch ins Budget passen
+            ende = "budget_ende"
+            break
+        texte, stats = await _sicheres_nachladen([uebersicht])
+        abrufe += 1
+        geprueft = pos
+        text_u = texte.get(uebersicht, "")
+        links = [(u, lb) for u, lb in _uebersicht_pdf_links(text_u, uebersicht_url=uebersicht,
+                                                           marke=marke, modell=modell)
+                 if u not in versuchte_pdfs]
+        host, pfad = _url_ohne_query(uebersicht)
+        log.info("research_phase=identitaet_uebersicht_fallback position=%d/%d host=%s pfad=%s "
+                 "uebersicht_abgerufen=%s textlaenge=%d abruf_fehler=%d aus_cache=%d pdf_links_passend=%d",
+                 pos, len(kandidaten), host, pfad, bool(text_u), len(text_u), stats.get("fehler", 0),
+                 stats.get("aus_cache", 0), len(links))
+        if not links:
+            continue
+        # Genau EIN PDF-Download je Übersicht: erster passender, noch nicht versuchter Link.
+        pdf_url, label = links[0]
+        versuchte_pdfs.add(pdf_url)
+        geladen = await _lade_pdf_bytes(pdf_url, marke)
+        abrufe += 1
+        text = _pdf_text(geladen[0]) if geladen else ""
+        pdf_host, pdf_pfad = _url_ohne_query(pdf_url)
+        log.info("research_phase=identitaet_uebersicht_fallback position=%d pdf_host=%s pdf_pfad=%s "
+                 "pdf_geladen=%s text_vorhanden=%s", pos, pdf_host, pdf_pfad, bool(geladen), bool(text))
+        if text:
+            log.info("research_phase=identitaet_uebersicht_fallback ende=erfolg abrufe=%d budget=%d geprueft=%d",
+                     abrufe, budget_fallback, pos)
+            return [{"url": geladen[1], "title": label, "content": text,
+                     "verlinkt_von_herstellerseite": uebersicht}]
+    log.info("research_phase=identitaet_uebersicht_fallback ende=%s abrufe=%d budget=%d geprueft=%d",
+             ende, abrufe, budget_fallback, geprueft)
+    return []
 
 
 # ── N1: gezielte Nachladung eines unabhängigen Rollenbelegs ──────────────────
