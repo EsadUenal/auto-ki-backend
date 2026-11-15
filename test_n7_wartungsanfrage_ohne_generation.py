@@ -316,15 +316,20 @@ async def main():
           "(Wartungsrangfolge-Paket: 'Motorkühlmittel' mit 150.000 km, nicht erreicht, steht nicht mehr im "
           "Fünferlimit; der Antriebsriemen belegt dieselbe Eigenschaft 'km-Schwelle nicht erreicht')",
           len(kuehl) == 1 and herkunft in kuehl[0].aktion and "Datum und Kilometerstand" in kuehl[0].aktion
-          and "zeitliche Alternative" in kuehl[0].aktion
           # F3 (fachlich begründet): Baujahr 2017 -> Fahrzeugalter mindestens 8 Jahre >= 6 Jahre Zeitschwelle: die
           # Zeitschwelle ist BELEGBAR erreicht und wird so benannt (vorher "nicht ausschließen, dass ... erreicht
           # ist" -- zu vorsichtig, obwohl der ganze mögliche Altersbereich die Schwelle überschreitet). Aussage
           # bleibt: ob die Arbeit gemacht wurde, ist unbekannt; keine Fälligkeit, kein Versäumnis.
-          and "nach dem Baujahr bereits erreicht" in kuehl[0].aktion
-          and re.search(r"Fahrzeugalter mindestens \d+ Jahre", kuehl[0].aktion)
-          and "geht aus den vorliegenden Daten nicht hervor" in kuehl[0].aktion
+          # N21: Kurzform statt Volltext -- dieselben Fakten (Zeitschwelle nach Baujahr belegbar erreicht, Fahrzeugalter,
+          # Durchführung unbekannt) in kürzerem Wortlaut.
+          and "Bezug laut Quelle: Erstintervall 105.000 km oder 6 Jahre, danach 15.000 km / 1 Jahr" in kuehl[0].aktion
           and "überfällig" not in kuehl[0].aktion, str([a.aktion for a in kuehl]))
+    fr_rb = [a for a in r_voll.kaufaktionen.verkaeuferfragen.fahrzeugspezifisch if "antriebsriemen" in a.id]
+    check("D13a) N21: die Zeitaussage (Zeitschwelle nach Baujahr belegbar erreicht, Fahrzeugalter, km-Anteil nicht einschlägig) "
+          "steht in der zugehörigen Verkäuferfrage; keine Fälligkeit, kein Versäumnis",
+          len(fr_rb) == 1 and "zeitliche Alternative" in fr_rb[0].aktion and "nach dem Baujahr rechnerisch erreicht" in fr_rb[0].aktion
+          and re.search(r"Fahrzeugalter mindestens \d+ Jahre", fr_rb[0].aktion) and "nicht einschlägig" in fr_rb[0].aktion
+          and "überfällig" not in fr_rb[0].aktion, str([a.aktion for a in fr_rb]))
     check("D13b) Motorkühlmittel (150.000 km, nicht erreicht, kein Zeitintervall) verliert gegen den "
           "Antriebsriemen mit belegbar erreichter Zeitschwelle -- kein Nachweis dafür im Fünferlimit",
           not [a for a in dok_v.fahrzeugspezifisch if "motorkuehlmittel" in a.id])

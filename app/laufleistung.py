@@ -98,7 +98,7 @@ import logging
 import re
 from datetime import date
 
-from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshinweis
+from app.models import EvidenceQuelle, Insight, Laufleistungskontext, Wartungshinweis, WartungsRegelInfo
 from app.risikothemen import DATENSATZ_MARKER, SCHLUSSSATZ_KEINE_HERSTELLERVORGABE, SCHLUSSSATZ_UNEINHEITLICH
 from app.wartungsangabe import aus_request as wartungsangabe_aus_request
 from app.servicehistorie import (
@@ -1047,6 +1047,137 @@ def _kandidaten(insights: list[Insight]) -> list[tuple[Insight, str]]:
     return out
 
 
+# ── N21: strukturierte Kurzform eines Wartungshinweises ──────────────────────────────────────────────────────────
+#
+# Erzeugt aus DENSELBEN Regelfeldern wie `_formuliere_regeln` (Kilometer, Zeit, Verknüpfung, Bedingung, Einsatz,
+# Folgeintervall) -- keine Zeichenkappung, keine neue fachliche Auslegung. Der volle `hinweis` bleibt unverändert.
+# Kilometer- und Zeitstatus tragen je ihre eigene Grundlage; was nicht ableitbar ist, wird nicht als "nicht erreicht"
+# ausgegeben. "Erreicht" heißt hier ausschließlich: die Erstschwelle ist rechnerisch überschritten -- kein Versäumnis.
+
+_TAETIGKEIT_KURZ = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}
+_VERBINDER_KURZ = {"oder": " oder ", "und": " und ", "unklar": " / "}
+_HANDLUNG_NACHWEIS = ("Nachweis verlangen: Datum, Kilometerstand und Beleg. Ob die Arbeit gemacht wurde, ist "
+                      "unbekannt.")
+
+
+def _intervall_kurz(zeit: tuple[int, str] | None, km: tuple[int, int | None] | None,
+                    verbinder: str | None) -> str | None:
+    teile = []
+    if km:
+        teile.append(_punkt_text(km[0], km[1]))
+    if zeit:
+        teile.append(zeit_anzeige(zeit[0], zeit[1]))
+    if not teile:
+        return None
+    return _VERBINDER_KURZ.get(verbinder or "unklar", " / ").join(teile)
+
+
+def _folge_info(r: WartungsRegel) -> tuple[bool, str | None]:
+    """(genannt, auswertbar als Text). Gelesen wird nur, was die Fundstelle hinter "Danach" ausdrücklich nennt."""
+    teile = _FOLGEINTERVALL.split(_GELTUNGSZEILE.sub("", r.text), maxsplit=1)
+    if len(teile) < 2:
+        return False, None
+    seg = teile[1]
+    z = _zeit_treffer(seg)
+    text = _intervall_kurz((z[0], z[1]) if z else None, parse_wartungspunkt(seg), None)
+    return True, text
+
+
+def _regel_info(r: WartungsRegel) -> WartungsRegelInfo:
+    genannt, folge = _folge_info(r)
+    return WartungsRegelInfo(
+        art="bedingt" if r.bedingt else "grund", erstintervall=_intervall_kurz(r.zeit, r.km, r.verbinder),
+        folgeintervall=folge, folge_genannt=genannt, verknuepfung=r.verbinder, einsatz=r.einsatz,
+        wortlaut=" ".join(r.text.split()))
+
+
+def _km_status_kurz(ausw: "_Auswertung", kilometerstand: int) -> tuple[str, str | None]:
+    if ausw.von_km is None:
+        return "keine_kmregel", None
+    punkt = _punkt_text(ausw.von_km, ausw.bis_km)
+    if ausw.modus == "nur_bedingt":
+        return "bedingt", f"Kilometerpunkt ({punkt}) gilt nur unter ungeklärter Voraussetzung; nicht bewertet"
+    erst = "frühester genannter Punkt" if ausw.mehrdeutig else "Erstpunkt"
+    text = {
+        STATUS_DARUEBER: f"{erst} ({punkt}) rechnerisch erreicht",
+        STATUS_IM_BEREICH: f"Stand liegt im Bereich des Punkts ({punkt})",
+        STATUS_NAEHERT_SICH: f"{erst} ({punkt}) rund {_km(ausw.von_km - kilometerstand)} voraus",
+        STATUS_ENTFERNT: f"{erst} ({punkt}) weit entfernt; der Kilometeranteil ist damit nicht einschlägig",
+    }.get(ausw.status)
+    return ausw.status, text
+
+
+def _zeit_status_kurz(ausw: "_Auswertung", alter_jahre: int | None, technik: str | None) -> tuple[str, str | None]:
+    zeiten = [r for r in ausw.regeln if r.zeit]
+    if not zeiten:
+        return "keine_zeitregel", None
+    if len({r.zeit for r in zeiten}) > 1 or (ausw.mehrdeutig and len(zeiten) != len(ausw.regeln)):
+        return "uneindeutig", "Die Quelle nennt mehrere verschiedene Zeitangaben; keine wird ausgewählt"
+    zeit = zeiten[0].zeit
+    # Die Bezeichnung folgt der Verknüpfung der Quelle: "oder" = zeitliche ALTERNATIVE zum Kilometerpunkt, "und" =
+    # zusätzliche Bedingung, ohne Kilometerpunkt = reine Zeitschwelle, unklare Verknüpfung = neutral "Zeitangabe".
+    art = {"oder": "zeitliche Alternative (oder {})", "und": "zusätzliche Zeitbedingung (und {})"}.get(
+        zeiten[0].verbinder, "Zeitschwelle ({})" if not zeiten[0].km else "Zeitangabe ({})")
+    angabe = art.format(zeit_anzeige(zeit[0], zeit[1]))
+    if ausw.modus == "nur_bedingt":
+        return "bedingt", f"{angabe} gilt nur unter ungeklärter Voraussetzung; nicht bewertet"
+    if technik:
+        return "bedingt", f"{angabe}; ob sie gilt, hängt von der ungeklärten technischen Voraussetzung ab"
+    klasse = _zeit_klasse(zeit, alter_jahre)
+    if klasse == "erreicht":
+        return "erreicht", (f"{angabe} nach dem Baujahr rechnerisch erreicht "
+                            f"(Fahrzeugalter mindestens {alter_jahre - 1} Jahre)")
+    if klasse == "band":
+        return "grenzwertig", f"{angabe} liegt an der Altersgrenze; ohne Erstzulassungsmonat offen"
+    if klasse == "baujahr_unbekannt":
+        return "unbekannt", f"{angabe}; ohne bekanntes Baujahr nicht bestimmbar"
+    return "nicht_erreicht", f"{angabe} rechnerisch noch nicht erreicht"
+
+
+def _kurzfelder(bauteil: str, ausw: "_Auswertung", roh: str | None, kilometerstand: int,
+                alter_jahre: int | None, technik: str | None, taetigkeit: str | None,
+                marktvorbehalt: bool, herkunft: str | None = None) -> dict:
+    """Die N21-Felder eines Wartungshinweises (`Wartungshinweis.km_status` ... `regeln`)."""
+    km_status, km_text = _km_status_kurz(ausw, kilometerstand)
+    zeit_status, zeit_text = _zeit_status_kurz(ausw, alter_jahre, technik)
+    infos = [_regel_info(r) for r in eindeutige_regeln([r for r in zerlege_regeln(roh) if r.km or r.zeit])]
+    basis = [i for i in infos if i.art == ("bedingt" if ausw.modus == "nur_bedingt" else "grund")]
+    if ausw.mehrdeutig:
+        intervall = "mehrere verschiedene Angaben: " + "; ".join(
+            f"„{i.erstintervall}“" for i in basis if i.erstintervall)
+    else:
+        i0 = basis[0] if basis else None
+        intervall = (f"Erstintervall {i0.erstintervall}" if i0 and i0.erstintervall else None)
+        if i0 and i0.folgeintervall:
+            intervall += f", danach {i0.folgeintervall}"
+        elif i0 and i0.folge_genannt:
+            intervall += ", danach: Folgeintervall genannt (Wortlaut in den Details)"
+        if intervall and ausw.von_km is None:
+            intervall += " (ohne Kilometerangabe)"
+        if intervall and ausw.modus == "nur_bedingt":
+            intervall += " (nur unter ungeklärter Voraussetzung)"
+    taet = _TAETIGKEIT_KURZ.get(taetigkeit, "Tätigkeit nicht belegt")
+    kopf = f"{taet}: {intervall}." if intervall else f"{taet}."
+    satz = [kopf]
+    if km_text:
+        satz.append(f"Kilometer: {km_text}.")
+    if zeit_text:
+        satz.append(f"Zeit: {zeit_text}.")
+    grenzen: list[str] = []
+    if marktvorbehalt:
+        grenzen.append("Marktvorbehalt der Quelle: Geltung in Deutschland nicht bestätigt")
+    if technik:
+        grenzen.append(f"Anwendbarkeit ungeklärt: {technik}")
+    if ausw.zusatz and ausw.modus == "grund":
+        grenzen.append("zusätzliche bedingte Regel, Voraussetzung ungeklärt (Wortlaut in den Details)")
+    if any(r.einsatz == "normal" for r in ausw.regeln):
+        grenzen.append("Angabe gilt laut Quelle für normale Einsatzbedingungen")
+    if herkunft == "web_wartung":      # letzter Eintrag: der Satz endet in der Ausgabe mit Punkt (wie im vollen Hinweis)
+        grenzen.append(_HERKUNFT_ZUSATZ["web_wartung"].strip().rstrip("."))
+    return dict(km_status=km_status, km_text=km_text, zeit_status=zeit_status, zeit_text=zeit_text,
+                intervall_kurz=kopf, kurz=" ".join(satz), handlung=_HANDLUNG_NACHWEIS, grenzen=grenzen, regeln=infos)
+
+
 def _wartungshinweise(insights: list[Insight], kilometerstand: int,
                       alter_jahre: int | None = None) -> list[Wartungshinweis]:
     """Wartungshinweise aus vorhandener Evidence — nie aus dem Nichts.
@@ -1129,6 +1260,8 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             taetigkeit=getattr(i, "taetigkeit", None),
             technische_bedingung=getattr(i, "technische_bedingung", None),
             technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
+            **_kurzfelder(bauteil, ausw, roh, kilometerstand, alter_jahre, technik,
+                          getattr(i, "taetigkeit", None), hat_quellenvorbehalt(roh), herkunft),
         )))
 
     # STATUS_ENTFERNT taucht hier nur noch in genau einem Fall auf: km-seitig

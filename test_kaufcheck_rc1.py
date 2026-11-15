@@ -138,9 +138,11 @@ def test_hu():
     # wird dasselbe wie zuvor: 09/2028 sauber formatiert und als passend
     # eingeordnet, jetzt mit der gesetzlichen Regel als Herkunft.
     zeile_hu = next((z for z in b.splitlines() if z.startswith("| HU |")), "")
-    check("Tabellenzeile HU zeigt 09/2028 und ✓ passt (gesetzliche Regel)",
-          "| bis 09/2028 |" in zeile_hu and "(gesetzliche Regel)" in zeile_hu
-          and zeile_hu.endswith("| ✓ passt |"), zeile_hu)
+    # N21: plausible Inseratangabe ist KEIN geprüfter HU-Nachweis -- kein "✓ passt".
+    check("Tabellenzeile HU zeigt 09/2028 als Inseratangabe, plausibel und ausdrücklich nicht geprüft",
+          "| bis 09/2028 (Angabe im Inserat) |" in zeile_hu and "(gesetzliche Regel)" in zeile_hu
+          and zeile_hu.endswith("| Angabe plausibel, nicht geprüft: HU-Bericht oder Plakette prüfen lassen |")
+          and "✓" not in zeile_hu and "passt" not in zeile_hu, zeile_hu)
     titel = [a["titel"] for a in map(_dump, _alle_aktionen("dokumente"))]
     check("Dokumenten-Checkliste nennt 09/2028, nie 092028",
           any("09/2028" in t for t in titel) and not any("092028" in t for t in titel), str(titel[:4]))

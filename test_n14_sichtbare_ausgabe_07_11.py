@@ -123,7 +123,8 @@ if fragen_i:
           "nicht einschlägig" in fragen_i[0].aktion, fragen_i[0].aktion)
 if dok_i:
     check("I5) Der Dokumententext trägt dieselbe Information",
-          "6 Jahre" in dok_i[0].aktion and "nicht einschlägig" in dok_i[0].aktion, dok_i[0].aktion)
+          # N21: das Dokument nennt Beleg und Intervallbezug; der Kilometer-Anlass steht in Frage und Bericht
+          "6 Jahre" in dok_i[0].aktion and "Erstintervall 90.000 km oder 6 Jahre" in dok_i[0].aktion, dok_i[0].aktion)
 
 # I6-I9: jetzt der GANZE sichtbare Bericht -- exakt die Funktion, die in
 # app/kaufcheck.py als `result["bericht"]` an den Nutzer geht. KEIN Gemini-

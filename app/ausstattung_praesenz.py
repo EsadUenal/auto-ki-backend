@@ -233,8 +233,14 @@ def praesenz(text: str | None, identity=None, ausstattung=None,
     return UNKNOWN, a, bezeichnung
 
 
-def bedingung(bezeichnung: str | None, a: Abhaengigkeit | None) -> str:
-    """Der EINE Präfix für bedingte Punkte: "Falls EDC vorhanden: "."""
+def bedingung(bezeichnung: str | None, a: Abhaengigkeit | None, *, wartung: bool = False) -> str:
+    """Der EINE Präfix für bedingte Punkte: "Falls EDC vorhanden: ".
+
+    `wartung=True` (N21): Bei einer Wartung bezeichnet die gefundene Bezeichnung oft den Betriebsstoff oder die
+    Tätigkeit, nicht das Bauteil ("verbaut" gilt für ein Getriebe, nicht für ein Öl). Dann nennt die Bedingung das
+    FAHRZEUGMERKMAL aus der strukturierten Abhängigkeit (Klasse), unbestätigt -- ohne Namens- oder Fahrzeugsonderfall."""
+    if wartung and a is not None and a.art != "ausstattung":
+        return f"Falls das Fahrzeug folgendes Merkmal hat ({a.klasse}, am Fahrzeug nicht bestätigt): "
     name = bezeichnung or (a.klasse if a else "diese Ausstattung")
     verb = "verbaut" if a is not None and a.art != "ausstattung" else "vorhanden"
     return f"Falls {name} {verb}: "

@@ -149,7 +149,10 @@ def punkt_pruefen(tag, zeile, ins_b):
     check(f"{tag} technische Bedingung genau dann, wenn das eigene Insight sie trägt ({soll_bed})", hat_bed == soll_bed
           and (not soll_bed or ins_b.technische_bedingung in zeile), zeile)
     check(f"{tag} Präsenz-Bedingung des eigenen Titels erhalten ('{praesenz.strip()}')",
-          (praesenz in zeile) if praesenz else not zeile.startswith("Falls "), zeile)
+          # N21: die Präsenz-Bedingung bleibt (Getriebeart nicht bestätigt), nennt aber das Fahrzeugmerkmal statt des
+          # Betriebsstoffs ("verbaut" gilt für ein Getriebe, nicht für ein Öl).
+          (zeile.startswith("Falls das Fahrzeug ") and "nicht bestätigt): " in zeile and "verbaut" not in zeile)
+          if praesenz else not zeile.startswith("Falls "), zeile)
     check(f"{tag} keine Erreicht-/Fälligkeitsaussage in der Zeile",
           not any(w in zeile.lower() for w in ("erreicht", "fällig", "versäumt")), zeile)
 

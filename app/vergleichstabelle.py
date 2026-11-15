@@ -93,6 +93,8 @@ PASST = "✓ passt"
 WEICHT_AB = "⚠ weicht ab"
 WIDERSPRUCH = "❌ Widerspruch"
 NICHT_BEWERTBAR = "nicht bewertbar"
+# N21: plausible, aber ungeprüfte HU-Angabe (kein Prüfbericht, keine Plakette gesehen).
+HU_PLAUSIBEL_NICHT_GEPRUEFT = "Angabe plausibel, nicht geprüft: HU-Bericht oder Plakette prüfen lassen"
 KEINE_REFERENZ = "keine Vergleichsdaten"
 # Wortlaut wie in `postprocess.neutralisiere_preiszeile_ohne_markt` (RC1).
 KEINE_MARKTBASIS = "keine belastbare Marktbasis"
@@ -355,12 +357,16 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
             ohne_referenz="beide Angaben unbelegt: HU-Bericht klären"))
     elif hu is not None:
         status = getattr(hu, "status", None)
-        einordnung = {PLAUSIBEL: PASST, ABGELAUFEN: "⚠ abgelaufen",
+        # N21: eine plausible HU-Angabe ist KEINE geprüfte HU. Verglichen wird nur die Angabe des Inserats mit der
+        # gesetzlichen Frist; ein Prüfbericht oder eine Plakette liegt nicht vor. Daher kein "✓ passt" (das generische
+        # PASST bleibt für Zeilen, deren Wert gegen eine Datenquelle bestätigt ist) und kein Häkchen-Symbol.
+        plausibel = status == PLAUSIBEL
+        einordnung = {PLAUSIBEL: HU_PLAUSIBEL_NICHT_GEPRUEFT, ABGELAUFEN: "⚠ abgelaufen",
                       UNGEWOEHNLICH_WEIT: "⚠ ungewöhnlich weit: im Fahrzeugschein prüfen"
                       }.get(status, "⚠ nicht eindeutig lesbar")
         zeilen.append(Vergleichszeile(
-            "HU", f"bis {hu.anzeige}", "alle 24 Monate, Erst-HU nach 36 Monaten",
-            HERKUNFT_AMTLICH, einordnung))
+            "HU", f"bis {hu.anzeige}" + (" (Angabe im Inserat)" if plausibel else ""),
+            "alle 24 Monate, Erst-HU nach 36 Monaten", HERKUNFT_AMTLICH, einordnung))
     return zeilen
 
 

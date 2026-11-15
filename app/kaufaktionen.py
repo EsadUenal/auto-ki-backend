@@ -1071,10 +1071,11 @@ class _Sammler:
     def _rest_einleitung(bereich: str) -> str:
         # "jeweils" statt "ebenfalls": die Restzeile übernimmt nichts vom Träger (weder dessen Tätigkeit noch
         # eine Anwendbarkeitsfrage); was für den einzelnen Punkt gilt, steht in seiner eigenen Klammer.
-        return ("Weitere ausgewählte Wartungspunkte, jeweils nach Datum, Kilometerstand und Beleg fragen: "
+        # Ergebnisoffen: die Durchführung wird nicht vorausgesetzt.
+        return ("Weitere ausgewählte Wartungspunkte, jeweils nach Durchführung, Datum, Kilometerstand und Beleg fragen: "
                 if bereich == VERKAEUFERFRAGEN else
-                "Weitere ausgewählte Wartungspunkte, jeweils Rechnung oder Serviceheft-Eintrag mit Datum und "
-                "Kilometerstand zeigen lassen: ")
+                "Weitere ausgewählte Wartungspunkte, jeweils falls durchgeführt Rechnung oder Serviceheft-Eintrag mit "
+                "Datum und Kilometerstand zeigen lassen: ")
 
     def _rest_zeilen(self, bereich: str, rest: list[Kaufaktion]) -> tuple[list[str], list[str]]:
         """Je gekapptem Wartungspunkt EINE konkrete Zeile (Bauteil, Tätigkeit, Intervall, Bedingungen) und die
@@ -1344,11 +1345,11 @@ def _katalog_mit_wartungsrest(katalog, bereich: str, zeilen: list[str]):
         return katalog
     if bereich == VERKAEUFERFRAGEN:
         eintrag = ("wartungsrest", "Wartung und Technik",
-                   "Wann und bei welchem Kilometerstand wurden die weiteren ausgewählten Wartungspunkte gemacht?",
+                   "Wurden die folgenden Wartungsarbeiten durchgeführt, und wenn ja, wann und bei welchem Kilometerstand?",
                    _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
     else:
         eintrag = ("wartungsrest", "Prüfungen und Wartung",
-                   "Nachweise zu den weiteren ausgewählten Wartungspunkten zeigen lassen",
+                   "Nachweise zu den weiteren ausgewählten Wartungspunkten, falls durchgeführt, zeigen lassen",
                    _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
     ergebnis = list(katalog)
     anker = _WARTUNGSREST_ANKER.get(bereich)
@@ -1622,7 +1623,8 @@ def _bedingt(i: Insight) -> str:
     from app.ausstattung_praesenz import bedingung, abhaengigkeit
     a, bez = abhaengigkeit(getattr(i, "equipment_dependency", None) or getattr(i, "bauteil", None)
                            or i.titel)
-    return bedingung(getattr(i, "equipment_dependency", None) or bez, a)
+    return bedingung(getattr(i, "equipment_dependency", None) or bez, a,
+                     wartung=getattr(i, "kategorie", None) in ("wartung", "web_wartung"))
 
 
 def _ausstattung_bestaetigt(bauteil: str | None, ausstattung: list[str] | None) -> bool:
@@ -2235,6 +2237,98 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 _LAUF_SCHLUESSEL_PRAEFIX = {"db_wartung": "wartung-", "web_wartung": "wartung-web-"}
 
 
+def _wartung_bezug(w) -> str:
+    """Intervall laut Quelle (Erst-/Folgeintervall) aus der Kurzform, ohne Tätigkeitspräfix und ohne Statussätze."""
+    kopf = (getattr(w, "intervall_kurz", None) or "").rstrip(".")
+    return kopf.split(": ", 1)[1] if ": " in kopf else kopf
+
+
+def _wartung_vorbehalte(w) -> list[str]:
+    """Entscheidungsrelevante Grenzen KNAPP und eigenständig verständlich (kein Quellenzitat): Marktbezug, ungeklärte
+    Voraussetzung einer zusätzlichen oder der einzigen Regel (mit deren Intervall), Nicht-Übertragung auf eine reine
+    Zeitregel. Der vollständige Wortlaut bleibt auf der Karte (Details) und im Berichtsabschnitt zur Evidenz."""
+    out: list[str] = []
+    if any(g.startswith("Marktvorbehalt") for g in (getattr(w, "grenzen", None) or [])):
+        out.append("Marktbezug: Geltung in Deutschland nicht bestätigt")
+    if any(g.startswith("Angabe gilt laut Quelle für normale Einsatzbedingungen") for g in (getattr(w, "grenzen", None) or [])):
+        out.append("Angabe gilt laut Quelle für normale Einsatzbedingungen")
+    if getattr(w, "technische_bedingung_status", None) == "unresolved" and getattr(w, "technische_bedingung", None):
+        out.append(f"Anwendbarkeit ungeklärt: {w.technische_bedingung}")
+    bedingte = [r for r in (getattr(w, "regeln", None) or []) if r.art == "bedingt"]
+    hat_grund = any(r.art == "grund" for r in (getattr(w, "regeln", None) or []))
+    if bedingte and hat_grund:
+        iv = bedingte[0].erstintervall
+        txt = (f"eine zusätzliche Regel der Quelle{f' ({iv})' if iv else ''} gilt nur unter einer Voraussetzung, "
+               f"die für dieses Fahrzeug ungeklärt ist")
+        if getattr(w, "km_status", None) == "keine_kmregel":
+            txt += "; sie wird nicht auf die Zeitregel übertragen"
+        out.append(txt)
+    elif bedingte:
+        out.append("das Intervall gilt laut Quelle nur unter einer Voraussetzung, die für dieses Fahrzeug ungeklärt ist")
+    return out
+
+
+def _wartung_anlass(w) -> str:
+    """Warum die Frage jetzt relevant ist: Kilometer- und Zeitstatus mit ihrer eigenen Grundlage (Text der Karte).
+    Nur belegte Zustände; ein bedingter, uneindeutiger oder nicht erreichter Status wird hier nicht ausgegeben."""
+    teile = [t for t in (
+        getattr(w, "km_text", None) if getattr(w, "km_status", None) in ("darueber", "im_bereich", "naehert_sich", "entfernt")
+        else None,
+        getattr(w, "zeit_text", None) if getattr(w, "zeit_status", None) in ("erreicht", "grenzwertig", "unbekannt")
+        else None) if t]
+    return f"Anlass: {'; '.join(teile)}." if teile else ""
+
+
+def _wartung_frage_text(w) -> str:
+    """N21: Text unter der Verkäuferfrage. Die Frage selbst (Titel) fragt nach Tätigkeit, Durchführung, Datum und
+    Kilometerstand; hier steht nur der Bezug (Intervall laut Quelle, Anlass, knappe Vorbehalte) -- keine Handlungs-
+    anweisung, kein Zitat, keine Wiederholung des vollen Hinweises. Ohne Kurzform (ältere Antwort): voller Hinweis."""
+    if not getattr(w, "kurz", None):
+        return w.hinweis + " Nach Datum, Kilometerstand und Beleg fragen."
+    teile = [f"Laut Quelle: {_wartung_bezug(w)}.", _wartung_anlass(w)]
+    vb = _wartung_vorbehalte(w)
+    if vb:
+        teile.append("Vorbehalte: " + "; ".join(vb) + ".")
+    return " ".join(t for t in teile if t)
+
+
+def _wartung_dokument_text(w) -> str:
+    """N21: Text der Dokumentenanforderung: benötigter Beleg und Angaben, Intervallbezug, knappe Vorbehalte und die
+    Herkunft der Intervallangabe. Keine erneute Wartungserklärung. Ohne Kurzform: bisheriger Text."""
+    beleg = "Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand zeigen lassen."
+    if not getattr(w, "kurz", None):
+        return f"{w.hinweis} {beleg}"
+    teile = [beleg, f"Bezug laut Quelle: {_wartung_bezug(w)}."]
+    vb = _wartung_vorbehalte(w)
+    if vb:
+        teile.append("Vorbehalte: " + "; ".join(vb) + ".")
+    if getattr(w, "herkunft", None) == "web_wartung":
+        teile.append("Die Intervallangabe stammt aus der Webrecherche, nicht aus der geprüften Fahrzeugdatenbank.")
+    return " ".join(teile)
+
+
+def _kompakt_aus_hinweis(w, bauteil: str, falls: str = "") -> str | None:
+    """Sammelzeile (Bündelung am Limit) aus der STRUKTURIERTEN Kurzform: Bauteil, Tätigkeit, Intervall laut Quelle,
+    ungeklärte Zusatzregel/Anwendbarkeit, Marktvorbehalt -- ohne gekappte Quellenzitate. None ohne Kurzform (ältere
+    Antwort): dann bleibt die Zeile aus `_kompakt_wartung`."""
+    if not getattr(w, "kurz", None):
+        return None
+    taet = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}.get(getattr(w, "taetigkeit", None), "Tätigkeit nicht belegt")
+    teile = [taet, f"laut Quelle: {_wartung_bezug(w)}"]
+    regeln = getattr(w, "regeln", None) or []
+    bedingte = [r for r in regeln if r.art == "bedingt"]
+    if bedingte and any(r.art == "grund" for r in regeln):
+        iv = bedingte[0].erstintervall
+        teile.append("zusätzlich bedingte Regel, Voraussetzung ungeklärt" + (f": {iv}" if iv else ""))
+    if getattr(w, "technische_bedingung_status", None) == "unresolved" and getattr(w, "technische_bedingung", None):
+        teile.append(f"Anwendbarkeit ungeklärt, zuerst klären: {w.technische_bedingung}")
+    if any(g.startswith("Marktvorbehalt") for g in (getattr(w, "grenzen", None) or [])):
+        teile.append("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt")
+    if getattr(w, "km_status", None) == "bedingt":
+        teile.append("Intervall bedingt")
+    return f"{falls}„{bauteil}“ ({'; '.join(teile)})"
+
+
 def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = None) -> None:
     """Wartungspunkte, die bei DIESER Laufleistung relevant sind -> Frage + Nachweis.
 
@@ -2284,6 +2378,12 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
         ungeklaert = getattr(w, "technische_bedingung_status", None) == "unresolved" and bool(bedingung)
         kompakt = _kompakt_wartung(bauteil, getattr(w, "taetigkeit", None), w.intervall_text, falls,
                                    technische_bedingung=bedingung if ungeklaert else None)
+        # N21: strukturierte Sammelzeile hat Vorrang (überschreibt die aus dem Rohtext gekappte Zeile des Web-Pfads).
+        kompakt_neu = _kompakt_aus_hinweis(w, bauteil, falls)
+        if kompakt_neu:
+            kompakt = kompakt_neu
+            for bereich_ in (VERKAEUFERFRAGEN, DOKUMENTE):
+                s._kompakt[(bereich_, schluessel)] = kompakt_neu
         if ungeklaert:
             # N12-Fix: ungeklärte technische Anwendbarkeit zuerst klären --
             # der laufleistungsbezogene Hinweis (`w.hinweis`) bleibt als
@@ -2292,10 +2392,13 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
             frage, hinweis = _technik_anwendbarkeit_frage(
                 w.bauteil, bedingung, _taetigkeit_verb(getattr(w, "taetigkeit", None)))
             dok_titel, dok_text = _technik_anwendbarkeit_dokument(w.bauteil, bedingung)
-            s.add(VERKAEUFERFRAGEN, schluessel, frage, f"{w.hinweis} {hinweis}",
+            s.add(VERKAEUFERFRAGEN, schluessel, frage,
+                  _wartung_frage_text(w) if getattr(w, "kurz", None) else f"{w.hinweis} {hinweis}",
                   rang, evidence_ids=[w.evidence_id], kategorie="wartung",
                   gruppe="Wartung und Technik", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
-            s.add(DOKUMENTE, schluessel, dok_titel, f"{w.hinweis} {dok_text}",
+            s.add(DOKUMENTE, schluessel, dok_titel,
+                  f"{dok_text} Bezug laut Quelle: {_wartung_bezug(w)}." if getattr(w, "kurz", None)
+                  else f"{w.hinweis} {dok_text}",
                   rang, evidence_ids=[w.evidence_id], kategorie="wartung",
                   gruppe="Prüfungen und Wartung", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
             continue
@@ -2307,13 +2410,12 @@ def _aus_laufleistung(s: _Sammler, kontext, insights: list[Insight] | None = Non
         dok_titel = _taetigkeit_dok_titel(getattr(w, "taetigkeit", None))
         s.add(VERKAEUFERFRAGEN, schluessel,
               f"{falls}{_wartungsfrage(bauteil, getattr(w, 'taetigkeit', None))}",
-              f"{w.hinweis} Nach Datum, Kilometerstand und Beleg fragen.",
+              _wartung_frage_text(w),
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
               gruppe="Wartung und Technik", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
 
         s.add(DOKUMENTE, schluessel, f"{falls}{dok_titel} {bauteil}",
-              f"{w.hinweis} Rechnung oder Eintrag im Serviceheft mit Datum und "
-              f"Kilometerstand zeigen lassen.",
+              _wartung_dokument_text(w),
               rang, evidence_ids=[w.evidence_id], kategorie="wartung",
               gruppe="Prüfungen und Wartung", bauteil=bauteil, ordnung=pos, kompakt=kompakt)
 

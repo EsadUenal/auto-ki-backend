@@ -947,6 +947,39 @@ class Wartungshinweis(BaseModel):
     taetigkeit: str | None = None
     technische_bedingung: str | None = None
     technische_bedingung_status: str | None = None
+    # N21 (Lesbarkeit): strukturierte KURZFORM, aus denselben Regelfeldern erzeugt wie `hinweis` (keine Kappung).
+    # `hinweis`, `status` und `intervall_text` bleiben unverändert (Vollansicht, Bericht, ältere Verbraucher).
+    # Ältere Antworten tragen diese Felder nicht: Verbraucher fallen dann auf `status`/`hinweis` zurück und
+    # erfinden keinen Zeitstatus.
+    # `km_status`: "naehert_sich" | "im_bereich" | "darueber" | "entfernt" | "bedingt" (nur unter ungeklärter
+    # Voraussetzung, nicht bewertet) | "keine_kmregel" (reine Zeitregel).
+    km_status: str | None = None
+    km_text: str | None = None
+    # `zeit_status`: "erreicht" | "grenzwertig" | "unbekannt" (Baujahr fehlt) | "nicht_erreicht" | "bedingt" |
+    # "uneindeutig" (mehrere verschiedene Angaben) | "keine_zeitregel". "erreicht" heißt NUR: die Zeitschwelle ist
+    # nach dem Baujahr rechnerisch überschritten -- kein Versäumnis, kein Rückstand.
+    zeit_status: str | None = None
+    zeit_text: str | None = None
+    intervall_kurz: str | None = None        # nur Tätigkeit + Erst-/Folgeintervall (Standardzeile der Karte)
+    kurz: str | None = None                  # Tätigkeit, Erst-/Folgeintervall, km-/Zeitstatus in 1-2 Sätzen
+    handlung: str | None = None              # konkrete Handlung (Nachweis verlangen), keine Bewertung
+    grenzen: list[str] = Field(default_factory=list)   # Marktvorbehalt, ungeklärte Bedingungen, Anwendbarkeit
+    regeln: list["WartungsRegelInfo"] = Field(default_factory=list)   # strukturierte Fundstellen (Details)
+
+
+class WartungsRegelInfo(BaseModel):
+    """N21: EINE Fundstelle einer Wartungsaussage in strukturierter Form -- Erst- und Folgeintervall sowie die
+    Verknüpfung von Kilometer und Zeit bleiben getrennt, eine bedingte Regel wird nie mit der Grundregel verschmolzen."""
+    art: str                                  # "grund" | "bedingt"
+    erstintervall: str | None = None          # z. B. "15.000 km oder 1 Jahr"
+    folgeintervall: str | None = None         # nur, wenn die Fundstelle ein "Danach ..." nennt und es auswertbar ist
+    folge_genannt: bool = False               # die Fundstelle nennt ein Folgeintervall (auch wenn nicht auswertbar)
+    verknuepfung: str | None = None           # "oder" | "und" | "unklar" | None
+    einsatz: str | None = None                # "normal" | "erschwert" | "gemischt" | None
+    wortlaut: str                             # Wortlaut der Fundstelle (Details)
+
+
+Wartungshinweis.model_rebuild()
 
 
 class Laufleistungskontext(BaseModel):

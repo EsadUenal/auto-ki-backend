@@ -833,7 +833,7 @@ def wende_praesenz_an(insights: list[Insight], identity, req) -> list[Insight]:
             log.info("Kanonische Risikomenge: %s entfällt (%s nicht vorhanden)", i.id, abh.klasse)
             continue
         if state == PRAESENZ_UNKNOWN:
-            praefix = praesenz_bedingung(bez, abh)
+            praefix = praesenz_bedingung(bez, abh, wartung=i.kategorie in ("wartung", "web_wartung"))
             titel = i.titel if i.titel.startswith("Falls ") else praefix + i.titel
             out.append(i.model_copy(update={"presence_state": PRAESENZ_UNKNOWN,
                                             "equipment_dependency": bez or abh.klasse,

@@ -122,7 +122,9 @@ check("1m) übereinstimmend: bisheriger Grund unverändert",
 gleich = req("09/2027", "HU bis September 2027.")
 check("2a) kein Konflikt bei gleichem Termin", hu_konflikt(gleich.tuev_bis, gleich.beschreibung) is None)
 zl, md = hu_zeilen(gleich)
-check("2b) bisherige Anzeige unverändert ('✓ passt')", "✓ passt" in md and "09/2027" in md, md)
+# N21: eine plausible HU-Angabe ist KEIN geprüfter Nachweis -- die Zeile zeigt 09/2027, aber nicht "✓ passt".
+check("2b) übereinstimmende Angabe: 'Angabe plausibel, nicht geprüft' statt '✓ passt'",
+      "Angabe plausibel, nicht geprüft" in md and "09/2027" in md and "✓ passt" not in md, md)
 check("2c) keine Widerspruchs-Finding", not [f for f in _widerspruch_findings(gleich, None, None) if "HU" in f.titel])
 
 # ── 3) nur ein Termin vorhanden ──────────────────────────────────────────────
@@ -131,7 +133,8 @@ nur_text = req(None, "HU bis August 2027.")
 check("3a) nur Formular: kein Konflikt", hu_konflikt(nur_form.tuev_bis, nur_form.beschreibung) is None)
 check("3b) nur Text: kein Konflikt (und keine Formularübernahme)",
       hu_konflikt(nur_text.tuev_bis, nur_text.beschreibung) is None and nur_text.tuev_bis is None)
-check("3c) nur Formular: bisherige Tabelle", "✓ passt" in hu_zeilen(nur_form)[1])
+check("3c) nur Formular: Tabelle mit 'plausibel, nicht geprüft' (N21)",
+      "Angabe plausibel, nicht geprüft" in hu_zeilen(nur_form)[1] and "✓ passt" not in hu_zeilen(nur_form)[1])
 
 # ── 4) andere Datumsangaben sind keine HU ────────────────────────────────────
 andere = req("09/2027", "Erstzulassung 03/2017, Service im August 2025, Inserat vom 05.11.2026, "

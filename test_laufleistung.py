@@ -579,8 +579,11 @@ check("P4 der laufleistungsbezogene, konkretere Text gewinnt",
       # Fahrzeug" (vermeidet die Suggestion eines einzelnen vergangenen
       # Termins bei einem wiederkehrenden Intervall). Veraltete
       # Testerwartung, kein Produktfehler.
-      any("wurde bei dieser Laufleistung rein rechnerisch mindestens einmal erreicht" in a.aktion
-          for a in _ak_p.dokumente.fahrzeugspezifisch))
+      # N21: Kurzform statt Volltext -- derselbe Befund (Kilometerpunkt rechnerisch erreicht), der Laufleistungspfad
+      # liefert die Statusaussage; die volle Aussage bleibt auf dem Wartungshinweis.
+      any("Bezug laut Quelle: Erstintervall" in a.aktion for a in _ak_p.dokumente.fahrzeugspezifisch)
+      and any("Anlass:" in a.aktion and "rechnerisch erreicht" in a.aktion
+              for a in _ak_p.verkaeuferfragen.fahrzeugspezifisch if a.kategorie == "wartung"))
 check("P5 keine Besichtigungs-/Probefahrtaktion aus einem Wartungspunkt",
       not [a for a in list(_ak_p.besichtigung.fahrzeugspezifisch)
            + list(_ak_p.probefahrt.fahrzeugspezifisch) if a.kategorie == "wartung"])
