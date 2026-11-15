@@ -2696,6 +2696,16 @@ def _hubraum_liter_werte(text: str) -> list[tuple[str, int]]:
     return out
 
 
+def _hubraum_werte_litergleich(text: str) -> list[tuple[str, int]]:
+    """Hubraumangaben in Litern UND in cm³ ("4969 cm³"), alle als Literwert "5.0" und Position. Dieselbe cm³-Erkennung
+    und -Umrechnung wie die Hubraum-Claims (`_RE_HUBRAUM_CCM`, `_ccm_als_liter`) -- keine zweite Normalisierung. Für die
+    Motorkern-Prüfung: ausdrücklich genannte cm³ zählen wie die entsprechende Literangabe. Gleiche Werte bleiben gleich
+    (keine künstliche Mehrdeutigkeit), ein abweichender Wert bleibt abweichend."""
+    out = list(_hubraum_liter_werte(text))
+    out += [(_ccm_als_liter(m.group(1)), m.start()) for m in _RE_HUBRAUM_CCM.finditer(text)]
+    return sorted(out, key=lambda x: x[1])
+
+
 def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
     """Die fachlich QUALIFIZIERTE Sicht EINES ausgerichteten Treffers -- die
     gemeinsame Vorstufe aller Identitaets-Claims UND der Motorkern-Pruefung
@@ -3665,7 +3675,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                     continue
                 anker = start
                 if hub_norm:
-                    werte = _hubraum_liter_werte(satz)
+                    werte = _hubraum_werte_litergleich(satz)
                     if hub_norm not in {w for w, _ in werte} or any(w != hub_norm for w, _ in werte):
                         continue
                     anker = start + next(p for w, p in werte if w == hub_norm)
@@ -3700,7 +3710,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                 seg = satz[start:ende]
                 if not kern <= _tokens(seg):
                     continue
-                if hub_norm and hub_norm not in {w for w, _ in _hubraum_liter_werte(seg)}:
+                if hub_norm and hub_norm not in {w for w, _ in _hubraum_werte_litergleich(seg)}:
                     continue
                 if start != 0 and not _satz_nennt_modell(seg, ziel.get("modell")):
                     continue
