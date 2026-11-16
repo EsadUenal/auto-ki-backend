@@ -92,11 +92,14 @@ def hinweis_aus(text, km=82000, alter=9, technik=None, taetigkeit="ersetzen", ti
 # ══ A. Kurzform aus Regelfeldern ═════════════════════════════════════════════════════════════
 print("== A Kurzform und Statusfelder ==")
 mo = hinweis_aus(VOLL)
-check("A1 Motoröl: Kurzform nennt Tätigkeit, Erstintervall (km UND Zeit mit 'oder'), km- und Zeitstatus",
-      mo is not None and mo.kurz.startswith("Wechsel: Erstintervall 15.000 km oder 1 Jahr.")
+check("A1 Motoröl: Kurzform nennt Tätigkeit, das laut Quelle WIEDERKEHRENDE Intervall ('alle', km UND Zeit mit 'oder'), "
+      "km- und Zeitstatus; kein 'Erstintervall'/'Erstpunkt' bei einer rein wiederkehrenden Regel (N22)",
+      mo is not None and mo.kurz.startswith("Wechsel: alle 15.000 km oder 1 Jahr.")
+      and "Intervall (15.000 km) bei dieser Laufleistung rechnerisch mindestens einmal erreicht" in mo.kurz
+      and "Erstintervall" not in mo.kurz and "Erstpunkt" not in mo.kurz and mo.wiederkehrend is True
       and "Kilometer:" in mo.kurz and "Zeit:" in mo.kurz, mo.kurz if mo else "")
 check("A1b Standardzeile der Karte (`intervall_kurz`) trägt nur Tätigkeit + Intervall, ohne Statussätze",
-      mo is not None and mo.intervall_kurz == "Wechsel: Erstintervall 15.000 km oder 1 Jahr."
+      mo is not None and mo.intervall_kurz == "Wechsel: alle 15.000 km oder 1 Jahr."
       and mo.kurz.startswith(mo.intervall_kurz) and "Kilometer:" not in mo.intervall_kurz)
 check("A2 Motoröl: Kurzform deutlich kürzer als der volle Hinweis; der volle Hinweis bleibt unverändert erhalten",
       mo is not None and len(mo.kurz.split()) < len(mo.hinweis.split()) / 3
@@ -119,7 +122,7 @@ check("A6 Ventilspiel (km im Bereich, Zeit rechnerisch erreicht): alter Status '
       "'erreicht' ist ein EIGENES Feld -- beide Dimensionen sind trennbar",
       vs is not None and vs.status == "im_bereich" and vs.km_status == "im_bereich" and vs.zeit_status == "erreicht"
       and "zeitliche Alternative (oder 6 Jahre)" in vs.zeit_text and "rechnerisch erreicht" in vs.zeit_text
-      and vs.kurz.startswith("Prüfung: Erstintervall 90.000 km oder 6 Jahre."), vs.kurz if vs else "")
+      and vs.kurz.startswith("Prüfung: alle 90.000 km oder 6 Jahre."), vs.kurz if vs else "")
 check("A7 ... 'erreicht' ist keine Versäumnisaussage (kein 'fällig/überfällig/versäumt/Rückstand')",
       vs is not None and sauber(vs.kurz) and sauber(vs.zeit_text) and sauber(vs.handlung))
 
@@ -171,7 +174,7 @@ check("A16 NUR bedingte Regel: km_status 'bedingt', zeit_status 'bedingt', nicht
 hm = hinweis_aus("Motoröl alle 10.000 km. " + M + " Motoröl alle 15.000 km oder 1 Jahr.")
 check("A17 mehrere verschiedene Grundregeln: keine Auswahl, beide genannt, Zeit 'uneindeutig', nichts kombiniert",
       hm is not None and hm.zeit_status == "uneindeutig" and "mehrere verschiedene Angaben" in hm.kurz
-      and "„10.000 km“" in hm.kurz and "„15.000 km oder 1 Jahr“" in hm.kurz and "10.000 km oder 1 Jahr" not in hm.kurz
+      and "„alle 10.000 km“" in hm.kurz and "„alle 15.000 km oder 1 Jahr“" in hm.kurz and "10.000 km oder 1 Jahr" not in hm.kurz
       and "frühester genannter Punkt" in hm.kurz, hm.kurz if hm else "")
 und = hinweis_aus("Motoröl alle 30.000 km und 2 Jahre")
 check("A18 UND-Verknüpfung bleibt UND (nicht zu 'oder' zusammengezogen)",
@@ -242,9 +245,9 @@ print("  DOKUMENT:", mo_d["titel"], "\n           ", mo_d["aktion"])
 check("B3 Motoröl-Frage: die Frage (Titel) erfragt Tätigkeit, Durchführung, Datum und Kilometerstand; die Aktion trägt nur den "
       "Bezug (Intervall, Anlass, knappe Vorbehalte)",
       "gewechselt" in mo_f["titel"] and "wann und bei welchem Kilometerstand" in mo_f["titel"]
-      and mo_f["aktion"].startswith("Laut Quelle: Erstintervall 15.000 km oder 1 Jahr. Anlass: ")
+      and mo_f["aktion"].startswith("Laut Quelle: alle 15.000 km oder 1 Jahr. Anlass: ")
       and "Marktbezug: Geltung in Deutschland nicht bestätigt" in mo_f["aktion"]
-      and "eine zusätzliche Regel der Quelle (15.000 km oder 1 Jahr) gilt nur unter einer Voraussetzung, die für dieses "
+      and "eine zusätzliche Regel der Quelle (alle 15.000 km oder 1 Jahr) gilt nur unter einer Voraussetzung, die für dieses "
           "Fahrzeug ungeklärt ist" in mo_f["aktion"], mo_f["aktion"])
 check("B3a Motoröl-Frage: KEINE angehängte Handlungsanweisung, KEIN Quellenzitat, KEIN Fußnotenwortlaut, keine Statuserklärung",
       "Nach Datum, Kilometerstand und Beleg fragen" not in mo_f["aktion"] and "zeigen lassen" not in mo_f["aktion"]
@@ -254,9 +257,9 @@ check("B3a Motoröl-Frage: KEINE angehängte Handlungsanweisung, KEIN Quellenzit
 check("B4 Motoröl-Dokument: konkreter Beleg mit Datum und Kilometerstand, Intervallbezug, knappe Vorbehalte, Herkunft",
       "Wechselnachweis" in mo_d["titel"]
       and mo_d["aktion"].startswith("Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand zeigen lassen. "
-                                    "Bezug laut Quelle: Erstintervall 15.000 km oder 1 Jahr.")
+                                    "Bezug laut Quelle: alle 15.000 km oder 1 Jahr.")
       and "Marktbezug: Geltung in Deutschland nicht bestätigt" in mo_d["aktion"]
-      and "zusätzliche Regel der Quelle (15.000 km oder 1 Jahr)" in mo_d["aktion"]
+      and "zusätzliche Regel der Quelle (alle 15.000 km oder 1 Jahr)" in mo_d["aktion"]
       and mo_d["aktion"].endswith("Die Intervallangabe stammt aus der Webrecherche, nicht aus der geprüften Fahrzeugdatenbank."),
       mo_d["aktion"])
 check("B4a Motoröl-Dokument: KEINE erneute Wartungserklärung (kein Anlass-/Statussatz, kein Zitat, keine Durchführungsfrage)",
@@ -280,12 +283,12 @@ kue = next(a for a in antwort["kaufaktionen"]["verkaeuferfragen"]["fahrzeugspezi
 check("B7 ungeklärte Anwendbarkeit bleibt die ZUERST gestellte Frage (N12); die Aktion nennt Intervallbezug und Bedingung knapp, "
       "ohne den langen Erklärtext zu wiederholen",
       "Trifft die Bedingung" in kue["titel"] and "nur Fahrzeuge mit Zusatzheizung" in kue["aktion"]
-      and "Laut Quelle: Erstintervall 30.000 km oder 2 Jahre" in kue["aktion"]
+      and "Laut Quelle: alle 30.000 km oder 2 Jahre" in kue["aktion"]
       and "Eine Webrecherche nennt" not in kue["aktion"], kue["aktion"])
 kue_d = next(a for a in antwort["kaufaktionen"]["dokumente"]["fahrzeugspezifisch"] if "Anwendbarkeit" in a["titel"])
 check("B7a Anwendbarkeits-Dokument: Titel, konkrete Klärung (Fahrzeugschein/FIN) und Intervallbezug, kein Anlass-/Statussatz",
       "Technische Anwendbarkeit" in kue_d["titel"] and "Fahrzeugschein oder FIN" in kue_d["aktion"]
-      and "Bezug laut Quelle: Erstintervall 30.000 km oder 2 Jahre" in kue_d["aktion"] and "Anlass:" not in kue_d["aktion"],
+      and "Bezug laut Quelle: alle 30.000 km oder 2 Jahre" in kue_d["aktion"] and "Anlass:" not in kue_d["aktion"],
       kue_d["aktion"])
 kw = antwort["laufleistungskontext"]["wartungshinweise"]
 mo_k = next(w for w in kw if w["bauteil"] == "Motoröl")
@@ -355,7 +358,7 @@ for bereich in ("verkaeuferfragen", "dokumente"):
           and "..." not in txt and "Erstintervall 105.000 km oder 6 Jahre, danach 15.000 km / 1 Jahr" in txt
           and "Anwendbarkeit ungeklärt, zuerst klären: nur Fahrzeuge mit Zusatzheizung" in txt
           and txt.count("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt") == 3
-          and "zusätzlich bedingte Regel, Voraussetzung ungeklärt: 15.000 km oder 1 Jahr" in txt, txt)
+          and "zusätzlich bedingte Regel, Voraussetzung ungeklärt: alle 15.000 km oder 1 Jahr" in txt, txt)
 for bereich in ("verkaeuferfragen", "dokumente"):
     sp = next(a for a in antwort2["kaufaktionen"][bereich]["basis"] if a["id"].endswith("basis-wartungsrest"))
     txt = sp["titel"] + " " + sp["aktion"]
@@ -375,7 +378,8 @@ check("C5 Sammel-Dokument: Nachweis nur 'falls durchgeführt'",
 check("C6 beide Sammelpunkte nennen alle fünf Wartungen einzeln mit Tätigkeit, Intervall und Vorbehalt (unverändert)",
       all(f"„{b}“ (" in t["aktion"] for t in (sp_f, sp_d)
           for b in ("Motoröl", "Ventilspiel", "Nebenaggregat-Antriebsriemen", "Automatikgetriebeöl", "Kühlmittel"))
-      and sp_f["aktion"].count("laut Quelle: Erstintervall") == 5)
+      and sp_f["aktion"].count("laut Quelle: Erstintervall") == 1        # nur der Riemen (Erst-/Folgeintervall)
+      and sp_f["aktion"].count("laut Quelle: alle ") == 4)              # N22: die übrigen vier sind laut Quelle wiederkehrend
 # Einzelaktion: gleiche Korrektur der Präsenz-Bedingung
 ge_f = next(a for a in antwort["kaufaktionen"]["verkaeuferfragen"]["fahrzeugspezifisch"] if "Automatikgetriebeöl" in a["titel"])
 ge_d = next(a for a in antwort["kaufaktionen"]["dokumente"]["fahrzeugspezifisch"] if "Automatikgetriebeöl" in a["titel"])

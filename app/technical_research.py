@@ -60,6 +60,7 @@ SICHERHEIT
 import asyncio
 import logging
 import re
+import uuid
 from typing import Protocol
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -79,7 +80,7 @@ from app.web_search import (
     _domain_von, _marke_eigene_domain, _markenlabel, _pressedomain_gehoert_marke, _psl_teile,
     _qualitaets_label, _TIER_FACHMEDIEN, _KATEGORIE_BOOST_WERT,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
-    ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
+    ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search, tavily_diagnose,
     bereinige_steuerzeichen, bereinige_treffer,
 )
 
@@ -1177,7 +1178,8 @@ def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
         else:
             stat["snippet_fallback"] += 1
             stat["fallback_" + (eigen if eigen != "ok" else "fehlt")] += 1
-            ergebnis.append({**r, "_ot": "snippet"})
+            # `_ot_grund`: nur Diagnose (SW-Diagnose), dieselbe Einstufung wie im Zähler oben.
+            ergebnis.append({**r, "_ot": "snippet", "_ot_grund": eigen if eigen != "ok" else "fehlt"})
     return ergebnis, stat
 
 
@@ -8464,11 +8466,18 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
     eskalierbar: dict[str, bool] = {}
     for kategorie in kategorien:
         roh_kategorie = roh.get(kategorie) or []
+        kuratierungs_ausschluss: list[dict] = []
         treffer = curate_results(roh_kategorie,
-                                 kategorie=_WEB_KATEGORIE[kategorie], max_results=8,
-                                 score_fn=lambda u, k=_WEB_KATEGORIE[kategorie]: _score_domain_kategorie(u, k))
+                                 kategorie=_WEB_KATEGORIE[kategorie], max_results=_KURATIERUNG_MAX,
+                                 score_fn=lambda u, k=_WEB_KATEGORIE[kategorie]: _score_domain_kategorie(u, k),
+                                 ausschluss=kuratierungs_ausschluss)
         if stats is not None:
-            stats[kategorie] = {"roh": len(roh_kategorie), "curated": len(treffer)}
+            stats[kategorie] = {"roh": len(roh_kategorie), "curated": len(treffer),
+                                # nur Diagnose (SW-Diagnose): tatsächlich zur Extraktion ausgewählte Treffer und die
+                                # Gründe der Kuratierung für alle übrigen; keine Wirkung auf Auswahl/Extraktion.
+                                "kuratiert_ids": [id(r) for r in treffer],
+                                "kuratierungs_ausschluss": kuratierungs_ausschluss,
+                                "kuratierungs_limit": _KURATIERUNG_MAX}
         # `generation_cluster` begleitet `generation` überall dorthin, wo
         # bisher nur die einzelne Zeichenkette floss. Trägt seit der ENFAL-
         # Korrektur ("Ableitung braucht positive Zuordnung, nicht nur
@@ -8601,6 +8610,130 @@ def _log_identitaet_phase(treffer: list[dict], marke: str | None, modell: str | 
 # zählt nie doppelt, nie negativ), Claim-/Satz-Ebene bleibt eine STRIKT
 # GETRENNTE, eigene Einheit — nie gegen die Treffer-Zähler verrechnet.
 _ALIGNMENT_GRUENDE = ("modell_fehlt", "marke_fehlt", "titel_fremde_marke", "andere_generation")
+
+
+# ── SW-Diagnose: Schwachstellen-Recherchekette je Lauf und Runde (nur Beobachtung) ──────────────────────────────────
+#
+# Befund 16.11.2026: im Produktionslog fehlten Suchwortlaut, Trefferzahl je Anfrage, Treffer-URLs mit Kuratierungs-
+# und Ablehnungsgrund sowie jede Aufzeichnung der Eskalationsrunden. Diese Zeilen (Präfix `sw_diagnose`, INFO) schreiben
+# AUSSCHLIESSLICH bereits vorhandene Entscheidungen mit: keine zusätzliche Suche, kein Abruf, keine Extraktion, keine
+# Änderung an Auswahl, Budget oder Schwellen. Keine Seitentexte, keine Query-Strings von URLs, keine Nutzerdaten.
+_KURATIERUNG_MAX = 8   # bestehende Kuratierungsgrenze je Kategorie in `phase_fakten` (unverändert, nur benannt)
+
+
+def _diag_url(url: str | None) -> str:
+    """Host + Pfad ohne Query/Fragment, gekürzt -- Trefferkennung für die Diagnose, nie Seitentext."""
+    try:
+        teile = urlsplit(url or "")
+    except ValueError:
+        return "-"
+    s = f"{teile.netloc}{teile.path or '/'}"
+    return s if len(s) <= 120 else s[:117] + "..."
+
+
+def _sw_markiere(treffer: list[dict], runde: int, intent: str) -> list[dict]:
+    """Kopien mit Herkunft (Runde, Suchintent) -- nur Diagnose; ein bereits markierter Treffer behält seine Herkunft.
+    Kopien, damit gecachte Providerantworten nie verändert werden."""
+    return [{**r, "_sw_runde": r.get("_sw_runde", runde), "_sw_intent": r.get("_sw_intent", intent)}
+            for r in treffer]
+
+
+def _sw_diagnose_suche(lauf: str, runde: int, intents, treffer_je_intent, provider_meta: list[dict]) -> None:
+    """Je Suchanfrage: Intent, Wortlaut, Treffer der Providerantwort, nach dem bestehenden Sperrfilter, erhalten."""
+    meta: dict[str, dict] = {}
+    for e in provider_meta:
+        meta.setdefault(e.get("query"), e)
+    for (intent, q), treffer in zip(intents, treffer_je_intent):
+        m = meta.get(q) or {}
+        roh = m.get("roh")
+        log.info("sw_diagnose lauf=%s runde=%d stufe=suche intent=%s query=%r treffer_provider=%s "
+                 "treffer_nach_sperrfilter=%s treffer_erhalten=%d cache=%s fehler=%s",
+                 lauf, runde, intent, q, "-" if roh is None else roh,
+                 "-" if m.get("nach_filter") is None else m.get("nach_filter"), len(treffer),
+                 "-" if not m else ("ja" if m.get("cache") else "nein"),
+                 "-" if not m else ("ja" if m.get("fehler") else "nein"))
+
+
+def sw_diagnose_ausgabe(web_recherche, insights, kaufaktionen=None) -> None:
+    """Letzte Stufe der Kette (vom KaufCheck aufgerufen): wie viele Web-Schwachstellen-Insights (mit Beleglage und
+    Quelldomain) entstanden, wie viele als Nebenbeleg in einem anderen Insight aufgingen und wie viele Aktionen sie
+    tragen. Nur Zählung vorhandener Objekte; ohne Laufkennung (kein Web-Lauf) keine Zeile."""
+    lauf = getattr(web_recherche, "diagnose_lauf", None)
+    if not lauf:
+        return
+    sw = [i for i in insights or [] if getattr(i, "kategorie", None) == "web_schwachstelle"]
+    beleg: dict[str, int] = {}
+    for i in sw:
+        k = getattr(i, "beleglage", None) or "regulaer"
+        beleg[k] = beleg.get(k, 0) + 1
+    domains = sorted({_domain_von(q.url or "") for i in sw for q in (getattr(i, "quellen", None) or []) if q.url})
+    nebenbeleg = sum(1 for i in insights or [] for n in (getattr(i, "nebenbelege", None) or [])
+                     if getattr(n, "kategorie", None) == "web_schwachstelle")
+    aktionen: dict[str, int] = {}
+    for bereich in ("besichtigung", "probefahrt", "verkaeuferfragen", "dokumente"):
+        liste = getattr(kaufaktionen, bereich, None) if kaufaktionen is not None else None
+        n = sum(1 for a in [*(getattr(liste, "basis", None) or []), *(getattr(liste, "fahrzeugspezifisch", None) or [])]
+                if getattr(a, "kategorie", None) == "web_schwachstelle")
+        if n:
+            aktionen[bereich] = n
+    log.info("sw_diagnose lauf=%s stufe=ausgabe insights_web_schwachstelle=%d beleglagen=%s quellen=%s "
+             "als_nebenbeleg=%d aktionen=%s", lauf, len(sw),
+             ",".join(f"{k}={n}" for k, n in sorted(beleg.items())) or "-", ",".join(domains) or "-", nebenbeleg,
+             ",".join(f"{k}={n}" for k, n in sorted(aktionen.items())) or "-")
+
+
+def _sw_diagnose_extraktion(lauf: str, runde: int, treffer: list[dict], stats: dict, abgelehnt_delta: list[dict],
+                            fakten: list) -> None:
+    """Je Treffer des ausgewerteten Pools: Herkunft, Text (Volltext/Snippet), Kuratierung (ausgewählt oder Grund),
+    Treffer-Ebene, Claim-Gründe, Kandidat, Fakten -- getrennt, damit ein vorhandener Volltext nie als "zur Extraktion
+    ausgewählt" erscheint. Gründe stammen ausschließlich aus `stats` (Kuratierung) und `abgelehnt` (Extraktion)."""
+    st = stats.get("schwachstelle") or {}
+    kuratiert_ids = set(st.get("kuratiert_ids") or ())
+    ausschluss = {a.get("_id"): a.get("grund") for a in (st.get("kuratierungs_ausschluss") or [])}
+    eigene = [a for a in abgelehnt_delta if a.get("kategorie") == "schwachstelle"]
+    gruende_je_url: dict[str, list[str]] = {}
+    for a in eigene:
+        gruende_je_url.setdefault(a.get("url") or "", []).append(str(a.get("grund") or "unbekannt"))
+    fakten_je_url: dict[str, list[str]] = {}
+    sw_fakten = [f for f in fakten if f.kategorie == "schwachstelle"]
+    for f in sw_fakten:
+        for q in getattr(f, "quellen", None) or []:
+            fakten_je_url.setdefault(q.url or "", []).append(getattr(f, "beleglage", None) or "regulaer")
+    kandidat_urls = {u for u, gs in gruende_je_url.items() if any(g.endswith(_ESKALATIONS_GRUENDE) for g in gs)}
+    ausschluss_hist: dict[str, int] = {}
+    for g in ausschluss.values():
+        ausschluss_hist[g] = ausschluss_hist.get(g, 0) + 1
+    log.info("sw_diagnose lauf=%s runde=%d stufe=kuratierung treffer=%d kuratiert=%d limit=%d ausgeschlossen=%s "
+             "fakten=%d kandidaten=%d", lauf, runde, len(treffer), len(kuratiert_ids), st.get("kuratierungs_limit", 0),
+             ",".join(f"{k}={n}" for k, n in sorted(ausschluss_hist.items())) or "-", len(sw_fakten),
+             len(kandidat_urls))
+    for nr, r in enumerate(treffer, 1):
+        url = r.get("url") or ""
+        text = r.get("_ot") or "-"
+        if text == "snippet":
+            text = f"snippet({r.get('_ot_grund') or '-'})"
+        if id(r) in kuratiert_ids:
+            kuratiert = "ja"
+            gs = gruende_je_url.get(url, [])
+            basis = [g.split(":", 1)[0] for g in gs]
+            if "source_quality" in basis:
+                ebene = "source_quality"
+            else:
+                ebene = next((g for g in basis if g in _ALIGNMENT_GRUENDE), "bestanden")
+            claim: dict[str, int] = {}
+            for g in basis:
+                if g != "source_quality" and g not in _ALIGNMENT_GRUENDE and not g.endswith(_ESKALATIONS_GRUENDE):
+                    claim[g] = claim.get(g, 0) + 1
+            claim_txt = ",".join(f"{k}={n}" for k, n in sorted(claim.items())) or "-"
+        else:
+            kuratiert = f"nein:{ausschluss.get(id(r), 'unbekannt')}"
+            ebene, claim_txt = "-", "-"
+        f_url = fakten_je_url.get(url, [])
+        log.info("sw_diagnose lauf=%s runde=%d stufe=treffer nr=%d herkunft=r%s:%s url=%s text=%s kuratiert=%s "
+                 "treffer_ebene=%s claim_gruende=%s kandidat=%s fakten=%s",
+                 lauf, runde, nr, r.get("_sw_runde", "-"), r.get("_sw_intent", "-"), _diag_url(url), text, kuratiert,
+                 ebene, claim_txt, "ja" if url in kandidat_urls and id(r) in kuratiert_ids else "nein",
+                 ",".join(f_url) if f_url and id(r) in kuratiert_ids else "0")
 
 
 def _log_fakten_phase(kategorie: str, anfragen: int, stats: dict, abgelehnt_delta: list[dict],
@@ -9083,6 +9216,8 @@ class TavilyTechnicalResearchProvider:
         # der in normalem Webtext ohnehin fast nie vorkommt.
         breit = " ".join(filter(None, [marke, z["modell"]]))
         jahr = str(baujahr) if baujahr else None
+        # SW-Diagnose: Kennung dieses Recherchelaufs (verbindet Such-, Treffer-, Insight- und Ausgabezeilen).
+        diag_lauf = uuid.uuid4().hex[:10]
         anfragen = 0
         fehler = False
         abgelehnt: list[dict] = []
@@ -9420,11 +9555,16 @@ class TavilyTechnicalResearchProvider:
             ("inspection_interval", f"{breit} Inspektionsintervall"),
         )
         technik_intents = sw_intents + wa_intents
-        technik_treffer_je_intent = await suche_runde(
-            "technik", 1, [(q, {"include_raw_content": True} if i < len(sw_intents) else {})
-                           for i, (_, q) in enumerate(technik_intents)])
-        sw_treffer_je_intent = technik_treffer_je_intent[:len(sw_intents)]
+        with tavily_diagnose() as _provider_meta:      # SW-Diagnose: Trefferzahlen je Anfrage, kein Eingriff
+            technik_treffer_je_intent = await suche_runde(
+                "technik", 1, [(q, {"include_raw_content": True} if i < len(sw_intents) else {})
+                               for i, (_, q) in enumerate(technik_intents)])
+        sw_treffer_je_intent = [_sw_markiere(t, 1, intent)
+                                for (intent, _q), t in zip(sw_intents, technik_treffer_je_intent[:len(sw_intents)])]
         wa_treffer_je_intent = technik_treffer_je_intent[len(sw_intents):]
+        log.info("sw_diagnose lauf=%s stufe=start ziel=%r jahr=%s generation=%s", diag_lauf, breit, jahr or "-",
+                 gen or "-")
+        _sw_diagnose_suche(diag_lauf, 1, sw_intents, sw_treffer_je_intent, _provider_meta)
         # Observability (nur log.debug — keine User-UI, keine zweite
         # Extraction-Pipeline): pro Intent Rohtreffer- und High-Quality-Domain-
         # Zahl, BEVOR die Listen zusammengeführt werden. Die eigentliche
@@ -9472,6 +9612,7 @@ class TavilyTechnicalResearchProvider:
         for kat, anz_anfragen in (("rueckruf", 2), ("schwachstelle", len(sw_intents)),
                                   ("wartung", len(wa_intents))):
             _log_fakten_phase(kat, anz_anfragen, fakten_stats, abgelehnt_delta, fakten)
+        _sw_diagnose_extraktion(diag_lauf, 1, roh["schwachstelle"], fakten_stats, abgelehnt_delta, fakten)
 
         # PHASE 2+ (Adaptive-Evidence-Research, §A Folgeauftrag): echte
         # Mehrrunden-State-Machine statt genau einer festen Zusatzrunde --
@@ -9516,9 +9657,14 @@ class TavilyTechnicalResearchProvider:
                 # als ausgeführt und wird getrennt als retry_budget_abgelehnt ausgewiesen.
                 _skip_vorher = budget_uebersprungen("tavily")
                 _retry_vorher = budget_retry_abgelehnt("tavily")
-                esk_treffer_je_intent = await asyncio.gather(
-                    *[suche(q, phase="technik", include_raw_content=(kat == "schwachstelle"))
-                      for _, q in esk_intents])
+                with tavily_diagnose() as _esk_meta:     # SW-Diagnose: Trefferzahlen je Anfrage, kein Eingriff
+                    esk_treffer_je_intent = await asyncio.gather(
+                        *[suche(q, phase="technik", include_raw_content=(kat == "schwachstelle"))
+                          for _, q in esk_intents])
+                if kat == "schwachstelle":
+                    esk_treffer_je_intent = [_sw_markiere(t, runde_nr, intent)
+                                             for (intent, _q), t in zip(esk_intents, esk_treffer_je_intent)]
+                    _sw_diagnose_suche(diag_lauf, runde_nr, esk_intents, esk_treffer_je_intent, _esk_meta)
                 geplant_n = len(esk_intents)
                 retry_abgelehnt_n = max(0, budget_retry_abgelehnt("tavily") - _retry_vorher)
                 uebersprungen_n = min(geplant_n, max(0, budget_uebersprungen("tavily") - _skip_vorher))
@@ -9534,9 +9680,13 @@ class TavilyTechnicalResearchProvider:
                     _log_originaltext(kat, runde_nr, _ot_stat,
                                       angefordert=geplant_n - uebersprungen_n)
                 fakten = [f for f in fakten if f.kategorie != kat]
+                _abgelehnt_vor_runde = len(abgelehnt)
                 runde_fakten = phase_fakten({kat: roh[kat]}, z, identitaet, (kat,), abgelehnt,
                                             stats=fakten_stats, erlaube_multi_source=frozenset({kat}))
                 fakten += runde_fakten
+                if kat == "schwachstelle":
+                    _sw_diagnose_extraktion(diag_lauf, runde_nr, roh[kat], fakten_stats,
+                                            abgelehnt[_abgelehnt_vor_runde:], runde_fakten)
                 zustand_nachher = _zustand_kategorie(abgelehnt, kat)
                 fortschritt = _hat_fortschritt(zustand_vorher[kat], zustand_nachher)
                 # Stop-Bedingung D (§A Auftrag): ein in dieser Runde
@@ -9597,7 +9747,8 @@ class TavilyTechnicalResearchProvider:
                                    nachsuche_uebersprungen=nachsuche_uebersprungen,
                                    phasen_status={"identitaet": status_identitaet,
                                                  "rueckruf": status_rueckruf,
-                                                 "technik": status_technik})
+                                                 "technik": status_technik},
+                                   diagnose_lauf=diag_lauf)
 
 
 # ── Fixture-Provider (Tests) ─────────────────────────────────────────────────

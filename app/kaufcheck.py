@@ -44,7 +44,7 @@ from app.fahrzeugkontext import build_fahrzeugkontext
 from app.laufleistung import (
     build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
 )
-from app.technical_research import recherchiere_technisch, technical_coverage
+from app.technical_research import recherchiere_technisch, sw_diagnose_ausgabe, technical_coverage
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
@@ -595,6 +595,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # technischen Aktionen wie PFAD A.
     kaufaktionen = build_kaufaktionen(req, baureihe, motor_match, insights,
                                      laufleistungskontext=laufleistungskontext)
+    # SW-Diagnose: letzte Stufe der Schwachstellenkette (nur Log, keine Wirkung auf Ergebnis/Ausgabe).
+    sw_diagnose_ausgabe(web_recherche, insights, kaufaktionen)
 
     empfehlung_gruende = baue_empfehlung_gruende(
         req, baureihe, motor_match, insights, key_findings, result.get("empfehlung", "unbekannt"),

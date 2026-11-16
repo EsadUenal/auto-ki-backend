@@ -437,14 +437,43 @@ def _zeit_klasse(zeit: tuple[int, str], alter_jahre: int | None) -> str:
     return "nicht_erreicht"
 
 
+# N22: Wiederholungswort UNMITTELBAR vor dem ausgewerteten Wert ("Alle 60.000 km", "zumindest alle 15.000 km").
+_WIEDERHOLUNG_VOR_WERT = re.compile(r"\b(?:alle|jede[nrs]?)\s*$", re.IGNORECASE)
+
+
+def _wiederholung_am_wert(erst: str, hat_km: bool, zeit_treffer) -> bool:
+    """Steht die Wiederholung an GENAU dem ersten Wert, den die Regel auswertet (Kilometer oder Zeit, je nachdem, was
+    zuerst steht)? "jährlich"/"einmal jährlich"/"jedes Jahr" als erster Wert ist selbst eine Wiederholung."""
+    werte: list[tuple[int, str]] = []
+    if hat_km:
+        pos = _km_spanne(erst)
+        if pos:
+            werte.append((pos[0], "km"))
+    if zeit_treffer:
+        werte.append((zeit_treffer[2], "zeit"))
+    if not werte:
+        return False
+    start, art = min(werte)
+    if art == "zeit" and _ZEIT_JAEHRLICH.fullmatch(erst[zeit_treffer[2]:zeit_treffer[3]]):
+        return True
+    return bool(_WIEDERHOLUNG_VOR_WERT.search(erst[:start]))
+
+
 class WartungsRegel:
     """EINE Fundstelle einer Wartungsaussage mit ihrer eigenen Bedingung und ihrem ERSTintervall.
 
     Kilometer, Zeit und Bedingung gehören zur selben Fundstelle und werden nie über Fundstellen hinweg
     gemischt. `bedingt`: eine Voraussetzung (Anzeige/Hinweismeldung, Landesbezug, "falls", erschwerte
     Einsatzbedingungen) ist an DIESE Fundstelle geknüpft -- das ist weder der Marktvorbehalt des Dokuments
-    (`hat_quellenvorbehalt`) noch die technische Ausstattungsbedingung des Fakts (`technische_bedingung`)."""
-    __slots__ = ("text", "erst", "bedingt", "einsatz", "km", "zeit", "verbinder")
+    (`hat_quellenvorbehalt`) noch die technische Ausstattungsbedingung des Fakts (`technische_bedingung`).
+
+    `wiederkehrend` (N22): die Fundstelle nennt ihr Intervall ausdrücklich als Wiederholung ("Alle 60.000 km / 4 Jahre",
+    "zumindest alle 15.000 km / 1 Jahr", "alle 15.000 km oder einmal jährlich") und KEIN gesondertes Folgeintervall
+    ("Danach ..."). Belegt nur durch das Wiederholungswort UNMITTELBAR vor genau dem Kilometer-/Zeitwert, den diese
+    Regel auswertet, oder durch eine Zeitangabe "jährlich" als erstem Wert -- ein "alle" im Modell-, Bedingungs- oder
+    Tätigkeitstext an anderer Stelle zählt nicht. Daraus folgt nie eine nächste Fälligkeit (die letzte Durchführung
+    ist unbekannt)."""
+    __slots__ = ("text", "erst", "bedingt", "einsatz", "km", "zeit", "verbinder", "wiederkehrend")
 
     def __init__(self, text: str):
         self.text = text
@@ -469,6 +498,8 @@ class WartungsRegel:
                                   "und" if _VERBINDER_UND.match(v) else "unklar")
             else:
                 self.verbinder = "unklar"
+        self.wiederkehrend = (not _FOLGEINTERVALL.search(_GELTUNGSZEILE.sub("", text))
+                              and _wiederholung_am_wert(self.erst, bool(self.km), z))
 
     def signatur(self) -> tuple:
         return (self.bedingt, self.km, self.zeit, self.verbinder)
@@ -1053,6 +1084,9 @@ def _kandidaten(insights: list[Insight]) -> list[tuple[Insight, str]]:
 # Folgeintervall) -- keine Zeichenkappung, keine neue fachliche Auslegung. Der volle `hinweis` bleibt unverändert.
 # Kilometer- und Zeitstatus tragen je ihre eigene Grundlage; was nicht ableitbar ist, wird nicht als "nicht erreicht"
 # ausgegeben. "Erreicht" heißt hier ausschließlich: die Erstschwelle ist rechnerisch überschritten -- kein Versäumnis.
+# N22: eine ausdrücklich wiederkehrende Regel ("Alle 60.000 km / 4 Jahre") erscheint als "alle ...", nicht als
+# "Erstintervall"; ihr Kilometertext spricht vom Intervall, nicht von einem "Erstpunkt". Erst-/Folgeintervalle
+# ("..., danach ...") und Angaben ohne Wiederholungsbeleg bleiben unverändert.
 
 _TAETIGKEIT_KURZ = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}
 _VERBINDER_KURZ = {"oder": " oder ", "und": " und ", "unklar": " / "}
@@ -1088,15 +1122,35 @@ def _regel_info(r: WartungsRegel) -> WartungsRegelInfo:
     return WartungsRegelInfo(
         art="bedingt" if r.bedingt else "grund", erstintervall=_intervall_kurz(r.zeit, r.km, r.verbinder),
         folgeintervall=folge, folge_genannt=genannt, verknuepfung=r.verbinder, einsatz=r.einsatz,
-        wortlaut=" ".join(r.text.split()))
+        wortlaut=" ".join(r.text.split()), wiederkehrend=r.wiederkehrend)
 
 
-def _km_status_kurz(ausw: "_Auswertung", kilometerstand: int) -> tuple[str, str | None]:
+def regel_intervall_text(info) -> str | None:
+    """Intervall einer Fundstelle für Text-Ausgaben (N22): eine wiederkehrende Regel als "alle ...", sonst das
+    Erstintervall wie bisher. Ältere `WartungsRegelInfo` ohne das Feld bleiben unverändert."""
+    iv = getattr(info, "erstintervall", None)
+    if iv and getattr(info, "wiederkehrend", False):
+        return f"alle {iv}"
+    return iv
+
+
+def _km_status_kurz(ausw: "_Auswertung", kilometerstand: int,
+                    wiederkehrend: bool = False) -> tuple[str, str | None]:
     if ausw.von_km is None:
         return "keine_kmregel", None
     punkt = _punkt_text(ausw.von_km, ausw.bis_km)
     if ausw.modus == "nur_bedingt":
         return "bedingt", f"Kilometerpunkt ({punkt}) gilt nur unter ungeklärter Voraussetzung; nicht bewertet"
+    if wiederkehrend and not ausw.mehrdeutig:
+        # N22: eine wiederkehrende Regel hat keinen "Erstpunkt"; ohne letzte Durchführung wird nur gesagt, dass der
+        # Intervallabstand rechnerisch mindestens einmal erreicht ist -- keine Anzahl, keine nächste Fälligkeit.
+        text = {
+            STATUS_DARUEBER: f"Intervall ({punkt}) bei dieser Laufleistung rechnerisch mindestens einmal erreicht",
+            STATUS_IM_BEREICH: f"Stand liegt im Bereich des Intervallpunkts ({punkt})",
+            STATUS_NAEHERT_SICH: f"Intervallpunkt ({punkt}) rund {_km(ausw.von_km - kilometerstand)} voraus",
+            STATUS_ENTFERNT: f"Intervallpunkt ({punkt}) weit entfernt; der Kilometeranteil ist damit nicht einschlägig",
+        }.get(ausw.status)
+        return ausw.status, text
     erst = "frühester genannter Punkt" if ausw.mehrdeutig else "Erstpunkt"
     text = {
         STATUS_DARUEBER: f"{erst} ({punkt}) rechnerisch erreicht",
@@ -1138,16 +1192,21 @@ def _kurzfelder(bauteil: str, ausw: "_Auswertung", roh: str | None, kilometersta
                 alter_jahre: int | None, technik: str | None, taetigkeit: str | None,
                 marktvorbehalt: bool, herkunft: str | None = None) -> dict:
     """Die N21-Felder eines Wartungshinweises (`Wartungshinweis.km_status` ... `regeln`)."""
-    km_status, km_text = _km_status_kurz(ausw, kilometerstand)
-    zeit_status, zeit_text = _zeit_status_kurz(ausw, alter_jahre, technik)
     infos = [_regel_info(r) for r in eindeutige_regeln([r for r in zerlege_regeln(roh) if r.km or r.zeit])]
     basis = [i for i in infos if i.art == ("bedingt" if ausw.modus == "nur_bedingt" else "grund")]
+    # N22: die Kurzform folgt der EINEN maßgeblichen Regel; bei mehreren verschiedenen Angaben wird keine ausgewählt.
+    i0 = basis[0] if (basis and not ausw.mehrdeutig) else None
+    wiederkehrend = bool(i0 and i0.wiederkehrend)
+    km_status, km_text = _km_status_kurz(ausw, kilometerstand, wiederkehrend=wiederkehrend)
+    zeit_status, zeit_text = _zeit_status_kurz(ausw, alter_jahre, technik)
     if ausw.mehrdeutig:
         intervall = "mehrere verschiedene Angaben: " + "; ".join(
-            f"„{i.erstintervall}“" for i in basis if i.erstintervall)
+            f"„{regel_intervall_text(i)}“" for i in basis if i.erstintervall)
     else:
-        i0 = basis[0] if basis else None
-        intervall = (f"Erstintervall {i0.erstintervall}" if i0 and i0.erstintervall else None)
+        if wiederkehrend:
+            intervall = regel_intervall_text(i0)          # "alle 60.000 km oder 4 Jahre" -- kein "Erstintervall"
+        else:
+            intervall = (f"Erstintervall {i0.erstintervall}" if i0 and i0.erstintervall else None)
         if i0 and i0.folgeintervall:
             intervall += f", danach {i0.folgeintervall}"
         elif i0 and i0.folge_genannt:
@@ -1175,7 +1234,8 @@ def _kurzfelder(bauteil: str, ausw: "_Auswertung", roh: str | None, kilometersta
     if herkunft == "web_wartung":      # letzter Eintrag: der Satz endet in der Ausgabe mit Punkt (wie im vollen Hinweis)
         grenzen.append(_HERKUNFT_ZUSATZ["web_wartung"].strip().rstrip("."))
     return dict(km_status=km_status, km_text=km_text, zeit_status=zeit_status, zeit_text=zeit_text,
-                intervall_kurz=kopf, kurz=" ".join(satz), handlung=_HANDLUNG_NACHWEIS, grenzen=grenzen, regeln=infos)
+                intervall_kurz=kopf, kurz=" ".join(satz), handlung=_HANDLUNG_NACHWEIS, grenzen=grenzen, regeln=infos,
+                wiederkehrend=wiederkehrend)
 
 
 def _wartungshinweise(insights: list[Insight], kilometerstand: int,

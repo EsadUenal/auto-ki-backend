@@ -606,11 +606,11 @@ for lab, text in (("A Zeitregel zuerst", ZEIT + ". " + KMB + "."), ("B Zusatzreg
         spez = [a for a in getattr(ka_i, bereich).fahrzeugspezifisch if "zahnriemen" in (a.titel + a.aktion).lower()]
         za = spez[0] if spez else None
         check(f"I18 {lab} {bereich}: EINE Aktion; Zeit-Grundregel ausgewertet (erreicht), bedingte Kilometerregel wörtlich, ungeklärt, nicht übertragen",
-              len(spez) == 1 and "Erstintervall 6 Jahre (ohne Kilometerangabe)" in za.aktion
+              len(spez) == 1 and "alle 6 Jahre (ohne Kilometerangabe)" in za.aktion
               and ("rechnerisch erreicht (Fahrzeugalter mindestens 8 Jahre" in za.aktion or bereich == "dokumente")
               # N21: Aktion = knappe Zusatzregel (Intervall, ungeklärte Voraussetzung, nicht übertragen); der Wortlaut steht
               # in der strukturierten Regel des Wartungshinweises (Karte/Details)
-              and "zusätzliche Regel der Quelle (150.000 km)" in za.aktion and "ungeklärt" in za.aktion
+              and "zusätzliche Regel der Quelle (alle 150.000 km)" in za.aktion and "ungeklärt" in za.aktion
               and "zumindest alle 150.000 km" not in za.aktion
               and any(r.art == "bedingt" and "zumindest alle 150.000 km" in r.wortlaut for r in hz_i[0].regeln)
               and "nicht auf die Zeitregel übertragen" in za.aktion and "Kilometerpunkt" not in za.aktion,
@@ -623,7 +623,7 @@ for lab, text in (("A Zeitregel zuerst", ZEIT + ". " + KMB + "."), ("B Zusatzreg
 for lab, bj, erwartet in (("Alter unbekannt", None, "ohne bekanntes Baujahr"), ("Unsicherheitsbereich", 2020, "Erstzulassungsmonat")):
     req_x = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=bj, kilometerstand=KM_T, kraftstoff="Benzin", ausstattung=[])
     _i, _l, ka_x = kette(fakten_t(ZEIT + ". " + KMB + ".", bj=bj), req_x)
-    za = [a for a in ka_x.verkaeuferfragen.fahrzeugspezifisch if "Erstintervall 6 Jahre (ohne Kilometerangabe)" in a.aktion]
+    za = [a for a in ka_x.verkaeuferfragen.fahrzeugspezifisch if "alle 6 Jahre (ohne Kilometerangabe)" in a.aktion]
     check(f"I21 [Extraktionspfad] {lab}: Zeitregel sichtbar mit dem richtigen Grund ('{erwartet}'), nicht als erreicht, kein Rang 750",
           len(za) == 1 and erwartet in za[0].aktion and "erreicht (Fahrzeugalter" not in za[0].aktion
           and za[0].rang < 750, za[0].aktion[:260] if za else "keine Aktion")
@@ -658,7 +658,7 @@ def antwort_zu(req, fk):
 
 def zeit_aktionen(antwort, bereich):
     return [a for a in antwort["kaufaktionen"][bereich]["fahrzeugspezifisch"]
-            if "Erstintervall 6 Jahre (ohne Kilometerangabe)" in a["aktion"]]
+            if "alle 6 Jahre (ohne Kilometerangabe)" in a["aktion"]]
 
 
 FAELLE = (("A erreicht", 2017, ZEIT + ". " + KMB + ".", "bereits erreicht (Fahrzeugalter mindestens 8 Jahre"),
@@ -694,7 +694,7 @@ for lab, bj, text, kern in FAELLE:
     check(f"J4 {lab}: serialisierte Antwort -- Verkäuferfrage UND Dokument tragen dieselbe Zeitregel samt Zusatzregel und Quelle",
           # N21: Aktion trägt die Kurzform (gleiche Aussage, kürzerer Wortlaut als der volle Hinweis `kern`)
           len(za_v) == 1 and len(za_d) == 1 and kern_kurz in za_v[0]["aktion"]
-          and "zusätzliche Regel der Quelle (150.000 km)" in za_v[0]["aktion"]
+          and "zusätzliche Regel der Quelle (alle 150.000 km)" in za_v[0]["aktion"]
           and "nicht auf die Zeitregel übertragen" in za_d[0]["aktion"] and "nicht auf die Zeitregel übertragen" in za_v[0]["aktion"]
           and "aus der Webrecherche" in za_d[0]["aktion"], str(za_v)[:200])
     check(f"J5 {lab}: Evidenz -- jede Aktion verweist auf den zusammengeführten Insight (existiert in der Antwort)",
@@ -716,8 +716,8 @@ for lab, bj, text, kern in FAELLE:
                                      "zumindest alle 150.000 km"))
           and kern_kurz in za_v[0]["aktion"] and kern_kurz in b
           and all(k in za_v[0]["aktion"] and k in za_d[0]["aktion"] and k in b
-                  for k in ("Erstintervall 6 Jahre (ohne Kilometerangabe)",
-                            "zusätzliche Regel der Quelle (150.000 km)", "nicht auf die Zeitregel übertragen")))
+                  for k in ("alle 6 Jahre (ohne Kilometerangabe)",
+                            "zusätzliche Regel der Quelle (alle 150.000 km)", "nicht auf die Zeitregel übertragen")))
     check(f"J9 {lab}: unbekannte letzte Durchführung / keine Fälligkeit in jedem Kanal",
           all(sauber(t) for t in (block_j.split("Wartungspunkt")[-1], za_v[0]["aktion"], za_d[0]["aktion"])))
 # Rang der Zeitregel in der Antwort
@@ -730,7 +730,7 @@ check("J10 Rang in der Antwort: erreichte Zeitgrenze 750, unbekanntes Alter daru
 ins_p, lk_p, ka_p, zr_p, block_p, ant_p = antwort_zu(REQ_T, fakten_t(ZEIT + "."))
 check("J11 reine Zeitregel ohne Zusatzregel: Prompt, Frage, Dokument und Bericht tragen sie; kein Kilometer-Hinweis",
       len(zr_p) == 1 and zr_p[0].hinweis in block_p and len(zeit_aktionen(ant_p, "verkaeuferfragen")) == 1
-      and len(zeit_aktionen(ant_p, "dokumente")) == 1 and "Erstintervall 6 Jahre (ohne Kilometerangabe)" in ant_p["bericht"]
+      and len(zeit_aktionen(ant_p, "dokumente")) == 1 and "alle 6 Jahre (ohne Kilometerangabe)" in ant_p["bericht"]
       and "bedingte Regel" not in zr_p[0].hinweis and len(lk_p.wartungshinweise) == 1)
 if SEITEN:
     zr_real = [w for w in lk_h.wartungshinweise if w.punkt_km is None]
@@ -810,7 +810,7 @@ for lab, bj, text, erwartet_status, kern in (
                   and z[0]["hinweis"].split(".")[0] not in a["aktion"] for a in spez))
     b = " ".join(ant_k["bericht"].split())
     check(f"K4 {lab}: Bericht -- Verkäuferfragen UND Dokumente tragen den Hinweis der Karte (Satz für Satz), Quellaussage im Risikoabschnitt",
-          b.count("Erstintervall 6 Jahre (ohne Kilometerangabe)") == 2 and "Zahnriemen kontrollieren: alle 6 Jahre" in b)
+          b.count("alle 6 Jahre (ohne Kilometerangabe)") == 2 and "Zahnriemen kontrollieren: alle 6 Jahre" in b)
 # nicht erreichte Zeitgrenze: kein Hinweis ohne Anlass
 req_n = KaufCheckRequest(marke="Toyota", modell="Yaris", baujahr=2024, kilometerstand=40000, kraftstoff="Benzin", ausstattung=[],
                          vorbesitzer=2, scheckheftgepflegt=True)
@@ -819,7 +819,7 @@ check("K5 Zeitgrenze nicht erreicht (Baujahr 2024): weder Karte noch Prompt noch
       not [w for w in ant_n["laufleistungskontext"]["wartungshinweise"] if w["bauteil"] == "Zahnriemen"]
       and not [x for x in wp_zeilen(prompt_n) if "Zahnriemen" in x]
       and not [a for b_ in ("verkaeuferfragen", "dokumente") for a in ant_n["kaufaktionen"][b_]["fahrzeugspezifisch"]
-               if "Zeitintervall (6 Jahre)" in a["aktion"] or "Erstintervall 6 Jahre (ohne Kilometerangabe)" in a["aktion"]])
+               if "Zeitintervall (6 Jahre)" in a["aktion"] or "alle 6 Jahre (ohne Kilometerangabe)" in a["aktion"]])
 if SEITEN:
     real_k = real + ("\n\n2.10. WEITERE ARBEITEN\nBeim Lexus RC F Zahnriemen kontrollieren: alle 6 Jahre. Beim Lexus RC F bei Fahrzeugen mit "
                      "Wartungsanzeige: Zahnriemen kontrollieren, wenn die Hinweismeldung erscheint (zumindest alle 150.000 km), falls für "

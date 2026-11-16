@@ -13,6 +13,7 @@ Free-Plan: 1.000 Abfragen/Monat (basic = 1 Credit, kein Kreditkarte nötig).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 import time
@@ -37,6 +38,28 @@ from app.provider_control import (
 log = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.tavily.com/search"
+
+# Diagnose (SW-Diagnose, nur Beobachtung): ein Aufrufer kann für die Dauer eines Blocks die Trefferzahl JE ANFRAGE vor
+# und nach dem bestehenden Nachfilter (`ohne_gesperrte_quellen`) mitschreiben lassen. Ohne aktiven Sammler (Default)
+# ändert sich nichts. Es werden weder Anfragen noch Ergebnisse verändert, kein zusätzlicher Call, kein Seitentext.
+_TAVILY_DIAGNOSE: contextvars.ContextVar[list | None] = contextvars.ContextVar("tavily_diagnose", default=None)
+
+
+@contextmanager
+def tavily_diagnose():
+    """Sammelt je Suchanfrage {"query", "cache", "roh", "nach_filter", "fehler"} in einer Liste (nur Diagnose)."""
+    sammler: list[dict] = []
+    token = _TAVILY_DIAGNOSE.set(sammler)
+    try:
+        yield sammler
+    finally:
+        _TAVILY_DIAGNOSE.reset(token)
+
+
+def _diagnose_eintrag(query: str, **werte) -> None:
+    sammler = _TAVILY_DIAGNOSE.get()
+    if sammler is not None:
+        sammler.append({"query": query, **werte})
 
 # ============================================================================
 # Quellenqualität: Kategorisierung, Ranking, Filterung (Final Polish)
@@ -814,9 +837,13 @@ def curate_results(
     kategorie: str | None = None,
     max_results: int = 5,
     score_fn: Callable[[str], int] | None = None,
+    ausschluss: list | None = None,
 ) -> list[dict[str, Any]]:
     """
     `score_fn` (optional): kategoriespezifische Bewertung für die SORTIERUNG (Default: `score_domain(url, kategorie)`).
+    `ausschluss` (optional, nur Diagnose): erhält je NICHT übernommenem Treffer {"url", "grund"} mit dem tatsächlichen
+    Grund dieser Funktion ("social_media", "url_duplikat", "domain_titel_duplikat", "rang_ueber_limit"). Auswahl und
+    Reihenfolge bleiben unverändert.
     Zentrale Nachbearbeitung roher Tavily-Treffer für alle vier Flows
     (Chat, Diagnose, Kaufcheck, Verkaufscheck):
 
@@ -837,18 +864,26 @@ def curate_results(
     gesehen_domain_titel: set[tuple[str, str]] = set()
     bereinigt: list[dict[str, Any]] = []
 
+    def _aus(r, grund):
+        if ausschluss is not None:
+            # `_id`: Objektkennung des Treffers im Aufrufer (doppelte URLs bleiben unterscheidbar), nur Diagnose.
+            ausschluss.append({"url": r.get("url", ""), "grund": grund, "_id": id(r)})
+
     for r in results:
         url = r.get("url", "")
         domain = _domain_von(url)
         if not domain or any(sperr in domain for sperr in SOCIAL_MEDIA_AUSSCHLUSS):
+            _aus(r, "social_media")
             continue
 
         url_key = _normalisiere_url(url)
         if url_key in gesehen_urls:
+            _aus(r, "url_duplikat")
             continue
 
         titel_key = (domain, (r.get("title") or "").strip().lower())
         if titel_key in gesehen_domain_titel:
+            _aus(r, "domain_titel_duplikat")
             continue
 
         gesehen_urls.add(url_key)
@@ -860,6 +895,8 @@ def curate_results(
     bereinigt.sort(key=lambda r: (score_fn(r.get("url", "")) if score_fn
                                   else score_domain(r.get("url", ""), kategorie)), reverse=True)
 
+    for r in bereinigt[max_results:]:
+        _aus(r, "rang_ueber_limit")
     return bereinigt[:max_results]
 
 # Retry mit Exponential Backoff — nur für transiente Fehler (429 Rate-Limit, 5xx
@@ -923,6 +960,7 @@ async def _tavily_search_intern(
     """
     if not TAVILY_API_KEY:
         log.debug("Websuche übersprungen: TAVILY_API_KEY nicht gesetzt.")
+        _diagnose_eintrag(query, cache=False, roh=None, nach_filter=0, fehler=True)
         return [], True   # kein API-Key = technischer Ausfall, keine Datenknappheit
 
     # Social Media grundsätzlich ausschließen (spart Tavily-Ergebnis-Slots für
@@ -948,6 +986,7 @@ async def _tavily_search_intern(
         cached = _cache.get(key)
         if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL_S:
             log.debug("provider_event provider=tavily feature=cache status=hit")
+            _diagnose_eintrag(query, cache=True, roh=None, nach_filter=len(cached[1]), fehler=False)
             return cached[1], False
 
     count = max(1, min(int(count), TAVILY_MAX_RESULTS))
@@ -987,6 +1026,7 @@ async def _tavily_search_intern(
         body["exclude_domains"] = exclude_domains
 
     results: list[dict[str, Any]] = []
+    roh_anzahl: int | None = None          # nur Diagnose: Trefferzahl der Providerantwort vor dem Nachfilter
     hatte_fehler = False
     timeout = httpx.Timeout(
         connect=TAVILY_CONNECT_TIMEOUT_SECONDS,
@@ -1011,6 +1051,7 @@ async def _tavily_search_intern(
                 data = resp.json()
                 if not isinstance(data, dict) or not isinstance(data.get("results", []), list):
                     raise ValueError("ungueltige_provider_antwort")
+                roh_anzahl = len(data.get("results", []))
                 results = bereinige_treffer(ohne_gesperrte_quellen(data.get("results", [])))
                 log_provider_event("tavily", status="success", attempt=versuch + 1,
                                    started=call_started)
@@ -1067,6 +1108,7 @@ async def _tavily_search_intern(
             log.warning("Tavily interner Aufruffehler (%s).", type(exc).__name__)
             break
 
+    _diagnose_eintrag(query, cache=False, roh=roh_anzahl, nach_filter=len(results), fehler=hatte_fehler)
     if results:
         # Größe begrenzen (Long-Running-Prozess) — bei Überschreitung einfach den
         # ältesten Eintrag verdrängen statt eine komplexe LRU-Struktur zu pflegen;

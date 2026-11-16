@@ -2242,6 +2242,13 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
 _LAUF_SCHLUESSEL_PRAEFIX = {"db_wartung": "wartung-", "web_wartung": "wartung-web-"}
 
 
+def _regel_intervall_text(info):
+    """N22: Intervall einer Fundstelle (wiederkehrend als "alle ..."); Import lokal wie die übrigen Laufleistungs-
+    Helfer dieses Moduls."""
+    from app.laufleistung import regel_intervall_text
+    return regel_intervall_text(info)
+
+
 def _wartung_bezug(w) -> str:
     """Intervall laut Quelle (Erst-/Folgeintervall) aus der Kurzform, ohne Tätigkeitspräfix und ohne Statussätze."""
     kopf = (getattr(w, "intervall_kurz", None) or "").rstrip(".")
@@ -2262,7 +2269,7 @@ def _wartung_vorbehalte(w) -> list[str]:
     bedingte = [r for r in (getattr(w, "regeln", None) or []) if r.art == "bedingt"]
     hat_grund = any(r.art == "grund" for r in (getattr(w, "regeln", None) or []))
     if bedingte and hat_grund:
-        iv = bedingte[0].erstintervall
+        iv = _regel_intervall_text(bedingte[0])     # N22: wiederkehrende Zusatzregel als "alle ..."
         txt = (f"eine zusätzliche Regel der Quelle{f' ({iv})' if iv else ''} gilt nur unter einer Voraussetzung, "
                f"die für dieses Fahrzeug ungeklärt ist")
         if getattr(w, "km_status", None) == "keine_kmregel":
@@ -2323,7 +2330,7 @@ def _kompakt_aus_hinweis(w, bauteil: str, falls: str = "") -> str | None:
     regeln = getattr(w, "regeln", None) or []
     bedingte = [r for r in regeln if r.art == "bedingt"]
     if bedingte and any(r.art == "grund" for r in regeln):
-        iv = bedingte[0].erstintervall
+        iv = _regel_intervall_text(bedingte[0])     # N22: wiederkehrende Zusatzregel als "alle ..."
         teile.append("zusätzlich bedingte Regel, Voraussetzung ungeklärt" + (f": {iv}" if iv else ""))
     if getattr(w, "technische_bedingung_status", None) == "unresolved" and getattr(w, "technische_bedingung", None):
         teile.append(f"Anwendbarkeit ungeklärt, zuerst klären: {w.technische_bedingung}")

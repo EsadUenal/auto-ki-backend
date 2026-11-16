@@ -847,6 +847,9 @@ class TechnischeRecherche(BaseModel):
     # "budget_uebersprungen": 1}]. Weder leeres Suchergebnis noch Providerfehler: die
     # Abdeckung dieser Kategorie ist unvollständig. Leer = nichts übersprungen.
     nachsuche_uebersprungen: list[dict] = Field(default_factory=list)
+    # SW-Diagnose (nur Log-Korrelation): Kennung des Recherchelaufs, mit der der KaufCheck seine Insight-/Ausgabe-
+    # Diagnose denselben `sw_diagnose`-Zeilen zuordnet. Nie serialisiert (keine API-/Speicheränderung).
+    diagnose_lauf: str | None = Field(default=None, exclude=True)
 
 
 class Fahrzeugkontext(BaseModel):
@@ -963,6 +966,9 @@ class Wartungshinweis(BaseModel):
     zeit_status: str | None = None
     zeit_text: str | None = None
     intervall_kurz: str | None = None        # nur Tätigkeit + Erst-/Folgeintervall (Standardzeile der Karte)
+    # N22: die Kurzform beruht auf einer wiederkehrenden Regel ("alle ..."); Karte/Chips sprechen dann nicht von einem
+    # "Erstpunkt". None bei älteren Antworten.
+    wiederkehrend: bool | None = None
     kurz: str | None = None                  # Tätigkeit, Erst-/Folgeintervall, km-/Zeitstatus in 1-2 Sätzen
     handlung: str | None = None              # konkrete Handlung (Nachweis verlangen), keine Bewertung
     grenzen: list[str] = Field(default_factory=list)   # Marktvorbehalt, ungeklärte Bedingungen, Anwendbarkeit
@@ -976,6 +982,9 @@ class WartungsRegelInfo(BaseModel):
     erstintervall: str | None = None          # z. B. "15.000 km oder 1 Jahr"
     folgeintervall: str | None = None         # nur, wenn die Fundstelle ein "Danach ..." nennt und es auswertbar ist
     folge_genannt: bool = False               # die Fundstelle nennt ein Folgeintervall (auch wenn nicht auswertbar)
+    # N22: das Intervall ist laut Wortlaut eine Wiederholung ("Alle 60.000 km / 4 Jahre") ohne gesondertes Folge-
+    # intervall. `erstintervall` trägt dann den wiederkehrenden Abstand. Default False: ältere Antworten bleiben gültig.
+    wiederkehrend: bool = False
     verknuepfung: str | None = None           # "oder" | "und" | "unklar" | None
     einsatz: str | None = None                # "normal" | "erschwert" | "gemischt" | None
     wortlaut: str                             # Wortlaut der Fundstelle (Details)
