@@ -1199,8 +1199,8 @@ _BASIS_GETRIEBE: dict[tuple[str, str], dict[str, str]] = {
         MANUELL: "Der Rückwärtsgang soll ohne Kratzen einrasten.",
     },
     ("probefahrt", "schalten"): {
-        AUTOMATIK: "Alle Fahrstufen durchfahren: Gangwechsel sollen weich und ohne "
-                   "Verzögerung kommen, auch beim Zurückschalten.",
+        AUTOMATIK: "Fahrverhalten und Schaltvorgänge bei einer normalen, sicheren Probefahrt beurteilen: "
+                   "Gangwechsel sollen weich und ohne Verzögerung kommen, auch beim Zurückschalten.",
         MANUELL: "Jeden Gang inklusive der oberen Gänge einlegen: ohne Kratzen, Hakeln "
                  "oder Herausspringen.",
     },

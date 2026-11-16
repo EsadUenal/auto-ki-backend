@@ -3753,7 +3753,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
             Motor -- und (3) in einem Segment, das das Zielmodell nennt oder das
             erste des Satzes ist (der Satz-Anker); ein spaeteres Segment ohne
             Modellnennung ("die Sonderedition dagegen ...") ist eine andere Variante."""
-            grenzen = [0] + [m.end() for m in re.finditer(r"(?<!\d)[,.]|[,.](?!\d)|[;:!?]|sondern", satz, re.IGNORECASE)]
+            grenzen = [0] + [m.end() for m in re.finditer(r"(?<!\d)[,.]|[,.](?!\d)|[;:!?]|\bsondern\b", satz, re.IGNORECASE)]
             for m in re.finditer(r"(?<![A-Za-z0-9ÄÖÜäöüß])" + re.escape(wort) + r"(?![A-Za-z0-9ÄÖÜäöüß])",
                                  satz, re.IGNORECASE):
                 if _verneint_im_teilsatz(satz, m.start()):

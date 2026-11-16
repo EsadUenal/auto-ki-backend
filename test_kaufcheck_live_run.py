@@ -441,7 +441,10 @@ print("\n[K/L] Keine Regression bei Getriebe und Preis")
 probe = texte(bereich("probefahrt"))
 check("K1 Automatik: Anfahrverhalten", "Automatikgetriebe soll ohne" in probe)
 check("K2 Automatik: Fahrstufe R", "Fahrstufe R mehrfach einlegen" in probe)
-check("K3 Automatik: alle Fahrstufen", "Alle Fahrstufen durchfahren" in probe)
+check("K3 Automatik: Schaltvorgänge bei normaler, sicherer Probefahrt beurteilen (keine Aufforderung, alle Wählhebelpositionen "
+      "während der Fahrt einzulegen)",
+      "Schaltvorgänge bei einer normalen, sicheren Probefahrt beurteilen" in probe
+      and "Gangwechsel sollen weich und ohne Verzögerung kommen" in probe and "Alle Fahrstufen durchfahren" not in probe)
 check("K4 Automatik: durchrutschendes Getriebe", "durchrutschendes" in probe)
 check("K5 Keine Kupplungspruefung bei Automatik", "Kupplung" not in probe, probe[:200])
 

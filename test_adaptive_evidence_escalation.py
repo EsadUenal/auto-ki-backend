@@ -274,6 +274,9 @@ check("H) Query nennt NUR Getriebe/transmission, keine anderen Feld-Woerter "
       all(w not in queries_h[0][1] for w in ("Generation", "Kraftstoff", "Radantrieb", "Hybrid"))
       and "Getriebe" in queries_h[0][1] and "transmission" in queries_h[1][1], str(queries_h))
 
+NAMEN_GEN_DOK_MOT = ["identity_spec_gap_generation_de", "identity_spec_gap_generation_en",
+                     "identity_spec_gap_dokumenttyp_de", "identity_spec_gap_dokumenttyp_en",
+                     "identity_spec_gap_motorisierung_de", "identity_spec_gap_motorisierung_en"]
 print("--- Spec-I) mehrere offene Specs ueber BEIDE Achsen -- L1-Korrektur "
       "(ENFAL-Recherchepfad-Folgeauftrag, 2026-11): Generation und Motorisierung "
       "bekommen GETRENNTE Query-Paare, nicht mehr eine einzige ueberladene "
@@ -283,27 +286,28 @@ gaps_i = _identity_spec_gaps(alles_offen)
 check("I) alle 5 web-belegbaren Felder als offen erkannt", set(gaps_i) == {
       "generation", "fuel", "drivetrain", "transmission", "powertrain"}, str(gaps_i))
 queries_i = _identity_spec_gap_queries("Testmarke Modellz", "2018", gaps_i)
-check("I) GENAU 4 Queries (2 Achsen x DE+EN) -- weiterhin GEBUENDELT je Achse, "
+check("I) GENAU 6 Queries (3 Query-Paare: Generation, Dokumenttyp [N1], Motorisierung; je DE+EN) -- weiterhin GEBUENDELT je Achse, "
       "nicht 5 Felder x 2 = 10 Calls, aber auch NICHT mehr 1 Sammelpaar fuer alle "
       "5 Felder (§ Auftrag: 'Generation und Motorisierung gezielt beruecksichtigen, "
       "nicht nur eine ueberladene Sammelquery')",
-      len(queries_i) == 4, str(queries_i))
+      [n for n, _ in queries_i] == NAMEN_GEN_DOK_MOT, str(queries_i))
 check("I) Query-Paar 1 (Generation-Achse) nennt NUR 'Generation', keine "
       "Motorisierungs-Woerter -- genau die vom Auftrag benannte Trennung",
       "Generation" in queries_i[0][1] and "generation" in queries_i[1][1]
       and all(w not in queries_i[0][1] for w in ("Kraftstoff", "Radantrieb", "Getriebe",
                                                   "Antriebstechnologie")),
       str(queries_i))
+q_mot_de = dict(queries_i)["identity_spec_gap_motorisierung_de"]
+q_mot_en = dict(queries_i)["identity_spec_gap_motorisierung_en"]
 check("I) Query-Paar 2 (Motorisierungs-Achse) nennt Kraftstoff/Antrieb/Getriebe/"
       "Powertrain in EINEM gebündelten String, aber NICHT 'Generation'",
-      all(w in queries_i[2][1] for w in ("Kraftstoff", "Radantrieb", "Getriebe",
-                                         "Antriebstechnologie"))
-      and "Generation" not in queries_i[2][1], str(queries_i))
+      all(w in q_mot_de for w in ("Kraftstoff", "Radantrieb", "Getriebe", "Antriebstechnologie"))
+      and "Generation" not in q_mot_de, str(queries_i))
 check("I-neutral) Powertrain-Gap-Wortwahl ist NEUTRAL -- kein 'Hybrid'/'Elektrifizierung' "
       "als Suchbegriff, der das Ergebnis selbst vorentscheiden wuerde (§A Auftrag Punkt 1/2, "
       "PASS-GATE-Fund) -- geprueft am Motorisierungs-Query-Paar, das 'powertrain' trägt",
-      "Hybrid" not in queries_i[2][1] and "hybrid" not in queries_i[3][1]
-      and "Elektrifizierung" not in queries_i[2][1], str(queries_i))
+      "Hybrid" not in q_mot_de and "hybrid" not in q_mot_en
+      and "Elektrifizierung" not in q_mot_de, str(queries_i))
 
 print("--- L1-Audit) Ein bereits bestaetigter Leistungswert blockiert die "
       "Generation-/Motorisierungs-Nachrecherche NICHT (ENFAL-Recherchepfad-"
@@ -319,7 +323,8 @@ check("L1-Audit) Generation/Kraftstoff/Getriebe/Powertrain bleiben trotz bereits
 queries_l1 = _identity_spec_gap_queries("Testmarke Modellz", "2018", gaps_l1)
 check("L1-Audit) trotz bestaetigter Leistung werden weiterhin beide Achsen-Query-"
       "Paare gebaut (4 Queries), kein verfruehter Abbruch der Identitaetsrecherche "
-      "durch einen reinen Leistungstreffer", len(queries_l1) == 4, str(queries_l1))
+      "durch einen reinen Leistungstreffer",
+      [n for n, _ in queries_l1] == NAMEN_GEN_DOK_MOT, str(queries_l1))
 
 print("--- kein Gap -> keine unnoetige Zusatzsuche (Identity bereits stark "
       "bestaetigt) ---")
@@ -364,7 +369,10 @@ print("--- E) mehrere offene Confirm-only-Specs -> GEBUENDELTE Query, nicht "
       "1 Call pro Feld ---")
 queries_e = _identity_spec_gap_queries("Testmarke Modellz", "2018", [],
                                        ziel=ZIEL_MIT_MOTOR, confirm_felder=gaps_c)
-check("E) weiterhin genau 2 Queries fuer 3 offene Confirm-Felder", len(queries_e) == 2,
+check("E) 3 offene Confirm-Felder (engine_name/horsepower/displacement) -> Motorisierungs-Paar (gebuendelt, nicht 1 Call pro Feld) "
+      "PLUS das Motorkern-Fachquellen-Paar (N6, nur weil engine_name unbestaetigt ist): genau diese 4 benannten Queries",
+      [n for n, _ in queries_e] == ["identity_spec_gap_motorisierung_de", "identity_spec_gap_motorisierung_en",
+                                    "identity_spec_gap_motor_fachquelle_de", "identity_spec_gap_motor_fachquelle_en"],
       str(queries_e))
 check("E) DE-Query enthaelt den konkreten Nutzer-Claim (5.0 V8, 477 PS)",
       "5.0 V8" in queries_e[0][1] and "477 PS" in queries_e[0][1], str(queries_e))
@@ -422,6 +430,45 @@ class FakeTavily:
         return []
 
 
+# Call-Modell (Historie): Identität Runde 1 (2) + Identity-Spec-Gap je OFFENER Achse (Generation 2, Dokumenttyp 2 [N1, nur bei offener
+# Generation, 2026-11-07], Motorisierung 2; Motorkern-Fachquelle 2 [N6] nur bei unbestätigtem engine_name) + Rückruf 2 + Schwachstelle 2 +
+# Wartung 2 = 14 Basisaufrufe in diesem Szenario. Jede Eskalationsrunde kommt mit +2 dazu. Jeder Aufruf gehört zu GENAU EINER Achse;
+# ein doppelter oder unzugeordneter Aufruf fällt auf (statt nur die Gesamtzahl zu vergleichen).
+_ACHSEN = (
+    ("identitaet_runde1", ("technische Daten", "Generation Baureihe Bauzeitraum")),
+    ("spec_gap_generation", ("Generation Modellcode Spezifikation", "generation model code specifications")),
+    ("spec_gap_dokumenttyp", ("Rettungskarte Rettungsdatenblatt", "rescue card owner's manual")),
+    ("spec_gap_motorisierung", ("Motorisierung Spezifikation", "drivetrain technology specifications")),
+    ("rueckruf", ("Rückruf",)),
+    ("schwachstelle", ("bekannte Probleme Schwachstellen", "Gebrauchtwagen Test")),
+    ("wartung", ("Wartungsintervall Serviceintervall", "Inspektionsintervall")),
+    ("eskalation_schwachstelle", ("Werkstattinformation technischer Hinweis", "technical service bulletin OR")),
+    ("eskalation_runde3", ("bestätigt Herstellerangabe", "confirmed specification")),
+)
+_BASIS = {"identitaet_runde1": 2, "spec_gap_generation": 2, "spec_gap_dokumenttyp": 2, "spec_gap_motorisierung": 2,
+          "rueckruf": 2, "schwachstelle": 2, "wartung": 2}
+
+
+def call_modell(calls, eskalation_schwachstelle=0, eskalation_runde3=0):
+    """(ok, Detail): jede Query genau einer Achse, keine Dublette, je Achse die erwartete Anzahl."""
+    erwartet = dict(_BASIS)
+    if eskalation_schwachstelle:
+        erwartet["eskalation_schwachstelle"] = eskalation_schwachstelle
+    if eskalation_runde3:
+        erwartet["eskalation_runde3"] = eskalation_runde3
+    ist: dict[str, int] = {}
+    unzugeordnet = []
+    for c in calls:
+        treffer = [a for a, w in _ACHSEN if any(x in c for x in w)]
+        if len(treffer) != 1:
+            unzugeordnet.append((c, treffer))
+        else:
+            ist[treffer[0]] = ist.get(treffer[0], 0) + 1
+    dubletten = sorted({c for c in calls if list(calls).count(c) > 1})
+    ok = not unzugeordnet and not dubletten and ist == erwartet
+    return ok, f"ist={ist} erwartet={erwartet} unzugeordnet={unzugeordnet} dubletten={dubletten}"
+
+
 def _patch(fake: FakeTavily):
     web_search.tavily_search = fake
     technical_research.tavily_search = fake
@@ -448,10 +495,13 @@ async def test_h_keine_eskalation_bei_sofortigem_high_trust():
     # laesst sowohl die Generation- als auch die Motorisierungs-Achse offen ->
     # die Identity-Spec-Gap-Runde ist jetzt 4 Calls (2 Achsen x DE+EN) statt der
     # vorigen 2 (EIN Sammelpaar fuer alle Felder) -- Basis dadurch 12 statt 10.
-    check("H) kein Evidence-Gap -> exakt 12 Calls (2 Identitaet + 4 Identity-Spec-Gap "
-          "[Generation + Motorisierung getrennt] + 2 Rueckruf + 4 Technik), KEINE "
+    check("H) kein Evidence-Gap -> exakt 14 Calls (2 Identitaet + 6 Identity-Spec-Gap "
+          "[Generation + Dokumenttyp + Motorisierung] + 2 Rueckruf + 4 Technik), KEINE "
           "Weakness/Wartung-Eskalationsrunde",
-          len(calls) == 12, str(calls))
+          call_modell(calls)[0] and len(calls) == 14, call_modell(calls)[1])
+    check("H) Gegenprobe Call-Modell: ein doppelter Aufruf und ein unbekannter Zusatzaufruf fallen auf (nicht nur die Summe zählt)",
+          not call_modell(calls + [calls[2]])[0] and not call_modell(calls + ["Testmarke Modellz irgendetwas"])[0]
+          and not call_modell([c for c in calls if "rescue card" not in c])[0])
     check("H) Hauptpfad-Fakt kam durch", any(f.bauteil == "Wasserpumpe" for f in recherche.fakten))
 
 
@@ -462,9 +512,9 @@ async def test_i_eskalation_nur_fuer_schwachstelle():
     esk_calls = _esk_calls(calls, "Werkstattinformation", "technical service bulletin")
     check("I) genau 2 zusaetzliche Eskalations-Calls fuer Schwachstelle",
           len(esk_calls) == 2, str(calls))
-    check("I) insgesamt 14 Calls (12 Basis inkl. der jetzt zweigeteilten "
-          "Identity-Spec-Gap-Runde + 2 Eskalation), Wartung eskaliert NICHT mit",
-          len(calls) == 14, str(calls))
+    check("I) insgesamt 16 Calls (14 Basis inkl. der Identity-Spec-Gap-Runde [Generation, Dokumenttyp, Motorisierung] + 2 "
+          "Eskalation), je Achse exakt, Wartung eskaliert NICHT mit",
+          call_modell(calls, 2)[0] and len(calls) == 16, call_modell(calls, 2)[1])
     check("I) keine Wartungs-Eskalations-Achsen aufgerufen",
           not _esk_calls(calls, "Betriebsanleitung Serviceheft Wartungsplan",
                         "owner's manual service schedule"))
@@ -495,8 +545,8 @@ async def test_g_wartung_mit_nur_2_families_eskaliert_nicht_mehr():
           "(der bereits sichtbare, niedrig-confidence Fakt ist KEIN Gap)",
           not _esk_calls(calls, "Betriebsanleitung Serviceheft Wartungsplan",
                          "owner's manual service schedule"), str(calls))
-    check("G) insgesamt genau 12 Calls (reine Basis, keine Eskalation nötig)",
-          len(calls) == 12, str(calls))
+    check("G) insgesamt genau 14 Calls (reine Basis, je Achse exakt, keine Eskalation nötig)",
+          call_modell(calls)[0] and len(calls) == 14, call_modell(calls)[1])
     check("G) keine Schwachstelle-Eskalations-Achsen aufgerufen (kein "
           "Schwachstellen-Treffer in diesem Szenario)",
           not _esk_calls(calls, "Werkstattinformation", "technical service bulletin"))
@@ -515,8 +565,8 @@ async def test_j_eskalation_loest_den_gap_in_runde_2():
     check("J) Runde 2 macht aus dem Gap einen sichtbaren, schwaecheren Fakt",
           len(sw_fakten) == 1, str(sw_fakten))
     check("J) beleglage korrekt gesetzt", bool(sw_fakten) and sw_fakten[0].beleglage == "mehrfach_unabhaengig")
-    check("J) genau 14 Calls (12 Basis + 2 Eskalation, kein dritter Suchlauf -- "
-          "GENAU EINE Eskalationsrunde)", len(calls) == 14, str(calls))
+    check("J) genau 16 Calls (14 Basis + 2 Eskalation, kein dritter Suchlauf -- "
+          "GENAU EINE Eskalationsrunde), je Achse exakt", call_modell(calls, 2)[0] and len(calls) == 16, call_modell(calls, 2)[1])
 
 
 async def test_k_wartung_und_schwachstelle_eskalieren_unabhaengig():
@@ -540,8 +590,8 @@ async def test_k_wartung_und_schwachstelle_eskalieren_unabhaengig():
           "die beiden Kategorien beeinflussen sich auch hier nicht gegenseitig",
           len(_esk_calls(calls, "Werkstattinformation", "technical service bulletin")) == 2,
           str(calls))
-    check("K) insgesamt genau 14 Calls (12 Basis + 2 Schwachstelle-Eskalation, "
-          "KEINE Wartungs-Eskalation mehr)", len(calls) == 14, str(calls))
+    check("K) insgesamt genau 16 Calls (14 Basis + 2 Schwachstelle-Eskalation, je Achse exakt, "
+          "KEINE Wartungs-Eskalation mehr)", call_modell(calls, 2)[0] and len(calls) == 16, call_modell(calls, 2)[1])
 
 
 # Zweite Seite DERSELBEN Family (kfzwissen-a.de) -- erhöht `n_kandidaten`
@@ -570,8 +620,8 @@ async def test_c_und_e_runde3_bei_fortschritt_dann_endgueltiger_stop():
     check("E) trotz Runde 3 bleibt der Fakt offen (weiterhin nur 2 Families) -> "
           "kein sichtbarer Fakt, aber auch KEINE vierte Runde",
           not any(f.kategorie == "schwachstelle" for f in recherche.fakten))
-    check("E) exakt 16 Calls (12 Basis + 2 Runde-2 + 2 Runde-3), keine fuenfte/"
-          "sechste Eskalations-Query", len(calls) == 16, str(calls))
+    check("E) exakt 18 Calls (14 Basis + 2 Runde-2 + 2 Runde-3), je Achse exakt, keine fuenfte/"
+          "sechste Eskalations-Query", call_modell(calls, 2, 2)[0] and len(calls) == 18, call_modell(calls, 2, 2)[1])
 
 
 class FakeTavilyMitCeiling(FakeTavily):

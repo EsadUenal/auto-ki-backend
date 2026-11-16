@@ -273,7 +273,8 @@ zeilen = baue_zeilen(r_d, b_d, m_mhev_ohne, identity=i_d)
 kz = [z for z in zeilen if z.kriterium == "Kraftstoff"][0]
 check("D1 Kraftstoffzeile zeigt nie eine Antriebsart als Referenz",
       "Hybrid" not in kz.zelle_referenz() and "Hybrid" not in kz.angabe)
-check("D2 Antriebsart in eigener Zeile", any(z.kriterium == "Antriebsart" for z in zeilen))
+check("D2 Antriebsart (Elektrifizierung) in eigener Zeile, getrennt von Kraftstoff",
+      any(z.kriterium == "Antriebsart (Elektrifizierung)" for z in zeilen) and kz.kriterium == "Kraftstoff")
 check("D3 identity.fuel ist nie ein Powertrain-Wert", i_d.fuel not in ("Mild-Hybrid", "Plug-in-Hybrid"))
 for fuel_user, bez in (("Benzin", "2.0 TFSI"), ("Diesel", "2.0 TDI")):
     m_x = motor("d-x", bez, "QQ1", "Mild-Hybrid", 200)
@@ -395,6 +396,17 @@ FX_GUT = {
                         "Bei der Testmarke Alpha ist der Turbolader ein bekanntes Problem.")],
     "wartung": [],
 }
+# Variante des Original-Fixtures: dieselben Quellen, aber der Aussagesatz nennt das Zielmodell AUSDRÜCKLICH zusammen mit der Motorbezeichnung
+# (N6/N17: ein Motor-Zusatzwort zählt nur als positive, an das Zielmodell gebundene Aussage).
+FX_GUT_Q = dict(FX_GUT, identitaet=[
+    t("https://www.adac.de/testmarke-alpha", "Testmarke Alpha T2 (seit 2016): Daten",
+      "Die Testmarke Alpha T2 (seit 2016) ist die 2. Generation. Die Testmarke Alpha T2 fährt mit 2.0 Q und 180 PS, "
+      "Benziner, Hinterradantrieb, 6-Gang-Schaltgetriebe."),
+    t("https://www.auto-motor-und-sport.de/testmarke-alpha", "Testmarke Alpha T2 im Test",
+      "Die zweite Generation der Testmarke Alpha (T2, seit 2016): Der Alpha T2 mit 2.0 Q und 180 PS ist ein Benziner "
+      "mit Heckantrieb und 6-Gang-Schaltgetriebe."),
+    FX_GUT["identitaet"][2],
+])
 wi, abgelehnt = werte_identitaet_aus(FX_GUT["identitaet"], ziel)
 check("H1 Generation aus Quellentexten mit passendem Baujahresfenster", wi.generation == "T2")
 check("H2 Generation einer anderen Bauzeit (T1 2008-2015) verworfen",
@@ -402,7 +414,12 @@ check("H2 Generation einer anderen Bauzeit (T1 2008-2015) verworfen",
 check("H3 Leistung nur bestätigt (Nutzerwert), nie gewählt", wi.leistung_ps == 180)
 check("H4 Antrieb/Getriebe/Kraftstoff per Konsens", wi.antrieb == "Heck"
       and wi.getriebe == "manuell" and wi.kraftstoff == "benzin")
-check("H5 Motorbezeichnung nur als BESTÄTIGUNG der Nutzerangabe", wi.motor == "2.0 Q")
+check("H5 Original-Fixture: 'Q' steht nur in Sätzen OHNE das Zielmodell -> nicht eigenständig belegt; bestätigt wird nur '2.0', "
+      "'Q' bleibt als unbelegter Rest ausgewiesen (keine Aufwertung der Nutzerangabe)",
+      wi.motor == "2.0" and wi.feldwerte["engine_name"]["unbelegter_rest"] == ["Q"])
+wi_q, _ = werte_identitaet_aus(FX_GUT_Q["identitaet"], ziel)
+check("H5b Nennt der Aussagesatz Zielmodell UND Motorbezeichnung, ist '2.0 Q' belegt: Bestätigung der Nutzerangabe, nie eine andere Bezeichnung",
+      wi_q.motor == "2.0 Q" and wi_q.feldwerte["engine_name"]["unbelegter_rest"] == [])
 wi_konf, _ = werte_identitaet_aus([
     t("https://www.adac.de/a", "Testmarke Alpha T2", "Testmarke Alpha T2 (seit 2016)."),
     t("https://www.autobild.de/b", "Testmarke Alpha T3", "Testmarke Alpha T3 (seit 2017)."),
@@ -508,10 +525,14 @@ check("J6 ... Bericht zeigt 'Analyse eingeschränkt' statt 'KAUFEN NACH BESICHTI
       ANZEIGE_LIMITED.upper() in res_lim["bericht"] and "KAUFEN NACH BESICHTIGUNG" not in res_lim["bericht"])
 check("J7 ... Überschrift und Empfehlung aus derselben Entscheidung (kein 'Fahrzeug erkannt')",
       "## Fahrzeug erkannt" not in res_lim["bericht"])
-res_ok = asyncio.run(_j_pfad(FX_GUT, motor="2.0 Q", leistung_ps=180, kraftstoff="Benzin",
+res_ok = asyncio.run(_j_pfad(FX_GUT_Q, motor="2.0 Q", leistung_ps=180, kraftstoff="Benzin",
                              getriebe="manuell"))
 check("J8 ECHTER Pfad: Web belegt Generation + Motorisierung -> normale Empfehlung erlaubt",
       res_ok["recommendation_state"] == STATE_NORMAL and res_ok["empfehlung"] != "unbekannt")
+res_q_offen = asyncio.run(_j_pfad(FX_GUT, motor="2.0 Q", leistung_ps=180, kraftstoff="Benzin", getriebe="manuell"))
+check("J8b ECHTER Pfad, Original-Fixture ('Q' nicht belegt): Motorisierung bleibt offen -> LIMITED_ANALYSIS statt normaler Empfehlung",
+      res_q_offen["recommendation_state"] == STATE_LIMITED and res_q_offen["empfehlung"] == "unbekannt"
+      and "Motorisierung" in (res_q_offen.get("empfehlung_hinweis") or res_q_offen["bericht"]))
 check("J9 ... Web-Generation erreicht die kanonische Identität",
       res_ok["vehicle_identity"].get("generation") == "T2")
 check("J10 ... Bericht: 'über Webquellen plausibilisiert', nicht ENFAL-Referenz",
@@ -719,14 +740,16 @@ async def _fake_suche(query, **kw):
 async def _fake_fb(queries, **kw):
     _q_log.extend(queries)
     return []
-_orig_s, _orig_fb = _tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback
-_tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback = _fake_suche, _fake_fb
+# Aufrufgrenze der Technikrecherche ist `tavily_search` (der frühere `tavily_search_with_fallback`-Pfad ist dort nicht mehr im Modul);
+# der echte Provider-Pfad (Identität -> Rückruf -> Technik) läuft unverändert, nur die Suche selbst ist offline ersetzt.
+_orig_s = _tr_mod.tavily_search
+_tr_mod.tavily_search = _fake_suche
 try:
     asyncio.run(_tr_mod.TavilyTechnicalResearchProvider().recherchiere(
         marke="Testmarke", modell="Alpha", baujahr=2019, motor="2.0 Q", ausgeloest_durch="db_miss",
         ziel={"leistung_ps": 180}))
 finally:
-    _tr_mod.tavily_search, _tr_mod.tavily_search_with_fallback = _orig_s, _orig_fb
+    _tr_mod.tavily_search = _orig_s
 rr_q = [q for q in _q_log if "Rückruf" in q]
 check("P3 Rückrufanfragen ohne Baujahr (Veröffentlichung != Baujahr), Generation im Query",
       len(rr_q) == 2 and all("2019" not in q for q in rr_q) and any("T2" in q for q in rr_q))
@@ -816,7 +839,11 @@ i_s1.apply_web_evidence(TechnischeRecherche(ausgeloest_durch="db_miss", identita
     belegt=True, marke="Testmarke", modell="Alpha", confidence="hoch", belegende_domains=2,
     feldwerte={"generation": {"value": "T2", "confidence": "hoch", "domains": 2},
                "horsepower": {"value": 184, "confidence": "hoch", "domains": 2},
-               "fuel": {"value": "benzin", "confidence": "hoch", "domains": 2}})))
+               "fuel": {"value": "benzin", "confidence": "hoch", "domains": 2},
+               # Motorisierung nur aufgelöst, wenn die Motorbezeichnung selbst belegt ist (N6/N17: Zusatzwort 'Q' ohne eigenen Beleg
+               # würde die Motorisierung offen lassen, siehe H5/J8b); hier ist sie vollständig belegt (kein unbelegter Rest).
+               "engine_name": {"value": "2.0 Q", "confidence": "hoch", "domains": 2, "kern_vollstaendig": True,
+                               "unbelegter_rest": []}})))
 finding_s1 = _identitaets_finding("Platzhalter-Text", web_belegt=True, identity=i_s1)
 check("S1 Web-Identität nach Merge vollständig aufgelöst (Generation+Motorisierung bestätigt) "
       "-> keine widersprüchliche Nachtrag-Aufforderung mehr",

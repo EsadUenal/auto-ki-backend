@@ -178,6 +178,41 @@ f, fg, fa = lauf([], [], False, technik="not_run")
 check("F: Technikphase nicht gelaufen -> kein N18-Fall",
       not f.technik_luecke and f.anzeige == "Kaufen nach Besichtigung", f.anzeige)
 
+# G) Belastbarkeit: nur ein belastbarer Befund hebt die technische Lücke auf (Fachentscheidung N18, Restkorrekturen)
+from app.empfehlungs_policy import STATE_LIMITED, STATE_NORMAL, technik_datenluecke  # noqa: E402
+
+
+def entsch(fakten, insights=(), rueckruf="success"):
+    web = SimpleNamespace(phasen_status={"identitaet": "success", "rueckruf": rueckruf, "technik": "partial"},
+                          fakten=list(fakten), identitaet=None)
+    return entscheide("kaufen_nach_besichtigung", identitaet(), web_recherche=web, insights=list(insights))
+
+
+def fk(kat, beleglage=None):
+    return SimpleNamespace(kategorie=kat, beleglage=beleglage)
+
+
+g1 = entsch([])
+check("G1 keine technischen Befunde und keine Hinweise: Einschränkung, Text ohne Hinweis-Zusatz",
+      g1.anzeige == ANZEIGE_N18 and "keine belegte Aussage vor" in g1.hinweis and "unbestätigt" not in g1.hinweis)
+g2 = entsch([fk("wartung", "uebereinstimmend_unbestaetigt")],
+            [ins("c1", "web_wartung", trust="web", beleglage="uebereinstimmend_unbestaetigt")])
+check("G2 nur ein übereinstimmender, unbestätigter Wartungshinweis: Einschränkung bleibt; Text nennt die Hinweise und "
+      "behauptet nicht 'keine Daten'",
+      g2.anzeige == ANZEIGE_N18 and g2.technik_luecke == ("Schwachstellen", "Wartung")
+      and "unbestätigte Angaben" in g2.hinweis and "keine belegte Aussage vor" not in g2.hinweis and "keine Entwarnung" in g2.hinweis,
+      g2.hinweis)
+g3 = entsch([fk("schwachstelle", "begrenzter_bericht")], [ins("b1", "web_schwachstelle", trust="web", beleglage="begrenzter_bericht")])
+check("G3 nur ein begrenzter Bericht: Einschränkung bleibt, Hinweistext wie bei G2", g3.anzeige == ANZEIGE_N18 and g3.hinweis == g2.hinweis)
+g4 = entsch([fk("wartung", "uebereinstimmend_unbestaetigt"), fk("schwachstelle", "begrenzter_bericht"), fk("wartung")])
+check("G4 ein belastbarer Wartungsbefund (auch ohne bestätigte Schwachstelle) hebt die technische Lücke auf",
+      not g4.technik_luecke and g4.anzeige == "Kaufen nach Besichtigung" and g4.hinweis is None, g4.anzeige)
+g5 = entsch([fk("wartung", "mehrfach_unabhaengig")])
+check("G5 ein mehrfach unabhängig belegter Wartungsbefund zählt als belastbar", not g5.technik_luecke)
+g6 = entsch([fk("wartung")], rueckruf="failed")
+check("G6 andere, unabhängige Einschränkung (Rückrufphase fehlgeschlagen) bleibt trotz belastbarem Wartungsbefund wirksam",
+      g6.state == STATE_LIMITED and not g6.technik_luecke and g6.anzeige != "Kaufen nach Besichtigung", f"{g6.state} {g6.anzeige}")
+
 print()
 if _FEHLER:
     print("FEHLER:", _FEHLER)

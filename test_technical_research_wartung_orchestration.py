@@ -266,6 +266,42 @@ async def test_j_beide_leer():
     check("J) beide Queries wurden trotzdem ausgeführt", len(_wa_calls(calls)) == 2)
 
 
+# Call-Modell (Historie): Identität Runde 1 (2) + Identity-Spec-Gap je OFFENER Achse (Generation 2, Dokumenttyp 2 [N1, nur bei offener
+# Generation, 2026-11-07], Motorisierung 2; Motorkern-Fachquelle 2 [N6] nur bei unbestätigtem engine_name) + Rückruf 2 + Schwachstelle 2 +
+# Wartung 2 = 14 Basisaufrufe in diesem Szenario. Jede Eskalationsrunde kommt mit +2 dazu. Jeder Aufruf gehört zu GENAU EINER Achse;
+# ein doppelter oder unzugeordneter Aufruf fällt auf (statt nur die Gesamtzahl zu vergleichen).
+_ACHSEN = (
+    ("identitaet_runde1", ("technische Daten", "Generation Baureihe Bauzeitraum")),
+    ("spec_gap_generation", ("Generation Modellcode Spezifikation", "generation model code specifications")),
+    ("spec_gap_dokumenttyp", ("Rettungskarte Rettungsdatenblatt", "rescue card owner's manual")),
+    ("spec_gap_motorisierung", ("Motorisierung Spezifikation", "drivetrain technology specifications")),
+    ("rueckruf", ("Rückruf",)),
+    ("schwachstelle", ("bekannte Probleme Schwachstellen", "Gebrauchtwagen Test")),
+    ("wartung", ("Wartungsintervall Serviceintervall", "Inspektionsintervall")),
+    ("eskalation_schwachstelle", ("Werkstattinformation technischer Hinweis", "technical service bulletin OR")),
+)
+_BASIS = {"identitaet_runde1": 2, "spec_gap_generation": 2, "spec_gap_dokumenttyp": 2, "spec_gap_motorisierung": 2,
+          "rueckruf": 2, "schwachstelle": 2, "wartung": 2}
+
+
+def call_modell(calls, eskalation_schwachstelle=0):
+    """(ok, Detail): jede Query genau einer Achse, keine Dublette, je Achse die erwartete Anzahl."""
+    erwartet = dict(_BASIS)
+    if eskalation_schwachstelle:
+        erwartet["eskalation_schwachstelle"] = eskalation_schwachstelle
+    ist: dict[str, int] = {}
+    unzugeordnet = []
+    for c in calls:
+        treffer = [a for a, w in _ACHSEN if any(x in c for x in w)]
+        if len(treffer) != 1:
+            unzugeordnet.append((c, treffer))
+        else:
+            ist[treffer[0]] = ist.get(treffer[0], 0) + 1
+    dubletten = sorted({c for c in calls if list(calls).count(c) > 1})
+    ok = not unzugeordnet and not dubletten and ist == erwartet
+    return ok, f"ist={ist} erwartet={erwartet} unzugeordnet={unzugeordnet} dubletten={dubletten}"
+
+
 # ── K/L/M) Identity/Recall/Schwachstelle bleiben unverändert ──────────────
 async def test_klm_andere_phasen_unveraendert():
     recherche, calls = await _recherchiere({
@@ -278,16 +314,12 @@ async def test_klm_andere_phasen_unveraendert():
     check("L) Identität Runde 1 weiterhin exakt 2 Queries", len(ident_calls) == 2, str(ident_calls))
     check("M) Rückruf weiterhin exakt 2 Queries", len(rueckruf_calls) == 2, str(rueckruf_calls))
     check("K) Schwachstelle weiterhin exakt 2 Queries", len(sw_calls) == 2, str(sw_calls))
-    # Adaptive-Evidence-Research (Folgeauftrag §C): die IDENTITAET_TREFFER-
-    # Fixture dieser Datei belegt Kraftstoff/Antrieb ("Diesel"/"Frontantrieb"),
-    # aber WEDER Generation NOCH Getriebe/Powertrain -- das löst GENAU EINE
-    # zusätzliche, gebündelte Identity-Spec-Gap-Runde aus (2 weitere Queries,
-    # unabhängig von der Anzahl offener Felder). §7 Call-Modell gilt
-    # inhaltlich unverändert (2+2+2+2=8 für Identität-Runde-1/Rückruf/
-    # Schwachstelle/Wartung), PLUS diese neue, bewusste Zusatzrunde = 10.
-    check("§7+§C Call-Modell: 8 (Identität-Runde-1 + Rückruf + Schwachstelle + "
-          "Wartung) + 2 (Identity-Spec-Gap-Runde: Generation/Getriebe/Powertrain "
-          "offen) = 10", len(calls) == 10, str(calls))
+    # Die IDENTITAET_TREFFER-Fixture belegt Kraftstoff/Antrieb, aber WEDER Generation NOCH Getriebe/Powertrain: das löst GENAU EINE
+    # Identity-Spec-Gap-Runde aus, die seit L1 (Generation/Motorisierung getrennt) und N1 (Dokumenttyp bei offener Generation) 3 Query-Paare
+    # umfasst. Das beabsichtigte Gesamtmodell sind 14 Aufrufe, je Achse exakt wie in `call_modell` benannt.
+    ok_cm, detail_cm = call_modell(calls)
+    check("§7+§C+L1+N1 Call-Modell: 14 Aufrufe, je Achse exakt (Identität 2, Spec-Gap Generation 2 / Dokumenttyp 2 / Motorisierung 2, "
+          "Rückruf 2, Schwachstelle 2, Wartung 2), keine Dublette, nichts unzugeordnet", ok_cm and len(calls) == 14, detail_cm)
     check("phasen_status.identitaet bleibt SUCCESS", recherche.phasen_status.get("identitaet") == "success")
 
 

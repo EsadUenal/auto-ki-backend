@@ -197,7 +197,7 @@ FAKTEN = [
     fakt("Motoröl", ZS + " " + M + " " + FN, "quelle-a.de", "ersetzen", markt=True),
     fakt("Ventilspiel", "Ventilspiel Inspektion: Alle 90.000 km / 6 Jahre", "quelle-b.de", "pruefen", markt=True),
     fakt("Nebenaggregat-Antriebsriemen", "Antriebsriemen Alle 105.000 km / 6 Jahre Danach alle 15.000 km / jährlich",
-         "quelle-c.de", "ersetzen", markt=True),
+         "quelle-c.de", "pruefen", markt=True),
     fakt("Automatikgetriebeöl", "Automatikgetriebeöl prüfen: alle 60.000 km oder 4 Jahre", "quelle-d.de", "pruefen"),
     fakt("Kühlmittel", "Kühlmittel prüfen: alle 30.000 km oder 2 Jahre", "quelle-e.de", "pruefen",
          bedingung="nur Fahrzeuge mit Zusatzheizung"),
@@ -350,7 +350,7 @@ for bereich in ("verkaeuferfragen", "dokumente"):
     txt = sammel[0]["aktion"] if sammel else ""
     check(f"C2 {bereich}: jede Wartung mit Tätigkeit und Intervall laut Quelle, ohne gekappte Zitate ('...')",
           all(f"„{b}“ ({t}; laut Quelle: " in txt for b, t in (("Motoröl", "Wechsel"), ("Ventilspiel", "Prüfung"),
-                                                           ("Nebenaggregat-Antriebsriemen", "Wechsel"), ("Automatikgetriebeöl", "Prüfung"),
+                                                           ("Nebenaggregat-Antriebsriemen", "Prüfung"), ("Automatikgetriebeöl", "Prüfung"),
                                                            ("Kühlmittel", "Prüfung")))
           and "..." not in txt and "Erstintervall 105.000 km oder 6 Jahre, danach 15.000 km / 1 Jahr" in txt
           and "Anwendbarkeit ungeklärt, zuerst klären: nur Fahrzeuge mit Zusatzheizung" in txt

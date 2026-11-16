@@ -326,6 +326,9 @@ F_FAELLE = {
     "kein":      synth("Der RC F hat einen 5,0 Liter V8 Motor, kein Kompressor."),
     "andere":    synth("Der RC F wird von einem 5,0 Liter V8 angetrieben, die Sonderedition dagegen "
                        "von einem 5,0 Liter V8 Kompressor."),
+    # "sondern" ist eine Segmentgrenze: ohne Komma gehört der Zusatz der anderen Variante, nicht dem RC F
+    "sondern":  synth("Der RC F wird von einem 5,0 Liter V8 angetrieben sondern die Sonderedition von einem 5,0 Liter V8 "
+                       "Kompressor."),
     "alternativ": synth("Der RC F wird von einem 5,0 Liter V8 angetrieben; alternativ ist ein Kompressor "
                          "nur fuer die Sonderedition erhaeltlich."),
 }
@@ -348,6 +351,11 @@ for motor, state, gate in (("5.0 V8 Kompressor", "user_confirmed", True),
     check(f"F mit / {motor!r}: Gate", g == gate, str(g))
     if state == "user_only":
         check(f"F mit / {motor!r}: Teil nennt den belegten Zusatz", tl == ["5.0 V8 Kompressor"], str(tl))
+
+SYN_SONDERN_MIT = synth("Der RC F wird von einem 5,0 Liter V8 Kompressor angetrieben sondern nicht von einem Turbo.")
+r, st, tl, g = zeile("5.0 V8 Kompressor", [SYN_SONDERN_MIT, CARWIKI, AMS])
+check("F sondern-Gegenprobe: ein Zusatz VOR 'sondern' im Modellsegment bleibt positiv belegt", st == "user_confirmed" and g is True,
+      str((st, g)))
 
 print("\nERGEBNIS:", "ALLE OK" if not FAILS else f"{len(FAILS)} FEHLER: {FAILS}")
 raise SystemExit(1 if FAILS else 0)

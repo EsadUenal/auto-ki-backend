@@ -257,33 +257,56 @@ _SCHWACHSTELLEN_KATEGORIEN = ("schwachstelle", "motorproblem", "web_schwachstell
 _WARTUNGS_KATEGORIEN = ("wartung", "web_wartung")
 
 
+# Hinweise, die KEINEN belastbaren Befund tragen: ein begrenzter Bericht einer Fachquelle und ein bloß übereinstimmender,
+# weiterhin unbestätigter Hinweis (mehrere Quellen, kein Herstellerbeleg). Sie bleiben sichtbar, heben die technische
+# Datenlücke aber nicht auf. Ein belastbarer Befund (geprüfter DB-Eintrag, Webfakt ohne diese Beleglage, mehrfach
+# unabhängig belegter Fakt) zählt -- auch ein reiner Wartungsbefund ohne bestätigte Schwachstelle.
+_BELEGLAGE_NUR_HINWEIS = ("begrenzter_bericht", "uebereinstimmend_unbestaetigt")
+_TECHNIK_KATEGORIEN = frozenset(_SCHWACHSTELLEN_KATEGORIEN) | frozenset(_WARTUNGS_KATEGORIEN)
+
+
+def _ist_nur_hinweis(x) -> bool:
+    return getattr(x, "beleglage", None) in _BELEGLAGE_NUR_HINWEIS
+
+
 def technik_datenluecke(web_recherche, insights=None) -> tuple[str, ...]:
     """("Schwachstellen", "Wartung"), wenn die Technikphase lief (SUCCESS/PARTIAL)
     und WEDER Schwachstellen- NOCH Wartungsbefunde vorliegen, sonst ()."""
     status = getattr(web_recherche, "phasen_status", None) or {}
     if status.get("technik") not in ("success", "partial"):
         return ()
-    # Ein BEGRENZTER Bericht einer Fachquelle ("some owners ...", Beleglage "begrenzter_bericht") ist kein belastbarer
-    # Befund: er hebt die Datenlücke nicht auf (sonst würde ein einzelner Hinweis fehlende Abdeckung verdecken).
     fakt_kat = {getattr(f, "kategorie", None) for f in (getattr(web_recherche, "fakten", None) or [])
-                if getattr(f, "beleglage", None) != "begrenzter_bericht"}
+                if not _ist_nur_hinweis(f)}
     # Ein DB-Insight zählt nur als Befund, wenn sein Trust (Verifikations-Architektur,
     # app/evidence.py) nicht "unverified_db" ist. Der Default eines Insights ohne
     # gesetzten Trust ist "unverified_db": ein ungeprüfter Datenbankeintrag hebt die
     # Einschränkung nicht auf (er bleibt als Hinweis sichtbar, belegt aber nichts).
     insight_kat = {getattr(i, "kategorie", None) for i in (insights or [])
                    if (getattr(i, "trust", None) or "unverified_db") != "unverified_db"
-                   and getattr(i, "beleglage", None) != "begrenzter_bericht"}
+                   and not _ist_nur_hinweis(i)}
     vorhanden = fakt_kat | insight_kat
-    if vorhanden & (set(_SCHWACHSTELLEN_KATEGORIEN) | set(_WARTUNGS_KATEGORIEN)):
+    if vorhanden & _TECHNIK_KATEGORIEN:
         return ()
     return ("Schwachstellen", "Wartung")
+
+
+def technik_nur_hinweise(web_recherche, insights=None) -> bool:
+    """True, wenn technische Hinweise ohne belastbaren Befund vorliegen (begrenzte Berichte / bloß übereinstimmende,
+    unbestätigte Hinweise): der Hinweistext darf dann nicht "keine Daten" behaupten."""
+    return any(_ist_nur_hinweis(x) and getattr(x, "kategorie", None) in _TECHNIK_KATEGORIEN
+               for x in [*(getattr(web_recherche, "fakten", None) or []), *(insights or [])])
 
 
 _TECHNIK_LUECKE_HINWEIS = (
     "Die Technikrecherche lief, ergab aber weder belastbare Schwachstellen- noch belastbare "
     "Wartungsdaten. Das ist keine Entwarnung: zu Schwachstellen und Wartung liegt keine "
     "belegte Aussage vor. Die Stufe „Kaufen nach Besichtigung“ sagt dazu nichts aus.")
+_TECHNIK_LUECKE_HINWEIS_MIT_HINWEISEN = (
+    "Die Technikrecherche lief, ergab aber weder belastbare Schwachstellen- noch belastbare "
+    "Wartungsdaten. Vorhandene Hinweise aus Webquellen sind begrenzte Berichte einzelner Quellen oder übereinstimmende, "
+    "aber unbestätigte Angaben ohne Herstellerbeleg (siehe Hinweise im Bericht); sie ersetzen keinen belastbaren "
+    "Befund und sagen nichts über den Zustand dieses Fahrzeugs. Das ist keine Entwarnung. Die Stufe „Kaufen nach "
+    "Besichtigung“ sagt dazu nichts aus.")
 
 
 def entscheide(kandidat: str | None, identity, *, web_recherche=None,
@@ -298,8 +321,10 @@ def entscheide(kandidat: str | None, identity, *, web_recherche=None,
             luecke = (technik_datenluecke(web_recherche, insights)
                       if kandidat == "kaufen_nach_besichtigung" else ())
             if luecke:
+                hinweis_text = (_TECHNIK_LUECKE_HINWEIS_MIT_HINWEISEN
+                                if technik_nur_hinweise(web_recherche, insights) else _TECHNIK_LUECKE_HINWEIS)
                 return Empfehlungsentscheidung(kandidat, STATE_NORMAL, ANZEIGE_TECHNIK_EINGESCHRAENKT,
-                                               _TECHNIK_LUECKE_HINWEIS, aufl, technik_luecke=luecke)
+                                               hinweis_text, aufl, technik_luecke=luecke)
             return Empfehlungsentscheidung(kandidat, STATE_NORMAL,
                                            _ANZEIGE_NORMAL.get(kandidat, kandidat), None, aufl)
         # Empfehlung bleibt UNVERÄNDERT — nur state/anzeige/hinweis machen die
