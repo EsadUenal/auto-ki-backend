@@ -889,19 +889,123 @@ if SEITEN:
                                                   + KMB[0].lower() + KMB[1:] + ".")):
         fk5 = extraktion(real + zusatz)[0]                       # Recherchelimit UNVERÄNDERT (5 Fakten)
         namen, hint, prompt, aktionen, lk5, ka5 = verfolge(fk5, REQ, lab)
-        check(f"L6 {lab}: Recherchelimit (5 Fakten) wird eingehalten; Karte <= {ll.MAX_HINWEISE}, Aktionen <= {ka_mod.MAX_SPEZIFISCH_PRO_BEREICH}",
-              len(fk5) <= 5 and len(lk5.wartungshinweise) <= ll.MAX_HINWEISE
+        check(f"L6 {lab}: Recherchelimit (höchstens 5 ARBEITEN, mehrere Regeln derselben Arbeit zählen einmal) wird eingehalten; Karte <= {ll.MAX_HINWEISE}, Aktionen <= {ka_mod.MAX_SPEZIFISCH_PRO_BEREICH}",
+              len({tr._arbeit_schluessel(f) for f in fk5}) <= 5 and len(lk5.wartungshinweise) <= ll.MAX_HINWEISE
               and all(len(getattr(ka5, b_).fahrzeugspezifisch) <= ka_mod.MAX_SPEZIFISCH_PRO_BEREICH for b_ in ("verkaeuferfragen", "dokumente")))
         check(f"L7 {lab}: JEDE ausgewählte Web-Wartung erreicht Karte, Prompt, Verkäuferfragen UND Dokumente (kein Verlust durch das Kartenlimit)",
-              set(namen) == set(hint) == set(prompt) == set(aktionen["verkaeuferfragen"]) == set(aktionen["dokumente"]) and len(namen) >= 4,
+              set(namen) == set(hint) == set(prompt) == set(aktionen["verkaeuferfragen"]) == set(aktionen["dokumente"]) and len(namen) == 5,
               str((namen, hint, prompt, aktionen)))
         check(f"L8 {lab}: Karte und Prompt in derselben Reihenfolge, je Bauteil ein Hinweis", hint == prompt and len(set(hint)) == len(hint))
-    # Ursache der Kappung (mit Zeitregel): das RECHERCHElimit -- zwei Fakten desselben Bauteils (Zeitregel + bedingte Kilometerregel)
-    # belegen zwei der fünf Plätze und werden erst NACH der Auswahl zu einem Insight zusammengeführt
+    # L9 (korrigiert): zwei Regeln derselben Arbeit (unbedingte Zeitregel + bedingte Zusatzregel des Zahnriemens) belegen im
+    # Recherchelimit nur EINEN Platz; der frei werdende Platz geht nach bestehender Rangfolge an die nächste Arbeit.
     fk_m = extraktion(real + zusatz)[0]
-    check("L9 [Ursache offengelegt] Zahnriemen belegt im Recherchelimit zwei der fünf Plätze (zwei Fakten, ein Insight); es ist das "
-          "Recherchelimit, nicht Karten- oder Aktionslimit, das eine weitere Wartung verdrängt",
-          [f.bauteil for f in fk_m].count("Zahnriemen") == 2 and len(fk_m) == 5)
+    arb_m = {tr._arbeit_schluessel(f) for f in fk_m}
+    check("L9 [Ziel] Zahnriemen: zwei Regeln (zwei Fakten), aber nur EIN Arbeitsplatz; fünf verschiedene Arbeiten werden gewählt, "
+          "Nebenaggregat-Antriebsriemen rückt nach (vorher nur vier Arbeiten)",
+          [f.bauteil for f in fk_m].count("Zahnriemen") == 2 and len(arb_m) == 5 and len(fk_m) == 6
+          and "Nebenaggregat-Antriebsriemen" in [f.bauteil for f in fk_m],
+          str([f.bauteil for f in fk_m]))
+    ins_m, lk_m, ka_m = kette(fk_m, REQ)
+    zr = [i for i in ins_m if i.kategorie == "web_wartung" and i.titel.startswith("Zahnriemen")]
+    zr_txt = zr[0].beschreibung if zr else ""
+    zr_hint = " ".join(w.hinweis for w in lk_m.wartungshinweise if w.bauteil == "Zahnriemen")
+    fragen_zr = " ".join(a.titel + " " + a.aktion for a in ka_m.verkaeuferfragen.fahrzeugspezifisch if "Zahnriemen" in a.titel + a.aktion)
+    check("M1 [ECHT] beide Zahnriemen-Regeln bleiben erhalten: Zeitregel (6 Jahre) UND bedingte Zusatzregel (Wartungsanzeige, "
+          "150.000 km, Land) in Insight, Karte und Verkäuferfragen; Quelle bleibt; ein Insight",
+          len(zr) == 1 and "alle 6 Jahre" in zr_txt and "Hinweismeldung" in zr_txt and "150.000 km" in zr_txt
+          and zr[0].quellen and "6 Jahre" in zr_hint and "150.000" in zr_hint and "Zahnriemen" in fragen_zr,
+          str((zr_txt[:200], zr_hint[:200], fragen_zr[:200])))
+
+# ══ M. Auswahlplätze zählen Arbeiten (gebündelte Gegenproben) ═════════════════════════════════════════════
+print("\n== M Arbeitsplätze ==")
+from app.models import WebFakt  # noqa: E402
+
+
+def wf(bauteil, taet, aussage="x", conf="mittel"):
+    return WebFakt(kategorie="wartung", bauteil=bauteil, aussage=aussage, confidence=conf, taetigkeit=taet)
+
+
+# SYNTH (nur Auswahllogik; Reihenfolge = bestehende Rangfolge)
+a1, a2 = wf("Zahnriemen", "pruefen", "Regel 1"), wf("Zahnriemen", "pruefen", "Regel 2 bedingt")
+b_, c_, d_, e_, f_, g_ = (wf(n, "pruefen") for n in ("Ölfilter", "Luftfilter", "Bremsflüssigkeit", "Kühlmittel", "Getriebeöl", "Zündkerzen"))
+beh, verw = tr._begrenze_auf_arbeiten([a1, b_, a2, c_, d_, e_, f_, g_], 5)
+check("M2 [SYNTH] zwei Regeln derselben Arbeit verbrauchen einen Platz: fünf Arbeiten gewählt, beide Regeln erhalten, "
+      "die nächste Arbeit rückt nach, die sechste ist echt verdrängt (Reihenfolge der Rangfolge unverändert)",
+      [f.aussage for f in beh] == ["Regel 1", "x", "Regel 2 bedingt", "x", "x", "x"] and [f.bauteil for f in beh] ==
+      ["Zahnriemen", "Ölfilter", "Zahnriemen", "Luftfilter", "Bremsflüssigkeit", "Kühlmittel"]
+      and [f.bauteil for f in verw] == ["Getriebeöl", "Zündkerzen"])
+beh2, verw2 = tr._begrenze_auf_arbeiten([b_, c_, d_, e_, f_, g_, wf("Zahnriemen", "pruefen")], 5)
+check("M3 [SYNTH] ohne Mehrfachbelegung bleibt die Auswahl exakt die bisherige (die ersten fünf in Rangfolge)",
+      beh2 == [b_, c_, d_, e_, f_] and len(verw2) == 2 and verw2[0] is g_)
+p_, w_ = wf("Zahnriemen", "pruefen"), wf("Zahnriemen", "ersetzen")
+beh3, _v = tr._begrenze_auf_arbeiten([p_, w_, b_, c_, d_, e_], 5)
+check("M4 [SYNTH] Prüfung und Wechsel desselben Bauteils sind verschiedene Arbeiten (zwei Plätze); verschiedene Bauteile "
+      "('Zahnriemen' / 'Nebenaggregat-Antriebsriemen') werden nicht vermischt",
+      tr._arbeit_schluessel(p_) != tr._arbeit_schluessel(w_) and len(beh3) == 5 and e_ not in beh3
+      and tr._arbeit_schluessel(wf("Zahnriemen", "pruefen")) != tr._arbeit_schluessel(wf("Nebenaggregat-Antriebsriemen", "pruefen")))
+check("M5 [SYNTH] Fakten ohne erkennbaren Bauteilkern werden nie zusammengelegt",
+      len(tr._begrenze_auf_arbeiten([wf(None, None), wf(None, None), wf("", None)], 2)[0]) == 2)
+
+# ══ N. Kandidatenpfad (`phase_fakten`, bisherige_wartung) zählt dieselben ARBEITEN ═══════════════════════════
+print("\n" + "== N Kandidatenpfad ==")
+from app.models import EvidenceQuelle as _EQ, WebFakt as _WF  # noqa: E402,F811
+
+
+class _Ident:                                             # Stub der Web-Identität: nichts bestätigt
+    generation = generation_cluster = kraftstoff = powertrain = None
+
+
+ZIEL_N = {"marke": "Lexus", "modell": "RC F", "baujahr": 2017, "kilometerstand": 82000, "kraftstoff": "Benzin",
+          "motor": "5.0 V8, Heckantrieb"}
+
+
+def phase_n(treffer_fakten, kandidaten):
+    """Echter `phase_fakten`-Aufruf (curate -> Extraktion -> Kandidatenpfad). [STUB] Extraktion liefert die ECHT aus dem
+    Lexus-Quelltext extrahierten Fakten (ggf. gefiltert), der Kandidatengenerator liefert gekennzeichnete synthetische Kandidaten."""
+    o1, o2 = tr._extrahiere_fakten, tr._wartung_candidate_fakten
+    tr._extrahiere_fakten = lambda *a, **k: list(treffer_fakten)
+    tr._wartung_candidate_fakten = lambda *a, **k: (list(kandidaten), [], False)
+    try:
+        ab_n: list[dict] = []
+        return tr.phase_fakten({"wartung": [{"url": URL, "title": "WARTUNG UND GARANTIE", "content": "x"}]}, ZIEL_N, _Ident(),
+                               ("wartung",), ab_n)
+    finally:
+        tr._extrahiere_fakten, tr._wartung_candidate_fakten = o1, o2
+
+
+if SEITEN:
+    fk_real = extraktion(real + zusatz)[0]                          # ECHT: 6 Fakten, 5 Arbeiten (Zahnriemen doppelt)
+    arb = lambda fl: {tr._arbeit_schluessel(f) for f in fl}         # noqa: E731
+    cands = [_WF(kategorie="wartung", bauteil="Kühlmittel", quellen=[_EQ(typ="web", url="https://www.beispiel-kandidat.de/wartung", titel="[SYNTH] Kandidatenquelle", qualitaet="Fachmedien")], aussage="[SYNTH] Kühlmittel prüfen: alle 30.000 km", confidence="mittel",
+                 taetigkeit="pruefen"),
+             _WF(kategorie="wartung", bauteil="Bremsflüssigkeit", quellen=[_EQ(typ="web", url="https://www.beispiel-kandidat.de/wartung", titel="[SYNTH] Kandidatenquelle", qualitaet="Fachmedien")], aussage="[SYNTH] Bremsflüssigkeit prüfen: alle 2 Jahre",
+                 confidence="mittel", taetigkeit="pruefen")]
+    # a) fünf Arbeiten / sechs Fakten, ohne Kandidaten: nichts geht verloren
+    r_a = phase_n(fk_real, [])
+    check("N1 [ECHT] ohne Kandidaten bleiben alle sechs Fakten (fünf Arbeiten, beide Zahnriemen-Regeln) erhalten",
+          r_a == fk_real and len(arb(r_a)) == 5 and [f.bauteil for f in r_a].count("Zahnriemen") == 2)
+    # b) fünf Arbeiten / sechs Fakten MIT Kandidaten: keine sechste Arbeit, nichts aus der Auswahl entfernt, Rangfolge unverändert
+    r_b = phase_n(fk_real, cands)
+    check("N2 [ECHT+SYNTH] mit Kandidaten bleiben es fünf Arbeiten; die sechs Fakten stehen unverändert und in derselben Reihenfolge, "
+          "kein Kandidat verdrängt eine gewählte Arbeit oder Zusatzregel",
+          r_b == fk_real and not any(c in r_b for c in cands))
+    # c) vier Arbeiten / fünf Fakten (letzte Arbeit entfernt): der freie ARBEITSPLATZ geht an den ersten Kandidaten (nach Rangfolge)
+    fk_vier = [f for f in fk_real if f.bauteil != "Nebenaggregat-Antriebsriemen"]
+    r_c = phase_n(fk_vier, cands)
+    check("N3 [ECHT+SYNTH] vier Arbeiten / fünf Fakten: genau ein weiterer Kandidat (der ranghöhere) rückt auf den freien "
+          "Arbeitsplatz, beide Zahnriemen-Regeln bleiben",
+          len(fk_vier) == 5 and len(arb(fk_vier)) == 4 and r_c == fk_vier + [cands[0]] and len(arb(r_c)) == 5
+          and [f.bauteil for f in r_c].count("Zahnriemen") == 2)
+    # d) Ausgabe: Insights, Karte, Verkäuferfragen und Dokumente tragen die fünf Arbeiten inkl. beider Regeln
+    namen_n, hint_n, prompt_n, akt_n, lk_n, ka_n = verfolge(r_c, REQ, "Kandidatenpfad")
+    ins_n = kette(r_c, REQ)[0]
+    zr_n = [i for i in ins_n if i.kategorie == "web_wartung" and i.titel.startswith("Zahnriemen")]
+    check("N4 [ECHT+SYNTH] fünf Arbeiten (inkl. Kandidat) erreichen Insight, Karte, Prompt, Verkäuferfragen und Dokumente; der "
+          "Zahnriemen-Insight trägt beide Regeln und seine Quelle",
+          set(namen_n) == set(hint_n) == set(prompt_n) == set(akt_n["verkaeuferfragen"]) == set(akt_n["dokumente"])
+          and len(namen_n) == 5 and "Kühlmittel" in namen_n and len(zr_n) == 1
+          and "alle 6 Jahre" in zr_n[0].beschreibung and "Hinweismeldung" in zr_n[0].beschreibung and zr_n[0].quellen,
+          str((namen_n, hint_n, akt_n)))
 
 # ══ G. Keine schweren Importe für die gemeinsame Konstante ═══════════════════════════════════
 print("\n== G Importe ==")

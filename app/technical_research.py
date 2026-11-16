@@ -7324,8 +7324,12 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                            p[0],
                            p[1].bauteil or ""))]
         fakten = [f for f, _, _ in geordnet]
-        behalten = fakten[:MAX_FAKTEN_JE_KATEGORIE]
-        verworfen = fakten[MAX_FAKTEN_JE_KATEGORIE:]
+        # L9: das Limit zählt ARBEITEN, nicht Regeln. Mehrere Fakten derselben Arbeit (gleiches Bauteil UND gleiche
+        # belegte Tätigkeit, z. B. unbedingte Zeitregel + bedingte Zusatzregel) werden später ohnehin zu EINEM Insight
+        # zusammengeführt (`risikothemen.kanonisiere`, gleicher Kern); sie dürfen deshalb nur EINEN Platz belegen.
+        # Alle Regeln der gewählten Arbeit bleiben erhalten; Prüfung und Wechsel (verschiedene Tätigkeit) und
+        # verschiedene Bauteile bleiben getrennte Arbeiten. Die Rangfolge oben bleibt unverändert.
+        behalten, verworfen = _begrenze_auf_arbeiten(fakten, MAX_FAKTEN_JE_KATEGORIE)
         for f in verworfen:
             # Diagnostisch erhalten (Auftrag §4): ein durchs Auswahllimit
             # zurückgehaltener, an sich gültiger Fakt wird NICHT
@@ -7339,6 +7343,30 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     fakten.sort(key=lambda f: ({"hoch": 0, "mittel": 1, "niedrig": 2}[f.confidence],
                                f.bauteil or ""))
     return fakten[:MAX_FAKTEN_JE_KATEGORIE]
+
+
+def _arbeit_schluessel(f) -> tuple:
+    """Identität einer Wartungsarbeit für die Plätze-Zählung: tragender Bauteilkern (wie `kanonisiere`, Stufe 1)
+    plus belegte Tätigkeit. Ohne erkennbaren Kern bleibt jeder Fakt eine eigene Arbeit."""
+    from app.risikothemen import bauteil_kern
+    kern = bauteil_kern(f.bauteil).kern
+    return (kern, getattr(f, "taetigkeit", None)) if kern else ("einzeln", id(f))
+
+
+def _begrenze_auf_arbeiten(fakten: list, limit: int) -> tuple[list, list]:
+    """(behalten, verworfen) in bestehender Rangfolge: höchstens `limit` verschiedene Arbeiten; weitere Regeln einer
+    bereits gewählten Arbeit werden ohne zusätzlichen Platz mitgenommen."""
+    arbeiten: set = set()
+    behalten: list = []
+    verworfen: list = []
+    for f in fakten:
+        s = _arbeit_schluessel(f)
+        if s in arbeiten or len(arbeiten) < limit:
+            arbeiten.add(s)
+            behalten.append(f)
+        else:
+            verworfen.append(f)
+    return behalten, verworfen
 
 
 _WEB_KATEGORIE = {
@@ -8468,8 +8496,13 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                 motor=ziel.get("motor"), getriebe=ziel.get("getriebe"),
                 haupt_fakten=[f for f in fakten if f.kategorie == "wartung"],
                 erlaube_multi_source="wartung" in erlaube_multi_source)
-            bisherige_wartung = sum(1 for f in fakten if f.kategorie == "wartung")
-            fakten += cand_fakten[:max(0, MAX_FAKTEN_JE_KATEGORIE - bisherige_wartung)]
+            # L9: dieselbe arbeitsbezogene Begrenzung wie im Hauptpfad (`_begrenze_auf_arbeiten`): die vorhandenen
+            # Wartungsfakten bleiben unverändert und belegen ihre Arbeitsplätze (mehrere Regeln einer Arbeit = ein Platz);
+            # Kandidaten füllen nur freie Arbeitsplätze in ihrer Reihenfolge. Nichts Vorhandenes wird je entfernt.
+            vorhandene_wartung = [f for f in fakten if f.kategorie == "wartung"]
+            gewaehlt, _nicht = _begrenze_auf_arbeiten(vorhandene_wartung + list(cand_fakten), MAX_FAKTEN_JE_KATEGORIE)
+            vorhanden_ids = {id(f) for f in vorhandene_wartung}
+            fakten += [f for f in gewaehlt if id(f) not in vorhanden_ids]
             abgelehnt += cand_abgelehnt
             eskalierbar["wartung"] = cand_eskalierbar
         elif kategorie == "schwachstelle":
