@@ -756,7 +756,9 @@ def build_insights(
                 # was offen ist -- auch wer nur Titel überfliegt, verwechselt
                 # das nicht mit einer bestätigten Wartungsangabe.
                 + (" (mehrere Quellen übereinstimmend, kein Herstellerbeleg)"
-                   if beleglage == "uebereinstimmend_unbestaetigt" else ""),
+                   if beleglage == "uebereinstimmend_unbestaetigt" else "")
+                # SW-N19/E1: ein BEGRENZTER Bericht einer Fachquelle ist kein belegtes Modellproblem; der Titel sagt das.
+                + (" (begrenzter Bericht einer Fachquelle)" if beleglage == "begrenzter_bericht" else ""),
                 beschreibung=_web_beschreibung(fakt, baujahr),
                 quellen_typen=_typen(fakt.quellen),
                 quellen=list(fakt.quellen),
@@ -780,6 +782,7 @@ def build_insights(
                 # eine verifizierte Herstellerangabe. Floor-fähig ist sie NICHT,
                 # siehe Begründung in app/empfehlungs_floor.py.
                 trust=TRUST_WEB,
+                beleglage=beleglage,
                 einfluss=_web_einfluss(fakt, beleglage),
                 bauteil=((fakt.bauteil or "").replace("_", " ") or None),
             ))
@@ -875,6 +878,11 @@ def _web_beschreibung(fakt, baujahr) -> str:
     if getattr(fakt, "beleglage", None) == "uebereinstimmend_unbestaetigt":
         text = (f"Die ausgewerteten Quellen nennen übereinstimmend: „{text}“ Für dieses "
                 "Fahrzeug ist diese Angabe nicht ausreichend bestätigt.")
+    if getattr(fakt, "beleglage", None) == "begrenzter_bericht":
+        # Der Quellenwortlaut bleibt erhalten. Die Quelle belegt nur, DASS es Berichte gibt: keine Häufigkeit, keine
+        # modellweite Schwachstelle, keine Aussage über dieses Fahrzeug.
+        text = (f"Eine Fachquelle berichtet: {text} Das ist ein begrenzter Bericht: eine Häufigkeit oder eine "
+                "modellweite Schwachstelle ist daraus nicht belegt.")
     if fakt.kategorie == "rueckruf" and fakt.applicability == "vehicle_possible":
         text += (f" Das Baujahr {baujahr or ''} liegt im genannten Produktionszeitraum: das "
                  "Fahrzeug ist möglicherweise betroffen. Nur die FIN-Prüfung klärt das.").replace("  ", " ")
@@ -896,7 +904,9 @@ def _web_beschreibung(fakt, baujahr) -> str:
         herkunft = getattr(fakt, "herkunftsregion", None)
         text += (f" {herkunft}. " if herkunft else " ") + (
             "Ob das für Ihr Fahrzeug in Deutschland zutrifft, ist nicht bestätigt. "
-            "Mit dem fahrzeugeigenen Wartungsplan oder einer Vertragswerkstatt abgleichen.")
+            + ("Bei der Besichtigung oder in einer Vertragswerkstatt prüfen lassen."
+               if fakt.kategorie == "schwachstelle" else
+               "Mit dem fahrzeugeigenen Wartungsplan oder einer Vertragswerkstatt abgleichen."))
     # N12-Fix (ENFAL-Testabsicherung, 2026-11): DRITTE, eigenständige Achse
     # neben Baujahr- und Regions-Geltung -- eine technische Bedingung
     # ("nur Hybrid- und Hybrid Plug-in-Modelle"), deren Zutreffen auf dieses
@@ -954,7 +964,15 @@ _WEB_EINFLUSS_CORROBORATED = {
 }
 
 
+_WEB_EINFLUSS_BEGRENZT = {
+    "schwachstelle": "Begrenzter Bericht einer Fachquelle, keine belegte Häufigkeit und keine bestätigte "
+                     "Modell-Schwachstelle: bei der Besichtigung gezielt prüfen, nicht als Mangel werten.",
+}
+
+
 def _web_einfluss(fakt, beleglage: str | None) -> str:
+    if beleglage == "begrenzter_bericht" and fakt.kategorie in _WEB_EINFLUSS_BEGRENZT:
+        return _WEB_EINFLUSS_BEGRENZT[fakt.kategorie]
     if beleglage == "mehrfach_unabhaengig" and fakt.kategorie in _WEB_EINFLUSS_MULTI_SOURCE:
         return _WEB_EINFLUSS_MULTI_SOURCE[fakt.kategorie]
     if beleglage == "uebereinstimmend_unbestaetigt" and fakt.kategorie in _WEB_EINFLUSS_CORROBORATED:

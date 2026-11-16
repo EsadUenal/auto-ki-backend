@@ -440,6 +440,8 @@ class Insight(BaseModel):
     # nicht ausdrücklich setzt, darf nicht versehentlich hart wirken.
     trust: str = "unverified_db"
     einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
+    # Nur Web-Insights: Beleglage des zugrunde liegenden WebFakts (z. B. "begrenzter_bericht"); None = Normalfall.
+    beleglage: str | None = None
     # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch
     # berechnete Marktvergleich (Median, robuste Spanne, verwendete Datenpunkte).
     marktanalyse: Marktanalyse | None = None

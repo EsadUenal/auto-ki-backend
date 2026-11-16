@@ -77,7 +77,7 @@ from app.web_search import (
     KATEGORIE_RUECKRUFE, KATEGORIE_SCHWACHSTELLEN, KATEGORIE_TECHNISCHE_DATEN,
     KATEGORIE_WARTUNG, US_QUELLEN_AUSSCHLUSS,
     _domain_von, _marke_eigene_domain, _markenlabel, _pressedomain_gehoert_marke, _psl_teile,
-    _qualitaets_label,
+    _qualitaets_label, _TIER_FACHMEDIEN, _KATEGORIE_BOOST_WERT,
     curate_results, hat_brauchbaren_raw_content, hole_raw_content, ist_amtliche_quelle,
     ist_abruf_gesperrt, registrable_domain, score_domain, tavily_search,
     bereinige_steuerzeichen, bereinige_treffer,
@@ -878,8 +878,58 @@ def _rollenbeleg_kandidat(treffer: list[dict], *, ziel: dict) -> tuple[str | Non
 # angefragten Marke zuordnet. Ändert NICHTS an Alignment/Varianten-/
 # Problemwort-Gates -- Herstellervertrauen ist weiterhin nicht dasselbe wie
 # Claim-Applicability, die läuft unverändert eigenständig weiter.
-def _score_domain_fuer_marke(url: str, kategorie: str, marke: str | None) -> int:
+# ── Redaktionelle Fachpresse (nur Schwachstellen) ─────────────────────────────────────────────────────────────────────
+# SW-N19/E1: `_FACHMEDIEN_DOMAINS` (app/web_search.py) kennt nur vier deutsche Domains; eine englische Redaktion wie
+# evo, Auto Express oder ein PistonHeads-Kaufratgeber blieb "Sonstige Quelle" (Score 0) und konnte nie eine Aussage tragen,
+# gleich wie fundiert sie ist. Diese Klasse gilt ausschließlich für die Kategorie "schwachstelle" (wie
+# `_IDENTITAET_TIER2` nur für Phase 1): Wartung, Rückrufe, Identität und Marktdaten bleiben unverändert. Aufgenommen
+# sind etablierte Automobil-Redaktionen mit namentlich genannter Redaktion (öffentliche Anbieterangaben gesichtet am
+# 15.11.2026: PistonHeads "reviews and buying guides written by our expert team", evo "in-depth editorial", Auto Express
+# "most experienced journalists and testers", CAR "most respected automotive journalists"; Car and Driver, MotorTrend
+# und Road & Track als Hearst-Autos-Titel). Entscheidend ist die PUBLIKATIONSART, nicht die Domain: Foren, Community,
+# Kleinanzeigen/Auktionen, Leser-/Besitzerbewertungen, Blogs und Kommentarbereiche derselben Domain zählen nicht; bei
+# PistonHeads gilt nur der Redaktionsbereich (/news/), weil dort Forum (/gassing/), Kleinanzeigen und Auktionen liegen.
+# Keine neuen Vertrauenswerte: die Klasse erhält exakt den bestehenden Fachmedien-Wert.
+_FACHPRESSE_SCHWACHSTELLEN: dict[str, tuple[str, ...]] = {
+    "pistonheads.com": ("/news/",),
+    "evo.co.uk": (),
+    "autoexpress.co.uk": (),
+    "carmagazine.co.uk": (),
+    "caranddriver.com": (),
+    "motortrend.com": (),
+    "roadandtrack.com": (),
+}
+_NUTZERINHALT_HOST = re.compile(r"^(?:forums?|community|blogs?|shop|classifieds?|auctions?|cars?forsale)\.", re.I)
+_NUTZERINHALT_PFAD = re.compile(
+    r"/(?:forums?|gassing|community|classifieds?|auctions?|reader[- ]?reviews?|owner[- ]?reviews?|user[- ]?reviews?|"
+    r"blogs?|comments?|members?|profile|sponsored|advertorial|partner[- ]?content)(?:/|$)", re.I)
+
+
+def _ist_redaktionelle_fachpresse(url: str) -> bool:
+    try:
+        teile = urlsplit(url or "")
+    except ValueError:
+        return False
+    host = (teile.hostname or "").lower()
+    pfad = (teile.path or "/").lower()
+    if not host or _NUTZERINHALT_HOST.match(host) or _NUTZERINHALT_PFAD.search(pfad):
+        return False
+    for dom, erlaubt in _FACHPRESSE_SCHWACHSTELLEN.items():
+        if host == dom or host.endswith("." + dom):
+            return (not erlaubt) or any(pfad.startswith(p) for p in erlaubt)
+    return False
+
+
+def _score_domain_kategorie(url: str, kategorie: str | None) -> int:
+    """`score_domain` plus die redaktionelle Fachpresse (NUR Schwachstellen); sonst identisch."""
     score = score_domain(url, kategorie)
+    if kategorie == KATEGORIE_SCHWACHSTELLEN and _ist_redaktionelle_fachpresse(url):
+        score = max(score, _TIER_FACHMEDIEN + _KATEGORIE_BOOST_WERT)
+    return score
+
+
+def _score_domain_fuer_marke(url: str, kategorie: str, marke: str | None) -> int:
+    score = _score_domain_kategorie(url, kategorie)
     if kategorie == KATEGORIE_RUECKRUFE:
         return score
     if score < TIER1_MIN_SCORE and _marke_eigene_domain(url, marke):
@@ -1560,7 +1610,8 @@ def _confidence_aus_domains(anzahl_domains: int, bester_score: int) -> str:
     return "niedrig"
 
 
-def _quellen_aus(treffer: list[dict], limit: int = 3, *, marke: str | None = None) -> list[EvidenceQuelle]:
+def _quellen_aus(treffer: list[dict], limit: int = 3, *, marke: str | None = None,
+                 kategorie: str | None = None) -> list[EvidenceQuelle]:
     """`marke` optional (Default None, rückwärtskompatibel): ENFAL-Produktions-
     befund (01.11.2026, L4) -- ohne Zielmarke blieb z.B. lexus.ch als "Sonstige
     Quelle" statt "Hersteller" gelabelt, obwohl dieselbe Marke+Domain-Zuordnung
@@ -1576,7 +1627,9 @@ def _quellen_aus(treffer: list[dict], limit: int = 3, *, marke: str | None = Non
         gesehen.add(d)
         out.append(EvidenceQuelle(typ="web_technik", url=url,
                                   titel=(r.get("title") or d)[:120],
-                                  qualitaet=_qualitaets_label(url, marke)))
+                                  qualitaet=("Fachmedien" if kategorie == "schwachstelle"
+                                             and _ist_redaktionelle_fachpresse(url)
+                                             else _qualitaets_label(url, marke))))
         if len(out) >= limit:
             break
     return out
@@ -4252,8 +4305,13 @@ def _fremd_pruefer(satz_liste: list[str], marke: str | None, modell: str | None)
 
 def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str], koepfe: frozenset[str],
                         marke: str | None, modell: str | None, ziel_info: dict | None,
-                        abgelehnt: list[dict], url: str) -> dict | None:
-    """Alle Gates fuer EINE eindeutig englische Aussage. `None`: unbestaetigter Kandidat (Grund und gesammelte
+                        abgelehnt: list[dict], url: str, begrenzt_zulassen: bool = False) -> dict | None:
+    """Alle Gates fuer EINE eindeutig englische Aussage.
+
+    `begrenzt_zulassen` (nur Hauptpfad, d. h. qualifizierte Quelle): eine Aussage, die nur BELEGT, dass es Berichte gibt
+    ("some owners", "some RC Fs"), wird nicht verworfen, aber auch nicht zur modellweiten Schwachstelle: sie wird als
+    "begrenzter Bericht" mit den offenen Achsen (Markt der Quelle, Zeitraum/Ausführung) zurückgegeben. Fremdmarkt,
+    unklarer Markt, Fremdmodell, Hörensagen, Einzelfahrzeug, Rückruf und alle Aussage-Gates bleiben unverändert. `None`: unbestaetigter Kandidat (Grund und gesammelte
     Evidenz stehen in `abgelehnt`). Sonst {"label", "schluessel", "markt", "beleg", "z", "passt"}.
 
     Getrennt geprueft: Sprache (Vorstufe), Reichweite der Aussage (Population), Bauteil, Marktreichweite der
@@ -4280,6 +4338,10 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
         return ab("en_frage")
     if _en.ist_bedingt(claim):
         return ab("en_bedingt")
+    if _en.ist_rueckrufbezug(claim):
+        return ab("rueckrufabschnitt")           # Rückruf/Servicemaßnahme: Rückrufpfad, kein zweiter, unabhängiger Defekt
+    if _en.ist_hoerensagen(claim):
+        return ab("hoerensagen")                 # "we have heard of ...": Weitergabe eines Gerüchts, keine Aussage der Quelle
     if _ist_benign_relativiert(claim) or _en.ist_benign(claim):
         return ab("benign_relativiert")
     if _ist_rueckrufabschnitt(claim) or _en.ist_rueckrufdatensatz(claim):
@@ -4294,16 +4356,26 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
         r.get("title"), satz_liste, satz, fremd=_fremd_pruefer(satz_liste, marke, modell), koepfe=koepfe,
         hat_bauteil=_en.hat_bauteil)
     rw = _en.reichweite(claim, (einzel, allgemein))
+    begrenzt = False
+    if (begrenzt_zulassen and not einzel and not allgemein and rw in ("allgemein", "unbelegt")
+            and _en.ist_begrenzter_bericht(claim, modell)):
+        begrenzt = True                          # Teilmengen-Aussage ("some ..."): belegt Berichte, keine Häufigkeit
+        rw = "allgemein"
     if rw != "allgemein":
         return ab("einzelbericht" if rw == "einzel" else "reichweite_unbelegt")
     bt = _en.bauteil(claim)
     if not bt:
         return ab("no_component")
     evidenz["bauteil"] = bt[0]
+    evidenz["reichweite"] = "begrenzt" if begrenzt else "allgemein"
     markt_status, markt_name = _en.markt(claim, rahmen)
     evidenz["markt"] = markt_name or markt_status
+    markt_unaufgeloest = False
     if markt_status != "ok":
-        return ab("en_markt_" + markt_status)
+        if begrenzt and markt_status == "unbelegt":
+            markt_unaufgeloest = True            # fremd/unklar bleiben gesperrt; fehlender Beleg bleibt als offen sichtbar
+        else:
+            return ab("en_markt_" + markt_status)
     kontext_text = " ".join([claim, *rahmen])
     # Motor-/Leistungs-/Generationsbezug allein traegt keine Uebertragbarkeit: die Aussage muss das Zielmodell
     # selbst in Satz oder Rahmen nennen (ein geerbter Seitentitel genuegt dafuer nicht).
@@ -4335,11 +4407,18 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
     achse_ausf, achse_zeit = bool(var_passend), passt is True
     t2 = achse_ausf and (achse_zeit or gen_ok)
     evidenz.update({"generation": gen_ok, "uebertragung_dasselbe_teil": t1, "ausfuehrung_und_zeit_oder_generation": t2})
+    geltung_unaufgeloest = False
     if markt_name == "UK" and not t1:
-        return ab("en_uk_ohne_uebertragung")
+        if not begrenzt:
+            return ab("en_uk_ohne_uebertragung")
+        markt_unaufgeloest = True
     if not (t1 or t2):
-        return ab("en_relation_unbelegt")
-    teile = [f"Marktbezug laut Quelle: {markt_name}"]
+        if not begrenzt:
+            return ab("en_relation_unbelegt")
+        geltung_unaufgeloest = True              # Ausführung/Zeitraum der Quelle nennen das Baujahr nicht
+    teile = ["Begrenzter Bericht der Quelle, keine belegte Häufigkeit"] if begrenzt else []
+    teile.append(f"Marktbezug laut Quelle: {markt_name}" if markt_name
+                 else "Marktbezug der Quelle nicht belegt")
     geltung = []
     if achse_ausf:
         geltung.append("Ausführung " + "/".join(var_passend))
@@ -4352,7 +4431,8 @@ def _en_aussage_pruefen(claim: str, *, r: dict, satz: str, satz_liste: list[str]
     if t1:
         teile.append("Übertragung: Quelle belegt dasselbe Teil bei anderen Märkten/Varianten")
     return {"label": bt[0], "schluessel": bt[1], "markt": markt_name, "beleg": "; ".join(teile),
-            "z": z, "passt": passt}
+            "z": z, "passt": passt, "begrenzt": begrenzt, "markt_unaufgeloest": markt_unaufgeloest,
+            "geltung_unaufgeloest": geltung_unaufgeloest}
 
 
 def _en_zitat(claim: str, beleg: str | None) -> str:
@@ -5307,12 +5387,50 @@ def _artikel_geltung(text: str, baujahr: int | None, hubraum=None,
 # verworfen. Nennt der Satz BEIDE (eigene und fremde Marke, z.B. ein Vergleich
 # mit einem Schwestermodell), wird NICHT verworfen — das wäre eine aggressive
 # Überreaktion, die echte Sätze verliert.
-def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str | None:
+# Markennamen, die zugleich GEWÖHNLICHE Wörter sind ("seat" = Sitz, "mini", "smart", "land" = Land). Nur für diese kleine,
+# sprachlich begründete Menge verlangt die Markenerkennung einen Eigennamen-Kontext; alle anderen Marken ("ford mustang",
+# "bmw m4") zählen wie bisher unabhängig von der Schreibweise. Kein Fahrzeug- oder Modellbezug.
+_MARKEN_GATTUNGSWORT = frozenset({"seat", "mini", "smart", "land", "rover"})
+
+
+def _gattungswort_ist_marke(wort: str, worte: list[str], i: int) -> bool:
+    """Ein Marken-Homograph zählt als Marke nur im Eigennamen-Kontext: durchgehend GROSS ("SEAT", "MINI"), oder
+    großgeschrieben und direkt gefolgt von einer Modellbezeichnung (großgeschriebenes Wort oder Wort mit Ziffer:
+    "Seat Leon", "Smart ForTwo", "Mini Cooper"). "Land Rover" gilt als Paar. Ein Satz mit "Seat belts ..." oder
+    "the heated seat" nennt keine Marke."""
+    n = _norm(wort)
+    if n in ("land", "rover"):
+        nachbar = (worte[i + 1] if n == "land" and i + 1 < len(worte) else
+                   worte[i - 1] if n == "rover" and i > 0 else "")
+        return _norm(nachbar) == ("rover" if n == "land" else "land")
+    if len(wort) > 1 and wort.isupper():
+        return True
+    if wort[:1].isupper() and i + 1 < len(worte):
+        nxt = worte[i + 1]
+        return nxt[:1].isupper() or any(ch.isdigit() for ch in nxt)
+    return False
+
+
+def _fremde_marken_im_satz(satz: str, marke_tokens: set[str]) -> set[str]:
     from app.vehicle_identity import MARKEN
+    worte = re.findall(r"[\wÄÖÜäöüß-]+", satz or "")
+    gefunden: set[str] = set()
+    for i, w in enumerate(worte):
+        n = _norm(w)
+        if n in MARKEN and n not in marke_tokens:
+            if n in _MARKEN_GATTUNGSWORT and not _gattungswort_ist_marke(w, worte, i):
+                continue
+            gefunden.add(n)
+    return gefunden
+
+
+def _fremde_marke_satz(satz: str, marke: str | None, modell: str | None) -> str | None:
     satz_tokens = _tokens(satz)
     marke_tokens = _tokens(marke)
     modell_tokens = _tokens(modell)
-    fremde = (satz_tokens & MARKEN) - marke_tokens
+    # Marken-Homographe ("seat", "mini", "smart", "land") nur im Eigennamen-Kontext; sonst wäre jedes englische "seat" (Sitz)
+    # die Marke SEAT, ein Satz über den Fahrzeugsitz ein Fremdfahrzeug-Satz und der Modellkontext der folgenden Sätze verloren.
+    fremde = _fremde_marken_im_satz(satz, marke_tokens)
     if not fremde:
         return None
     if marke_tokens & satz_tokens:
@@ -6805,7 +6923,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                     if _spr == "en":
                         en_info = _en_aussage_pruefen(
                             claim, r=r, satz=satz, satz_liste=satz_liste, koepfe=koepfe, marke=marke,
-                            modell=modell, abgelehnt=abgelehnt, url=url,
+                            modell=modell, abgelehnt=abgelehnt, url=url, begrenzt_zulassen=True,
                             ziel_info={"baujahr": baujahr, "hubraum": hubraum, "fuel": fuel_ziel,
                                        "powertrains": powertrains_ziel, "motor": motor,
                                        "generation_codes": [c for c in [generation, *(generation_cluster or [])]
@@ -6990,6 +7108,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
                         eintrag["abschnitt_taetigkeit"][claim] = abschnitt_von_claim[claim]
                     if en_info is not None:
                         eintrag.setdefault("en", {})[claim] = en_info["beleg"]
+                        eintrag.setdefault("en_info", {})[claim] = en_info
                     if muster:
                         eintrag.setdefault("muster", set()).add(muster)
                     if kategorie == "rueckruf":
@@ -7026,7 +7145,7 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     _wartung_explizit: list[bool] = []
     _wartung_taet_rang: list[int] = []
     for schluessel, e in kandidaten.items():
-        quellen = _quellen_aus(e["treffer"], marke=marke)
+        quellen = _quellen_aus(e["treffer"], marke=marke, kategorie=kategorie)
         if not quellen:
             continue
         domains = len({_domain_von(q.url or "") for q in quellen})
@@ -7046,6 +7165,20 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
         if e["vage"] and e["passt"] is not True:
             geltung, bereich = "unresolved", e["vage"]
             confidence = "niedrig"
+        # SW-N19/E1: ein BEGRENZTER Bericht ("some owners ...") bleibt ein begrenzter Hinweis: niedrige Confidence, eigene
+        # Beleglage, offene Achsen (Markt der Quelle, Baujahr/Ausführung) als bestehende Unsicherheitszustände.
+        _en_i = (e.get("en_info") or {}).get(e["aussage"]) if kategorie == "schwachstelle" else None
+        _begrenzt = bool(_en_i and _en_i.get("begrenzt"))
+        _beleglage = "begrenzter_bericht" if _begrenzt else None
+        _regional, _herkunft = None, None
+        if _begrenzt:
+            confidence = "niedrig"
+            if _en_i.get("geltung_unaufgeloest") and geltung is None:
+                geltung, bereich = "unresolved", None
+            if _en_i.get("markt_unaufgeloest"):
+                _regional = "unresolved"
+                _herkunft = ("Die Quelle ist englischsprachig, ihr Marktbezug ist für diese Aussage nicht belegt"
+                             if not _en_i.get("markt") else f"Marktbezug laut Quelle: {_en_i['markt']}")
         scope_text = None
         if kategorie == "rueckruf":
             # Release-Hardening: die zentrale Scope-Policy (recall_filter.rueckruf_scope)
@@ -7114,7 +7247,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
             rueckruf_datensatz=(dict(datensatz_von_aussage[e["aussage"]])
                                 if kategorie == "rueckruf" and e["aussage"] in datensatz_von_aussage
                                 else None),
-            herkunftsregion=herkunftsregion, regionale_geltung=regionale_geltung,
+            herkunftsregion=_herkunft or herkunftsregion, regionale_geltung=_regional or regionale_geltung,
+            beleglage=_beleglage,
             technische_bedingung=technik_bedingung,
             technische_bedingung_status="unresolved" if technik_bedingung else None,
             taetigkeit=taetigkeit,
@@ -8303,7 +8437,8 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
     for kategorie in kategorien:
         roh_kategorie = roh.get(kategorie) or []
         treffer = curate_results(roh_kategorie,
-                                 kategorie=_WEB_KATEGORIE[kategorie], max_results=8)
+                                 kategorie=_WEB_KATEGORIE[kategorie], max_results=8,
+                                 score_fn=lambda u, k=_WEB_KATEGORIE[kategorie]: _score_domain_kategorie(u, k))
         if stats is not None:
             stats[kategorie] = {"roh": len(roh_kategorie), "curated": len(treffer)}
         # `generation_cluster` begleitet `generation` überall dorthin, wo
@@ -8624,7 +8759,7 @@ def _zustand_kategorie(abgelehnt: list[dict], kategorie: str) -> dict:
                and (a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE) and a.get("url")]
     urls = {a["url"] for a in relevant}
     families = {_source_family(u) for u in urls}
-    bester_score = max((score_domain(u, _WEB_KATEGORIE.get(kategorie)) for u in urls), default=-1)
+    bester_score = max((_score_domain_kategorie(u, _WEB_KATEGORIE.get(kategorie)) for u in urls), default=-1)
     return {"families": len(families), "n_kandidaten": len(urls), "bester_score": bester_score}
 
 

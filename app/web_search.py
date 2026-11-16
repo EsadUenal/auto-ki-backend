@@ -18,7 +18,7 @@ import re
 import time
 from contextlib import contextmanager
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -813,8 +813,10 @@ def curate_results(
     results: list[dict[str, Any]],
     kategorie: str | None = None,
     max_results: int = 5,
+    score_fn: Callable[[str], int] | None = None,
 ) -> list[dict[str, Any]]:
     """
+    `score_fn` (optional): kategoriespezifische Bewertung für die SORTIERUNG (Default: `score_domain(url, kategorie)`).
     Zentrale Nachbearbeitung roher Tavily-Treffer für alle vier Flows
     (Chat, Diagnose, Kaufcheck, Verkaufscheck):
 
@@ -855,7 +857,8 @@ def curate_results(
 
     # Stabile Sortierung nach Score (bei Gleichstand bleibt Tavily-Relevanz-
     # Reihenfolge erhalten, da Python sort() stabil ist).
-    bereinigt.sort(key=lambda r: score_domain(r.get("url", ""), kategorie), reverse=True)
+    bereinigt.sort(key=lambda r: (score_fn(r.get("url", "")) if score_fn
+                                  else score_domain(r.get("url", ""), kategorie)), reverse=True)
 
     return bereinigt[:max_results]
 

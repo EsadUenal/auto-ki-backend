@@ -263,13 +263,17 @@ def technik_datenluecke(web_recherche, insights=None) -> tuple[str, ...]:
     status = getattr(web_recherche, "phasen_status", None) or {}
     if status.get("technik") not in ("success", "partial"):
         return ()
-    fakt_kat = {getattr(f, "kategorie", None) for f in (getattr(web_recherche, "fakten", None) or [])}
+    # Ein BEGRENZTER Bericht einer Fachquelle ("some owners ...", Beleglage "begrenzter_bericht") ist kein belastbarer
+    # Befund: er hebt die Datenlücke nicht auf (sonst würde ein einzelner Hinweis fehlende Abdeckung verdecken).
+    fakt_kat = {getattr(f, "kategorie", None) for f in (getattr(web_recherche, "fakten", None) or [])
+                if getattr(f, "beleglage", None) != "begrenzter_bericht"}
     # Ein DB-Insight zählt nur als Befund, wenn sein Trust (Verifikations-Architektur,
     # app/evidence.py) nicht "unverified_db" ist. Der Default eines Insights ohne
     # gesetzten Trust ist "unverified_db": ein ungeprüfter Datenbankeintrag hebt die
     # Einschränkung nicht auf (er bleibt als Hinweis sichtbar, belegt aber nichts).
     insight_kat = {getattr(i, "kategorie", None) for i in (insights or [])
-                   if (getattr(i, "trust", None) or "unverified_db") != "unverified_db"}
+                   if (getattr(i, "trust", None) or "unverified_db") != "unverified_db"
+                   and getattr(i, "beleglage", None) != "begrenzter_bericht"}
     vorhanden = fakt_kat | insight_kat
     if vorhanden & (set(_SCHWACHSTELLEN_KATEGORIEN) | set(_WARTUNGS_KATEGORIEN)):
         return ()

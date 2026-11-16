@@ -109,8 +109,30 @@ _RE_PROBLEM = re.compile(
     r"gives?\s+out|go(?:es)?\s+bad|goes\s+wrong|disintegrat\w+|collapse\w*|snap(?:s|ped)?)\b", re.IGNORECASE)
 
 
+# Fehlfunktion ohne Defekt-Schlagwort: (a) eine Kuehl-/Belueftungsfunktion, die bei Betrieb HEISS wird (Funktion
+# mit gegenteiligem Effekt, kein normales Warmwerden), (b) "play(s) up" mit technischem Komponenten-Subjekt
+# (britisch fuer "macht Probleme"). Beides nur mit Komponentenbezug; "kids play up", "play up the ..." oder
+# "very hot" ohne Kuehlfunktion bleiben ohne Problemsignal.
+_RE_KUEHLFUNKTION_HEISS = re.compile(
+    r"\b(?:becom\w+|get(?:s|ting)?|got|turn\w*|go(?:es)?|went)\s+(?:very\s+|too\s+|extremely\s+|really\s+)?hot\s+"
+    r"(?:when|while|as)\s+(?:the\s+|its\s+)?(?:cooling|ventilat\w+|air[- ]?con\w*|a/c)\s+"
+    r"(?:function|mode|setting|feature)\s+(?:was|is|were|has\s+been)\s+"
+    r"(?:engaged|on|selected|activated|switched\s+on|turned\s+on)\b", re.IGNORECASE)
+_RE_PLAY_UP = re.compile(r"\bplay(?:s|ed|ing)?\s+up\b", re.IGNORECASE)
+_RE_PLAY_UP_KOMPONENTE = re.compile(
+    r"\b(?:amplifiers?|amps?|sound\s+systems?|head\s+units?|infotainment|navigation|sat[- ]?nav|sensors?|"
+    r"control\s+units?|ecu|modules?|electronics?|wiring|alternators?|pumps?|actuators?|servos?|motors?|"
+    r"engines?|gearbox|transmission|differentials?|compressors?|switches|relays?|displays?|screens?)\b",
+    re.IGNORECASE)
+
+
 def hat_problem(satz: str) -> bool:
-    return bool(_RE_PROBLEM.search(_RE_MATERIAL_KEIN_SCHADEN.sub(" ", satz or "")))
+    satz = satz or ""
+    if _RE_PROBLEM.search(_RE_MATERIAL_KEIN_SCHADEN.sub(" ", satz)):
+        return True
+    if _RE_KUEHLFUNKTION_HEISS.search(satz):
+        return True
+    return bool(_RE_PLAY_UP.search(satz) and _RE_PLAY_UP_KOMPONENTE.search(satz))
 
 
 # ── Verneinung, Relativierung, Frage, Bedingung, Garantie, Rueckrufdatensatz (Schutzregeln) ──────
@@ -224,6 +246,63 @@ def hat_wiederholung(text: str) -> bool:
 
 def hat_population(text: str) -> bool:
     return bool(_RE_POPULATION.search(text or ""))
+
+
+# SW-N19/E1: Hörensagen ("we have heard of ...", "reportedly", "apparently") ist keine Aussage der Quelle über das Fahrzeug,
+# sondern deren Weitergabe eines Gerüchts: sie wird nicht zur Aussage gemacht.
+_RE_HOERENSAGEN = re.compile(
+    r"\b(?:we(?:['’]ve|\s+have)\s+heard|i(?:['’]ve|\s+have)\s+heard|(?:i|we)\s+heard|heard\s+(?:of|that|about|tell)|"
+    r"hear(?:d|ing)\s+(?:of|that|about)|rumou?r\w*|reportedly|allegedly|supposedly|apparently|hearsay|"
+    r"(?:it(?:['’]s|\s+is)|is|are)\s+said|(?:some|people)\s+say|word\s+(?:is|has\s+it)|word\s+on\s+the\s+street)\b",
+    re.IGNORECASE)
+# Teilmengen-Quantoren: "some owners", "several cars", "a number of examples", "owners have reported". Sie belegen, DASS es
+# Berichte gibt -- keine Häufigkeit und keine modellweite Schwäche. Dagegen tragen "many/most/numerous/common/often/known
+# issue/typical" eine Häufigkeitsaussage (und bleiben `allgemein`).
+_RE_TEILMENGE = re.compile(
+    r"\b(?:some|several|a\s+number\s+of|a\s+few|various|multiple|certain|other)\s+(?:[\w-]+\s+){0,2}"
+    r"(?:owners?|drivers?|cars?|vehicles?|examples?|units?|customers?|buyers?|users?)\b"
+    r"|\b(?:owners?|drivers?|buyers?|customers?|users?|others)\s+(?:have\s+|has\s+)?(?:reported|experienced|had|"
+    r"found|noted|complained|mentioned)\b", re.IGNORECASE)
+_RE_HAEUFIGKEIT = re.compile(
+    r"\b(?:many|most|numerous|countless|lots\s+of|a\s+lot\s+of|plenty\s+of|all|majority)\b", re.IGNORECASE)
+
+
+_RE_ZEITPUNKT_USUALLY = re.compile(
+    r"\b(?:usually|typically|generally|normally)\s+(?:at|around|after|before|within|by|between|from|in)\b",
+    re.IGNORECASE)
+
+
+# Rückruf/Servicemaßnahme: gehört in den Rückrufpfad (KBA/Hersteller), nie als zusätzlicher unabhängiger Defekt gezählt.
+_RE_RUECKRUFBEZUG = re.compile(
+    r"\b(?:recall(?:s|ed)?|service\s+(?:action|campaign)|safety\s+campaign|technical\s+service\s+bulletin|TSB)\b",
+    re.IGNORECASE)
+
+
+def ist_rueckrufbezug(satz: str) -> bool:
+    return bool(_RE_RUECKRUFBEZUG.search(satz or ""))
+
+
+def ist_hoerensagen(satz: str) -> bool:
+    return bool(_RE_HOERENSAGEN.search(satz or ""))
+
+
+def ist_begrenzter_bericht(claim: str, modell: str | None = None) -> bool:
+    """Die Aussage belegt NUR, dass es Berichte gibt ("some owners", "some RC Fs"): kein Häufigkeits-, Modell- oder
+    Population-Wort ("many", "common", "often", "known issue", "typical"). `modell` erlaubt die Teilmenge auch über den
+    Modellnamen ("Some RC Fs had ...")."""
+    c = claim or ""
+    # "..., usually at around 25,000 miles": "usually" nennt hier den Zeitpunkt, nicht die Häufigkeit des Auftretens.
+    c_haeufigkeit = _RE_ZEITPUNKT_USUALLY.sub(" ", c)
+    if _RE_ALLGEMEIN.search(c_haeufigkeit) or _RE_HAEUFIGKEIT.search(c_haeufigkeit):
+        return False
+    if _RE_TEILMENGE.search(c):
+        return True
+    toks = [re.escape(t) for t in re.findall(r"\w+", modell or "")]
+    if toks:
+        name = r"\s*[- ]?\s*".join(toks)
+        return bool(re.search(r"\b(?:some|several|a\s+number\s+of|a\s+few|certain|various)\s+(?:\w+\s+)?" + name + r"s?\b",
+                              c, re.IGNORECASE))
+    return False
 
 
 def traegt_reichweite(text: str) -> bool:
@@ -353,7 +432,7 @@ _BAUTEILE: tuple[tuple[re.Pattern, str, str, bool], ...] = tuple(
         (r"12\s?v\s+batter(?:y|ies)|starter\s+batter(?:y|ies)", "Starterbatterie", "starterbatterie", False),
         (r"infotainment|head\s+units?|touch\s*pads?|touch\s*screens?|navigation\s+systems?|sat[- ]?nav",
          "Infotainment", "infotainment", False),
-        (r"air[- ]?con(?:ditioning)?|a/c|climate\s+control|ac\s+compressors?", "Klimaanlage", "klimaanlage", False),
+        (r"air[- ]?con(?:ditioning)?|a/c|climate\s+control|ac\s+compressors?|hvac", "Klimaanlage", "klimaanlage", False),
         (r"sun\s*roofs?", "Schiebedach", "dach_fenster", False),
         (r"panoramic\s+roofs?", "Panoramadach", "dach_fenster", False),
         (r"window\s+regulators?|power\s+windows?", "Fensterheber", "dach_fenster", False),
@@ -361,6 +440,9 @@ _BAUTEILE: tuple[tuple[re.Pattern, str, str, bool], ...] = tuple(
          "beleuchtung", False),
         (r"clear\s*coat|lacquer|peeling\s+paint", "Klarlack", "oberflaeche", False),
         (r"dashboards?|interior\s+(?:trim|plastics?)", "Armaturenbrett", "innenraum", False),
+        (r"(?:heated|ventilated|cooled)(?:\s*[/&-]\s*|\s+and\s+)(?:heated|ventilated|cooled)\s+seats?|"
+         r"(?:heated|ventilated|cooled)\s+seats?|seat\s+(?:heating|heaters?|ventilation|cooling)",
+         "Sitzheizung/-belüftung", "innenraum", False),
         (r"rust(?:ing|ed)?|corrosion|corroded", "Rost", "rost", False),
         (r"engines?|motors?", "Motor", "motor", True),
     ))
@@ -423,7 +505,8 @@ def zeitraum(text: str) -> tuple[int | None, int | None] | None:
 
 _RE_MARKT_FREMD = re.compile(
     r"(?-i:(?<![\w.])(?:US|USA|U\.S\.A?\.?|USDM|JDM|CARB|EPA|NHTSA|GCC)(?!\w))"
-    r"|\bUnited\s+States\b|\bNorth\s+Americ\w*|\bAmerican\s+(?:market|models?|cars?|spec)\b|\bCanad\w*"
+    r"|\bUnited\s+States\b|\bNorth\s+Americ\w*|\bAmerican\s+(?:market|models?|cars?|spec|owners?|drivers?|buyers?|customers?)\b"
+    r"|\bAmericans\b|\bin\s+the\s+States\b|\bstateside\b|\bCanad\w*"
     r"|\bAustrali\w*|\bNew\s+Zealand\b|\bin\s+Japan\b|\bJapan(?:ese)?[- ](?:market|spec|domestic|models?)\b"
     r"|\bMiddle\s+East\b|\bChina\b|\bChinese\s+market\b|\bSouth\s+Africa\b|\bMexic\w*|\bBrazil\w*"
     r"|\bCalifornia\w*|\bfederal\s+(?:spec|emissions?|models?)\b|\bUS[- ]spec\b", re.IGNORECASE)

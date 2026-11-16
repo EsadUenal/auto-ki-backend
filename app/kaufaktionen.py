@@ -2213,7 +2213,12 @@ def _aus_web_evidence(s: _Sammler, insights: list[Insight]) -> None:
         # Cluster I (Web-Scope): ist der Geltungsbereich laut Quelle für dieses
         # Baujahr nicht belegt, heißt es nicht "bekannter Schwachpunkt dieses
         # Modells", sondern ausdrücklich unaufgelöst.
-        if unresolved:
+        if getattr(i, "beleglage", None) == "begrenzter_bericht":
+            # Begrenzter Bericht einer Fachquelle: keine Häufigkeit, kein "bekannter Schwachpunkt", kein "Problem".
+            web_satz = (f"Eine Fachquelle berichtet von einzelnen Fällen zu „{bauteil}“ (keine belegte Häufigkeit); "
+                        "ob dieses Fahrzeug dazu gehört, ist nicht belegt. Nach durchgeführten Reparaturen fragen "
+                        "und Belege zeigen lassen.")
+        elif unresolved:
             web_satz = (f"Webquellen nennen „{bauteil}“ als Problem"
                         + (f" ({i.geltungsbereich})" if i.geltungsbereich else "")
                         + "; ob dieses Fahrzeug dazu gehört, ist nicht belegt. Nach "
