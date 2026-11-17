@@ -681,6 +681,9 @@ class WebVehicleIdentity(BaseModel):
     # "zwei_domain" (bestehend) | "primaerquelle" (neu, NUR Marke+Modell,
     # siehe app/technical_research.py `_identitaet_belegt()`) | None (nicht belegt).
     identitaets_pfad: str | None = None
+    # Identitäts-Diagnose (nur Log, nie serialisiert): je Feld die bereits berechneten Quellen-/Konsensentscheidungen dieser
+    # Auswertung (`werte_identitaet_aus`), damit `_log_identitaet_felder` sie ohne zweite Extraktion protokollieren kann.
+    diagnose: dict | None = Field(default=None, exclude=True)
     # ── KaufCheck-Final-Stabilization: Identität aus Quellentexten ───────────
     # Generationsnummer ("4. Generation") getrennt vom Code ("ND").
     generation_nummer: str | None = None

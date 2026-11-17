@@ -44,7 +44,8 @@ from app.fahrzeugkontext import build_fahrzeugkontext
 from app.laufleistung import (
     build_laufleistungskontext, prompt_block as laufleistung_prompt_block,
 )
-from app.technical_research import recherchiere_technisch, sw_diagnose_ausgabe, technical_coverage
+from app.technical_research import (identitaet_diagnose_ausgabe, recherchiere_technisch, sw_diagnose_ausgabe,
+                                    technical_coverage)
 from app.evidence import (
     build_insights, format_evidence_for_prompt, filter_evidence_ids,
     valid_evidence_ids, enrich_marktvergleich_spanne, marktvergleich_id, ergaenze_id,
@@ -415,6 +416,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     canonical_rueckrufe: list[dict] = []
     if baureihe is None:
         canonical_rueckrufe, _kba_vertrauen = get_rueckrufe_fuer_identity(identity)
+    identitaet_diagnose_ausgabe(web_recherche, identity)     # nur Log: Stand der Motorisierungsfelder vor der Rückrufprüfung
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="kauf",
                               marktanalyse=marktanalyse, web_recherche=web_recherche, identity=identity,
                               canonical_rueckrufe=canonical_rueckrufe)

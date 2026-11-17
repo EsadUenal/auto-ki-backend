@@ -71,6 +71,7 @@ from app.kraftstoff_powertrain import (
     scope_passt, scopes_passen,
 )
 from app.motor_applicability import _kraftstoffe as _technik_scope_begriffe
+from app.hubraum_norm import CCM_RE as _CCM_RE, CCM_ZAHL as _CCM_ZAHL, ccm_als_liter as _ccm_als_liter_norm
 from app.laufleistung import WEITERE_STELLE_MARKER
 from app.models import EvidenceQuelle, TechnischeRecherche, WebFakt, WebVehicleIdentity
 from app.provider_control import budget_retry_abgelehnt, budget_uebersprungen
@@ -1759,12 +1760,10 @@ _RE_QT_ZAHL = re.compile(r"^\s*(?:(?:us|uk|imp)\s+)?(?:qt|quarts?|gal|gallons?)\
 # runden (z.B. "4.9 Liter" vs. "5.0 Liter" fuer denselben 4969-ccm-Motor),
 # bleiben ein echter, vom bestehenden `konsens()` zu entscheidender
 # Widerspruch -- kein beliebiges Zahlen-Matching.
-_RE_HUBRAUM_CCM = re.compile(r"\b(\d{3,5})\s*(?:cm\s*3|cm\s*³|ccm)\b", re.IGNORECASE)
-
-
-def _ccm_als_liter(ccm_text: str) -> str:
-    liter = round(int(ccm_text) / 1000, 1)
-    return f"{liter:.1f}"
+# Tausendertrennzeichen: EINE Erkennung/Umrechnung in app/hubraum_norm.py -- "4.969 cm³", "4 969 cm³", "4,969 cm³" und
+# "4969 cm³" ergeben alle 5.0 (vorher las die Erkennung aus "4.969" nur "969" -> 1.0). Gruppe 1 ist die Zahl samt Trenner.
+_RE_HUBRAUM_CCM = _CCM_RE
+_ccm_als_liter = _ccm_als_liter_norm
 
 
 _KRAFTSTOFF_CLAIM = (("diesel", re.compile(r"\bdiesel\w*|\btdi\b|\bcdi\b|\bdci\b|skyactiv-?d", re.I)),
@@ -2771,6 +2770,7 @@ def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
     keine zweite, abweichende Markt-/Zeit-/Modellpruefung."""
     url = r.get("url") or ""
     dom, tier = _domain_von(url), _tier_identitaet(url, ziel.get("marke"))
+    tier_roh = tier          # nur Diagnose: Stufe der Domain VOR Regionsfremd-/Schwach-/Fremdmarkt-Abwertung
     if _ist_regionsfremd(url):
         # Identity-Hardening, Abschnitt 5: die IdentitätsPHASE darf internationale
         # Quellen für Marke/Modell/Generation-EXISTENZ nutzen (siehe `recherchiere()`,
@@ -2908,9 +2908,15 @@ def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
     # derselbe Text, gegen den die folgenden Claim-Regexe laufen, also
     # dieselben Zeichenpositionen wie die `m.start()`-Übergaben unten.
     _fremdmarkt = _fremdmarkt_spannen(text)
+    # Nur Diagnose (beschreibt das bereits gefällte Urteil, entscheidet nichts): Zeitfenster-Befund der Quelle.
+    _fenster_urteil = ("mehrdeutig" if _datenblatt_fenster == ZEITRAUM_MEHRDEUTIG
+                       else "ausserhalb" if _verwurf_grund_datenblatt
+                       else "passt" if (isinstance(_datenblatt_fenster, tuple) and baujahr is not None)
+                       else "kein_fenster")
     return {"url": url, "dom": dom, "tier": tier, "tier_vor_schwach_abwertung": tier_vor_schwach_abwertung,
             "voll_modell": voll_modell, "grund": grund, "text": text, "saetze": saetze_liste,
-            "verwurf_grund_datenblatt": _verwurf_grund_datenblatt, "fremdmarkt": _fremdmarkt}
+            "verwurf_grund_datenblatt": _verwurf_grund_datenblatt, "fremdmarkt": _fremdmarkt,
+            "tier_roh": tier_roh, "zeitfenster": _fenster_urteil}
 
 
 def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
@@ -2933,7 +2939,10 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
         # bisher an die (ggf. abgewertete) `tier`-Variable gebunden.
         basis_tier = tier_override if tier_override is not None else tier
         eff_tier = max(basis_tier, 3) if _in_fremdmarkt_span(pos, _fremdmarkt) else basis_tier
-        claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": eff_tier, "url": url, **extra})
+        claims.append({"feld": feld, "wert": wert, "domain": dom, "tier": eff_tier, "url": url,
+                       # nur Diagnose: Stufe vor Abwertungen, Fremdmarkt-Deckelung dieser Fundstelle, Zeitfenster-Befund
+                       "tier_roh": q["tier_roh"], "fremdmarkt_gedeckelt": eff_tier != basis_tier,
+                       "zeitfenster": q["zeitfenster"], **extra})
 
     # Eine Seite, deren TITEL die Leistung des Zielfahrzeugs nennt, handelt von
     # genau dieser Motorisierung: ihr Generationscode wiegt eine Stufe mehr.
@@ -3103,7 +3112,7 @@ def _identitaets_claims(r: dict, ziel: dict) -> list[dict]:
     return claims
 
 
-def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, dict] | None:
+def konsens(claims: list[dict], feld: str, *, bevorzugt=None, diag: dict | None = None) -> tuple[object, dict] | None:
     """Gewichteter Konsens EINES Felds (siehe Modulkopf).
 
     `bevorzugt` (optional): der Nutzerwert. Werte, die ihn bestätigen, werden
@@ -3111,7 +3120,20 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
     eine Übersicht mit allen Leistungsstufen) zählt eine Domain für einen Wert
     nur einmal, und ein Nutzerwert, den eine Quelle nennt, ist kein Konflikt
     zu einer anderen Leistungsstufe derselben Seite.
+
+    `diag` (optional, nur Diagnose): erhält die tatsächlich angewandte Entscheidung (`entscheidung`, `grund`, je Wert
+    Gewicht/Domains/stark, bei Bestätigung `wert`/`gewicht`). Wirkt nie auf das Ergebnis.
     """
+    ergebnis = _konsens_entscheiden(claims, feld, bevorzugt, diag)
+    if diag is not None:
+        diag["entscheidung"] = "bestaetigt" if ergebnis is not None else "nicht_bestaetigt"
+        if ergebnis is not None:
+            diag["wert"], diag["gewicht"] = ergebnis[0], ergebnis[1].get("gewicht")
+            diag.setdefault("grund", "schwelle_erreicht")
+    return ergebnis
+
+
+def _konsens_entscheiden(claims: list[dict], feld: str, bevorzugt, diag: dict | None) -> tuple[object, dict] | None:
     je_wert: dict[str, dict] = {}
     for c in claims:
         if c["feld"] != feld or c.get("verworfen"):
@@ -3126,6 +3148,8 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
         if c.get("detail"):
             e["details"].append(c["detail"])
     if not je_wert:
+        if diag is not None:
+            diag["grund"] = "kein_gueltiger_claim"
         return None
     bewertet = []
     for key, e in je_wert.items():
@@ -3133,6 +3157,12 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
         stark = any(t <= 2 for t in e["domains"].values())
         bewertet.append((gewicht, stark, key, e))
     bewertet.sort(key=lambda x: -x[0])
+    if diag is not None:
+        diag["werte"] = {key: {"gewicht": g, "stark": st, "domains": len(e["domains"]),
+                               "domains_tier1": sum(1 for t in e["domains"].values() if t == 1),
+                               "domains_tier2": sum(1 for t in e["domains"].values() if t == 2),
+                               "domains_tier3": sum(1 for t in e["domains"].values() if t >= 3)}
+                         for g, st, key, e in bewertet}
     if bevorzugt is not None:
         # Mehrwertige Felder (Leistung/Hubraum): eine Quelle nennt oft ALLE
         # Leistungsstufen. Bestätigt wird hier nur, ob der Nutzerwert selbst
@@ -3142,12 +3172,21 @@ def konsens(claims: list[dict], feld: str, *, bevorzugt=None) -> tuple[object, d
                 return e["wert"], {"domains": len(e["domains"]), "gewicht": gewicht,
                                    "detail": _haeufigstes(e["details"]),
                                    "domain_namen": set(e["domains"])}
+        if diag is not None:
+            vorhanden = [(g, st) for g, st, key, _e in bewertet if key == str(bevorzugt).lower()]
+            diag["grund"] = ("nutzerwert_nicht_unter_den_claims" if not vorhanden
+                             else "nutzerwert_ohne_starke_quelle" if not vorhanden[0][1]
+                             else "nutzerwert_gewicht_zu_gering")
         return None
     gewicht, stark, key, e = bewertet[0]
     if not stark or gewicht < MIN_KONSENS_GEWICHT:
+        if diag is not None:
+            diag["grund"] = "keine_starke_quelle_tier<=2" if not stark else "gewicht_zu_gering"
         return None
     for g2, stark2, _k2, _e2 in bewertet[1:]:
         if stark2 and g2 * 2 >= gewicht:
+            if diag is not None:
+                diag["grund"] = "konflikt_vergleichbar_starker_quellen"
             return None       # Konflikt vergleichbar starker Quellen -> UNKNOWN
     return e["wert"], {"domains": len(e["domains"]), "gewicht": gewicht,
                        "detail": _haeufigstes(e["details"]), "domain_namen": set(e["domains"])}
@@ -3544,6 +3583,135 @@ def _generation_diagnose_zeile(treffer: list[dict], claims: list[dict], gen_clai
         dok_claims, " ".join(teile) or "-", ergebnis)
 
 
+# ── Identitäts-Diagnose der Motorisierungsfelder (nur Beobachtung) ──────────────────────────────────────────────────
+#
+# Hubraum, Motorkern/Motorbezeichnung, Kraftstoff, Antrieb und Elektrifizierung werden je Feld nachvollziehbar protokolliert:
+# welche Quelle (URL ohne Query, Domain), welcher Tier (nach Abwertungen), welches Zeitfenster-Urteil, welcher normalisierte
+# Claim, welcher Ausschlussgrund, wie viele Fundstellen/Quellen/unabhängige Domains zählten und wie der Konsens entschied.
+# Alles stammt aus den Größen, die `werte_identitaet_aus` ohnehin berechnet (Claims, `konsens(diag=)`, Motorkern-Belege):
+# KEINE zweite Extraktion, kein Provideraufruf, keine Änderung an Tier, Schwelle, Zeitfenster oder Auswahl. Kein Seitentext,
+# keine Nutzereingabe außer dem Motor-Nutzerwert der Anfrage selbst (Fahrzeugangabe), keine Secrets. Die Kennung `lauf` ist
+# dieselbe wie bei `sw_diagnose` (`TechnischeRecherche.diagnose_lauf`). Das Ergebnis liegt in `WebVehicleIdentity.diagnose`
+# (exclude=True: nie in API/Speicher).
+_IDENT_DIAG_FELDER = ("displacement", "engine_name", "fuel", "drivetrain", "powertrain")
+# Keine Begrenzung der Quellenzeilen je Feld: entscheidende Ablehnungsgründe dürfen nicht hinter einer Obergrenze verschwinden.
+
+
+def _baue_identitaets_diagnose(claims: list[dict], konsens_diag: dict[str, dict], kern_diag: dict,
+                               feldwerte: dict) -> dict:
+    felder: dict[str, dict] = {}
+    for feld in ("displacement", "fuel", "drivetrain", "powertrain"):
+        gruppen: dict[tuple, dict] = {}
+        for c in claims:
+            if c["feld"] != feld:
+                continue
+            g = gruppen.setdefault((c["url"], str(c["wert"])), {
+                "url": c["url"], "domain": c["domain"], "tier": c["tier"], "tier_roh": c.get("tier_roh"),
+                "wert": c["wert"], "zeitfenster": c.get("zeitfenster"), "fundstellen": 0,
+                "verworfen": c.get("verworfen"), "fremdmarkt_gedeckelt": False})
+            g["fundstellen"] += 1
+            g["tier"] = min(g["tier"], c["tier"])
+            g["fremdmarkt_gedeckelt"] = g["fremdmarkt_gedeckelt"] or bool(c.get("fremdmarkt_gedeckelt"))
+            g["verworfen"] = g["verworfen"] or c.get("verworfen")
+        quellen = list(gruppen.values())
+        gueltig = [g for g in quellen if not g["verworfen"]]
+        hist: dict[str, int] = {}
+        for g in quellen:
+            if g["verworfen"]:
+                hist[str(g["verworfen"])] = hist.get(str(g["verworfen"]), 0) + g["fundstellen"]
+        felder[feld] = {
+            "quellen": quellen, "fundstellen": sum(g["fundstellen"] for g in quellen),
+            "quellen_anzahl": len({g["url"] for g in quellen}),
+            "domains_gueltig": len({g["domain"] for g in gueltig}),
+            "domains_tier2": len({g["domain"] for g in gueltig if g["tier"] <= 2}),
+            "domains_tier1": len({g["domain"] for g in gueltig if g["tier"] == 1}),
+            "verworfen": hist, "konsens": konsens_diag.get(feld) or {}, "ergebnis": feldwerte.get(feld)}
+    kd = dict(kern_diag)
+    kd["domains_gueltig"] = len({q["domain"] for q in kern_diag.get("quellen", []) if q.get("kernbeleg_fundstellen")})
+    felder["engine_name"] = {
+        "kern": kd, "quellen": kern_diag.get("quellen", []), "ergebnis": feldwerte.get("engine_name")}
+    return {"felder": felder}
+
+
+def _identitaets_diagnose_sicher(claims, konsens_diag, kern_diag, feldwerte) -> dict | None:
+    """Die Diagnose darf die Identitätsauswertung nie beeinflussen: bei jedem Fehler entfällt sie."""
+    try:
+        return _baue_identitaets_diagnose(claims, konsens_diag, kern_diag, feldwerte)
+    except Exception:                                    # pragma: no cover — Schutznetz
+        log.debug("Identitäts-Diagnose nicht erstellt", exc_info=True)
+        return None
+
+
+def _diag_wert(w) -> str:
+    return "-" if w is None or w == "" else str(w).replace(" ", "_")
+
+
+def _log_identitaet_felder(lauf: str, runde: int, identitaet) -> None:
+    """Schreibt die Identitäts-Diagnose (`sw_diagnose`-Schwester, Präfix `identitaet_diagnose`) EINER Auswertung.
+    Ein Fehler hier darf die Recherche nie beeinflussen."""
+    try:
+        _log_identitaet_felder_schreiben(lauf, runde, identitaet)
+    except Exception:                                    # pragma: no cover — Schutznetz
+        log.debug("Identitäts-Diagnose nicht geschrieben", exc_info=True)
+
+
+def _log_identitaet_felder_schreiben(lauf: str, runde: int, identitaet) -> None:
+    diag = getattr(identitaet, "diagnose", None)
+    if not lauf or not diag:
+        return
+    for feld in _IDENT_DIAG_FELDER:
+        d = (diag.get("felder") or {}).get(feld)
+        if not d:
+            continue
+        quellen = list(d.get("quellen") or [])
+        if feld == "engine_name":
+            quellen.sort(key=lambda q: (not q.get("gezaehlt"), q.get("tier") or 9, q.get("url") or ""))
+        else:
+            quellen.sort(key=lambda q: (bool(q.get("verworfen")), q.get("tier") or 9, q.get("url") or ""))
+        for nr, q in enumerate(quellen, 1):
+            if feld == "engine_name":
+                eff = q.get("eff_tier")
+                status = ("gezaehlt" if q.get("gezaehlt") else
+                          f"ausgeschlossen:{q['ausschluss']}(kernbeleg_nicht_geprueft)" if q.get("ausschluss") else
+                          f"nicht_gezaehlt:beleg_tier_{eff}")
+                gedeckelt = eff is not None and q.get("tier") is not None and eff > q["tier"]
+                log.info("identitaet_diagnose lauf=%s runde=%d feld=%s stufe=quelle nr=%d url=%s domain=%s tier=%s tier_roh=%s "
+                         "tier_beleg=%s fremdmarkt_gedeckelt=%s zeitfenster=%s kernbeleg_fundstellen=%d status=%s",
+                         lauf, runde, feld, nr, _diag_url(q.get("url")), q.get("domain") or "-", _diag_wert(q.get("tier")),
+                         _diag_wert(q.get("tier_roh")), _diag_wert(eff), "ja" if gedeckelt else "nein",
+                         q.get("zeitfenster") or "-", q.get("kernbeleg_fundstellen") or 0, status)
+            else:
+                status = f"verworfen:{q['verworfen']}" if q.get("verworfen") else "gezaehlt"
+                log.info("identitaet_diagnose lauf=%s runde=%d feld=%s stufe=quelle nr=%d url=%s domain=%s tier=%s tier_roh=%s "
+                         "fremdmarkt_gedeckelt=%s zeitfenster=%s claim=%s fundstellen=%d status=%s", lauf, runde, feld, nr,
+                         _diag_url(q.get("url")), q.get("domain") or "-", _diag_wert(q.get("tier")),
+                         _diag_wert(q.get("tier_roh")), "ja" if q.get("fremdmarkt_gedeckelt") else "nein",
+                         q.get("zeitfenster") or "-", _diag_wert(q.get("wert")), q.get("fundstellen") or 0, status)
+        erg = d.get("ergebnis")
+        ergebnis = (f"{_diag_wert(erg.get('value'))}(confidence={erg.get('confidence')},domains={erg.get('domains')})"
+                    if isinstance(erg, dict) else "offen")
+        if feld == "engine_name":
+            k = d["kern"]
+            log.info("identitaet_diagnose lauf=%s runde=%d feld=%s stufe=entscheidung quellen_geprueft=%s quellen_mit_kernbeleg=%s "
+                     "fundstellen_kernbeleg=%s domains_gueltig=%s domains_tier<=2=%s quellen_tier1=%s kern=%s hubraum_erforderlich=%s "
+                     "schwelle=%s konsens=%s grund=%s unbelegter_rest=%s ergebnis=%s",
+                     lauf, runde, feld, k.get("quellen_geprueft", "-"), k.get("quellen_mit_kernbeleg", "-"),
+                     k.get("fundstellen_kernbeleg", "-"), k.get("domains_gueltig", "-"), k.get("domains_tier<=2", "-"),
+                     k.get("quellen_tier1", "-"), ",".join(k.get("kern") or []) or "-", k.get("hubraum_erforderlich") or "-",
+                     _diag_wert(k.get("schwelle")), k.get("entscheidung"), k.get("grund"),
+                     ",".join(k.get("unbelegter_rest") or []) or "-", ergebnis)
+        else:
+            kd = d.get("konsens") or {}
+            werte = ";".join(f"{w}:gewicht={v['gewicht']},domains={v['domains']},tier1={v['domains_tier1']},tier2={v['domains_tier2']}"
+                             for w, v in (kd.get("werte") or {}).items()) or "-"
+            log.info("identitaet_diagnose lauf=%s runde=%d feld=%s stufe=entscheidung fundstellen=%d quellen=%d domains_gueltig=%d "
+                     "domains_tier<=2=%d domains_tier1=%d verworfen=%s werte=%s konsens=%s grund=%s ergebnis=%s",
+                     lauf, runde, feld, d.get("fundstellen", 0), d.get("quellen_anzahl", 0), d.get("domains_gueltig", 0),
+                     d.get("domains_tier2", 0), d.get("domains_tier1", 0),
+                     ",".join(f"{k}={n}" for k, n in sorted((d.get("verworfen") or {}).items())) or "-", werte,
+                     kd.get("entscheidung", "-"), kd.get("grund", "-"), ergebnis)
+
+
 def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIdentity, list[dict]]:
     """Phase-1-Auswertung: belegte Identität + per Konsens akzeptierte Felder."""
     marke, modell = ziel.get("marke"), ziel.get("modell")
@@ -3655,14 +3823,18 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     ps = ziel.get("leistung_ps")
     leistung = uebernehme("horsepower", konsens(claims, "horsepower", bevorzugt=ps)) if ps else None
     hub = ziel.get("hubraum")
+    # Identitäts-Diagnose: die tatsächliche Konsensentscheidung je Feld (nur Beobachtung, `diag=` ändert nichts).
+    konsens_diag: dict[str, dict] = {"displacement": {}, "fuel": {}, "drivetrain": {}, "powertrain": {}}
     if hub:
-        uebernehme("displacement", konsens(claims, "displacement", bevorzugt=hub))
-    kraftstoff = uebernehme("fuel", konsens(claims, "fuel"))
-    antrieb = uebernehme("drivetrain", konsens(claims, "drivetrain"))
+        uebernehme("displacement", konsens(claims, "displacement", bevorzugt=hub, diag=konsens_diag["displacement"]))
+    else:
+        konsens_diag["displacement"] = {"entscheidung": "nicht_geprueft", "grund": "kein_nutzerhubraum"}
+    kraftstoff = uebernehme("fuel", konsens(claims, "fuel", diag=konsens_diag["fuel"]))
+    antrieb = uebernehme("drivetrain", konsens(claims, "drivetrain", diag=konsens_diag["drivetrain"]))
     # Root Cause 5 (Stufe 2): wie jedes andere Feld per gewichtetem Konsens —
     # zwei vergleichbar starke, widersprechende Quellen ergeben `None` (siehe
     # `konsens()`), genau wie bei `fuel`/`generation`. Kein Sonderfall.
-    powertrain = uebernehme("powertrain", konsens(claims, "powertrain"))
+    powertrain = uebernehme("powertrain", konsens(claims, "powertrain", diag=konsens_diag["powertrain"]))
     getriebe = uebernehme("transmission", konsens(claims, "transmission"))
     motorcode = uebernehme("engine_code", konsens(claims, "engine_code"))
     if ziel.get("baujahr") and mit_jahr and generation:
@@ -3672,6 +3844,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
     # die markanten Tokens der Nutzerangabe in >= 2 starken Quellen stehen.
     motor = ziel.get("motor")
     motor_bestaetigt = None
+    # Identitäts-Diagnose (nur Beobachtung): Motorkern-Entscheidung samt Quellenspur; ohne Nutzermotor nicht geprüft.
+    kern_diag: dict = {"entscheidung": "nicht_geprueft", "grund": "kein_nutzermotor", "quellen": []}
     if motor and _tokens(motor):
         # Kern der Motorangabe: Bezeichnungen mit Buchstaben UND Ziffern ("316d",
         # "QX12"); sonst markante Wörter (>= 4 Buchstaben, z.B. "skyactiv").
@@ -3713,9 +3887,13 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # erfunden (wie bei den Claims).
         kern_text = _motor_kern_bestaetigt(motor)
 
+        kern_quali: dict[int, dict] = {}          # nur Diagnose: Qualifikationsurteil je Quelle (id(r))
+
         def _motorkern_belege(r: dict) -> list[tuple[int, frozenset, str]]:
             """(effektive Stufe, Tokens, Satztext) je qualifizierter Fundstelle."""
             q = _qualifizierte_quelle(r, ziel)
+            kern_quali[id(r)] = {"url": q["url"], "domain": q["dom"], "tier": q["tier"], "tier_roh": q["tier_roh"],
+                                 "zeitfenster": q["zeitfenster"], "verwurf": q["verwurf_grund_datenblatt"]}
             if q["verwurf_grund_datenblatt"]:
                 return []
             text, pos, out = q["text"], 0, []
@@ -3822,6 +4000,33 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         # an der Bestätigungsschwelle selbst.
         anzahl_kernbeleg = sum(1 for _, bs in belege if bs)
         anzahl_tier1_kernbeleg = sum(1 for _, bs in belege if any(b[0] == 1 for b in bs))
+        # Diagnose: je Quelle das bereits gefällte Urteil (Tier/Zeitfenster/Kernbelege); Quellen ohne Urteil und ohne Kernbeleg
+        # werden nur gezählt. Eine wegen Datenblatt-Zeitfenster ausgeschlossene Quelle wurde auf Kernbelege NICHT geprüft.
+        kern_quellen = []
+        for r_, bs_ in belege:
+            ql = kern_quali.get(id(r_)) or {}
+            if not bs_ and not ql.get("verwurf"):
+                continue
+            kern_quellen.append({
+                "url": ql.get("url") or r_.get("url") or "", "domain": ql.get("domain") or "", "tier": ql.get("tier"),
+                "tier_roh": ql.get("tier_roh"), "zeitfenster": ql.get("zeitfenster"), "ausschluss": ql.get("verwurf"),
+                "kernbeleg_fundstellen": len(bs_), "eff_tier": min((b[0] for b in bs_), default=None),
+                "gezaehlt": any(b[0] <= 2 for b in bs_)})
+        kern_ok_diag = bool(kern_ok)
+        kern_diag = {
+            "entscheidung": "bestaetigt" if motor_bestaetigt is not None else "nicht_bestaetigt",
+            "grund": ("schwelle_erreicht" if motor_bestaetigt is not None else
+                      "kein_kern_und_kein_hubraum_gefordert" if not (kern or hub_norm) else
+                      "kein_kernbeleg" if anzahl_kernbeleg == 0 else
+                      "kein_beleg_tier<=2" if not doms else
+                      "schwelle_verfehlt_1_domain_tier<=2_ohne_tier1" if not kern_ok_diag else
+                      "teilbestaetigung_unmoeglich_zusammenhaengender_teil_fehlt"),
+            "schwelle": "mindestens 2 Domains mit Tier<=2 ODER 1 Tier-1-Beleg",
+            "fundstellen_kernbeleg": sum(len(bs) for _, bs in belege), "quellen_mit_kernbeleg": anzahl_kernbeleg,
+            "quellen_geprueft": len(belege), "domains_tier<=2": len(doms), "quellen_tier1": anzahl_tier1_kernbeleg,
+            "kern": sorted(kern), "hubraum_erforderlich": hub_norm, "wert": motor_bestaetigt,
+            "unbelegter_rest": (feldwerte.get("engine_name") or {}).get("unbelegter_rest") if motor_bestaetigt else None,
+            "quellen": kern_quellen}
         log.info(
             "Motorkern-Prüfung: nutzerwert=%r kern=%s hubraum_erforderlich=%s "
             "quellen_mit_kernbeleg=%d domains_tier<=2=%d davon_tier1=%d bestaetigt=%s",
@@ -3850,6 +4055,7 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
         feldwerte=feldwerte, identitaet_konfidenz=identitaet_konf,
         akzeptierte_claims=akzeptiert, abgelehnte_claims=abgelehnt,
         identitaets_pfad=pfad,
+        diagnose=_identitaets_diagnose_sicher(claims, konsens_diag, kern_diag, feldwerte),
     ), abgelehnt
 
 
@@ -5976,7 +6182,7 @@ _RE_CODEWERT_ANFANG = re.compile(r"^([A-Z0-9][A-Z0-9-]{1,9})(?=\s|$|\[)", re.IGN
 _RE_HUBRAUM_LABELZEILE = re.compile(
     r"^[\w/ .()-]{0,30}?(?:hubraum|hubvolumen|displacement)\s*:?\s*$", re.IGNORECASE)
 _RE_HUBRAUMWERT_ANFANG = re.compile(
-    r"^(\d{3,5}\s*(?:cm\s*3|cm\s*³|ccm)(?![A-Za-z0-9])|\d[.,]\d\s*(?:-?\s*(?:l\b|liter|litre)))",
+    r"^((?:" + _CCM_ZAHL + r")\s*(?:cm\s*3|cm\s*³|ccm)(?![A-Za-z0-9])|\d[.,]\d\s*(?:-?\s*(?:l\b|liter|litre)))",
     re.IGNORECASE)
 
 
@@ -8654,6 +8860,39 @@ def _sw_diagnose_suche(lauf: str, runde: int, intents, treffer_je_intent, provid
                  "-" if not m else ("ja" if m.get("fehler") else "nein"))
 
 
+def identitaet_diagnose_ausgabe(web_recherche, identity) -> None:
+    """Letzte Stufe der Identitäts-Diagnose (vom KaufCheck unmittelbar VOR der Evidenzbildung/Rückrufprüfung aufgerufen): der
+    Stand der fünf Motorisierungsfelder in der kanonischen Identität (Wert, Verifikationsstatus, Bestätigung durch Web, vermerkter
+    Web-Konflikt) und die Achsen, die die Rückrufprüfung daraus liest. Nur Lesen vorhandener Objekte; ohne Laufkennung (kein
+    Web-Lauf) keine Zeile. Ein Fehler hier wirkt nie auf den KaufCheck."""
+    lauf = getattr(web_recherche, "diagnose_lauf", None)
+    if not lauf or identity is None:
+        return
+    try:
+        web = getattr(web_recherche, "identitaet", None)
+        web_felder = (getattr(web, "feldwerte", None) or {}) if web is not None and getattr(web, "belegt", False) else {}
+        evid = getattr(identity, "field_evidence", None) or {}
+        for feld in _IDENT_DIAG_FELDER:
+            fe = evid.get(feld) or {}
+            web_eintrag = web_felder.get(feld) or {}
+            log.info("identitaet_diagnose lauf=%s stufe=weitergabe feld=%s wert=%s status=%s primaer=%s bestaetigt_durch=%s "
+                     "web_wert=%s web_domains=%s web_konflikt=%s bestaetigte_teile=%s", lauf, feld,
+                     _diag_wert(getattr(identity, feld, None)), fe.get("verification_state") or "-",
+                     fe.get("primary_source") or "-", _diag_wert(",".join(fe.get("confirmed_by") or [])),
+                     _diag_wert(web_eintrag.get("value")), web_eintrag.get("domains", "-"),
+                     _diag_wert(fe.get("web_conflict")), _diag_wert(",".join(fe.get("bestaetigte_teile") or [])))
+        from app.kraftstoff_powertrain import fahrzeug_achsen
+        from app.recall_filter import _achsen_fuer_klassen_scope
+        fuel, pts = fahrzeug_achsen(identity=identity)
+        _fuel_k, pts_k = _achsen_fuer_klassen_scope(fuel, pts, identity)
+        klassenscope = ("offen:antriebsart_unbekannt" if pts is None else
+                        "gesperrt:antriebsart_nicht_unabhaengig_bestaetigt" if pts_k is None else "freigegeben")
+        log.info("identitaet_diagnose lauf=%s stufe=rueckruf_achsen kraftstoff=%s antriebsarten=%s klassenscope=%s",
+                 lauf, fuel or "-", ",".join(sorted(pts)) if pts else "-", klassenscope)
+    except Exception:                                    # pragma: no cover — Schutznetz
+        log.debug("Identitäts-Diagnose (Weitergabe) nicht geschrieben", exc_info=True)
+
+
 def sw_diagnose_ausgabe(web_recherche, insights, kaufaktionen=None) -> None:
     """Letzte Stufe der Kette (vom KaufCheck aufgerufen): wie viele Web-Schwachstellen-Insights (mit Beleglage und
     Quelldomain) entstanden, wie viele als Nebenbeleg in einem anderen Insight aufgingen und wie viele Aktionen sie
@@ -9307,6 +9546,7 @@ class TavilyTechnicalResearchProvider:
         identitaet, abgelehnt_i = phase_identitaet(ident_treffer, z)
         abgelehnt += abgelehnt_i
         _log_identitaet_phase(ident_treffer, marke, z["modell"], identitaet)
+        _log_identitaet_felder(diag_lauf, 1, identitaet)      # Identitäts-Diagnose Runde 1 (nur Beobachtung)
         status_identitaet = _phase_status(lief=True, anfragen_gesamt=anf_gesamt["identitaet"],
                                           anfragen_fehlgeschlagen=anf_fehler["identitaet"])
         if not _identitaet_reicht(identitaet):
@@ -9455,6 +9695,7 @@ class TavilyTechnicalResearchProvider:
                 # verantwortlich, dass der HEV-Fehlbefund nicht auf Domain-
                 # Ebene nachvollziehbar war).
                 _log_identitaet_phase(ident_treffer, marke, z["modell"], identitaet)
+                _log_identitaet_felder(diag_lauf, 2, identitaet)   # Identitäts-Diagnose Runde 2 (nur Beobachtung)
                 geloest = [f for f, attr in _IDENTITY_SPEC_FELDER
                           if f in offene_spec_felder and getattr(identitaet, attr) is not None]
                 geloest += [f for f in offene_confirm_felder
