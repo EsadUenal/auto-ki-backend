@@ -2728,6 +2728,24 @@ def _rollenbeleg_eigener_teilsatz(text: str, start: int, ende: int) -> bool:
     return False
 
 
+# Bewertungsnote statt Hubraum: `_RE_HUBRAUM` akzeptiert eine Dezimalzahl, der nur ein Wort folgt ("5.0 V8", "2.0 TSI"),
+# auch OHNE Einheit. Dieselbe Form hat eine Testnote ("ADAC Urteil Autotest: 2.5 Lexus RC 200t F Sport" -> Hubraum 2.5).
+# Zahlenrolle: steht direkt vor der EINHEITSLOSEN Zahl ein Bewertungsbegriff (Urteil/Note/Bewertung/Rating/Score/...)
+# oder direkt dahinter eine Bewertungseinheit (Sterne/Punkte), ist sie eine Wertung -- kein Hubraum. Mit ausdrücklicher
+# Liter-Einheit ("2.5 Liter") bleibt jede Angabe gültig; die Prüfung gilt nur für die einheitslose Form.
+_RE_BEWERTUNG_DAVOR = re.compile(
+    r"\b(?:urteil|(?:gesamt|test)?note|noten|bewertung|wertung|rating|score|punkte|sterne)\b[^.!?;\d]{0,30}$", re.IGNORECASE)
+_RE_BEWERTUNG_DAHINTER = re.compile(r"\s*(?:sterne|punkte|points|stars)\b", re.IGNORECASE)
+_RE_LITEREINHEIT_DIREKT = re.compile(r"\s*-?\s*(?:l\b|liter|litre)", re.IGNORECASE)
+
+
+def _ist_bewertungszahl(text: str, m: "re.Match") -> bool:
+    if _RE_LITEREINHEIT_DIREKT.match(text[m.end(1):]):
+        return False
+    return bool(_RE_BEWERTUNG_DAVOR.search(text[max(0, m.start(1) - 45):m.start(1)])
+                or _RE_BEWERTUNG_DAHINTER.match(text[m.end(1):]))
+
+
 def _hubraum_liter_werte(text: str) -> list[tuple[str, int]]:
     """Hubraumangaben in Litern ("5.0 V8", "5,0 Liter") als (Wert "5.0", Position)
     -- mit den Ausschluessen fuer Nicht-Hubraum-Zahlen (Zeit/Drehzahl/Kapazitaet/
@@ -2736,6 +2754,8 @@ def _hubraum_liter_werte(text: str) -> list[tuple[str, int]]:
     out: list[tuple[str, int]] = []
     for m in _RE_HUBRAUM.finditer(text):
         if _HUBRAUM_FREMDEINHEIT.match(text[m.end(1):]):
+            continue
+        if _ist_bewertungszahl(text, m):
             continue
         if _RE_KAPAZITAET_UMRECHNUNG.match(text[m.end(1):]):
             continue
