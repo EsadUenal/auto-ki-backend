@@ -61,6 +61,7 @@ import asyncio
 import logging
 import re
 import uuid
+import zlib
 from typing import Protocol
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -8693,8 +8694,14 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
     for kategorie in kategorien:
         roh_kategorie = roh.get(kategorie) or []
         kuratierungs_ausschluss: list[dict] = []
+        # Schwachstellen: KEINE feste Auswahlgrenze -- alle nach Sperrfilter, Deduplizierung (und dem laufbezogenen
+        # Erfolglos-Ausschluss des Aufrufers) verbleibenden Treffer werden ausgewertet. `len(roh_kategorie)` kann nichts
+        # abschneiden (es gibt nie mehr Treffer als im Pool) -- keine versteckte Ersatzgrenze. Die Auswahlgröße löst selbst
+        # keinen Provider-Aufruf aus; Ausgabegrenze bleibt `MAX_FAKTEN_JE_KATEGORIE`. Rückruf und Wartung behalten 8.
+        kur_limit = None if kategorie == "schwachstelle" else _KURATIERUNG_MAX
         treffer = curate_results(roh_kategorie,
-                                 kategorie=_WEB_KATEGORIE[kategorie], max_results=_KURATIERUNG_MAX,
+                                 kategorie=_WEB_KATEGORIE[kategorie],
+                                 max_results=len(roh_kategorie) if kur_limit is None else kur_limit,
                                  score_fn=lambda u, k=_WEB_KATEGORIE[kategorie]: _score_domain_kategorie(u, k),
                                  ausschluss=kuratierungs_ausschluss)
         if stats is not None:
@@ -8703,7 +8710,7 @@ def phase_fakten(roh: dict[str, list[dict]], ziel: dict, identitaet: WebVehicleI
                                 # Gründe der Kuratierung für alle übrigen; keine Wirkung auf Auswahl/Extraktion.
                                 "kuratiert_ids": [id(r) for r in treffer],
                                 "kuratierungs_ausschluss": kuratierungs_ausschluss,
-                                "kuratierungs_limit": _KURATIERUNG_MAX}
+                                "kuratierungs_limit": kur_limit}      # None = keine feste Obergrenze (Schwachstellen)
         # `generation_cluster` begleitet `generation` überall dorthin, wo
         # bisher nur die einzelne Zeichenkette floss. Trägt seit der ENFAL-
         # Korrektur ("Ableitung braucht positive Zuordnung, nicht nur
@@ -8941,6 +8948,49 @@ def sw_diagnose_ausgabe(web_recherche, insights, kaufaktionen=None) -> None:
              ",".join(f"{k}={n}" for k, n in sorted(aktionen.items())) or "-")
 
 
+# ── Schwachstellen-Eskalation: bereits erfolglos ausgewertete Treffer belegen keine erneuten Kuratierungsplätze ──
+# Befund (Lauf 977695250d, 17.11.2026): In Eskalationsrunden wird `roh[kat] + neue_treffer` komplett neu kuratiert. Die Rangfolge
+# ist allein der Domain-Score, bei Gleichstand entscheidet die Position im Pool -- alte Treffer stehen vorn. Alttreffer, die
+# in einer früheren Runde bereits MIT Volltext ausgewertet wurden und weder Fakt noch Kandidat ergaben, belegten deshalb bei
+# Score-Gleichstand erneut die begrenzten Plätze (identisches Ergebnis), neue Treffer kamen nicht zum Zug.
+# Regel: Nur innerhalb DESSELBEN Recherchelaufs und NUR der Kategorie "schwachstelle". "Erfolglos ausgewertet" heißt:
+# der Treffer war kuratiert (also tatsächlich extrahiert), sein Volltext (`_ot == "volltext"`) lag vor, und er hat weder einen
+# Fakt noch einen Eskalations-Kandidaten geliefert. Nicht ausgewählte Treffer, Snippet-/Fehlt-Fälle (Abruf ohne verwertbaren
+# Text) und Treffer mit Fakt/Kandidat zählen NIE dazu. Der Ausschluss gilt nur für denselben Text: ändert sich der Inhalt
+# (z. B. später ergänzter Volltext), ist der Treffer wieder zulässig. Keine dauerhafte Sperrliste; Limit, Scores und
+# Schwellen bleiben unverändert.
+def _sw_signatur(r: dict) -> tuple:
+    c = r.get("content") or ""
+    return (r.get("_ot") or "-", len(c), zlib.crc32(c.encode("utf-8", "replace")))
+
+
+def _sw_erfolglos_ausgewertet(pool: list[dict], stats_kat: dict, fakten: list, abgelehnt_neu: list[dict]) -> dict[str, tuple]:
+    kuratiert = set((stats_kat or {}).get("kuratiert_ids") or ())
+    fakt_urls = {_url_schluessel(q.url or "") for f in fakten if f.kategorie == "schwachstelle"
+                 for q in (getattr(f, "quellen", None) or [])}
+    kandidat_urls = {_url_schluessel(a.get("url") or "") for a in abgelehnt_neu
+                     if a.get("kategorie") == "schwachstelle" and str(a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE)}
+    erledigt: dict[str, tuple] = {}
+    for r in pool:
+        if id(r) not in kuratiert or r.get("_ot") != "volltext":
+            continue
+        k = _url_schluessel(r.get("url") or "")
+        if k and k not in fakt_urls and k not in kandidat_urls:
+            erledigt[k] = _sw_signatur(r)
+    return erledigt
+
+
+def _ohne_erfolglos_ausgewertete(pool: list[dict], erledigt: dict[str, tuple]) -> tuple[list[dict], list[dict]]:
+    if not erledigt:
+        return pool, []
+    behalten: list[dict] = []
+    vorab: list[dict] = []
+    for r in pool:
+        k = _url_schluessel(r.get("url") or "")
+        (vorab if k in erledigt and erledigt[k] == _sw_signatur(r) else behalten).append(r)
+    return behalten, vorab
+
+
 def _sw_diagnose_extraktion(lauf: str, runde: int, treffer: list[dict], stats: dict, abgelehnt_delta: list[dict],
                             fakten: list) -> None:
     """Je Treffer des ausgewerteten Pools: Herkunft, Text (Volltext/Snippet), Kuratierung (ausgewählt oder Grund),
@@ -8962,8 +9012,9 @@ def _sw_diagnose_extraktion(lauf: str, runde: int, treffer: list[dict], stats: d
     ausschluss_hist: dict[str, int] = {}
     for g in ausschluss.values():
         ausschluss_hist[g] = ausschluss_hist.get(g, 0) + 1
-    log.info("sw_diagnose lauf=%s runde=%d stufe=kuratierung treffer=%d kuratiert=%d limit=%d ausgeschlossen=%s "
-             "fakten=%d kandidaten=%d", lauf, runde, len(treffer), len(kuratiert_ids), st.get("kuratierungs_limit", 0),
+    log.info("sw_diagnose lauf=%s runde=%d stufe=kuratierung treffer=%d kuratiert=%d limit=%s ausgeschlossen=%s "
+             "fakten=%d kandidaten=%d", lauf, runde, len(treffer), len(kuratiert_ids),
+             "unbegrenzt" if st.get("kuratierungs_limit") is None else st.get("kuratierungs_limit"),
              ",".join(f"{k}={n}" for k, n in sorted(ausschluss_hist.items())) or "-", len(sw_fakten),
              len(kandidat_urls))
     for nr, r in enumerate(treffer, 1):
@@ -9874,6 +9925,9 @@ class TavilyTechnicalResearchProvider:
                                   ("wartung", len(wa_intents))):
             _log_fakten_phase(kat, anz_anfragen, fakten_stats, abgelehnt_delta, fakten)
         _sw_diagnose_extraktion(diag_lauf, 1, roh["schwachstelle"], fakten_stats, abgelehnt_delta, fakten)
+        # Nur dieser Lauf, nur Schwachstellen: in Runde 1 bereits erfolglos (mit Volltext) ausgewertete Treffer.
+        sw_erledigt: dict[str, tuple] = _sw_erfolglos_ausgewertet(
+            roh["schwachstelle"], fakten_stats.get("schwachstelle") or {}, fakten, abgelehnt_delta)
 
         # PHASE 2+ (Adaptive-Evidence-Research, §A Folgeauftrag): echte
         # Mehrrunden-State-Machine statt genau einer festen Zusatzrunde --
@@ -9942,9 +9996,18 @@ class TavilyTechnicalResearchProvider:
                                       angefordert=geplant_n - uebersprungen_n)
                 fakten = [f for f in fakten if f.kategorie != kat]
                 _abgelehnt_vor_runde = len(abgelehnt)
-                runde_fakten = phase_fakten({kat: roh[kat]}, z, identitaet, (kat,), abgelehnt,
+                kur_pool, vorab_ausgeschlossen = (_ohne_erfolglos_ausgewertete(roh[kat], sw_erledigt)
+                                                  if kat == "schwachstelle" else (roh[kat], []))
+                runde_fakten = phase_fakten({kat: kur_pool}, z, identitaet, (kat,), abgelehnt,
                                             stats=fakten_stats, erlaube_multi_source=frozenset({kat}))
                 fakten += runde_fakten
+                if kat == "schwachstelle":
+                    # Diagnose: vorab ausgeschlossene Treffer mit ihrem tatsächlichen Grund ausweisen (keine Wirkung auf Auswahl).
+                    fakten_stats[kat].setdefault("kuratierungs_ausschluss", []).extend(
+                        {"url": r.get("url", ""), "grund": "bereits_ausgewertet_ohne_fakt", "_id": id(r)}
+                        for r in vorab_ausgeschlossen)
+                    sw_erledigt.update(_sw_erfolglos_ausgewertet(
+                        kur_pool, fakten_stats[kat], runde_fakten, abgelehnt[_abgelehnt_vor_runde:]))
                 if kat == "schwachstelle":
                     _sw_diagnose_extraktion(diag_lauf, runde_nr, roh[kat], fakten_stats,
                                             abgelehnt[_abgelehnt_vor_runde:], runde_fakten)

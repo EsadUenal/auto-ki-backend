@@ -172,8 +172,8 @@ check("A3 Trefferzahl vor und nach dem bestehenden Sperrfilter: 3 vom Provider, 
       feld(tw, "treffer_provider") == "3" and feld(tw, "treffer_nach_sperrfilter") == "2"
       and feld(tw, "treffer_erhalten") == "2" and feld(tw, "runde") == "1", tw)
 kur = next((z for z in z_a if "stufe=kuratierung" in z and "runde=1" in z), "")
-check("A4 Kuratierung: 3 Treffer im Pool, 2 ausgewählt, Grenze 8 sichtbar, Duplikat als Grund",
-      feld(kur, "treffer") == "3" and feld(kur, "kuratiert") == "2" and feld(kur, "limit") == "8"
+check("A4 Kuratierung: 3 Treffer im Pool, 2 ausgewählt, keine feste Obergrenze (limit=unbegrenzt), Duplikat als Grund",
+      feld(kur, "treffer") == "3" and feld(kur, "kuratiert") == "2" and feld(kur, "limit") == "unbegrenzt"
       and "url_duplikat=1" in kur and feld(kur, "fakten") == "1", kur)
 tz = [z for z in z_a if "stufe=treffer" in z and "runde=1" in z]
 adac = [z for z in tz if "adac.de/testmarke-modellz-probleme" in z]
@@ -227,17 +227,16 @@ check("B2 Runde 2: beide Eskalationsanfragen mit Intent und tatsächlichem Wortl
       and all(feld(z, "query") in [p["query"] for p in posts_b] for z in s2)
       and all(feld(z, "treffer_provider") == "8" for z in s2), str(s2))
 k2 = next((z for z in z_b if "stufe=kuratierung" in z and "runde=2" in z), "")
-check("B3 Runde 2: Pool 17 (1 aus Runde 1 + 16 neue), 8 ausgewählt, 9 über der bestehenden Grenze (sichtbar)",
-      feld(k2, "treffer") == "17" and feld(k2, "kuratiert") == "8" and "rang_ueber_limit=9" in k2
-      and feld(k2, "limit") == "8", k2)
+check("B3 Runde 2: Pool 17 (1 aus Runde 1 + 16 neue), ALLE 17 ausgewertet -- keine feste Obergrenze mehr (limit=unbegrenzt)",
+      feld(k2, "treffer") == "17" and feld(k2, "kuratiert") == "17" and "rang_ueber_limit" not in k2
+      and feld(k2, "limit") == "unbegrenzt", k2)
 t2 = [z for z in z_b if "stufe=treffer" in z and "runde=2" in z]
 check("B4 jeder Treffer trägt seine Herkunft (Runde und Intent) -- Runde-1-Treffer im Pool der Runde 2 bleibt r1",
       any("herkunft=r1:technical_weakness" in z for z in t2)
       and sum("herkunft=r2:source_upgrade_official" in z for z in t2) == 8
       and sum("herkunft=r2:source_upgrade_en" in z for z in t2) == 8, str(t2[:3]))
-check("B5 nicht ausgewählte Treffer: Grund 'rang_ueber_limit', keine Treffer-/Claim-Bewertung erfunden",
-      sum("kuratiert=nein:rang_ueber_limit" in z for z in t2) == 9
-      and all("treffer_ebene=-" in z and "claim_gruende=-" in z for z in t2 if "kuratiert=nein" in z))
+check("B5 kein Treffer fällt mehr 'rang_ueber_limit' heraus; jeder ausgewertete Treffer trägt eine Treffer-Bewertung",
+      not any("rang_ueber_limit" in z for z in t2) and sum("kuratiert=ja" in z for z in t2) == 17)
 check("B6 Budget unverändert gezählt: HTTP-Versuche == Tavily-Calls, nichts übersprungen",
       budget_b[0]["tavily"] == len(posts_b) and budget_b[1]["tavily"] == 0, f"{budget_b} posts={len(posts_b)}")
 
