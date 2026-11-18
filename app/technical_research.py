@@ -1890,6 +1890,45 @@ def _titel_zeitfenster(titel: str | None) -> tuple[int, int] | None:
     return next(iter(fenster)) if len(fenster) == 1 else None
 
 
+# Expliziter Modelljahres-Marker (Zeitliche Anwendbarkeit, 17.11.2026): ein Dokument, das sich AUSDRÜCKLICH auf EIN Modelljahr
+# bezieht ("MY21-Lexus-RC-Brochure.pdf", "Model Year 2021", "Modelljahr 2021"), beschreibt nur dieses Modelljahr -- Herstellervertrauen
+# (Tier) ersetzt diese Prüfung nicht. Erkannt wird NUR in Titel und DATEINAME der URL (letztes Pfadsegment), nie im Fließtext, nie im
+# Pfad davor (Navigation/Ordnerjahr), nie als bloße Jahreszahl (Veröffentlichungs-/Copyright-/Testdatum sind kein Modelljahr).
+# Kurzjahr nur mit "MY"-Präfix und eindeutiger Zuordnung (00-39 -> 20xx, 80-99 -> 19xx; sonst nicht interpretiert).
+# Ein Modelljahr n gilt als Fenster (n, n). Das Vorjahr n-1 (ein Modelljahr kann vorgezogen beginnen) ist NICHT belegt: es bleibt ohne
+# zusätzlichen Geltungsnachweis zeitlich UNGEKLÄRT (Grund `modelljahr_vorjahr_ungeklaert`), trägt keine positive Bestätigung und gilt
+# nicht als bewiesener Widerspruch. Mehrere VERSCHIEDENE Modelljahre -> mehrdeutig.
+# Vorhandene konkrete Fenster (Modellstart/Modellende, Titel-Klammerfenster) haben Vorrang und werden nie überschrieben.
+_RE_MODELLJAHR_MARKER = re.compile(
+    r"(?<![A-Za-z0-9])(?-i:MY)[-_]?(\d{4}|\d{2})(?!\d)"          # "MY" nur GROSS und ohne Leerzeichen ("My 2017 ..." ist Prosa)
+    r"|\bmodel[- ]?year[-_ ]?(\d{4})(?!\d)|\bmodelljahr[-_ ]?(\d{4})(?!\d)", re.IGNORECASE)
+
+
+def _modelljahr_marker(text: str | None) -> set[int]:
+    jahre: set[int] = set()
+    for m in _RE_MODELLJAHR_MARKER.finditer(text or ""):
+        roh = next(g for g in m.groups() if g)
+        if len(roh) == 2:
+            n = int(roh)
+            jahr = 2000 + n if n <= 39 else 1900 + n if n >= 80 else None
+        else:
+            jahr = int(roh)
+        if jahr is not None and 1980 <= jahr <= 2039:
+            jahre.add(jahr)
+    return jahre
+
+
+def _modelljahr_fenster(url: str | None, titel: str | None) -> tuple[int, int] | str | None:
+    dateiname = (url or "").split("#")[0].split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+    jahre = _modelljahr_marker(titel) | _modelljahr_marker(dateiname)
+    if not jahre:
+        return None
+    if len(jahre) > 1:
+        return ZEITRAUM_MEHRDEUTIG
+    j = next(iter(jahre))
+    return (j, j)
+
+
 _RE_GETRIEBE_MANUELL = re.compile(r"\b(\d)\s*-?\s*gang[- ]?(?:schaltgetriebe|handschaltung|manuell\w*)"
                                   r"|\b(sechs|f(?:ü|ue)nf)gang[- ]?(?:schaltgetriebe|handschaltung)"
                                   r"|\b(\d)-speed manual", re.I)
@@ -2912,14 +2951,22 @@ def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
     _datenblatt_fenster = _datenblatt_zeitraum(f"{r.get('title') or ''}. {r.get('content') or ''}")
     if _datenblatt_fenster is None:
         _datenblatt_fenster = _titel_zeitfenster(r.get("title"))
+    _fenster_aus_modelljahr = False
+    if _datenblatt_fenster is None:
+        # Kein konkretes Fenster vorhanden: expliziter Modelljahres-Marker (Titel/Dateiname) begrenzt die Anwendbarkeit.
+        _datenblatt_fenster = _modelljahr_fenster(url, r.get("title"))
+        _fenster_aus_modelljahr = _datenblatt_fenster is not None
     # Mehrdeutigkeit (`ZEITRAUM_MEHRDEUTIG`) ist KEIN "keine Zeitangabe" --
     # eine erkannte, aber nicht aufloesbare Varianten-Zuordnung darf keinen
     # beliebigen Claim dieser Quelle als zielgueltig durchreichen. Beide
     # Faelle (eindeutig ausserhalb ODER mehrdeutig) fuehren deshalb zum
     # gleichen Verwerfen -- nur mit unterscheidbarem Grund fuer Diagnose.
     _verwurf_grund_datenblatt = (
-        "baujahr_datenblatt_mehrdeutig" if _datenblatt_fenster == ZEITRAUM_MEHRDEUTIG
-        else "baujahr_ausserhalb_datenblatt" if (
+        ("modelljahr_mehrdeutig" if _fenster_aus_modelljahr else "baujahr_datenblatt_mehrdeutig")
+        if _datenblatt_fenster == ZEITRAUM_MEHRDEUTIG
+        else ("modelljahr_vorjahr_ungeklaert" if (_fenster_aus_modelljahr and baujahr == _datenblatt_fenster[0] - 1)
+              else "baujahr_ausserhalb_modelljahr" if _fenster_aus_modelljahr
+              else "baujahr_ausserhalb_datenblatt") if (
             isinstance(_datenblatt_fenster, tuple) and baujahr is not None
             and _im_zeitraum(baujahr, _datenblatt_fenster) is False)
         else None)
@@ -2931,6 +2978,7 @@ def _qualifizierte_quelle(r: dict, ziel: dict) -> dict:
     _fremdmarkt = _fremdmarkt_spannen(text)
     # Nur Diagnose (beschreibt das bereits gefällte Urteil, entscheidet nichts): Zeitfenster-Befund der Quelle.
     _fenster_urteil = ("mehrdeutig" if _datenblatt_fenster == ZEITRAUM_MEHRDEUTIG
+                       else "ungeklaert" if _verwurf_grund_datenblatt == "modelljahr_vorjahr_ungeklaert"
                        else "ausserhalb" if _verwurf_grund_datenblatt
                        else "passt" if (isinstance(_datenblatt_fenster, tuple) and baujahr is not None)
                        else "kein_fenster")
