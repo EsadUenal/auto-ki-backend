@@ -59,7 +59,7 @@ from app.preisurteil import (
     bewerte_preis, preis_bewertung_aus_verdict, no_market_prompt_block,
     prompt_block as preis_prompt_block,
 )
-from app.kaufaktionen import build_kaufaktionen
+from app.kaufaktionen import build_kaufaktionen, ergaenze_wartung_kurzbegruendungen
 from app.kba_canonical_lookup import get_rueckrufe_fuer_identity
 from app.hu_termin import konflikt_aus_request, konflikt_satz, bewerte_hu, prompt_zeile as hu_prompt_zeile, bereinige_bericht as hu_bereinige
 from app.markt_quellen import geeignete_marktquellen
@@ -436,6 +436,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # "Wartungspunkt 120.000 km" + "Fahrzeug 160.000 km" zuverlaessig eine
     # Faelligkeit, die durch keine Datenquelle gedeckt ist.
     laufleistungskontext = build_laufleistungskontext(req, insights)
+    ergaenze_wartung_kurzbegruendungen(insights, laufleistungskontext)   # N21-T: Kurzform der Warum-Karte (nur Wartung)
     laufleistung_block = laufleistung_prompt_block(laufleistungskontext)
     # PFAD A: verbindliche Markt-/Preisbloecke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt beider. Ohne ihn wuerde das

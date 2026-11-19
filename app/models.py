@@ -442,6 +442,10 @@ class Insight(BaseModel):
     einfluss: str | None = None       # Einfluss auf die Empfehlung / Preis / Strategie
     # Nur Web-Insights: Beleglage des zugrunde liegenden WebFakts (z. B. "begrenzter_bericht"); None = Normalfall.
     beleglage: str | None = None
+    # N21-T: KURZE, verständliche Begründung (nur Wartungs-Insights, aus der strukturierten Kurzform des zugehörigen
+    # Wartungshinweises, Zuordnung über die evidence_id). `beschreibung` (voller Quellenwortlaut) bleibt unverändert.
+    # None/leer = ältere Antwort oder keine eindeutige Zuordnung -> bisherige Darstellung.
+    kurzbegruendung: str | None = None
     # Nur beim Marktvergleich-Insight gesetzt: der strukturierte, deterministisch
     # berechnete Marktvergleich (Median, robuste Spanne, verwendete Datenpunkte).
     marktanalyse: Marktanalyse | None = None

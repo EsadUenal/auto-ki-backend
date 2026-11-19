@@ -2291,6 +2291,38 @@ def _wartung_anlass(w) -> str:
     return f"Anlass: {'; '.join(teile)}." if teile else ""
 
 
+def wartung_kurzbegruendung(w) -> str | None:
+    """N21-T: kurze, verständliche Begründung für die Warum-Karte aus der STRUKTURIERTEN Kurzform des Wartungshinweises
+    (gleiche Formatierung wie Frage und Dokument: `intervall_kurz`, `_wartung_vorbehalte`) -- kein Quellenzitat, keine
+    Kappung. Ohne Kurzform: None. Die Durchführung ist unbekannt; daraus folgt weder eine Fälligkeit noch ein Versäumnis."""
+    kopf = (getattr(w, "intervall_kurz", None) or "").strip()
+    if not getattr(w, "kurz", None) or not kopf:
+        return None
+    teile = [kopf if kopf.endswith(".") else kopf + "."]
+    vb = _wartung_vorbehalte(w)
+    if vb:
+        teile.append("Vorbehalte: " + "; ".join(vb) + ".")
+    if getattr(w, "herkunft", None) == "web_wartung":
+        teile.append("Die Angabe stammt aus der Webrecherche, nicht aus der geprüften Fahrzeugdatenbank.")
+    teile.append("Ob und wann die Arbeit durchgeführt wurde, ist unbekannt; daraus folgt weder eine Fälligkeit noch ein "
+                 "Versäumnis. Quellenwortlaut und Regeln stehen darunter.")
+    return " ".join(teile)
+
+
+def ergaenze_wartung_kurzbegruendungen(insights: list[Insight], kontext) -> None:
+    """Setzt `Insight.kurzbegruendung` für Wartungs-Insights (`wartung`/`web_wartung`), deren `id` EXAKT der `evidence_id`
+    eines Wartungshinweises mit Kurzform entspricht -- nie nach Listenposition oder Textähnlichkeit. Ohne eindeutige
+    Zuordnung bleibt das Feld None (kein fremder Text). Ändert weder Status noch Quellen noch Aktionen."""
+    hinweise = getattr(kontext, "wartungshinweise", None) or []
+    je_id = {w.evidence_id: w for w in hinweise if getattr(w, "evidence_id", None)}
+    for i in insights:
+        if i.kategorie not in ("wartung", "web_wartung"):
+            continue
+        w = je_id.get(i.id)
+        if w is not None:
+            i.kurzbegruendung = wartung_kurzbegruendung(w)
+
+
 def _wartung_frage_text(w) -> str:
     """N21: Text unter der Verkäuferfrage. Die Frage selbst (Titel) fragt nach Tätigkeit, Durchführung, Datum und
     Kilometerstand; hier steht nur der Bezug (Intervall laut Quelle, Anlass, knappe Vorbehalte) -- keine Handlungs-

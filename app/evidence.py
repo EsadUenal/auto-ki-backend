@@ -855,6 +855,18 @@ _WEB_TITEL = {
     "rueckruf": "Rückruf-Hinweis aus der Webrecherche ({bauteil})",
     "wartung": "{bauteil}: Wartungsangabe aus der Webrecherche",
 }
+def _satzgrenze(text: str) -> str:
+    """N20: vor einem angehängten Zusatz steht eine saubere Satzgrenze. Endet der Quellenwortlaut bereits mit einem Satz-
+    zeichen (auch vor einem schließenden Anführungszeichen), bleibt er unverändert; sonst folgt EIN Punkt. Der Wortlaut
+    selbst wird nicht umgeschrieben, es entstehen keine Doppelzeichen."""
+    t = (text or "").rstrip()
+    if not t:
+        return text
+    if t[-1] in ".!?…:;" or (t[-1] in '“”"»' and len(t) > 1 and t[-2] in ".!?…"):
+        return t
+    return t + "."
+
+
 def _web_beschreibung(fakt, baujahr) -> str:
     """Web-Aussage plus ihr Geltungsbereich — nie ein Fakt ohne Scope-Hinweis,
     wenn die Quelle selbst eingrenzt (Cluster I)."""
@@ -881,17 +893,17 @@ def _web_beschreibung(fakt, baujahr) -> str:
     if getattr(fakt, "beleglage", None) == "begrenzter_bericht":
         # Der Quellenwortlaut bleibt erhalten. Die Quelle belegt nur, DASS es Berichte gibt: keine Häufigkeit, keine
         # modellweite Schwachstelle, keine Aussage über dieses Fahrzeug.
-        text = (f"Eine Fachquelle berichtet: {text} Das ist ein begrenzter Bericht: eine Häufigkeit oder eine "
+        text = (f"Eine Fachquelle berichtet: {_satzgrenze(text)} Das ist ein begrenzter Bericht: eine Häufigkeit oder eine "
                 "modellweite Schwachstelle ist daraus nicht belegt.")
     if fakt.kategorie == "rueckruf" and fakt.applicability == "vehicle_possible":
-        text += (f" Das Baujahr {baujahr or ''} liegt im genannten Produktionszeitraum: das "
+        text = _satzgrenze(text) + (f" Das Baujahr {baujahr or ''} liegt im genannten Produktionszeitraum: das "
                  "Fahrzeug ist möglicherweise betroffen. Nur die FIN-Prüfung klärt das.").replace("  ", " ")
     elif geltung == "unresolved":
         bereich = (bereich[:1].lower() + bereich[1:]) if bereich and not bereich[:1].isdigit() else bereich
-        text += (f" Laut Quelle betrifft das {bereich or 'nur einen Teil der Fahrzeuge'}; ob dieses "
+        text = _satzgrenze(text) + (f" Laut Quelle betrifft das {bereich or 'nur einen Teil der Fahrzeuge'}; ob dieses "
                  f"Fahrzeug{f' (Baujahr {baujahr})' if baujahr else ''} dazu gehört, ist nicht belegt.")
     elif geltung == "covered" and bereich:
-        text += f" Laut Quelle betrifft das den Zeitraum {bereich}, der das Baujahr einschließt."
+        text = _satzgrenze(text) + f" Laut Quelle betrifft das den Zeitraum {bereich}, der das Baujahr einschließt."
     # ENFAL-Folgeauftrag ("regionale Evidenz aus dem Dokument statt aus der
     # Domainendung"): EIGENE Achse neben der Baujahr-Geltung oben (`geltung`/
     # `bereich`) -- beide können unabhängig voneinander zutreffen, deshalb ein
@@ -902,7 +914,7 @@ def _web_beschreibung(fakt, baujahr) -> str:
     # .ch") -- KEINE Ungeeignetheitsaussage, KEIN geratenes Land.
     if getattr(fakt, "regionale_geltung", None) == "unresolved":
         herkunft = getattr(fakt, "herkunftsregion", None)
-        text += (f" {herkunft}. " if herkunft else " ") + (
+        text = _satzgrenze(text) + (f" {herkunft}. " if herkunft else " ") + (
             "Ob das für Ihr Fahrzeug in Deutschland zutrifft, ist nicht bestätigt. "
             + ("Bei der Besichtigung oder in einer Vertragswerkstatt prüfen lassen."
                if fakt.kategorie == "schwachstelle" else
@@ -917,7 +929,7 @@ def _web_beschreibung(fakt, baujahr) -> str:
     # Durchführung gefragt wird (Auftrag: "bei ungeklärter Voraussetzung
     # zuerst Anwendbarkeit klären").
     if getattr(fakt, "technische_bedingung_status", None) == "unresolved":
-        text += (" Ob diese Bedingung auf dieses Fahrzeug zutrifft, ist anhand der "
+        text = _satzgrenze(text) + (" Ob diese Bedingung auf dieses Fahrzeug zutrifft, ist anhand der "
                 "vorliegenden Angaben nicht geklärt: zuerst die technische "
                 "Anwendbarkeit klären (z.B. über Fahrzeugschein oder FIN), bevor "
                 "eine Durchführung erfragt wird.")
