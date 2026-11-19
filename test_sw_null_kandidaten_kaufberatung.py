@@ -212,6 +212,7 @@ class _Resp:
 class FakeClient:
     routing: list[tuple[str, list]] = []
     posts: list[str] = []
+    ident: list[dict] = IDENT
 
     def __init__(self, *a, **k):
         pass
@@ -226,7 +227,7 @@ class FakeClient:
         q = json["query"]
         FakeClient.posts.append(q)
         if "technische Daten" in q or "Generation Baureihe Bauzeitraum" in q:
-            return _Resp({"results": [dict(r) for r in IDENT]})
+            return _Resp({"results": [dict(r) for r in FakeClient.ident]})
         for teil, liste in FakeClient.routing:
             if teil in q:
                 return _Resp({"results": [dict(r) for r in liste]})
@@ -253,16 +254,17 @@ class Sammler(logging.Handler):
         self.zeilen.append(record.getMessage())
 
 
-async def lauf():
+async def lauf(routing=None, ident=None, ziel_kw=None):
     ws._cache.clear()
-    FakeClient.routing, FakeClient.posts = ROUTING, []
+    FakeClient.routing, FakeClient.posts = (routing or ROUTING), []
+    FakeClient.ident = ident or IDENT
     h = Sammler()
     lg = logging.getLogger("app.technical_research")
     lg.setLevel(logging.INFO)
     lg.addHandler(h)
     try:
         async with provider_scope("kaufcheck", key="sw-nullkand-test") as scope:
-            rec = await tr.TavilyTechnicalResearchProvider().recherchiere(ausgeloest_durch="test", **ZIEL_KW)
+            rec = await tr.TavilyTechnicalResearchProvider().recherchiere(ausgeloest_durch="test", **(ziel_kw or ZIEL_KW))
             budget = dict(scope.calls), dict(scope.skipped)
     finally:
         lg.removeHandler(h)
@@ -279,8 +281,23 @@ rec_n, log_n, posts_n, budget_n = asyncio.run(lauf())
 
 sw = lambda rec: [f for f in rec.fakten if f.kategorie == "schwachstelle"]  # noqa: E731
 r2 = lambda log: next((z for z in log if z.startswith("research_phase=schwachstelle round=2")), "")  # noqa: E731
-check("C1 Runde 1 ohne Kandidaten -> Nachsuche 'null_kandidaten' in beiden Läufen",
+check("C1 Runde 1 ohne eskalationsrelevante Kandidaten -> Nachsuche 'null_kandidaten' in beiden Läufen",
       "gap=null_kandidaten" in r2(log_v) and "gap=null_kandidaten" in r2(log_n), r2(log_n))
+# Zusammenspiel beider Reparaturen: carvago liefert nach der Kontextkorrektur Kandidaten OHNE Hauptpfad-Anker (unqualifizierte
+# Quelle). Sie tragen keine Ausgabe, verändern den eskalationsrelevanten Zustand nicht und blockieren die Suchrichtung nicht.
+cv_kand = [a for a in rec_n.abgelehnte_fakten if a.get("kategorie") == "schwachstelle" and "carvago" in (a.get("url") or "")
+           and a["grund"] == "schwachstelle_candidate_ohne_hauptpfad_anker"]
+k1 = next((z for z in log_n if z.startswith("sw_diagnose") and "runde=1 stufe=kuratierung" in z), "")
+check("C1a [ECHT carvago] Runde 1: Kandidaten ohne Hauptpfad-Anker entstehen (u. a. Reifenverschleiß), eskalationsrelevant: 0",
+      any(a["satz"].startswith("In Berichten und Tests wird immer wieder ein erhöhter Verschleiß") for a in cv_kand)
+      and "kandidaten=0" in k1 and tr._zustand_kategorie(rec_n.abgelehnte_fakten, "schwachstelle")["n_kandidaten"] == 0, k1)
+sw_q2 = [p for p in posts_n if "Werkstattinformation" in p or "buying guide" in p or "technical service bulletin" in p]
+check("C1b daraus berechnet (nicht vorgegeben): genau die deutsche Nachsuche + die englische Kaufberatungsanfrage",
+      sw_q2 == ["Lexus RC F 2017 Werkstattinformation technischer Hinweis Herstellerangabe",
+                "Lexus RC F used buying guide common problems"], str(sw_q2))
+cv_r2 = next((z for z in log_n if z.startswith("sw_diagnose") and "runde=2 stufe=treffer" in z and "carvago" in z), "")
+check("C1c der carvago-Treffer mit Kandidaten bleibt in Runde 2 im Pool (nicht 'bereits_ausgewertet_ohne_fakt')",
+      "kuratiert=ja" in cv_r2, cv_r2)
 check("C2 VORHER: englische Anfrage nach TSB (US-Aggregator) -> kein Schwachstellenfakt",
       any("technical service bulletin" in p for p in posts_v) and sw(rec_v) == [], str([f.bauteil for f in sw(rec_v)]))
 check("C3 NACHHER: englische Anfrage nach Kaufberatungen -> drei begrenzte Fachberichte aus der PistonHeads-Kaufberatung",
@@ -333,6 +350,48 @@ check("C14 Bericht: Abschnitt nennt Aussage, begrenzten Status und Quelle (pisto
 aus = [z for z in log_n if z.startswith("sw_diagnose") and "stufe=treffer" in z and "pistonheads.com" in z]
 check("C15 SW-Diagnose weist den neuen Intent und die Fakten des Treffers aus",
       aus and "herkunft=r2:problem_report_en" in aus[0] and "fakten=begrenzter_bericht" in aus[0], str(aus[:1]))
+
+print("\n== D: [SYNTH] Kandidat ohne Anker aus Runde 1 trägt den Hauptpfad-Fakt aus Runde 2 mit ==")
+SATZ_WP = "Bei der Testmarke Modellz ist die Wasserpumpe ein bekanntes Problem."
+IDENT_TM = [{"url": "https://www.adac.de/testmarke-modellz", "title": "Testmarke Modellz (seit 2015)",
+             "content": "Die Testmarke Modellz (seit 2015): 2.0 Turbo mit 200 PS, Benzin, Frontantrieb."},
+            {"url": "https://www.auto-motor-und-sport.de/testmarke-modellz", "title": "Testmarke Modellz im Test",
+             "content": "Testmarke Modellz (seit 2015) mit 2.0 Turbo und 200 PS, Frontantrieb."}]
+
+
+def _t(url, titel, satz):
+    roh = (f"{titel}. Testmarke Modellz im Überblick. " + satz + " ") * 12
+    return {"url": url, "title": titel, "content": satz, "raw_content": roh}
+
+
+UNBEKANNT_A = _t("https://www.ratgeber-alpha.de/testmarke-modellz", "Testmarke Modellz Erfahrungen", SATZ_WP)
+UNBEKANNT_B = _t("https://www.ratgeber-beta.de/testmarke-modellz", "Testmarke Modellz im Alltag", SATZ_WP)
+FACH = _t("https://www.adac.de/testmarke-modellz-probleme", "Testmarke Modellz Schwachstellen", SATZ_WP)
+ROUTING_TM = [("bekannte Probleme Schwachstellen", [UNBEKANNT_A, UNBEKANNT_B]),
+              ("used buying guide common problems", [FACH])]
+ZIEL_TM = dict(marke="Testmarke", modell="Modellz", baujahr=2018, motor="2.0 Turbo 200 PS")
+rec_d, log_d, posts_d, _bd = asyncio.run(lauf(ROUTING_TM, IDENT_TM, ZIEL_TM))
+_orig_erfolglos = tr._sw_erfolglos_ausgewertet
+tr._sw_erfolglos_ausgewertet = lambda pool, st, f, ab: _orig_erfolglos(          # VORHER: nur eskalationsrelevante Kandidaten
+    pool, st, f, [a for a in ab if not str(a.get("grund") or "").startswith("schwachstelle_candidate")])
+try:
+    rec_dv, log_dv, _pdv, _bdv = asyncio.run(lauf(ROUTING_TM, IDENT_TM, ZIEL_TM))
+finally:
+    tr._sw_erfolglos_ausgewertet = _orig_erfolglos
+wp = lambda rec: next((f for f in sw(rec) if f.bauteil == "Wasserpumpe"), None)  # noqa: E731
+check("D1 zwei unqualifizierte Quellen mit demselben Claim: nur Kandidaten ohne Anker, keine Mehrquellen-Eskalation -> "
+      "'null_kandidaten', die Kaufberatungsanfrage läuft",
+      "gap=null_kandidaten" in r2(log_d) and any("used buying guide common problems" in p for p in posts_d)
+      and any(a["grund"] == "schwachstelle_candidate_ohne_hauptpfad_anker" for a in rec_d.abgelehnte_fakten), r2(log_d))
+check("D2 Runde 2 liefert den Hauptpfad-Fakt (qualifizierte Quelle); die Kandidaten aus Runde 1 ergänzen seine Quellen",
+      wp(rec_d) is not None and {q.url for q in wp(rec_d).quellen} >= {FACH["url"], UNBEKANNT_A["url"], UNBEKANNT_B["url"]},
+      str([q.url for q in wp(rec_d).quellen]) if wp(rec_d) else "kein Fakt")
+check("D3 VORHER (enge Kandidatendefinition): dieselben Runde-1-Treffer fielen weg, der Fakt hatte nur die Fachquelle",
+      wp(rec_dv) is not None and {q.url for q in wp(rec_dv).quellen} == {FACH["url"]},
+      str([q.url for q in wp(rec_dv).quellen]) if wp(rec_dv) else "kein Fakt")
+check("D4 die unqualifizierten Quellen werten den Fakt nicht auf (Beleglage/Confidence wie mit der Fachquelle allein)",
+      wp(rec_d).beleglage == wp(rec_dv).beleglage and wp(rec_d).confidence == wp(rec_dv).confidence,
+      f"{wp(rec_d).beleglage}/{wp(rec_d).confidence} vs {wp(rec_dv).beleglage}/{wp(rec_dv).confidence}")
 
 print("\n" + ("ALLE GRÜN" if not FEHLER else f"{len(FEHLER)} FEHLER: {FEHLER}"))
 sys.exit(1 if FEHLER else 0)

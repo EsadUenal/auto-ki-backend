@@ -9046,7 +9046,7 @@ def sw_diagnose_ausgabe(web_recherche, insights, kaufaktionen=None) -> None:
 # Score-Gleichstand erneut die begrenzten Plätze (identisches Ergebnis), neue Treffer kamen nicht zum Zug.
 # Regel: Nur innerhalb DESSELBEN Recherchelaufs und NUR der Kategorie "schwachstelle". "Erfolglos ausgewertet" heißt:
 # der Treffer war kuratiert (also tatsächlich extrahiert), sein Volltext (`_ot == "volltext"`) lag vor, und er hat weder einen
-# Fakt noch einen Eskalations-Kandidaten geliefert. Nicht ausgewählte Treffer, Snippet-/Fehlt-Fälle (Abruf ohne verwertbaren
+# Fakt noch einen Kandidaten der Candidate-Schicht geliefert (eskalationsrelevant oder ohne Hauptpfad-Anker). Nicht ausgewählte Treffer, Snippet-/Fehlt-Fälle (Abruf ohne verwertbaren
 # Text) und Treffer mit Fakt/Kandidat zählen NIE dazu. Der Ausschluss gilt nur für denselben Text: ändert sich der Inhalt
 # (z. B. später ergänzter Volltext), ist der Treffer wieder zulässig. Keine dauerhafte Sperrliste; Limit, Scores und
 # Schwellen bleiben unverändert.
@@ -9059,8 +9059,14 @@ def _sw_erfolglos_ausgewertet(pool: list[dict], stats_kat: dict, fakten: list, a
     kuratiert = set((stats_kat or {}).get("kuratiert_ids") or ())
     fakt_urls = {_url_schluessel(q.url or "") for f in fakten if f.kategorie == "schwachstelle"
                  for q in (getattr(f, "quellen", None) or [])}
+    # Kandidat = jeder Claim, den die Candidate-Schicht gruppiert hat: eskalationsrelevant (Mehrquellen-Upgrade) ODER noch
+    # ohne Hauptpfad-Anker. Auch ein Kandidat ohne Anker trägt einen späteren Hauptpfad-Fakt desselben Bauteils mit (er ergänzt
+    # dessen Quellen, s. Candidate-Schicht); er bleibt deshalb im Pool. Real (SW-N19/E1, carvago.com): nach der Korrektur des
+    # Fahrzeugkontexts lieferte der Treffer Kandidaten ohne Anker und wurde in Runde 2 trotzdem als erfolglos ausgeschlossen.
     kandidat_urls = {_url_schluessel(a.get("url") or "") for a in abgelehnt_neu
-                     if a.get("kategorie") == "schwachstelle" and str(a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE)}
+                     if a.get("kategorie") == "schwachstelle"
+                     and (str(a.get("grund") or "").endswith(_ESKALATIONS_GRUENDE)
+                          or str(a.get("grund") or "").startswith("schwachstelle_candidate"))}
     erledigt: dict[str, tuple] = {}
     for r in pool:
         if id(r) not in kuratiert or r.get("_ot") != "volltext":
