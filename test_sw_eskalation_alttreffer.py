@@ -180,7 +180,7 @@ GEEIGNET = t("https://www.adac.de/testmarke-modellz-probleme", "Testmarke Modell
 NEU = [_nebensache(i, "neu") for i in range(7)] + [GEEIGNET]
 ROUTING = [("bekannte Probleme Schwachstellen", ALT),
            ("Werkstattinformation technischer Hinweis", NEU),
-           ("technical service bulletin", [])]
+           ("used buying guide common problems", [])]
 
 
 class _Resp:
@@ -379,7 +379,7 @@ NEU_E = [_nebensache(i, "e2") for i in range(12)] + [GEEIGNET_E]
 rec_e2, z_e2, posts_e2, budget_e2 = asyncio.run(lauf([
     ("bekannte Probleme Schwachstellen", ALT),
     ("Werkstattinformation technischer Hinweis", NEU_E[:7]),
-    ("technical service bulletin", NEU_E[7:])]))
+    ("used buying guide common problems", NEU_E[7:])]))
 k_e2 = next((x for x in z_e2 if "stufe=kuratierung" in x and "runde=2" in x), "")
 check("E4 Eskalationsrunde: 13 neue Treffer, alle 13 ausgewertet (mehr als 8), 8 Alttreffer vorab ausgeschlossen",
       feld(k_e2, "treffer") == "21" and feld(k_e2, "kuratiert") == "13" and "bereits_ausgewertet_ohne_fakt=8" in k_e2, k_e2)

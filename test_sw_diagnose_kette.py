@@ -218,12 +218,12 @@ print("\n== B: Runde 1 ohne Kandidat -> Eskalation Runde 2 (Kuratierungsgrenze, 
 rec_b, z_b, posts_b, budget_b = asyncio.run(lauf([
     ("bekannte Probleme Schwachstellen", [SW_PROSPEKT]),
     ("Werkstattinformation technischer Hinweis", esk(8, "werkstatt")),
-    ("technical service bulletin", esk(8, "bulletin")),
+    ("used buying guide common problems", esk(8, "bulletin")),
 ]))
 check("B1 eine Laufkennung über beide Runden", len({feld(z, "lauf") for z in z_b}) == 1)
 s2 = [z for z in z_b if "stufe=suche" in z and "runde=2" in z]
 check("B2 Runde 2: beide Eskalationsanfragen mit Intent und tatsächlichem Wortlaut",
-      {feld(z, "intent") for z in s2} == {"source_upgrade_official", "source_upgrade_en"}
+      {feld(z, "intent") for z in s2} == {"source_upgrade_official", "problem_report_en"}
       and all(feld(z, "query") in [p["query"] for p in posts_b] for z in s2)
       and all(feld(z, "treffer_provider") == "8" for z in s2), str(s2))
 k2 = next((z for z in z_b if "stufe=kuratierung" in z and "runde=2" in z), "")
@@ -234,7 +234,7 @@ t2 = [z for z in z_b if "stufe=treffer" in z and "runde=2" in z]
 check("B4 jeder Treffer trägt seine Herkunft (Runde und Intent) -- Runde-1-Treffer im Pool der Runde 2 bleibt r1",
       any("herkunft=r1:technical_weakness" in z for z in t2)
       and sum("herkunft=r2:source_upgrade_official" in z for z in t2) == 8
-      and sum("herkunft=r2:source_upgrade_en" in z for z in t2) == 8, str(t2[:3]))
+      and sum("herkunft=r2:problem_report_en" in z for z in t2) == 8, str(t2[:3]))
 check("B5 kein Treffer fällt mehr 'rang_ueber_limit' heraus; jeder ausgewertete Treffer trägt eine Treffer-Bewertung",
       not any("rang_ueber_limit" in z for z in t2) and sum("kuratiert=ja" in z for z in t2) == 17)
 check("B6 Budget unverändert gezählt: HTTP-Versuche == Tavily-Calls, nichts übersprungen",

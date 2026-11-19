@@ -5792,7 +5792,10 @@ _RE_ANDERES_SUBJEKT = re.compile(
     # Präfix-Token des Zielmodells ("RC F") fälschlich als "eigenes Modell"
     # durchgewunken würde (§6 Auftrag: Geschwistervarianten derselben
     # Baureihe dürfen sich nicht gegenseitig kontaminieren).
-    r"([A-ZÄÖÜ][\wÄÖÜäöüß-]*(?:\s+[A-ZÄÖÜ0-9][\wÄÖÜäöüß0-9-]*){0,2})")
+    # SW-N19/E1: die Folge-Tokens nur innerhalb DERSELBEN Zeile -- eine Modellbezeichnung läuft nicht über einen
+    # Zeilenumbruch. Real (carvago.com, Abruf 19.11.2026, Vorteilsliste): "Geräuschkomfort beim Cruisen\nSolide
+    # verarbeitetes Interieur" wurde sonst als Fahrzeug "Cruisen Solide" gelesen.
+    r"([A-ZÄÖÜ][\wÄÖÜäöüß-]*(?:[ \t]+[A-ZÄÖÜ0-9][\wÄÖÜäöüß0-9-]*){0,2})")
 # Häufige, idiomatische Füllwörter nach "beim"/"für den" X, die KEIN
 # Fahrzeug-Subjekt sind (Aktivitäten/Nominalisierungen/Akteure, kein
 # Modellkatalog).
@@ -5990,7 +5993,45 @@ def _anderes_fahrzeug_lokal(satz: str, modell: str | None) -> str | None:
     vokabular = _bauteil_vokabular()
     if any(wort in muster or wort == schluessel for muster, schluessel in vokabular.items()):
         return None
+    if _ist_taetigkeits_nominalisierung(m.group(1)) or _ist_bauteil_kompositum(wort):
+        return None
     return wort
+
+
+# SW-N19/E1 (reale Textstellen, carvago.com RC-F-Gebrauchtwagentest, Abruf 19.11.2026): "Eine bekannte Eigenheit des
+# Lexus RC F ist die Elastizität des Fahrwerks beim Anbremsen." und "... die man beim Gebrauchtwagenkauf genau prüfen
+# sollte" galten als "anderes Fahrzeug" (X = "Anbremsen"/"Gebrauchtwagenkauf"), brachen den Fahrzeugkontext und ließen die
+# folgenden modellbezogenen Problemsätze (Kühlmittelundichtigkeit, Reifenverschleiß) als `fremdfahrzeug_segment` fallen.
+# Nach "beim/für den" steht im Deutschen sehr häufig eine Tätigkeit: ein substantivierter Infinitiv ("Anbremsen",
+# "Reisen", "Anfahren") oder ein Kompositum, dessen Kopf ein bereits bekanntes Tätigkeits-/Akteurswort ist
+# ("Gebrauchtwagen|kauf"). Erkannt wird nur ein EINZELNES, normal geschriebenes Wort (Großbuchstabe, danach nur
+# Kleinbuchstaben): Modellkürzel mit Ziffern/Großbuchstaben ("RC 300h", "Q5", "GTI") und mehrteilige Bezeichnungen
+# bleiben ein Fremdfahrzeug-Signal, ebenso jeder Eigenname, der keine dieser Formen hat ("Passat", "Tiguan").
+_RE_EINFACHES_WORT = re.compile(r"[A-ZÄÖÜ][a-zäöüß]{4,}")
+_RE_INFINITIV_ENDUNG = re.compile(r"(?:en|ern|eln)$")
+
+
+def _ist_taetigkeits_nominalisierung(roh: str | None) -> bool:
+    if not roh or not _RE_EINFACHES_WORT.fullmatch(roh.strip()):
+        return False
+    w = _norm(roh)
+    if len(w) >= 6 and _RE_INFINITIV_ENDUNG.search(w):
+        return True
+    return any(len(k) >= 4 and len(w) > len(k) and w.endswith(k) for k in _KEIN_FAHRZEUG_SUBJEKT_LOKAL)
+
+
+# Ein Kompositum, dessen letzter Bestandteil ein bekanntes Bauteilwort ist ("V8-Saugmotor", "Abgasturbolader"), ist ein
+# Bauteil, kein Fahrzeug -- dieselbe Regel wie für das Bauteilwort selbst (bestehendes Bauteil-Vokabular), nur auch für
+# zusammengesetzte Schreibweisen. Real: "Der V8-Saugmotor und das Wandler-Automatikgetriebe gelten als äußerst
+# langlebig ..." (carvago.com, Abruf 19.11.2026) brach als "unsichere Nominalphrase" den Kontext für den folgenden Satz
+# "Bei Exemplaren mit hoher Laufleistung können allerdings Kühlmittelleckagen an der Valley Plate ... auftreten."
+# Nur Vokabularmuster mit mindestens 5 Buchstaben, damit kurze Kürzel nicht als Wortende zufällig treffen.
+def _ist_bauteil_kompositum(wort_norm: str | None) -> bool:
+    if not wort_norm:
+        return False
+    kopf = wort_norm.split()[-1]
+    return any(len(m) >= 5 and m.isalpha() and len(kopf) > len(m) and kopf.endswith(m)
+               for m in _bauteil_vokabular())
 
 
 # RC-W4 (Review-Korrektur 2): die "beim/für den X"-Erkennung allein lässt eine
@@ -6048,6 +6089,8 @@ def _unsichere_satzanfangs_nominalphrase(satz: str, modell: str | None) -> str |
         return None
     vokabular = _bauteil_vokabular()
     if any(wort in muster or wort == schluessel for muster, schluessel in vokabular.items()):
+        return None
+    if _ist_bauteil_kompositum(wort):
         return None
     return wort
 
@@ -9183,7 +9226,7 @@ _MAX_ADAPTIVE_RUNDEN = 3   # Runde 1 (Standard) + maximal 2 adaptive Zusatzrunde
 
 def _eskalations_queries(kategorie: str, *, breit: str, jahr: str | None, basis: str,
                          bauteil_hint: str | None = None, merkmal_hint: str | None = None,
-                         runde: int = 2) -> list[tuple[str, str]]:
+                         runde: int = 2, gap_grund: str | None = None) -> list[tuple[str, str]]:
     """Queries für Runde 2 (Source-Upgrade) oder Runde 3 (Claim-Bestätigung).
 
     Runde 2, zwei Achsen pro Kategorie, bewusst ORTHOGONAL zu den
@@ -9214,6 +9257,22 @@ def _eskalations_queries(kategorie: str, *, breit: str, jahr: str | None, basis:
         # Schwachstelle) -- diese Query bleibt klar auf Werkstatt-/
         # Herstellerwissen zur Schwachstelle selbst fokussiert, keine
         # versehentliche Vermischung mit der Rückruf-Phase.
+        if gap_grund == "null_kandidaten":
+            # SW-N19/E1 (Läufe 977695250d und 3a6b2e730d, Lexus RC F): Runde 1 lieferte KEINEN einzigen Kandidaten, es
+            # gibt also nichts, dessen Quelle "upgegradet" werden könnte. Die TSB-/Herstellerformulierung brachte in
+            # beiden echten Läufen nur Rückruf-Händlerseiten, Broschüren und eine allgemeine Konzernerklärung. Die
+            # Quellengattung, die der Schwachstellenpfad für einen begrenzten Fachbericht qualifiziert
+            # (`_FACHPRESSE_SCHWACHSTELLEN`: englischsprachige redaktionelle Fachpresse), wurde nie angefragt; deren
+            # Gebrauchtwagen-Kaufberatungen nennen modellbezogene Fehlerbilder. Deshalb fragt die englische Anfrage hier
+            # nach genau diesen Kaufberatungen. Gleiche Anzahl Anfragen (Budget unverändert); Qualifikation, Marktvorbehalt
+            # und Häufigkeitsgrenzen bleiben unverändert bei der Auswertung. Die deutsche Anfrage bleibt unverändert.
+            return [
+                ("source_upgrade_official",
+                 " ".join(filter(None, [basis, jahr, "Werkstattinformation technischer Hinweis Herstellerangabe",
+                                        bauteil_hint]))),
+                ("problem_report_en",
+                 " ".join(filter(None, [breit, "used buying guide common problems", bauteil_hint]))),
+            ]
         return [
             ("source_upgrade_official",
              " ".join(filter(None, [basis, jahr, "Werkstattinformation technischer Hinweis Herstellerangabe",
@@ -10012,7 +10071,8 @@ class TavilyTechnicalResearchProvider:
                 merkmal_hint = _merkmal_hint_aus_abgelehnt(abgelehnt, kat)
                 esk_intents = _eskalations_queries(kat, breit=breit, jahr=jahr, basis=basis,
                                                    bauteil_hint=bauteil_hint,
-                                                   merkmal_hint=merkmal_hint, runde=runde_nr)
+                                                   merkmal_hint=merkmal_hint, runde=runde_nr,
+                                                   gap_grund=gap_grund)
                 # N19: budgetbedingt abgelehnte Calls getrennt zählen. Ein abgelehnter Call
                 # liefert eine leere Liste (web_search.py), ist aber weder ein echter
                 # Nulltreffer noch ein Providerfehler. Nur ERSTVERSUCHE zählen als

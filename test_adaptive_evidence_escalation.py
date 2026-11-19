@@ -697,7 +697,7 @@ async def test_b_null_kandidaten_loest_recovery_aus():
         "bekannte Probleme Schwachstellen": [SW_UNAUSGERICHTET_1, SW_UNAUSGERICHTET_2],
         "Werkstattinformation": [SW_RECOVERY_1, SW_RECOVERY_2],
     })
-    runde2_calls = _esk_calls(calls, "Werkstattinformation", "technical service bulletin")
+    runde2_calls = _esk_calls(calls, "Werkstattinformation", "used buying guide common problems")
     runde3_calls = _esk_calls(calls, "bestätigt Herstellerangabe", "confirmed specification")
     check("B1) Runde 1 hatte 0 Kandidaten (modell_fehlt dominiert) -> Recovery "
           "in Runde 2 WURDE trotzdem ausgeloest (kein 'eskalierbar' noetig)",
@@ -716,7 +716,7 @@ async def test_b2_null_kandidaten_ohne_recovery_stoppt_sauber():
     recherche, calls = await _recherchiere({
         "bekannte Probleme Schwachstellen": [SW_UNAUSGERICHTET_1, SW_UNAUSGERICHTET_2],
     })
-    runde2_calls = _esk_calls(calls, "Werkstattinformation", "technical service bulletin")
+    runde2_calls = _esk_calls(calls, "Werkstattinformation", "used buying guide common problems")
     runde3_calls = _esk_calls(calls, "bestätigt Herstellerangabe", "confirmed specification")
     check("B4) Runde 2 (Recovery) wurde ausgeloest", len(runde2_calls) == 2, str(calls))
     check("B5) Runde 2 fand NICHTS -> KEINE Runde 3 (kein automatisches volles "

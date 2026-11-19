@@ -159,7 +159,8 @@ _WART = json.loads((Path(__file__).parent / "tests" / "fixtures"
                     / "live_wartung_treffer_2026-11-08.json").read_text(encoding="utf-8"))
 FORUM = next(treffer(h["url"], h["title"], h["content"] or "")
              for h in _WART["ohne UXC1"] if "motor-talk" in h["url"])
-SW_R2 = ("Werkstattinformation technischer Hinweis", "technical service bulletin OR manufacturer")
+# Null-Kandidaten-Fall (SW-N19/E1): die englische Nachsuche fragt nach Gebrauchtwagen-Kaufberatungen (nicht nach TSBs).
+SW_R2 = ("Werkstattinformation technischer Hinweis", "used buying guide common problems")
 
 
 class _LogFang(logging.Handler):
