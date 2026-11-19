@@ -125,14 +125,19 @@ def insight_zu(ins, bauteil):
 
 
 def zeile_zu(text, bauteil):
-    """Die Restzeile eines Bauteils innerhalb der Bündelung (ab "„Bauteil“" bis zur schließenden Klammer)."""
+    """Die Restzeile eines Bauteils innerhalb der Bündelung: seine eigene Zeile ("• „Bauteil“ (...)"). Ein in der Schlusszeile
+    gebündelter Marktvorbehalt gehört zu den dort NAMENTLICH genannten Arbeiten und wird ihnen hier wieder zugeordnet."""
     start = text.find(f"„{bauteil}“")
     if start < 0:
         return ""
-    vor = text.rfind("; ", 0, start)
-    vor = text.rfind(": ", 0, start) if vor < 0 or vor < text.find("Weitere ausgewählte") else vor
-    ende = text.find(")", start)
-    return text[(vor + 2 if vor >= 0 else start):ende + 1]
+    ab = text.rfind("\n", 0, start) + 1
+    bis = text.find("\n", start)
+    zeile = text[ab:bis if bis >= 0 else len(text)]
+    zeile = zeile[2:] if zeile.startswith(chr(8226) + ' ') else zeile      # Aufzählungszeichen gehört zur Darstellung
+    for l in text.split("\n"):
+        if l.startswith("Marktvorbehalt der Quelle") and ": für " in l and f"„{bauteil}“" in l.split(": für ", 1)[1]:
+            zeile += " " + l.split(": für ", 1)[0]
+    return zeile
 
 
 def punkt_pruefen(tag, zeile, ins_b):

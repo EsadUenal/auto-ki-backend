@@ -357,7 +357,13 @@ for bereich in ("verkaeuferfragen", "dokumente"):
                                                            ("Kühlmittel", "Prüfung")))
           and "..." not in txt and "Erstintervall 105.000 km oder 6 Jahre, danach 15.000 km / 1 Jahr" in txt
           and "Anwendbarkeit ungeklärt, zuerst klären: nur Fahrzeuge mit Zusatzheizung" in txt
-          and txt.count("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt") == 3
+          # identischer Marktvorbehalt: EINMAL gebündelt, mit den NAMEN der drei betroffenen Arbeiten (nicht Automatikgetriebeöl/Kühlmittel)
+          and txt.count("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt") == 1
+          and "Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt: für „Motoröl“, „Ventilspiel“, "
+              "„Nebenaggregat-Antriebsriemen“." in txt
+          # je Arbeit eine eigene Zeile
+          and all(any(l.startswith(f"• ") and f"„{b}“ (" in l for l in txt.split(chr(10)))
+                  for b in ("Motoröl", "Ventilspiel", "Nebenaggregat-Antriebsriemen", "Automatikgetriebeöl", "Kühlmittel"))
           and "zusätzlich bedingte Regel, Voraussetzung ungeklärt: alle 15.000 km oder 1 Jahr" in txt, txt)
 for bereich in ("verkaeuferfragen", "dokumente"):
     sp = next(a for a in antwort2["kaufaktionen"][bereich]["basis"] if a["id"].endswith("basis-wartungsrest"))

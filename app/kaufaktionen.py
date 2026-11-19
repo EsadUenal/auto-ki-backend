@@ -1111,7 +1111,7 @@ class _Sammler:
         n = traeger[-1]
         host = ausgegeben[n]
         neu = host.model_copy(update={
-            "aktion": host.aktion + " " + self._rest_einleitung(bereich) + "; ".join(zeilen) + ".",
+            "aktion": host.aktion + " " + _wartungsrest_text(bereich, zeilen),
             "evidence_ids": list(host.evidence_ids) + [e for e in evidenz if e not in host.evidence_ids]})
         ausgegeben = list(ausgegeben)
         ausgegeben[n] = neu
@@ -1336,6 +1336,30 @@ def _katalog_mit_gekappten_fragen(katalog, gekappt: list[Kaufaktion]):
 _WARTUNGSREST_ANKER = {VERKAEUFERFRAGEN: "wartung", DOKUMENTE: "wartungsrechnungen"}
 
 
+_MARKTVORBEHALT_ZEILE = "Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt"
+_RE_BAUTEIL_ZEILE = re.compile(r"„([^“]+)“")
+
+
+def _wartungsrest_text(bereich: str, zeilen: list[str]) -> str:
+    """Sammelpunkt der Wartungsarbeiten: Einleitung, dann EINE Zeile je Arbeit ("• „Bauteil“ (Tätigkeit; laut Quelle: ...;
+    Vorbehalte)"). Der Inhalt jeder Zeile ist unverändert (Bauteil, Tätigkeit, Intervall, Erst-/Folgeintervall, Bedingungen,
+    Anwendbarkeit, Marktvorbehalt); nur die Darstellung trennt die Arbeiten sichtbar. Ein Marktvorbehalt, der in MEHREREN
+    Zeilen wörtlich gleich steht, wird einmal in einer Schlusszeile mit den NAMEN der betroffenen Arbeiten genannt (die
+    Geltung bleibt je Arbeit eindeutig); bei nur einer betroffenen Arbeit bleibt er in deren Zeile."""
+    betroffen = [z for z in zeilen if "; " + _MARKTVORBEHALT_ZEILE in z]
+    zeilen_aus = list(zeilen)
+    schluss = ""
+    if len(betroffen) >= 2:
+        namen = []
+        for z in betroffen:
+            m = _RE_BAUTEIL_ZEILE.search(z)
+            namen.append(f"„{m.group(1)}“" if m else None)
+        if all(namen):
+            zeilen_aus = [z.replace("; " + _MARKTVORBEHALT_ZEILE, "") if z in betroffen else z for z in zeilen]
+            schluss = f"\n{_MARKTVORBEHALT_ZEILE}: für {', '.join(namen)}."
+    return (_Sammler._rest_einleitung(bereich).rstrip() + "\n" + "\n".join("• " + z for z in zeilen_aus) + schluss)
+
+
 def _katalog_mit_wartungsrest(katalog, bereich: str, zeilen: list[str]):
     """Gleicher vorhandener Weg wie `_katalog_mit_gekappten_fragen`: was das Limit aus den Einzelaktionen drängt
     und keinen Wartungsträger findet, bleibt als EIN Sammelpunkt im Basiskatalog sichtbar. Das Basismodell kennt
@@ -1346,11 +1370,11 @@ def _katalog_mit_wartungsrest(katalog, bereich: str, zeilen: list[str]):
     if bereich == VERKAEUFERFRAGEN:
         eintrag = ("wartungsrest", "Wartung und Technik",
                    "Wurden die folgenden Wartungsarbeiten durchgeführt, und wenn ja, wann und bei welchem Kilometerstand?",
-                   _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
+                   _wartungsrest_text(bereich, zeilen), None, ())
     else:
         eintrag = ("wartungsrest", "Prüfungen und Wartung",
                    "Nachweise zu den weiteren ausgewählten Wartungspunkten, falls durchgeführt, zeigen lassen",
-                   _Sammler._rest_einleitung(bereich) + "; ".join(zeilen) + ".", None, ())
+                   _wartungsrest_text(bereich, zeilen), None, ())
     ergebnis = list(katalog)
     anker = _WARTUNGSREST_ANKER.get(bereich)
     pos = next((i + 1 for i, e in enumerate(ergebnis) if e[0] == anker), len(ergebnis))
