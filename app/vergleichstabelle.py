@@ -128,6 +128,20 @@ _POWERTRAIN_LABEL = {"MHEV": "Mild-Hybrid", "PHEV": "Plug-in-Hybrid", "BEV": "El
                      "ICE": "Verbrenner"}
 
 
+def _motor_teile(identity) -> list[str]:
+    """Vom Backend belegte, bestaetigte TEILE einer zusammengesetzten Motorangabe (`field_evidence.engine_name`): nur bei
+    Status `user_only`, nur nichtleere Texte. Uebernommen wird ausschliesslich der vorhandene Feldzustand -- keine Ableitung,
+    dass weitere Bestandteile (V8, Heckantrieb, Motorcode) oder die ganze Angabe damit bestaetigt seien."""
+    fe = ((getattr(identity, "field_evidence", None) or {}).get("engine_name") or {}) if identity is not None else {}
+    if fe.get("verification_state") != "user_only":
+        return []
+    return [t.strip() for t in (fe.get("bestaetigte_teile") or []) if isinstance(t, str) and t.strip()]
+
+
+def _teile_text(teile: list[str]) -> str:
+    return ", ".join(f"„{t}“" for t in teile)
+
+
 def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                 hu=None, laufleistungskontext=None, price_assessment=None,
                 markt_verfuegbar: bool = False, fakten=None,
@@ -204,10 +218,26 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
             # bestätigte Teilangabe (PS); enthält die Inserat-Angabe mehr als
             # das, wird das nicht als pauschales Häkchen dargestellt.
             nur_ps_bestaetigt = bool(motor_text) and motor_text.strip() != f"{ps} PS"
+            teile = _motor_teile(identity)
+            if teile:
+                # Leistung und Motorangabe getrennt bewertet: die Leistung ist bestaetigt, von der zusammengesetzten
+                # Motorangabe nur der genannte Teil; der Rest bleibt ausdruecklich ungeprueft.
+                zeilen.append(Vergleichszeile(
+                    "Motor/Leistung", angabe, f"{identity.horsepower} PS; Motor: {_teile_text(teile)}", HERKUNFT_WEB,
+                    f"✓ Leistung bestätigt; von der Motorangabe nur {_teile_text(teile)} bestätigt, "
+                    "übrige Bestandteile nicht unabhängig geprüft"))
+            else:
+                zeilen.append(Vergleichszeile(
+                    "Motor/Leistung", angabe, f"{identity.horsepower} PS", HERKUNFT_WEB,
+                    "✓ Leistung bestätigt; übrige Angaben nicht unabhängig geprüft"
+                    if nur_ps_bestaetigt else PASST))
+        elif _motor_teile(identity):
+            # Teilbestaetigte Motorangabe ohne bestaetigte Leistung: nur der belegte Teil steht als Referenz.
+            teile = _motor_teile(identity)
             zeilen.append(Vergleichszeile(
-                "Motor/Leistung", angabe, f"{identity.horsepower} PS", HERKUNFT_WEB,
-                "✓ Leistung bestätigt; übrige Angaben nicht unabhängig geprüft"
-                if nur_ps_bestaetigt else PASST))
+                "Motor/Leistung", angabe, f"Motor: {_teile_text(teile)}", HERKUNFT_WEB,
+                f"Von der Motorangabe nur {_teile_text(teile)} bestätigt; übrige Bestandteile und Leistung "
+                "nicht unabhängig geprüft"))
         else:
             zeilen.append(Vergleichszeile("Motor/Leistung", angabe, None, HERKUNFT_KEINE,
                                           NICHT_BEWERTBAR))
