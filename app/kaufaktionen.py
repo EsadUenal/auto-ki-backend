@@ -963,6 +963,10 @@ def _kba_ref(i: Insight) -> str | None:
 
 # ── Sammler ──────────────────────────────────────────────────────────────────
 
+# SW-N19-A: Herkunft der Fragen, die ein Überlauf des Verkäuferfragen-Limits nicht ersatzlos verlieren darf.
+_PROBLEM_KATEGORIEN = ("schwachstelle", "web_schwachstelle", "motorproblem")
+
+
 class _Sammler:
     """Sammelt Aktionen, dedupliziert konservativ und sortiert deterministisch.
 
@@ -1128,6 +1132,27 @@ class _Sammler:
             return []
         rest = [a for a in sortiert[MAX_SPEZIFISCH_PRO_BEREICH:] if self._ist_wartung(a)]
         return self._rest_zeilen(bereich, rest)[0] if rest else []
+
+    def verdraengte_problemfragen(self, bereich: str) -> list[Kaufaktion]:
+        """SW-N19-A: Verkäuferfragen zu Schwachstelle, Web-Schwachstelle oder Motorproblem, die das Limit aus den
+        Einzelaktionen drängt. Wartungen haben ihren Sammelpunkt, Rückrufe und Inserat-Punkte rangieren darüber bzw. haben
+        den Basiskatalog; diese Fragen gingen bisher ersatzlos verloren, obwohl ihre Besichtigung (ohne Wartungskonkurrenz)
+        erschien. Die Aktion bleibt UNVERÄNDERT (Fragetext, Wortlaut mit Vorbehalten, evidence_ids, Kategorie, Rang); nur
+        ihr Typ wechselt auf Basis, weil sie nicht zu den sechs Einzelaktionen zählt. Mehrere Bauteile unter einem Schlüssel
+        gehen wie in `liste()` mit ("Gilt auch für ...")."""
+        if bereich != VERKAEUFERFRAGEN:
+            return []
+        out: list[Kaufaktion] = []
+        for a in self.gekappt(bereich):
+            if a.kategorie not in _PROBLEM_KATEGORIEN:
+                continue
+            weitere = self._weitere_bauteile.get((bereich, a.id.split("-", 1)[1]))
+            text = a.aktion
+            if weitere:
+                text += " Gilt auch für: " + ", ".join(f"„{w}“" for w in weitere) + "."
+            out.append(a.model_copy(update={"typ": TYP_BASIS, "aktion": text,
+                                            "evidence_ids": list(a.evidence_ids)}))
+        return out
 
     def gekappt(self, bereich: str) -> list[Kaufaktion]:
         """Fahrzeugspezifische Aktionen, die `MAX_SPEZIFISCH_PRO_BEREICH` aus der
@@ -1507,13 +1532,17 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
                      bereich, len(rest_ohne_traeger))
             katalog = _katalog_mit_wartungsrest(katalog, bereich, rest_ohne_traeger)
         spezifisch = s.liste(bereich)
+        basis = _basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug,
+                             getriebe, verkaeufer, inserat_texte)
+        # SW-N19-A: verdrängte Problemfragen stehen VOR dem allgemeinen Katalog (sie sind fahrzeugbezogen), behalten
+        # aber Text, Belege und Rang; Limit und Einzelaktionen bleiben unberührt.
+        basis = s.verdraengte_problemfragen(bereich) + basis
         listen[bereich] = Pruefliste(
             bereich=bereich,
             export_title=EXPORT_TITEL[bereich],
             fahrzeug=fahrzeug,
             fahrzeugspezifisch=spezifisch,
-            basis=_basis_liste(bereich, katalog, s.schluessel(bereich), fahrzeug,
-                               getriebe, verkaeufer, inserat_texte),
+            basis=basis,
         )
     return Kaufaktionen(
         besichtigung=listen[BESICHTIGUNG],

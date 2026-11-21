@@ -337,11 +337,16 @@ check("A24 EDC-Dämpfer eigener Schlüssel (Bedingung bleibt erhalten), "
 # project_enfal_kaufcheck_inputs), keine Regression der Zusammenlegung selbst
 # (siehe A24 oben): mehr echte Sicherheitsrueckrufe verdraengen zu Recht eine
 # einzelne Verschleissfrage.
+# SW-N19-A: das Limit verdraengt die Fahrwerksfrage weiterhin aus den sechs EINZELAKTIONEN, sie geht aber nicht mehr
+# ersatzlos verloren: als konkrete Frage (mit ihren Belegen) bleibt sie in der Basisliste sichtbar.
+_fw_einzel = _texte_aktionen(dm4["ka"].verkaeuferfragen.fahrzeugspezifisch)
+_fw_basis = [a for a in dm4["ka"].verkaeuferfragen.basis if a.kategorie in ("schwachstelle", "web_schwachstelle", "motorproblem")]
 check("A24b die drei hoechstrangigen Rueckrufe verdraengen die Fahrwerksfrage "
-      "aus den sichtbaren sechs Verkaeuferfragen (erwartete Cap-Folge)",
+      "aus den sechs Einzelaktionen (Cap-Folge), sie bleibt aber konkret in der Basisliste sichtbar",
       sum(1 for a in dm4["ka"].verkaeuferfragen.fahrzeugspezifisch
           if a.id.startswith("frage-rueckruf")) == 3
-      and "EDC-Dämpfer" not in fragen_m4)
+      and "EDC-Dämpfer" not in _fw_einzel
+      and any("EDC-Dämpfer" in a.titel and a.evidence_ids for a in _fw_basis), str([a.titel for a in _fw_basis]))
 
 # Befund J/4.4
 gruende_m4 = " ".join(erg_m4["empfehlung_gruende"])
