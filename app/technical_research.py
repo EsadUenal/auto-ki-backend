@@ -1509,6 +1509,35 @@ def _satz_nennt_modell(satz: str, modell: str | None) -> bool:
             and _modell_zusammenhaengend(satz, modell, konkat))
 
 
+# I5: Modellbezug ueber einen Doppelpunkt. "BMW 3er: der 316d leistet 122 PS" ist EINE zusammengehoerige Aussage -- das
+# Segment hinter dem Doppelpunkt prädiziert ueber das Modell des Kopfes. Der Bezug wird NUR unter allen Bedingungen
+# uebertragen: (1) der Doppelpunkt steht unmittelbar hinter dem ERSTEN Satzsegment (dem Satz-Anker), (2) dieses Kopfsegment
+# nennt das Zielmodell, (3) das Segment nennt weder eine fremde Marke noch ein anderes Modell derselben Familie, (4) es
+# enthaelt keinen Wechselmarker (Gegensatz, Beschraenkung auf eine Teilmenge, Ausstattungs-/Variantenbezeichnung). Verneinung
+# prueft der Aufrufer weiter je Vorkommen. Ein Doppelpunkt allein vererbt nichts.
+_RE_BEZUGSWECHSEL = re.compile(
+    r"\b(?:dagegen|hingegen|jedoch|aber|allerdings|wohingegen|waehrend|während|alternativ|stattdessen|dafuer|dafür|"
+    r"ansonsten|sonst)\b|\bnur\s+(?:fuer|für|bei|beim|in|im|mit)\b|"
+    r"\w*(?:edition|sondermodell|variante|ausf[uü]hrung|version)\w*", re.IGNORECASE)
+
+
+def _modellbezug_ueber_doppelpunkt(satz: str, start: int, seg: str, grenzen: list[int], ziel: dict) -> bool:
+    if start < 1 or satz[start - 1] != ":":
+        return False
+    kopf_ende = start - 1
+    if any(0 < g < kopf_ende for g in grenzen):          # der Doppelpunkt schliesst NICHT das erste Segment ab
+        return False
+    if not _satz_nennt_modell(satz[:kopf_ende], ziel.get("modell")):
+        return False
+    if _RE_BEZUGSWECHSEL.search(seg):
+        return False
+    if _fremde_marke_satz(seg, ziel.get("marke"), ziel.get("modell")):
+        return False
+    if _nennt_fremdes_modell_derselben_marke(seg, ziel.get("marke"), ziel.get("modell")):
+        return False
+    return _geschwistermodell_lokal(seg, ziel.get("modell")) is None
+
+
 # Identity-Hardening (Folgeauftrag, Abschnitt 1 "Primary-Source-Pfad muss
 # wirklich streng sein", CORRECTED): die ursprüngliche Fassung prüfte
 # `score_domain(url) >= TIER1_MIN_SCORE` — das lässt zwar KEIN Fachmedium/
@@ -4015,7 +4044,8 @@ def werte_identitaet_aus(treffer: list[dict], ziel: dict) -> tuple[WebVehicleIde
                 if hub_norm and hub_norm not in {w for w, _ in _hubraum_werte_litergleich(seg)}:
                     continue
                 if start != 0 and not _satz_nennt_modell(seg, ziel.get("modell")):
-                    continue
+                    if not _modellbezug_ueber_doppelpunkt(satz, start, seg, grenzen, ziel):
+                        continue
                 return True
             return False
 
