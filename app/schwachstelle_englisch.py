@@ -466,6 +466,12 @@ def bauteil(satz: str) -> tuple[str, str] | None:
     return (treffer[1], treffer[2]) if treffer else None
 
 
+def bauteil_schluessel(text: str) -> set[str]:
+    """ALLE bestehenden Bauteil-Schluessel im Text (spezifische und generische Muster, Wortgrenzen) -- fuer den
+    Themenabgleich Snippet <-> Volltext derselben Quelle (SW-N19/E1), nicht fuer die Faktenbildung."""
+    return {schluessel for muster, _label, schluessel, _gen in _BAUTEILE if muster.search(text or "")}
+
+
 def hat_bauteil(satz: str) -> bool:
     return bauteil(satz) is not None
 

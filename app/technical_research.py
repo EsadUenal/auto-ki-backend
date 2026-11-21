@@ -1160,25 +1160,89 @@ def _originaltext_pruefung(raw, snippet: str = "") -> str:
 # (Snippet oder Text fehlt). Reiner Diagnoseindikator: False beweist keinen Verlust einer fachlichen Aussage.
 _RE_DIAG_AUSZEICHNUNG = re.compile(r"[*_#>`|]+")
 _RE_DIAG_LEER = re.compile(r"\s+")
-_RE_DIAG_AUSLASSUNG = re.compile(r"\.{3,}|…")
+# Auslassungen trennen Snippet-Teilstuecke: "[...]" bzw. "[…]" (Provider-Format, Klammern eingeschlossen), "...", "…".
+_RE_DIAG_AUSLASSUNG = re.compile(r"\[\s*(?:\.{3,}|…)\s*\]|\.{3,}|…")
+# Markdown-Link/-Bild im Seitentext: "[Text](url)" -> "Text" (der Provider liefert den Seitentext als Markdown).
+_RE_DIAG_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 
 
 def _diag_norm(text: str) -> str:
     t = unicodedata.normalize("NFKC", text).lower()
+    t = _RE_DIAG_MD_LINK.sub(r"\1", t)
     t = t.replace("„", '"').replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
     t = _RE_DIAG_AUSZEICHNUNG.sub(" ", t)
     return _RE_DIAG_LEER.sub(" ", t).strip()
 
 
+def _snippet_teile(snippet) -> list[tuple[str, str]]:
+    """(Originaltext, normalisiert) je Snippet-Teilstueck ab 12 normalisierten Zeichen."""
+    if not isinstance(snippet, str) or not snippet.strip():
+        return []
+    out = []
+    for x in _RE_DIAG_AUSLASSUNG.split(snippet):
+        n = _diag_norm(x)
+        if len(n) >= 12:
+            out.append((x.strip(), n))
+    return out
+
+
 def _snippet_enthalten(snippet, text) -> bool | None:
-    if not isinstance(snippet, str) or not snippet.strip() or not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str) or not text.strip():
         return None
-    t = _diag_norm(text)
-    teile = [_diag_norm(x) for x in _RE_DIAG_AUSLASSUNG.split(snippet)]
-    teile = [x for x in teile if len(x) >= 12]
+    teile = _snippet_teile(snippet)
     if not teile:
         return None
-    return all(x in t for x in teile)
+    t = _diag_norm(text)
+    return all(n in t for _, n in teile)
+
+
+# SW-N19/E1 (Textuebernahme): ein brauchbarer Originaltext ersetzt das Snippet (unveraendert). Der Provider liefert ihn
+# aber teils nur unvollstaendig (real: 675 Zeichen fuer eine Kaufberatung von rund 20.000 Zeichen) bzw. die Kuerzung
+# schneidet den Artikel hinter langen Seitenelementen ab -- dann ging eine bereits gelieferte Textstelle des Snippets
+# ungeprueft verloren. Ein Snippet-Teilstueck wird deshalb ZUSAETZLICH (als eigene Textstelle derselben Quelle, nicht
+# angefuegt, kein zweiter Beleg) durch die unveraenderten fachlichen Pruefungen gefuehrt, wenn ALLES gilt:
+#   (1) es steht nicht im tatsaechlich ausgewerteten Text (Formatnormalisierung `_diag_norm`),
+#   (2) es nennt ein Bauteil (bestehendes deutsches Vokabular bzw. englische Bauteilerkennung, gleiche Schluessel),
+#   (3) der ausgewertete Text nennt KEIN Bauteil desselben Schluessels -- aeussert sich der Volltext zum selben Thema
+#       (auch relativierend), entscheidet weiterhin allein er (kein Snippet-Retry gegen einen relativierenden Volltext).
+def _bauteil_schluessel(text: str) -> set[str]:
+    n = _norm(text or "")
+    de = {sch for m, sch in _bauteil_vokabular().items() if m in n and m not in _STRUKTUR_VERSCHLEISS_ADJ}
+    return de | _en.bauteil_schluessel(text or "")
+
+
+def _snippet_ergaenzung(snippet, eval_text: str) -> list[str]:
+    teile = _snippet_teile(snippet)
+    if not teile or not isinstance(eval_text, str):
+        return []
+    t = _diag_norm(eval_text)
+    eval_schluessel = None
+    out = []
+    for roh, n in teile:
+        if n in t:
+            continue
+        eigene = _bauteil_schluessel(roh)
+        if not eigene:
+            continue
+        if eval_schluessel is None:
+            eval_schluessel = _bauteil_schluessel(eval_text)
+        if eigene & eval_schluessel:
+            continue
+        out.append(roh)
+    return out
+
+
+def _mit_snippet_ergaenzung(treffer: list[dict]) -> list[dict]:
+    """Je Treffer mit `_snippet_ergaenzung` folgt direkt dahinter je Teilstueck eine eigene Textstelle derselben Quelle
+    (gleiche URL/Titel, `content` = Teilstueck, kein Originaltext). Gleiche URL -> gleiche Domain: `_quellen_aus` und die
+    Domainzaehlung werten sie nicht als zweiten Beleg; gleiche Bauteile fallen ueber den Kandidatenschluessel zusammen."""
+    out: list[dict] = []
+    for r in treffer:
+        out.append(r)
+        for teil in (r.get("_snippet_ergaenzung") or ()):
+            out.append({**r, "content": teil, "raw_content": None, "_ot": "snippet_ergaenzung",
+                        "_snippet_ergaenzung": ()})
+    return out
 
 
 def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
@@ -1208,10 +1272,12 @@ def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
             stat["volltext"] += 1
             stat["gekuerzt"] += int(gekuerzt)
             # Diagnose (ohne Wirkung): Laengen und Snippet-Abgleich vor/nach Kuerzung, je Treffer.
-            ergebnis.append({**r, "content": text, "_ot": "volltext",
+            ergaenzung = _snippet_ergaenzung(snippet, text)
+            ergebnis.append({**r, "content": text, "_ot": "volltext", "_snippet_ergaenzung": ergaenzung,
                              "_diag_text": {"raw_len": len(raw), "eval_len": len(text), "gekuerzt": bool(gekuerzt),
                                             "snippet_im_raw": _snippet_enthalten(snippet, raw),
-                                            "snippet_im_eval": _snippet_enthalten(snippet, text)}})
+                                            "snippet_im_eval": _snippet_enthalten(snippet, text),
+                                            "snippet_ergaenzt": len(ergaenzung)}})
         else:
             stat["snippet_fallback"] += 1
             stat["fallback_" + (eigen if eigen != "ok" else "fehlt")] += 1
@@ -7112,6 +7178,8 @@ def _extrahiere_fakten(treffer: list[dict], kategorie: str, *,
     # `_wartung_vokabular()`) — "schwachstelle"/"rueckruf" bleiben exakt beim
     # bisherigen, geteilten `_bauteil_vokabular()`.
     treffer = bereinige_treffer(treffer)   # F5: Sicherheitsnetz (Eingang: web_search.bereinige_treffer)
+    if kategorie == "schwachstelle":
+        treffer = _mit_snippet_ergaenzung(treffer)   # SW-N19/E1: nicht abgedeckte Snippet-Teilstuecke derselben Quelle
     vokabular = _wartung_vokabular() if kategorie == "wartung" else _bauteil_vokabular()
     min_score = _MIN_SCORE_RUECKRUF if kategorie == "rueckruf" else MIN_SCORE_FAKT
     # Rückrufdatensatz-Aussage -> Rohfelder DIESES Datensatzes (für den strukturierten Abgleich).
@@ -9219,14 +9287,14 @@ def _sw_diagnose_extraktion(lauf: str, runde: int, treffer: list[dict], stats: d
         fakten_url = str(len(f_url)) if id(r) in kuratiert_ids else "-"
         log.info("sw_diagnose lauf=%s runde=%d stufe=treffer nr=%d herkunft=r%s:%s url=%s text=%s kuratiert=%s "
                  "treffer_ebene=%s claim_gruende=%s kandidat=%s fakten=%s raw_len=%s eval_len=%s gekuerzt=%s "
-                 "snippet_im_raw=%s snippet_im_eval=%s claim_gruende_url=%s fakten_url=%s",
+                 "snippet_im_raw=%s snippet_im_eval=%s snippet_ergaenzt=%s claim_gruende_url=%s fakten_url=%s",
                  lauf, runde, nr, r.get("_sw_runde", "-"), r.get("_sw_intent", "-"), _diag_url(url), text, kuratiert,
                  ebene, claim_txt, "ja" if url in kandidat_urls and id(r) in kuratiert_ids else "nein",
                  ",".join(f_url) if f_url and id(r) in kuratiert_ids else "0",
                  "nicht_pruefbar" if dt.get("raw_len") is None else dt["raw_len"],
                  dt.get("eval_len", "-"), _jn(dt.get("gekuerzt")) if dt else "-",
                  _jn(dt.get("snippet_im_raw")) if dt else "-", _jn(dt.get("snippet_im_eval")) if dt else "-",
-                 claim_gruende_url, fakten_url)
+                 dt.get("snippet_ergaenzt", "-") if dt else "-", claim_gruende_url, fakten_url)
 
 
 def _log_fakten_phase(kategorie: str, anfragen: int, stats: dict, abgelehnt_delta: list[dict],

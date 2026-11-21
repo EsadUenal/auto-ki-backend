@@ -105,7 +105,9 @@ f2, _, g2 = extraktion(r2)
 check("C3 R2: bisheriges Ergebnis (1 Ablehnung no_problem_signal, Rost begrenzter Bericht)",
       dict(g2) == {"no_problem_signal": 1} and [(x.bauteil, x.beleglage) for x in f2] == [("Rost", "begrenzter_bericht")])
 f3, _, g3 = extraktion(r3)
-check("C4 S2: bisheriges Ergebnis (1 Ablehnung, keine Fakten)", sum(g3.values()) == 1 and f3 == [])
+check("C4 S2: der hinter der Kuerzung verlorene Snippet-Satz wird als Textstelle derselben Quelle ergaenzt "
+      "(SW-N19/E1-Fix): Rost als begrenzter Bericht", [(x.bauteil, x.beleglage) for x in f3] == [("Rost", "begrenzter_bericht")]
+      and r3["_diag_text"]["snippet_ergaenzt"] == 1, str([(x.bauteil, x.beleglage) for x in f3]))
 
 print("\n== D: Logzeile -- Werte vorhanden, keine Inhalte ==")
 zeilen: list[str] = []
@@ -138,7 +140,7 @@ check("D1 je Treffer eine Zeile mit Laufkennung, Runde und Nummer", len(tz) == 4
       and all("lauf=testlauf01 runde=2" in z for z in tz) and [z.split(" nr=")[1].split()[0] for z in tz] == ["1", "2", "3", "4"])
 check("D2 R1-Zeile: Laengen, gekuerzt=nein, Snippet ja/ja, URL-Aggregationen getrennt (170 Gruende, 3 Fakten)",
       f"raw_len={len(TEXT.strip())} eval_len={len(r1['content'])} gekuerzt=nein snippet_im_raw=ja snippet_im_eval=ja "
-      "claim_gruende_url=170 fakten_url=3" in tz[0], tz[0][-160:])
+      "snippet_ergaenzt=0 claim_gruende_url=170 fakten_url=3" in tz[0], tz[0][-160:])
 check("D3 R2-Zeile: raw_len und snippet_im_raw nicht_pruefbar", "raw_len=nicht_pruefbar" in tz[1]
       and "snippet_im_raw=nicht_pruefbar snippet_im_eval=ja" in tz[1], tz[1][-160:])
 check("D4 S2-Zeile: gekuerzt=ja, snippet_im_raw=ja, snippet_im_eval=nein",
@@ -175,7 +177,7 @@ check("E2 Textdiagnose je Treffer: Zeile 1 = Snippet (raw nicht pruefbar, eval =
       and f"raw_len={len((NAV + TEXT).strip())} eval_len={len(e2['content'])} gekuerzt=ja snippet_im_raw=ja snippet_im_eval=nein" in ez[1],
       " | ".join(z[-170:] for z in ez))
 check("E3 URL-Aggregation: beide Zeilen tragen DIESELBEN Werte, beschriftet als *_url (Summe beider Treffer)",
-      len(ez) == 2 and all(f"claim_gruende_url={gr_url} fakten_url={len(f_e)}" in z for z in ez) and gr_url == 2 and len(f_e) == 1,
+      len(ez) == 2 and all(f"claim_gruende_url={gr_url} fakten_url={len(f_e)}" in z for z in ez) and gr_url == 3 and len(f_e) == 2,  # Snippet-Treffer + ergaenzter Rostsatz des gekuerzten Treffers; je Einzelextraktion ein Rost-Fakt
       str((gr_url, len(f_e))))
 check("E4 das Feld claims_bewertet erscheint nicht mehr", all("claims_bewertet" not in z for z in zeilen))
 
