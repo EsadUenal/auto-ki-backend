@@ -60,6 +60,7 @@ SICHERHEIT
 import asyncio
 import logging
 import re
+import unicodedata
 import uuid
 import zlib
 from typing import Protocol
@@ -1152,6 +1153,34 @@ def _originaltext_pruefung(raw, snippet: str = "") -> str:
     return "ok"
 
 
+# SW-Diagnose Textuebernahme: einheitliche FORMAT-Normalisierung fuer den Vergleich Snippet <-> Text (keine Semantik):
+# Unicode NFKC, Kleinschreibung, Markdown-/Auszeichnungszeichen (*, _, #, >, `, |) entfernt, Anfuehrungszeichen
+# vereinheitlicht, jede Leerraumfolge zu einem Leerzeichen. Ein Snippet mit Auslassungen ("...", "…") gilt als
+# enthalten, wenn JEDES Teilstueck (ab 12 Zeichen) enthalten ist. Ergebnis True/False, None = nicht pruefbar
+# (Snippet oder Text fehlt). Reiner Diagnoseindikator: False beweist keinen Verlust einer fachlichen Aussage.
+_RE_DIAG_AUSZEICHNUNG = re.compile(r"[*_#>`|]+")
+_RE_DIAG_LEER = re.compile(r"\s+")
+_RE_DIAG_AUSLASSUNG = re.compile(r"\.{3,}|…")
+
+
+def _diag_norm(text: str) -> str:
+    t = unicodedata.normalize("NFKC", text).lower()
+    t = t.replace("„", '"').replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+    t = _RE_DIAG_AUSZEICHNUNG.sub(" ", t)
+    return _RE_DIAG_LEER.sub(" ", t).strip()
+
+
+def _snippet_enthalten(snippet, text) -> bool | None:
+    if not isinstance(snippet, str) or not snippet.strip() or not isinstance(text, str) or not text.strip():
+        return None
+    t = _diag_norm(text)
+    teile = [_diag_norm(x) for x in _RE_DIAG_AUSLASSUNG.split(snippet)]
+    teile = [x for x in teile if len(x) >= 12]
+    if not teile:
+        return None
+    return all(x in t for x in teile)
+
+
 def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
     """Setzt verwertbaren, mit der Suche gelieferten Originaltext als `content` (siehe oben). Rein, ohne
     Netzwerk. Ein bereits verarbeiteter Treffer (`_ot`) wird nicht erneut gezählt. Dieselbe URL, die in
@@ -1172,16 +1201,28 @@ def _mit_originaltext(treffer: list[dict]) -> tuple[list[dict], dict[str, int]]:
         stat["treffer"] += 1
         eigen = _originaltext_pruefung(r.get("raw_content"))
         raw = original.get(_url_schluessel(r.get("url") or ""))
+        snippet = r.get("content")
+        eigen_raw = r.get("raw_content") if isinstance(r.get("raw_content"), str) else None
         if raw:
             text, gekuerzt = _kuerze_originaltext(raw)
             stat["volltext"] += 1
             stat["gekuerzt"] += int(gekuerzt)
-            ergebnis.append({**r, "content": text, "_ot": "volltext"})
+            # Diagnose (ohne Wirkung): Laengen und Snippet-Abgleich vor/nach Kuerzung, je Treffer.
+            ergebnis.append({**r, "content": text, "_ot": "volltext",
+                             "_diag_text": {"raw_len": len(raw), "eval_len": len(text), "gekuerzt": bool(gekuerzt),
+                                            "snippet_im_raw": _snippet_enthalten(snippet, raw),
+                                            "snippet_im_eval": _snippet_enthalten(snippet, text)}})
         else:
             stat["snippet_fallback"] += 1
             stat["fallback_" + (eigen if eigen != "ok" else "fehlt")] += 1
             # `_ot_grund`: nur Diagnose (SW-Diagnose), dieselbe Einstufung wie im Zähler oben.
-            ergebnis.append({**r, "_ot": "snippet", "_ot_grund": eigen if eigen != "ok" else "fehlt"})
+            ergebnis.append({**r, "_ot": "snippet", "_ot_grund": eigen if eigen != "ok" else "fehlt",
+                             "_diag_text": {"raw_len": len(eigen_raw) if eigen_raw is not None else None,
+                                            "eval_len": len(snippet) if isinstance(snippet, str) else 0,
+                                            "gekuerzt": False,
+                                            "snippet_im_raw": _snippet_enthalten(snippet, eigen_raw),
+                                            "snippet_im_eval": True if isinstance(snippet, str) and snippet.strip()
+                                            else None}})
     return ergebnis, stat
 
 
@@ -9166,11 +9207,26 @@ def _sw_diagnose_extraktion(lauf: str, runde: int, treffer: list[dict], stats: d
             kuratiert = f"nein:{ausschluss.get(id(r), 'unbekannt')}"
             ebene, claim_txt = "-", "-"
         f_url = fakten_je_url.get(url, [])
+        # Textuebernahme (Diagnose): raw_len/eval_len/gekuerzt/snippet_im_* gehoeren zu DIESEM Treffer (sein
+        # tatsaechlich ausgewerteter Text). claim_gruende_url / fakten_url sind dagegen die bestehenden, JE URL
+        # zusammengefassten Groessen (Fakten zusaetzlich je Bauteil gebuendelt): keine Anzahl bewerteter Aussagen und
+        # nicht eindeutig einem einzelnen Treffer zugeordnet. Nur fuer kuratierte Treffer, sonst "-".
+        dt = r.get("_diag_text") or {}
+
+        def _jn(v):
+            return "nicht_pruefbar" if v is None else ("ja" if v else "nein")
+        claim_gruende_url = str(sum(claim.values())) if id(r) in kuratiert_ids else "-"
+        fakten_url = str(len(f_url)) if id(r) in kuratiert_ids else "-"
         log.info("sw_diagnose lauf=%s runde=%d stufe=treffer nr=%d herkunft=r%s:%s url=%s text=%s kuratiert=%s "
-                 "treffer_ebene=%s claim_gruende=%s kandidat=%s fakten=%s",
+                 "treffer_ebene=%s claim_gruende=%s kandidat=%s fakten=%s raw_len=%s eval_len=%s gekuerzt=%s "
+                 "snippet_im_raw=%s snippet_im_eval=%s claim_gruende_url=%s fakten_url=%s",
                  lauf, runde, nr, r.get("_sw_runde", "-"), r.get("_sw_intent", "-"), _diag_url(url), text, kuratiert,
                  ebene, claim_txt, "ja" if url in kandidat_urls and id(r) in kuratiert_ids else "nein",
-                 ",".join(f_url) if f_url and id(r) in kuratiert_ids else "0")
+                 ",".join(f_url) if f_url and id(r) in kuratiert_ids else "0",
+                 "nicht_pruefbar" if dt.get("raw_len") is None else dt["raw_len"],
+                 dt.get("eval_len", "-"), _jn(dt.get("gekuerzt")) if dt else "-",
+                 _jn(dt.get("snippet_im_raw")) if dt else "-", _jn(dt.get("snippet_im_eval")) if dt else "-",
+                 claim_gruende_url, fakten_url)
 
 
 def _log_fakten_phase(kategorie: str, anfragen: int, stats: dict, abgelehnt_delta: list[dict],
