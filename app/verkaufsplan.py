@@ -35,6 +35,11 @@ from typing import Any
 
 from app.carapi_provider import STATUS_OK, Marktbewertung, Marktdauer
 from app.hu_termin import ABGELAUFEN, bewerte_hu
+from app.inserat import (
+    NACHWEIS_KEINE, NACHWEIS_NICHT_ANGEGEBEN, NACHWEIS_TEILWEISE, NACHWEIS_UNBEKANNT, NACHWEIS_VOLLSTAENDIG,
+    UNFALL_JA, UNFALL_NEIN, UNFALL_NICHT_ANGEGEBEN, UNFALL_UNBEKANNT,
+    unfall_status, wartung_angegeben, wartung_status,
+)
 from app.key_findings import _ausstattung_treffer
 from app.models import VerkaufsCheckRequest
 
@@ -520,9 +525,17 @@ def baue_wertminderer(req, maengel: dict, listing_analyse, heute: dt.date) -> li
         add(f"Optischer Mangel: {e}",
             "Ehrlich nennen und fotografieren. Das verhindert Diskussionen bei der Besichtigung.",
             "gering" if _leicht(e) else "mittel")
-    if _norm(req.unfallfrei) == "nein":
+    unfall, unfall_quelle = unfall_status(req)
+    if unfall == UNFALL_NEIN:
         add("Unfallschaden", "Art und Reparatur offen beschreiben, Rechnungen oder Gutachten bereitlegen.",
             "hoch")
+    elif unfall == UNFALL_UNBEKANNT:
+        # Ehrlich kommunizierte Unsicherheit ist kein Verschweigen, bleibt aber eine Unsicherheit, nach der Käufer
+        # fragen werden. Nichts wird als unfallfrei oder als Unfall behauptet.
+        add("Unfallstatus unklar",
+            "Offen als unklar benennen, das ist richtig. Käufer werden danach fragen; vorhandene Belege "
+            "(Reparaturrechnungen, HU-Berichte, Auskunft der Vorbesitzer) können die Frage beantworten.",
+            "mittel")
     # RC1 Live-Closing: "Keine bekannt." und "Keine." beschreiben KEINEN Wert-
     # minderer — vorher wurde jede nicht-leere Eingabe blind als Minderer gewertet,
     # inklusive der eigenen Verneinung ("Keine bekannt.. Offen angeben..."). Die
@@ -545,12 +558,21 @@ def baue_wertminderer(req, maengel: dict, listing_analyse, heute: dt.date) -> li
     if req.schluessel_anzahl == 1:
         add("Nur ein Schlüssel", "Offen angeben. Ein fehlender Zweitschlüssel ist ein häufiges "
                                  "Verhandlungsargument.", "gering")
-    if req.scheckheftgepflegt is False or _norm(req.wartungsnachweise) == "keine":
+    # Gemeinsame Statusauswertung (VK-03): Nachweise sind eine eigene Angabe; ein nicht gesetztes Scheckheft sagt nichts
+    # über die Nachweise, ein ausdrücklich verneintes Scheckheft nur etwas über das Scheckheft.
+    wartung = wartung_status(req)
+    if wartung["nachweise"] == NACHWEIS_KEINE:
         add("Keine Wartungsnachweise", "Vorhandene Rechnungen sammeln. Ohne Nachweise ist die "
                                        "Historie für Käufer schwer einzuschätzen.", "mittel")
-    elif _norm(req.wartungsnachweise) == "teilweise":
+    elif wartung["nachweise"] == NACHWEIS_TEILWEISE:
         add("Wartungsnachweise lückenhaft", "Vorhandene Nachweise sortiert bereitlegen und Lücken offen "
                                             "erklären.", "gering")
+    elif wartung["nachweise"] == NACHWEIS_UNBEKANNT:
+        add("Wartungsnachweise unklar", "Vorhandene Rechnungen und Einträge sammeln und offen sagen, was "
+                                        "belegt ist und was nicht.", "gering")
+    elif wartung["scheckheft"] is False:
+        add("Kein Scheckheft", "Ohne Scheckheft zählen Rechnungen und Werkstattbelege. Vorhandene Belege "
+                               "sortiert bereitlegen.", "gering")
     monate = _monate_seit(req.letzter_service_datum, heute)
     if monate is not None and monate > 24:
         add("Letzter Service länger her", f"Letzter Service {req.letzter_service_datum}, vor rund "
@@ -619,6 +641,12 @@ def _marke_kurz(marke: str | None) -> str:
     return {"volkswagen": "VW", "mercedes-benz": "Mercedes"}.get(_norm(marke), (marke or "").strip())
 
 
+_NACHWEIS_ANZEIGE = {NACHWEIS_VOLLSTAENDIG: "laut Angabe vollständig vorhanden",
+                     NACHWEIS_TEILWEISE: "teilweise vorhanden",
+                     NACHWEIS_KEINE: "keine vorhanden",
+                     NACHWEIS_UNBEKANNT: "unbekannt"}
+
+
 def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None) -> dict:
     marke = (baureihe or {}).get("marke") or req.marke or ""
     modell = (baureihe or {}).get("modell") or req.modell or ""
@@ -670,7 +698,14 @@ def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None
     f("HU bis", req.tuev_bis)
     if req.scheckheftgepflegt is not None:
         f("Scheckheft", "ja" if req.scheckheftgepflegt else "nein")
-    f("Unfallfrei", {"ja": "ja", "nein": "nein, Unfallschaden vorhanden"}.get(_norm(req.unfallfrei)))
+    unfall, _uq = unfall_status(req)
+    f("Unfallfrei", {UNFALL_JA: "ja", UNFALL_NEIN: "nein, Unfallschaden vorhanden"}.get(unfall))
+    if unfall == UNFALL_UNBEKANNT:
+        f("Unfallstatus", "keine sichere Angabe möglich")
+    wartung = wartung_status(req)
+    f("Wartungsnachweise", _NACHWEIS_ANZEIGE.get(wartung["nachweise"]))
+    if req.letzter_service_datum or req.letzter_service_km:
+        f("Letzter Service", ", ".join(filter(None, [req.letzter_service_datum, _km(req.letzter_service_km)])))
     f("Schlüssel", req.schluessel_anzahl)
     if req.zweiter_radsatz is not None:
         f("Zweiter Radsatz", "ja" if req.zweiter_radsatz else "nein")
@@ -688,6 +723,12 @@ def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None
     zustand_satz = _zustand_satz(maengel)
     if zustand_satz:
         teaser += " " + zustand_satz
+    if (req.vorschaeden or "").strip() and not ist_verneinung(req.vorschaeden):
+        teaser += f" Vorschäden: {req.vorschaeden.strip().rstrip('.')}."
+    if unfall == UNFALL_UNBEKANNT:
+        teaser += " Unfallstatus: keine sichere Angabe möglich."
+    if wartung["nachweise"] in (NACHWEIS_TEILWEISE, NACHWEIS_KEINE):
+        teaser += " Wartungsnachweise: " + _NACHWEIS_ANZEIGE[wartung["nachweise"]] + "."
 
     # Lange Beschreibung (Markdown, Verkäuferstimme)
     abs_: list[str] = []
@@ -701,13 +742,19 @@ def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None
     zw: list[str] = []
     if req.scheckheftgepflegt is True:
         zw.append("- Scheckheftgepflegt, Serviceheft liegt vor")
+    if wartung["nachweise"] != NACHWEIS_NICHT_ANGEGEBEN:
+        zw.append("- Wartungsnachweise: " + _NACHWEIS_ANZEIGE[wartung["nachweise"]])
     if req.letzter_service_datum or req.letzter_service_km:
         zw.append("- Letzter Service: " + ", ".join(filter(None, [req.letzter_service_datum,
                                                                 _km(req.letzter_service_km)])))
     if req.tuev_bis:
         zw.append(f"- HU bis {req.tuev_bis}")
-    if _norm(req.unfallfrei) == "ja":
+    if unfall == UNFALL_JA:
         zw.append("- Unfallfrei")
+    elif unfall == UNFALL_NEIN:
+        zw.append("- Unfallschaden vorhanden")
+    elif unfall == UNFALL_UNBEKANNT:
+        zw.append("- Unfallstatus: keine sichere Angabe möglich")
     if _norm(req.reifen_zustand):
         zw.append(f"- Reifen: {_REIFEN.get(_norm(req.reifen_zustand), req.reifen_zustand)}")
     for label, wert in (("Zustand außen", req.zustand_aussen), ("Zustand innen", req.zustand_innen)):
@@ -723,7 +770,12 @@ def baue_inseratspaket(req, fahrzeug: dict, maengel: dict, baureihe: dict | None
         abs_.append(f"**Vorschäden / Nachlackierungen**\n- {req.vorschaeden.strip()}")
     if (req.tuning or "").strip():
         abs_.append(f"**Umbauten**\n- {req.tuning.strip()}")
-    abs_.append("Besichtigung und Probefahrt nach Absprache. Unterlagen liegen zur Einsicht bereit.")
+    # Keine pauschale Behauptung bereitliegender Unterlagen: nur vorhandene Wartungsunterlagen werden erwähnt. Fehlende
+    # Wartungsbelege heißen nicht, dass keinerlei Fahrzeugunterlagen existieren.
+    schluss = "Besichtigung und Probefahrt nach Absprache."
+    if req.scheckheftgepflegt is True or wartung["nachweise"] in (NACHWEIS_TEILWEISE, NACHWEIS_VOLLSTAENDIG):
+        schluss += " Die vorhandenen Wartungsunterlagen liegen zur Einsicht bereit."
+    abs_.append(schluss)
     return {
         "titel": [
             {"art": "sachlich", "text": sachlich},
@@ -754,6 +806,14 @@ def _zustand_satz(maengel: dict) -> str:
 
 # ══ I. Foto-Plan ═════════════════════════════════════════════════════════════
 
+# Technische Mängel, deren Beleg auf einem Foto sichtbar sein kann (Undichtigkeit, Rost, Riss, sichtbarer Schaden,
+# Fehlermeldung im Display, Reifen/Bremsscheibe). Alles andere gilt als Funktionsmangel ohne sichtbaren Beleg.
+_SICHTBARER_BELEG = re.compile(
+    r"leck|undicht|tropf|ölverlust|oelverlust|rost|korro|riss\b|risse|gerissen|beschädigt|beschaedigt|gebrochen|"
+    r"verbeult|abgenutzt|verschlissen|warnleuchte|fehlermeldung|display|anzeige|reifen|bremsscheibe|auspuff",
+    re.IGNORECASE)
+
+
 def baue_fotoplan(req, maengel: dict) -> dict:
     motive = [
         ("Vorne schräg (3/4-Ansicht)", "Das wichtigste Foto: wird als Vorschaubild angezeigt."),
@@ -762,7 +822,8 @@ def baue_fotoplan(req, maengel: dict) -> dict:
         ("Front gerade", "Scheinwerfer und Frontpartie."),
         ("Heck gerade", "Rückleuchten und Heckpartie."),
         ("Felgen und Reifen", "Eine Felge nah, Profil sichtbar."),
-        ("Cockpit mit Lenkrad", "Von der Fahrertür aus, Zündung an ohne Warnleuchten."),
+        ("Cockpit mit Lenkrad", "Cockpit und Anzeigen gut lesbar fotografieren. Vorhandene Störungsmeldungen nicht "
+                                "verdecken und wahrheitsgemäß beschreiben."),
         ("Kilometerstand im Display", "Gut lesbar, bei eingeschalteter Zündung."),
         ("Infotainment / Navigation", "Bildschirm eingeschaltet."),
         ("Sitze vorne", "Fahrersitz mit Wange (Abnutzung ist ein Käuferthema)."),
@@ -775,11 +836,20 @@ def baue_fotoplan(req, maengel: dict) -> dict:
         motive.append(("Zweiter Radsatz", "Räder nebeneinander, Profil sichtbar."))
     if req.schluessel_anzahl:
         motive.append(("Schlüssel", f"Alle {req.schluessel_anzahl} Schlüssel zusammen."))
-    for m in (maengel["optisch"] + maengel["technisch"])[:4]:
+    # Optische Schäden und technische Mängel mit sichtbarem Beleg werden fotografiert. Ein Funktionsmangel ohne sichtbaren
+    # Beleg (Klimaleistung, Sensoraussetzer) ist auf einem Foto nicht erkennbar: konkrete Beschreibung, Funktionsnachweis
+    # oder vorhandener Befund statt Nahaufnahme. Keine Ursachendiagnose.
+    sichtbar = [m for m in maengel["technisch"] if _SICHTBARER_BELEG.search(m)]
+    funktion = [m for m in maengel["technisch"] if m not in sichtbar]
+    for m in (maengel["optisch"] + sichtbar)[:4]:
         motive.append((f"Mangel: {m}", "Ehrlich und nah fotografieren. Das schafft Vertrauen."))
+    funktions_hinweise = [
+        f"„{m}“ ist auf einem Foto nicht erkennbar: im Inserat konkret beschreiben (was genau, wann, wie oft). "
+        f"Ein vorhandener Werkstattbefund oder eine sichtbare Fehlermeldung im Display kann den Punkt belegen; "
+        f"ohne Befund keine Ursache nennen." for m in funktion[:3]]
     return {
         "fotos": [{"nr": i + 1, "motiv": mo, "tipp": t} for i, (mo, t) in enumerate(motive)],
-        "hinweise": [
+        "hinweise": funktions_hinweise + [
             "Bei Tageslicht fotografieren, am besten bei bedecktem Himmel.",
             "Ruhiger, sauberer Hintergrund ohne andere Autos.",
             "Keine Filter und keine starke Bildbearbeitung.",
@@ -829,28 +899,51 @@ def baue_verhandlung(req, maengel: dict, strategie: dict) -> dict:
         preise["hinweise"].append("Wenn du Verhandlungsspielraum willst, setze den Inseratspreis etwas "
                                   "über deine Preisvorstellung und kennzeichne ihn als Verhandlungsbasis.")
 
+    # Handlungsvorschläge, keine erledigten Tatsachen (VK-05): ENFAL kennt weder Fotos noch das veröffentlichte Inserat
+    # noch den Preis, zu dem der Verkäufer Abschläge berücksichtigt, und prüft keine Dokumente. Die Antworten sagen,
+    # was der Verkäufer tun kann, und überlassen die Preisentscheidung ihm.
+    wartung = wartung_status(req)
     argumente: list[dict] = []
     for m in maengel["optisch"][:3]:
-        argumente.append({"einwand": m, "antwort": "Ist im Inserat genannt und fotografiert; der Zustand "
-                                                    "ist im Preis berücksichtigt."})
+        argumente.append({"einwand": m, "antwort": "Im Inserat nennen und fotografieren (siehe Foto-Plan), "
+                                                    "dann ist der Punkt offen angesprochen. Auf Nachfrage "
+                                                    "sachlich beschreiben; ob du dafür einen Abschlag zugestehst, "
+                                                    "entscheidest du."})
     for m in maengel["technisch"][:2]:
-        argumente.append({"einwand": m, "antwort": "Offen genannt und im Preis berücksichtigt. Ein "
-                                                    "Werkstattbefund hilft, wenn der Käufer unsicher ist."})
+        argumente.append({"einwand": m, "antwort": "Im Inserat konkret beschreiben (was genau, wann, wie "
+                                                    "oft). Ein Werkstattbefund hilft, wenn der Käufer unsicher "
+                                                    "ist. Ob der Punkt den Preis mindert, entscheidest du."})
     if isinstance(req.vorbesitzer, int) and req.vorbesitzer >= 2:
+        historie_belegt = (req.scheckheftgepflegt is True
+                           or wartung["nachweise"] in (NACHWEIS_VOLLSTAENDIG, NACHWEIS_TEILWEISE))
         argumente.append({"einwand": f"{req.vorbesitzer} Vorbesitzer",
-                          "antwort": "Die Historie ist über Serviceheft und Unterlagen nachvollziehbar."
-                          if req.scheckheftgepflegt else "Offen angegeben; vorhandene Unterlagen zeigen."})
+                          "antwort": "Offen angeben und die vorhandenen Wartungsunterlagen zeigen, soweit "
+                                     "sie vorliegen. Lücken benennst du ehrlich."
+                          if historie_belegt else "Offen angeben; vorhandene Unterlagen zeigen."})
     if req.scheckheftgepflegt is True:
         argumente.append({"einwand": "Wartung",
-                          "antwort": "Serviceheft und Rechnungen liegen zur Einsicht bereit."})
+                          "antwort": "Serviceheft und Rechnungen zur Einsicht bereithalten."})
     argumente.append({"einwand": "Reifen",
                       "antwort": {"neuwertig": "Reifen sind neuwertig; Profiltiefe kann gemessen werden.",
                                   "gut": "Reifen sind in gutem Zustand; Profiltiefe kann gemessen werden."}
                       .get(_norm(req.reifen_zustand),
                            "Profiltiefe vorher selbst messen, damit du konkret antworten kannst.")})
     if req.kilometerstand:
-        argumente.append({"einwand": "Laufleistung",
-                          "antwort": "Mit Serviceeinträgen und HU-Berichten belegbar."})
+        service = ", ".join(filter(None, [req.letzter_service_datum, _km(req.letzter_service_km)]))
+        service_satz = (f" Der letzte Service ({service}) ist deine Angabe, kein Beleg; ein Eintrag oder eine "
+                        f"Rechnung dazu stützt sie." if service else "")
+        if wartung["nachweise"] == NACHWEIS_VOLLSTAENDIG:
+            antwort = ("Laut deiner Angabe liegen vollständige Wartungsnachweise vor: Kilometerangaben mit "
+                       "Serviceeinträgen und HU-Berichten abgleichen und zeigen. ENFAL prüft diese Unterlagen "
+                       "nicht." + service_satz)
+        elif wartung["nachweise"] == NACHWEIS_TEILWEISE:
+            antwort = ("Die Nachweise liegen nur teilweise vor: vorhandene Einträge und HU-Berichte zeigen und "
+                       "die Lücken offen benennen. Die Laufleistung ist dadurch nur teilweise belegbar."
+                       + service_satz)
+        else:
+            antwort = ("Ohne bekannte Wartungsnachweise lässt sich die Laufleistung schwer belegen: HU-Berichte "
+                       "und Rechnungen sammeln, soweit vorhanden." + service_satz)
+        argumente.append({"einwand": "Laufleistung", "antwort": antwort})
     return {"preise": preise, "argumente": argumente,
             "fairness": "Bleib sachlich, nenne bekannte Mängel selbst und mach keine Zusagen, die du "
                         "nicht belegen kannst."}
@@ -954,10 +1047,12 @@ def baue_inseratsqualitaet(req, maengel: dict, listing_analyse) -> dict:
         textq = {"label": _label(erf, len(kriterien)),
                  "kriterien": [{"kriterium": k, "erfuellt": ok} for k, ok in kriterien]}
     trans = [
-        ("Unfallstatus angegeben", bool(req.unfallfrei)),
+        # Ausdrücklich "unklar" ist eine Auskunft (ehrlich benannt), nicht fehlende Kommunikation; dieselbe Auswertung
+        # wie die Vollständigkeit (`app.inserat`).
+        ("Unfallstatus angegeben oder ausdrücklich als unklar benannt", unfall_status(req)[0] != UNFALL_NICHT_ANGEGEBEN),
         ("Mängel genannt oder ausdrücklich keine bekannt",
          bool(maengel["technisch"] or maengel["optisch"] or maengel["verneint"])),
-        ("Wartungsnachweis angegeben", req.scheckheftgepflegt is not None or bool(req.wartungsnachweise)),
+        ("Wartungsnachweis angegeben", wartung_angegeben(req)),
         ("HU-Termin angegeben", bool(req.tuev_bis)),
         ("Anzahl Vorbesitzer angegeben", req.vorbesitzer is not None),
     ]

@@ -76,6 +76,111 @@ def _getriebe_norm(text: str | None) -> str | None:
     return None
 
 
+# ══ 0) GEMEINSAME STATUSAUSWERTUNG (VK-03/04/05) ═════════════════════════════
+#
+# Vollständigkeit, Transparenz, Wertminderer, beide Inseratspfade, der Fakten-Guard und die Verhandlung lesen
+# dieselben Zustände. Unterschieden wird NICHT angegeben, ausdrücklich UNBEKANNT und die positive/negative Angabe.
+# Eine ehrlich kommunizierte Unsicherheit ist kein Verschweigen, bleibt aber eine sachliche Unsicherheit. Die
+# Strukturangabe ist kanonisch; eine eindeutig zuordenbare Aussage im Inseratstext füllt nur eine LEERE Struktur auf,
+# ein Widerspruch wird gemeldet (`finde_widersprueche`) statt eine Seite still zu überschreiben.
+
+UNFALL_JA, UNFALL_NEIN = "ja", "nein"
+UNFALL_UNBEKANNT, UNFALL_NICHT_ANGEGEBEN = "unbekannt", "nicht_angegeben"
+NACHWEIS_VOLLSTAENDIG, NACHWEIS_TEILWEISE, NACHWEIS_KEINE = "vollstaendig", "teilweise", "keine"
+NACHWEIS_UNBEKANNT, NACHWEIS_NICHT_ANGEGEBEN = "unbekannt", "nicht_angegeben"
+
+# Aussage ÜBER den Unfallstatus als Thema ("Unfallfreiheit", "Unfallstatus") ist noch keine Behauptung.
+_UNFALL_THEMA = re.compile(r"unfallfreiheit|unfallstatus|unfallhistorie|unf[aä]lle?\b|unfallsch[aä]d\w*|unfallfrei|unfallwagen",
+                           re.IGNORECASE)
+# Positive Behauptung: das Fahrzeug SEI unfallfrei / hatte keinen Unfall.
+_UNFALL_ANSPRUCH = re.compile(
+    r"unfallfrei(?!heit)|unfallschadenfrei|kein(?:e|en|em|er|erlei)?\s+(?:\w+\s+)?unf[aä]ll?\w*"
+    r"|ohne\s+(?:\w+\s+)?unf[aä]ll?\w*", re.IGNORECASE)
+# Negative Tatsachenbehauptung: es GAB einen Unfall. Braucht ebenfalls eine Grundlage.
+_UNFALL_NEGATIV = re.compile(
+    r"nicht\s+unfallfrei|unfallsch[aä]d\w*\s+vorhanden|(?:hatte|hat|gab)\s+(?:\w+\s+)?(?:einen\s+)?unfall|unfall\s+gehabt"
+    r"|unfallwagen|unfallfahrzeug", re.IGNORECASE)
+# Ausdrückliche Unsicherheit des Verkäufers über den Status.
+_UNSICHER = re.compile(
+    r"keine\s+(?:sichere|verlässliche|belastbare|eindeutige|genaue)\w*\s+(?:angabe|aussage|auskunft)"
+    r"|nicht\s+(?:sicher|bekannt|beurteilen|beantworten)|kann\s+(?:ich\s+)?(?:dazu\s+|hierzu\s+)?(?:keine|nicht)\b"
+    r"|(?:ist|bleibt|sind)\s+(?:mir\s+)?(?:\w+\s+)?unbekannt|unsicher|unklar|wei(?:ß|ss)\s+ich\s+nicht",
+    re.IGNORECASE)
+
+
+def _saetze(text: str | None) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+
+
+def unfall_status(req) -> tuple[str, str | None]:
+    """(Zustand, Quelle): ja | nein | unbekannt | nicht_angegeben; Quelle "angabe" (Formular) oder "inserat" (eindeutiger
+    Unsicherheitssatz im Text, nur wenn das Formular leer ist). Aus `None` allein wird KEIN "unbekannt" gemacht."""
+    roh = _norm(getattr(req, "unfallfrei", None))
+    if roh in ("ja", "nein", "unbekannt"):
+        return roh, "angabe"
+    if roh and roh not in ("nicht angegeben", "keine angabe", "n/a", "-"):
+        return UNFALL_UNBEKANNT, "angabe"
+    for satz in _saetze(_hat_text(req)):
+        if (_UNFALL_THEMA.search(satz) and _UNSICHER.search(satz)
+                and not _UNFALL_ANSPRUCH.search(satz) and not _UNFALL_NEGATIV.search(satz)):
+            return UNFALL_UNBEKANNT, "inserat"
+    return UNFALL_NICHT_ANGEGEBEN, None
+
+
+_WARTUNG_KEINE = re.compile(
+    r"(?:keine|ohne)\s+(?:\w+\s+)?(?:wartungs|service)(?:nachweis|unterlagen|historie)\w*"
+    r"|(?:wartungs|service)nachweise?\s+(?:sind\s+|ist\s+)?(?:nicht|keine)\s+vorhanden", re.IGNORECASE)
+_WARTUNG_TEILWEISE = re.compile(
+    r"(?:wartungs|service)nachweis\w*\s+(?:sind\s+|ist\s+)?(?:nur\s+)?(?:teilweise|lückenhaft|unvollständig)"
+    r"|(?:teilweise|lückenhaft\w*)\s+(?:vorhandene?\w*\s+)?(?:wartungs|service)\w*"
+    r"|nicht\s+vollständig\w*\s+(?:wartungs|service)\w*|(?:wartungs|service)\w*\s+(?:sind\s+)?nicht\s+vollständig",
+    re.IGNORECASE)
+_WARTUNG_VOLL = re.compile(r"(?:vollständige?[nrs]?|lückenlose?[nrs]?)\s+(?:wartungs|service)\w*", re.IGNORECASE)
+_WARTUNG_UNBEKANNT = re.compile(r"(?:wartungs|service)\w*\s+(?:ist|sind)\s+(?:mir\s+)?unbekannt", re.IGNORECASE)
+
+
+def wartung_text_aussage(text: str | None) -> str | None:
+    """Eindeutige Aussage des Inseratstexts zu den Wartungsnachweisen oder None (keine/mehrdeutige Fundstelle)."""
+    treffer: set[str] = set()
+    for satz in _saetze(text):
+        if _WARTUNG_KEINE.search(satz):
+            treffer.add(NACHWEIS_KEINE)
+        elif _WARTUNG_TEILWEISE.search(satz):
+            treffer.add(NACHWEIS_TEILWEISE)
+        elif _WARTUNG_UNBEKANNT.search(satz):
+            treffer.add(NACHWEIS_UNBEKANNT)
+        elif _WARTUNG_VOLL.search(satz):
+            treffer.add(NACHWEIS_VOLLSTAENDIG)
+    return next(iter(treffer)) if len(treffer) == 1 else None
+
+
+def wartung_status(req) -> dict:
+    """{"nachweise": vollstaendig|teilweise|keine|unbekannt|nicht_angegeben, "quelle": angabe|inserat|None,
+    "scheckheft": True|False|None, "letzter_service": bool}.
+
+    Die Nachweise sind die eigene Angabe des Verkäufers (keine Dokumentprüfung durch ENFAL). Der letzte Service ist eine
+    EIGENE Angabe und kein Beleg vorhandener Nachweise. Ein nicht gesetztes Scheckheft ist keine Aussage über alle
+    Wartungsnachweise."""
+    roh = _norm(getattr(req, "wartungsnachweise", None))
+    if roh in (NACHWEIS_VOLLSTAENDIG, NACHWEIS_TEILWEISE, NACHWEIS_KEINE):
+        nachweise, quelle = roh, "angabe"
+    elif roh:
+        nachweise, quelle = NACHWEIS_UNBEKANNT, "angabe"
+    else:
+        text = wartung_text_aussage(_hat_text(req))
+        nachweise, quelle = (text, "inserat") if text else (NACHWEIS_NICHT_ANGEGEBEN, None)
+    return {"nachweise": nachweise, "quelle": quelle,
+            "scheckheft": getattr(req, "scheckheftgepflegt", None),
+            "letzter_service": bool(getattr(req, "letzter_service_datum", None)
+                                    or getattr(req, "letzter_service_km", None))}
+
+
+def wartung_angegeben(req) -> bool:
+    """Hat der Verkäufer etwas zu Scheckheft ODER Wartungsnachweisen gesagt? (Service allein zählt nicht.)"""
+    w = wartung_status(req)
+    return w["nachweise"] != NACHWEIS_NICHT_ANGEGEBEN or w["scheckheft"] is not None
+
+
 # ══ 1) DETERMINISTISCHE INSERATSANALYSE ══════════════════════════════════════
 
 # Wichtige Angaben, die in die Vollständigkeit einfließen (fester Katalog -> der
@@ -90,9 +195,9 @@ def _pruefe_vollstaendigkeit(req: VerkaufsCheckRequest) -> tuple[int, int, list[
         ("Getriebe",             bool(getattr(req, "getriebe", None)),       "wichtig"),
         ("Leistung / Motor",     bool(getattr(req, "motor", None)),          "optional"),
         ("TÜV/HU",               bool(getattr(req, "tuev_bis", None)),       "wichtig"),
-        ("Unfallfreiheit",       bool(getattr(req, "unfallfrei", None)),     "wichtig"),
+        ("Unfallfreiheit",       unfall_status(req)[0] != UNFALL_NICHT_ANGEGEBEN, "wichtig"),
         ("Anzahl Vorbesitzer",   getattr(req, "vorbesitzer", None) is not None, "wichtig"),
-        ("Scheckheft / Wartung", getattr(req, "scheckheftgepflegt", None) is not None, "wichtig"),
+        ("Scheckheft / Wartung", wartung_angegeben(req),                     "wichtig"),
         ("Ausstattung",          bool(getattr(req, "ausstattung", None)),    "wichtig"),
         ("Zustandsbeschreibung", text_da,                                    "wichtig"),
     ]
@@ -220,7 +325,10 @@ def finde_widersprueche(req: VerkaufsCheckRequest) -> list[str]:
     ):
         if not feldwert:
             continue
-        werte = {int(re.sub(r"[.\s]", "", m)) for m in re.findall(muster, tnorm)}
+        if label == "Kilometerstand":
+            werte = _aktuelle_km_werte(tnorm, muster)
+        else:
+            werte = {int(re.sub(r"[.\s]", "", m)) for m in re.findall(muster, tnorm)}
         if werte and all(abs(w - int(feldwert)) > toleranz for w in werte):
             genannt = f"{sorted(werte)[0]:,}".replace(",", ".")
             angegeben = f"{int(feldwert):,}".replace(",", ".")
@@ -228,13 +336,84 @@ def finde_widersprueche(req: VerkaufsCheckRequest) -> list[str]:
 
     tuev = _norm(getattr(req, "tuev_bis", None))
     if tuev:
-        termine = {f"{int(m[0]):02d}/{m[1]}" for m in
-                   re.findall(r"(0?[1-9]|1[0-2])\s*[/.]\s*(20\d{2})", tnorm)}
+        termine = _hu_termine_im_text(tnorm)
         if termine and tuev not in termine:
             out.append(f"Beschreibung nennt den Termin {sorted(termine)[0]}, angegeben ist "
                        f"HU bis {getattr(req, 'tuev_bis')}.")
 
+    # Unfallstatus: Formular und Text widersprechen sich. Die Strukturangabe bleibt kanonisch, beide Seiten werden genannt.
+    uf_struktur = _norm(getattr(req, "unfallfrei", None))
+    if uf_struktur == "ja" and any(
+            _UNFALL_THEMA.search(s) and _UNSICHER.search(s) and not _UNFALL_ANSPRUCH.search(s)
+            and not _UNFALL_NEGATIV.search(s) for s in _saetze(text)):
+        out.append("Beschreibung nennt Unsicherheit zum Unfallstatus, angegeben ist unfallfrei.")
+    # Wartungsnachweise: Formular und Text widersprechen sich.
+    nachweis_struktur = _norm(getattr(req, "wartungsnachweise", None))
+    nachweis_text = wartung_text_aussage(text)
+    if nachweis_struktur in (NACHWEIS_VOLLSTAENDIG, NACHWEIS_TEILWEISE, NACHWEIS_KEINE) and nachweis_text \
+            and nachweis_text != nachweis_struktur:
+        label = {NACHWEIS_VOLLSTAENDIG: "vollständig", NACHWEIS_TEILWEISE: "teilweise", NACHWEIS_KEINE: "keine",
+                 NACHWEIS_UNBEKANNT: "unbekannt"}
+        out.append(f"Beschreibung nennt Wartungsnachweise {label[nachweis_text]}, angegeben ist "
+                   f"{label[nachweis_struktur]}.")
+
     return out
+
+
+# Kilometerangabe und ihre Bedeutung (G1): "Letzter Service bei 177.000 km" oder "Zahnriemen bei 120.000 km gewechselt"
+# ist ein historischer Stand, kein aktueller Kilometerstand. Entscheidend ist das NÄCHSTE Bedeutungswort vor (und, falls
+# davor keines steht, kurz nach) der Zahl innerhalb derselben Aussage: nennt es eine Wartung/Reparatur, ist der Wert
+# historisch und bildet keinen Konflikt zum aktuellen Stand; ein Wort wie "Kilometerstand"/"Laufleistung"/"gelaufen"
+# macht ihn zum aktuellen Stand. Eine Zahl ohne jedes Bedeutungswort bleibt wie bisher eine Angabe zum Fahrzeug.
+_KM_HISTORISCH = re.compile(
+    r"service|inspektion|wartung|[öo]lwechsel|zahnriemen|reparatur|repariert|getauscht|gewechselt|erneuert|"
+    r"bremsen\s+neu|kupplung\s+neu|scheckheft|serviceintervall|bei\s+der\s+(?:letzten\s+)?(?:wartung|inspektion)",
+    re.IGNORECASE)
+_KM_AKTUELL = re.compile(r"kilometerstand|laufleistung|gelaufen|tachostand|\btacho\b|aktuell|km-stand|km\s*stand",
+                         re.IGNORECASE)
+_AUSSAGEGRENZE = (". ", "\n", ";", "!", "?")
+
+
+def _aktuelle_km_werte(tnorm: str, muster: str) -> set[int]:
+    werte: set[int] = set()
+    for m in re.finditer(muster, tnorm):
+        vorn = tnorm[:m.start()]
+        grenze = max(vorn.rfind(g) for g in _AUSSAGEGRENZE)
+        fenster = vorn[grenze + 1:][-60:]
+        hist = [x.start() for x in _KM_HISTORISCH.finditer(fenster)]
+        aktuell = [x.start() for x in _KM_AKTUELL.finditer(fenster)]
+        if hist or aktuell:
+            historisch = bool(hist) and (not aktuell or max(hist) > max(aktuell))
+        else:
+            rest = tnorm[m.end():]
+            enden = [rest.find(g) for g in _AUSSAGEGRENZE if rest.find(g) >= 0]
+            hinten = rest[:min(enden) if enden else len(rest)][:35]
+            historisch = bool(_KM_HISTORISCH.search(hinten)) and not _KM_AKTUELL.search(hinten)
+        if not historisch:
+            werte.add(int(re.sub(r"[.\s]", "", m.group(1))))
+    return werte
+
+
+# Datum und seine Bedeutung (VK-08): "08/2027" ist nur dann ein HU-Termin, wenn die Fundstelle ihn als HU/TÜV ausweist.
+# Service-, Inspektions-, Erstzulassungs- oder Kaufdaten sind keine HU-Termine; ein Datum ohne eindeutigen Bezug (oder
+# mit gleichzeitigem Service- und HU-Wort davor) ist mehrdeutig und erzeugt keine Konfliktbehauptung.
+_HU_WORT = re.compile(r"\b(?:t[üu]v|hu|hauptuntersuchung|plakette)\b", re.IGNORECASE)
+_SERVICE_WORT = re.compile(
+    r"service|inspektion|wartung|[öo]lwechsel|erstzulassung|\bez\b|zugelassen|kaufdatum|gekauft|reparatur|zahnriemen",
+    re.IGNORECASE)
+
+
+def _hu_termine_im_text(tnorm: str) -> set[str]:
+    termine: set[str] = set()
+    for m in re.finditer(r"(0?[1-9]|1[0-2])\s*[/.]\s*(20\d{2})", tnorm):
+        vorn = tnorm[:m.start()]
+        grenze = max(vorn.rfind(". "), vorn.rfind("\n"), vorn.rfind(";"), vorn.rfind("!"), vorn.rfind("?"))
+        klausel = vorn[grenze + 1:][-70:]
+        hu = [h.end() for h in _HU_WORT.finditer(klausel)]
+        service = [x.start() for x in _SERVICE_WORT.finditer(klausel)]
+        if hu and (not service or max(hu) > max(service)):
+            termine.add(f"{int(m.group(1)):02d}/{m.group(2)}")
+    return termine
 
 
 def baue_titel_vorschlag(req: VerkaufsCheckRequest, baureihe: dict | None = None,
@@ -378,20 +557,103 @@ def _neutralize_tuev_qualifier(text: str) -> str:
     return text
 
 
+# Konkrete Schadens-/Reparaturdetails in einer Unfallaussage. Das Unfallereignis selbst trägt `unfallfrei="nein"`;
+# Schadensort, Reparatur und Reparaturqualität trägt es NICHT.
+_UNFALL_SCHADENSBEZUG = re.compile(r"unfallsch[aä]d\w*|unf[aä]lle?\b", re.IGNORECASE)
+_UNFALL_REPARATUR = re.compile(
+    r"repar\w*|instandgesetzt|behoben|beseitigt|ausgebessert|fachgerecht\w*|lackier\w*|erneuert|ersetzt|getauscht|"
+    r"ausgebeult|gerichtet|werkstatt\w*", re.IGNORECASE)
+_UNFALL_ORT = re.compile(
+    r"\b(?:an|am|im|auf|in)\s+(?:der|dem|den|einer|einem)?\s*([a-zäöüß]{5,})|\b(vorne|hinten|links|rechts|seitlich|front\w*|heck\w*)\b",
+    re.IGNORECASE)
+_UNFALL_ORT_IGNORIEREN = {"fahrzeug", "fahrzeugs", "wagen", "auto", "vorbesitzer", "vorbesitzers", "vergangenheit"}
+
+
+def _stamm(wort: str) -> str:
+    return wort.lower().replace("ß", "ss")[:6]
+
+
+def _verkaeufer_detailtext(req) -> str:
+    """Klauseln der Verkäuferangaben, die selbst von einem Unfall sprechen (und ihn nicht als unklar benennen).
+    Eine bloße Nachlackierung/Reparaturangabe ohne Unfallbezug ist kein Beleg für Schaden oder Reparatur NACH einem Unfall."""
+    teile = [getattr(req, f, None) for f in ("vorschaeden", "inserat_text", "beschreibung", "tuning")]
+    for f in ("maengel", "technische_maengel", "optische_maengel"):
+        teile.extend(getattr(req, f, None) or [])
+    klauseln: list[str] = []
+    for t in teile:
+        for k in re.split(r"[.;!?\n]+", str(t or "")):
+            if _UNFALL_THEMA.search(k) and not _UNSICHER.search(k) and not _UNFALL_ANSPRUCH.search(k):
+                klauseln.append(k)
+    return " ".join(klauseln).lower().replace("ß", "ss")
+
+
+def _unfall_details_belegt(satz: str, req) -> bool:
+    """Sind die konkreten Schadens-/Reparaturdetails des Satzes durch eigene Verkäuferangaben gedeckt?
+    Reparaturaussagen brauchen eine Reparaturangabe, Ortsangaben (Bauteil, Seite) die Nennung desselben Orts.
+    `unfallfrei="nein"` allein legitimiert beides nicht; Nachlackierung allein ist kein Unfallbeleg."""
+    text = _verkaeufer_detailtext(req)
+    for m in _UNFALL_REPARATUR.finditer(satz):
+        if _stamm(m.group(0)) not in text and m.group(0).lower()[:5] not in text:
+            return False
+    for m in _UNFALL_ORT.finditer(satz):
+        ort = m.group(1) or m.group(2)
+        if ort.lower() in _UNFALL_ORT_IGNORIEREN or ort.lower().startswith("unfall"):
+            continue
+        if _stamm(ort) not in text:
+            return False
+    return True
+
+
+def _unfall_satz_belegt(satz: str, req) -> bool:
+    """Darf dieser Satz zum Unfallstatus stehen bleiben? Aussagenbezogen, nicht nach Negationswörtern.
+
+    * Positive Behauptung ("unfallfrei", "kein Unfall", "ohne Unfall"): nur bei Angabe "ja". Ein Negations- oder
+      Unsicherheitswort IRGENDWO im Satz ändert daran nichts ("Keine Mängel, unfallfrei" bleibt gesperrt).
+    * Negative Tatsachenbehauptung ("nicht unfallfrei", "hatte einen Unfall", "Unfallschaden ..."): nur bei Angabe
+      "nein" UND nur mit gedeckten Details. Schadensort und Reparatur ("an der Stoßstange repariert") müssen in den
+      Verkäuferangaben stehen; das allgemeine Unfallereignis legitimiert sie nicht.
+    * Reiner Unsicherheitssatz über das Thema ("Zur Unfallfreiheit kann ich keine sichere Angabe machen"): nur, wenn der
+      Verkäufer die Unsicherheit selbst angibt (Formular "unklar" oder eindeutiger Satz im Inserat). Eine vom Modell
+      erfundene Unsicherheit ist eine unbelegte Behauptung über das Wissen des Verkäufers.
+    * Jede andere Aussage zur Unfallfreiheit ("Unfallfreiheit garantiert"): nur bei "ja"."""
+    zustand = unfall_status(req)[0]
+    if _UNFALL_NEGATIV.search(satz):
+        return zustand == UNFALL_NEIN and _unfall_details_belegt(satz, req)
+    if _UNFALL_ANSPRUCH.search(satz):
+        return zustand == UNFALL_JA
+    if _UNSICHER.search(satz):
+        return zustand == UNFALL_UNBEKANNT
+    if _UNFALL_SCHADENSBEZUG.search(satz):
+        return zustand == UNFALL_NEIN and _unfall_details_belegt(satz, req)
+    return zustand == UNFALL_JA
+
+
+def _ist_belegt(belegt, satz: str) -> bool:
+    return bool(belegt(satz)) if callable(belegt) else bool(belegt)
+
+
 def _claim_rules(req: VerkaufsCheckRequest) -> list[tuple[str, re.Pattern, bool]]:
     """(menschlicher Name, Regex, ist_belegt) — trifft die Regex zu und ist NICHT
     belegt, wird der betroffene Satz/Aufzählungspunkt entfernt."""
-    unfall_ok = _norm(getattr(req, "unfallfrei", None)) == "ja"
     scheck_ok = getattr(req, "scheckheftgepflegt", None) is True
     erste_hand_ok = getattr(req, "vorbesitzer", None) == 1
     tuev_ok = bool(getattr(req, "tuev_bis", None))
+    nachweise = wartung_status(req)["nachweise"]
     return [
+        # Aussagenbezogen (VK-04): `_unfall_satz_belegt` prüft JEDEN Satz zum Unfallstatus einzeln.
         ("Unfallfreiheit",
-         re.compile(r"unfallfrei|kein(?:e|erlei)?\s+unfall|ohne\s+unfall|unfallschadenfrei", re.IGNORECASE),
-         unfall_ok),
+         re.compile(_UNFALL_THEMA.pattern + "|" + _UNFALL_ANSPRUCH.pattern + "|" + _UNFALL_NEGATIV.pattern, re.IGNORECASE),
+         lambda satz: _unfall_satz_belegt(satz, req)),
         ("Scheckheft",
          re.compile(r"scheckheft|lückenlos\w*\s+(?:wartung|service|historie)|serviceheft\s+gepflegt|voll\w*\s+scheckheft", re.IGNORECASE),
          scheck_ok),
+        # "vollständige Wartungs-/Servicehistorie": nur belegt, wenn der Verkäufer vollständige Nachweise ANGIBT
+        # (das ist seine Angabe, keine Dokumentprüfung) oder ein Scheckheft angibt. Teilweise/keine/unbekannt: gesperrt.
+        ("Vollständige Wartungshistorie",
+         re.compile(r"vollständige?[nrs]?\s+(?:wartungs|service)\w*", re.IGNORECASE),
+         lambda satz: (nachweise == NACHWEIS_VOLLSTAENDIG or scheck_ok
+                       or (nachweise in (NACHWEIS_TEILWEISE, NACHWEIS_KEINE, NACHWEIS_UNBEKANNT)
+                           and bool(re.search(r"(?:nicht|kein\w*|ohne)\s+(?:\w+\s+)?vollständig", satz, re.IGNORECASE))))),
         ("Erste Hand / Vorbesitzer",
          re.compile(r"erste\s*hand|1\.?\s*hand|erstbesitz|aus\s+erster\s+hand", re.IGNORECASE),
          erste_hand_ok),
@@ -408,7 +670,7 @@ def _satz_ok(satz: str, rules, ausst_backed: set[str], entfernt: list[str]) -> b
     """True, wenn der Satz/Punkt behalten werden darf. Prüft belegbare Positiv-
     Behauptungen und erfundene Ausstattung."""
     for name, rx, belegt in rules:
-        if rx.search(satz) and not belegt:
+        if rx.search(satz) and not _ist_belegt(belegt, satz):
             entfernt.append(f"{name}: „{satz.strip()}“")
             return False
     # Erfundene (nicht angegebene) wertige Ausstattung.
@@ -461,7 +723,7 @@ def _scrub_titel(titel: str, req: VerkaufsCheckRequest, entfernt: list[str]) -> 
         snorm = _norm(seg)
         drop = False
         for name, rx, belegt in rules:
-            if rx.search(seg) and not belegt:
+            if rx.search(seg) and not _ist_belegt(belegt, seg):
                 entfernt.append(f"Titel, {name}: „{seg}“")
                 drop = True
                 break
@@ -527,6 +789,9 @@ STRIKT VERBOTEN (das erfindet niemals etwas):
 - KEINE Unfallfreiheit, KEIN Scheckheft, KEIN „TÜV neu“, KEINE Vorbesitzer-Zahl,
   KEINE Garantie behaupten, wenn es nicht ausdrücklich in den Fakten steht.
 - Zustand NICHT beschönigen, Mängel NICHT verschweigen.
+- Als unbekannt oder nur teilweise vorhanden angegebene Punkte (z. B. Unfallstatus, Wartungsnachweise) genau so
+  benennen: nicht verschweigen, nicht als sicher oder vollständig darstellen, nichts dazuerfinden.
+- KEINE bereitliegenden Unterlagen oder Fotos behaupten, die nicht in den Fakten stehen.
 - KEINE technischen Daten (Leistung, Kraftstoff, Getriebe) erfinden oder ändern.
 - KEIN Händler-Slang, KEINE Superlative-Spam („TOP!!!“, „BESTPREIS“), keine
   Ausrufezeichen-Ketten.
@@ -541,7 +806,8 @@ Aufbau der Beschreibung (nur mit vorhandenen Fakten füllen, leere Punkte weglas
 1. Kurze, sachliche Einleitung (1–2 Sätze, keine Wertversprechen)
 2. **Fahrzeugdaten** (Baujahr, Kilometerstand, Kraftstoff, Getriebe, Leistung, Farbe)
 3. **Ausstattung** (nur die angegebene, als Liste)
-4. **Zustand & Wartung** (nur angegebene Fakten: Zustand, Scheckheft, TÜV, Vorbesitzer)
+4. **Zustand & Wartung** (nur angegebene Fakten: Zustand, Scheckheft, Wartungsnachweise, letzter Service, Unfallstatus,
+   Vorschäden, TÜV, Vorbesitzer)
 5. **Bekannte Mängel** (falls angegeben — ehrlich benennen)
 6. Sachlicher Abschluss (z. B. Einladung zur Besichtigung/Probefahrt) — ohne Kontaktdaten zu erfinden
 
@@ -568,19 +834,42 @@ def _fakten_block(req: VerkaufsCheckRequest) -> str:
     if getattr(req, "ausstattung", None):
         add("Ausstattung", ", ".join(req.ausstattung))
     add("Zustand/Beschreibung", _hat_text(req) or None)
-    uf = _norm(getattr(req, "unfallfrei", None))
-    if uf == "ja":
+    uf, uf_quelle = unfall_status(req)
+    if uf == UNFALL_JA:
         add("Unfallstatus", "unfallfrei (laut Verkäufer)")
-    elif uf == "nein":
+    elif uf == UNFALL_NEIN:
         add("Unfallstatus", "Unfallschaden vorhanden")
+    elif uf == UNFALL_UNBEKANNT:
+        add("Unfallstatus", "dem Verkäufer unbekannt, keine sichere Angabe möglich (so benennen, nicht verschweigen, "
+                            "nicht als unfallfrei darstellen)")
     vb = getattr(req, "vorbesitzer", None)
     if vb is not None:
         add("Vorbesitzer", vb)
     if getattr(req, "scheckheftgepflegt", None) is True:
-        add("Wartung", "scheckheftgepflegt")
+        add("Wartung", "scheckheftgepflegt (laut Verkäufer)")
+    w = wartung_status(req)
+    nachweis_text = {NACHWEIS_VOLLSTAENDIG: "laut Verkäufer vollständig vorhanden",
+                     NACHWEIS_TEILWEISE: "nur teilweise vorhanden (nicht als vollständige Historie darstellen)",
+                     NACHWEIS_KEINE: "keine vorhanden",
+                     NACHWEIS_UNBEKANNT: "dem Verkäufer unbekannt"}.get(w["nachweise"])
+    add("Wartungsnachweise", nachweis_text)
+    service = ", ".join(filter(None, [getattr(req, "letzter_service_datum", None),
+                                      f"{req.letzter_service_km:,} km".replace(",", ".")
+                                      if getattr(req, "letzter_service_km", None) else None]))
+    add("Letzter Service (Angabe des Verkäufers, kein Beleg)", service or None)
     add("TÜV/HU bis", getattr(req, "tuev_bis", None))
-    if getattr(req, "maengel", None):
-        add("Bekannte Mängel (ehrlich benennen)", ", ".join(req.maengel))
+    vorschaeden = (getattr(req, "vorschaeden", None) or "").strip()
+    add("Vorschäden/Nachlackierungen", vorschaeden or None)
+    tuning = (getattr(req, "tuning", None) or "").strip()
+    if tuning and not re.match(r"^\s*(?:keine?|nein|nicht\s+vorhanden)\b", tuning, re.IGNORECASE):
+        add("Tuning/Umbauten", tuning)
+    maengel_alle: list[str] = []
+    for m in [*(getattr(req, "maengel", None) or []), *(getattr(req, "technische_maengel", None) or []),
+              *(getattr(req, "optische_maengel", None) or [])]:
+        if m and m.strip() and m.strip() not in maengel_alle:
+            maengel_alle.append(m.strip())
+    if maengel_alle:
+        add("Bekannte Mängel (ehrlich benennen)", ", ".join(maengel_alle))
     if getattr(req, "preis_vorstellung", None):
         add("Preisvorstellung", f"{req.preis_vorstellung:,} €".replace(",", "."))
     return "\n".join(lines)
