@@ -523,6 +523,11 @@ class Insight(BaseModel):
     # Wechsel noch automatisch eine Prüfung) -- nur das, was der Quellsatz
     # selbst durch ein Verb/eine Formulierung tatsächlich belegt.
     taetigkeit: str | None = None
+    # Nur DB-Wartungs-Insights: der Intervalltext der DB-Zeile (`kritische_wartung.intervall`) UNVERÄNDERT, als
+    # strukturierter Träger. Die Laufleistungsauswertung liest ihn von hier und nicht aus dem nutzerseitigen
+    # Formulierungstext der `beschreibung` (der je nach Prüfstatus anders lautet). None = ältere Antwort oder
+    # kein Intervall; dann gilt der bisherige Rückgriff auf den Text.
+    wartung_intervall: str | None = None
 
 
 Insight.model_rebuild()
@@ -934,7 +939,9 @@ class Wartungshinweis(BaseModel):
     unverified, liegt auf Baureihen- statt Motorebene und trägt keine Quelle.
     """
     bauteil: str
-    # "naehert_sich" | "im_bereich" | "darueber" | "entfernt". "entfernt" erzeugt einen Hinweis NUR, wenn allein die
+    # "naehert_sich" | "im_bereich" | "darueber" | "entfernt" | "unbewertet". "unbewertet": die Angabe nennt mehrere
+    # alternative Kilometerwerte ohne belegte Auswahl -- es wird weder ein Wert gewählt noch "erreicht" ausgegeben.
+    # "entfernt" erzeugt einen Hinweis NUR, wenn allein die
     # ZEITFRAGE offen ist (Kilometerpunkt weit entfernt, oder reine Zeitregel mit unbekanntem Alter / an der
     # Altersgrenze) -- sonst GAR KEINEN Hinweis (keine Warnung ohne Anlass).
     status: str

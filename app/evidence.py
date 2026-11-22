@@ -111,6 +111,20 @@ _EINZELBERICHT = re.compile(
     re.IGNORECASE)
 
 
+def _db_wartung_taetigkeit(intervall) -> str | None:
+    """Tätigkeit einer DB-Wartungszeile -- nur, wenn der INTERVALLTEXT sie ausdrücklich nennt ("Erste Prüfung nach ...",
+    "Wechsel empfohlen"). Nie aus dem Bauteilnamen, nie aus dem `hinweis` (er kann ein anderes Bauteil meinen: "Inklusive
+    Wasserpumpe tauschen" bei einem Zahnriemen). Nennt der Text beide Arten, bleibt sie unbekannt."""
+    if not intervall:
+        return None
+    from app.technical_research import _WARTUNG_AKTION_ERSETZEN, _WARTUNG_AKTION_PRUEFEN   # lokal: Importzyklus
+    text = str(intervall)
+    ersetzen, pruefen = bool(_WARTUNG_AKTION_ERSETZEN.search(text)), bool(_WARTUNG_AKTION_PRUEFEN.search(text))
+    if ersetzen == pruefen:
+        return None
+    return "ersetzen" if ersetzen else "pruefen"
+
+
 def _trust_der_baureihe(baureihe: dict | None, fakt: str) -> str:
     """Trust-Stufe einer DB-Faktenart für DIESE Baureihe.
 
@@ -649,6 +663,10 @@ def build_insights(
                 bauteil=bauteil,
                 fakt_ref=_fakt_ref("kritische_wartung", w),
                 wartungsart=art,
+                # Strukturierter Träger des Intervalls und der EXPLIZIT belegten Tätigkeit: die Laufleistungsauswertung
+                # liest beides von hier, nicht aus dem Formulierungstext von `beschreibung`.
+                wartung_intervall=(str(w["intervall"]).strip() or None) if w.get("intervall") else None,
+                taetigkeit=_db_wartung_taetigkeit(w.get("intervall")),
             ))
 
     # ── 5) Marktvergleich (Marktvergleich 2.0 — deterministisch) ───────────────

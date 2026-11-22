@@ -72,6 +72,10 @@ def db_wartung(bauteil: str, intervall: str, hinweis: str = "Unbedingt einhalten
         quellen=[EvidenceQuelle(typ="motorvarianten", ref=bauteil,
                                 titel="VIRA-Wartungsdaten (geprüft)")],
         confidence="hoch", einfluss="Vor dem Kauf Durchführung und Nachweis klären.",
+        # Das Fixture steht für einen GEPRÜFTEN DB-Eintrag ("Vorgesehenes Intervall", Quelle "geprüft"). Der Insight-
+        # Default ist `unverified_db`; ohne ausdrückliches `verified` wäre das Fixture in sich widersprüchlich. Den
+        # ungeprüften Produzentenpfad deckt test_db_wartung_unverifiziert_ausgabe.py ab.
+        trust="verified",
     )
 
 

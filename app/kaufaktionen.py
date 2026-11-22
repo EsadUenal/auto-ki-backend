@@ -1983,7 +1983,10 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
             continue
         bauteil = _bauteil_aus_wartung(i)
         komp = _komponente(bauteil)
-        schluessel = f"wartung-{_schluessel_wartungsintervall(komp, bauteil, i.beschreibung)}"
+        # Der Intervalltext der DB-Zeile ist der strukturierte Träger; derselbe Schlüssel wie in `_aus_laufleistung`
+        # (dort `Wartungshinweis.intervall_text`), sonst entstünde neben dem Hinweis ein zweiter Punkt zum Bauteil.
+        merkmal = getattr(i, "wartung_intervall", None) or i.beschreibung
+        schluessel = f"wartung-{_schluessel_wartungsintervall(komp, bauteil, merkmal)}"
         art = getattr(i, "wartungsart", None) or WARTUNG_REGULAER
         frage, nachfrage, dok_titel, dok_text, dok_gruppe = _WARTUNG_VORLAGEN.get(
             art, _WARTUNG_VORLAGEN[WARTUNG_REGULAER])
@@ -1996,15 +1999,20 @@ def _aus_wartung(s: _Sammler, insights: list[Insight]) -> None:
         satz = f" {i.beschreibung}" if (art == WARTUNG_REGULAER and i.beschreibung) else ""
 
         falls = _bedingt(i)
+        # Sammelzeile für den Fall, dass das Sechserlimit den Punkt aus der Einzelausgabe drängt: Bauteil, belegte
+        # Tätigkeit und der Wortlaut des hinterlegten Intervalls samt Prüfstatus (kein Volltext, kein Duplikat).
+        kompakt = (_kompakt_wartung(bauteil, getattr(i, "taetigkeit", None), getattr(i, "wartung_intervall", None),
+                                    falls, quelle="hinterlegt, ungeprüft" if not ist_bekannt(i) else "hinterlegt")
+                   if getattr(i, "wartung_intervall", None) else None)
         s.add(VERKAEUFERFRAGEN, schluessel, falls + frage.format(b=bauteil),
               f"{herkunft}.{satz} {nachfrage}",
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe="Wartung und Technik", bauteil=bauteil, ordnung=positionen.get(i.id))
+              gruppe="Wartung und Technik", bauteil=bauteil, ordnung=positionen.get(i.id), kompakt=kompakt)
 
         s.add(DOKUMENTE, schluessel, falls + dok_titel.format(b=bauteil),
               falls + dok_text.format(b=bauteil),
               _R_WARTUNG, evidence_ids=[i.id], kategorie="wartung",
-              gruppe=dok_gruppe, bauteil=bauteil, ordnung=positionen.get(i.id))
+              gruppe=dok_gruppe, bauteil=bauteil, ordnung=positionen.get(i.id), kompakt=kompakt)
 
 
 # ── 4b) Technischer Web-Fallback ─────────────────────────────────────────────
@@ -2034,7 +2042,8 @@ _KOMPAKT_TAETIGKEIT = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}
 
 
 def _kompakt_wartung(bauteil: str, taetigkeit: str | None, intervall_text: str | None,
-                     falls: str = "", technische_bedingung: str | None = None) -> str:
+                     falls: str = "", technische_bedingung: str | None = None,
+                     quelle: str = "laut Quelle") -> str:
     """Eine kompakte, konkrete Zeile für einen gekappten Wartungspunkt: Bauteil, belegte Tätigkeit, Intervall
     (Erst- und Folgeintervall wörtlich, auf die Quellenaussage begrenzt) und Bedingungen. Die Bedingungen bleiben
     GETRENNT benannt: Einbau-Präsenz ("Falls ... verbaut", vor dem Bauteil), technische Anwendbarkeit (ungeklärte
@@ -2060,7 +2069,7 @@ def _kompakt_wartung(bauteil: str, taetigkeit: str | None, intervall_text: str |
     kern = _kuerze(kern)
     teile = [_KOMPAKT_TAETIGKEIT.get(taetigkeit, "Tätigkeit nicht belegt")]
     if kern:
-        teile.append(f"laut Quelle: {kern}")
+        teile.append(f"{quelle}: {kern}")
     if regeln and grund and bedingte:
         teile.append(f"zusätzlich bedingte Regel, Voraussetzung ungeklärt: {_kuerze(bedingte[0], 120)}")
     if technische_bedingung:
@@ -2319,6 +2328,15 @@ def _wartung_vorbehalte(w) -> list[str]:
         out.append("Angabe gilt laut Quelle für normale Einsatzbedingungen")
     if getattr(w, "technische_bedingung_status", None) == "unresolved" and getattr(w, "technische_bedingung", None):
         out.append(f"Anwendbarkeit ungeklärt: {w.technische_bedingung}")
+    # DB-Regeln: ungeprüfter Status, alternative Kilometerangaben ohne belegte Auswahl, Einordnung des Wortlauts
+    # (Herstellerangabe/Lifetime gegen bloße Empfehlung). Schlüssel sind die Präfixe aus `app.laufleistung`.
+    for g in getattr(w, "grenzen", None) or []:
+        if g.startswith("Ungeprüfte Datenbankangabe"):
+            out.append("ungeprüfte Orientierung aus der Fahrzeugdatenbank, nicht als Herstellervorgabe belegt")
+        elif g.startswith("Mehrere alternative Kilometerangaben"):
+            out.append("mehrere alternative Kilometerangaben ohne belegte Auswahl, deshalb nicht bewertet")
+        elif g.startswith("Hinterlegter Wortlaut mit Einordnung"):
+            out.append(g[0].lower() + g[1:])
     bedingte = [r for r in (getattr(w, "regeln", None) or []) if r.art == "bedingt"]
     hat_grund = any(r.art == "grund" for r in (getattr(w, "regeln", None) or []))
     if bedingte and hat_grund:
@@ -2376,13 +2394,20 @@ def ergaenze_wartung_kurzbegruendungen(insights: list[Insight], kontext) -> None
             i.kurzbegruendung = wartung_kurzbegruendung(w)
 
 
+def _ungeprueft(w) -> bool:
+    """Ungeprüfte DB-Regel (Grenze aus `app.laufleistung._grenzen_zusatz`): Herkunft ist die Fahrzeugdatenbank, nicht
+    eine Quelle, und sie ist nicht als Herstellervorgabe belegt."""
+    return any(g.startswith("Ungeprüfte Datenbankangabe") for g in (getattr(w, "grenzen", None) or []))
+
+
 def _wartung_frage_text(w) -> str:
     """N21: Text unter der Verkäuferfrage. Die Frage selbst (Titel) fragt nach Tätigkeit, Durchführung, Datum und
     Kilometerstand; hier steht nur der Bezug (Intervall laut Quelle, Anlass, knappe Vorbehalte) -- keine Handlungs-
     anweisung, kein Zitat, keine Wiederholung des vollen Hinweises. Ohne Kurzform (ältere Antwort): voller Hinweis."""
     if not getattr(w, "kurz", None):
         return w.hinweis + " Nach Datum, Kilometerstand und Beleg fragen."
-    teile = [f"Laut Quelle: {_wartung_bezug(w)}.", _wartung_anlass(w)]
+    quelle = "Laut ungeprüfter Datenbankangabe" if _ungeprueft(w) else "Laut Quelle"
+    teile = [f"{quelle}: {_wartung_bezug(w)}.", _wartung_anlass(w)]
     vb = _wartung_vorbehalte(w)
     if vb:
         teile.append("Vorbehalte: " + "; ".join(vb) + ".")
@@ -2395,7 +2420,8 @@ def _wartung_dokument_text(w) -> str:
     beleg = "Rechnung oder Eintrag im Serviceheft mit Datum und Kilometerstand zeigen lassen."
     if not getattr(w, "kurz", None):
         return f"{w.hinweis} {beleg}"
-    teile = [beleg, f"Bezug laut Quelle: {_wartung_bezug(w)}."]
+    quelle = "Bezug laut ungeprüfter Datenbankangabe" if _ungeprueft(w) else "Bezug laut Quelle"
+    teile = [beleg, f"{quelle}: {_wartung_bezug(w)}."]
     vb = _wartung_vorbehalte(w)
     if vb:
         teile.append("Vorbehalte: " + "; ".join(vb) + ".")
@@ -2411,7 +2437,7 @@ def _kompakt_aus_hinweis(w, bauteil: str, falls: str = "") -> str | None:
     if not getattr(w, "kurz", None):
         return None
     taet = {"ersetzen": "Wechsel", "pruefen": "Prüfung"}.get(getattr(w, "taetigkeit", None), "Tätigkeit nicht belegt")
-    teile = [taet, f"laut Quelle: {_wartung_bezug(w)}"]
+    teile = [taet, f"{'hinterlegt, ungeprüft' if _ungeprueft(w) else 'laut Quelle'}: {_wartung_bezug(w)}"]
     regeln = getattr(w, "regeln", None) or []
     bedingte = [r for r in regeln if r.art == "bedingt"]
     if bedingte and any(r.art == "grund" for r in regeln):
@@ -2423,6 +2449,11 @@ def _kompakt_aus_hinweis(w, bauteil: str, falls: str = "") -> str | None:
         teile.append("Marktvorbehalt der Quelle, Geltung in Deutschland nicht bestätigt")
     if getattr(w, "km_status", None) == "bedingt":
         teile.append("Intervall bedingt")
+    if getattr(w, "km_status", None) == "alternativen":
+        teile.append("alternative Kilometerangaben, Auswahl nicht belegt")
+    for g in getattr(w, "grenzen", None) or []:
+        if g.startswith("Hinterlegter Wortlaut mit Einordnung"):      # Herstellerangabe/Lifetime/Empfehlung bleibt sichtbar
+            teile.append(g[0].lower() + g[1:])
     return f"{falls}„{bauteil}“ ({'; '.join(teile)})"
 
 

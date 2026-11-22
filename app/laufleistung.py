@@ -132,6 +132,10 @@ STATUS_ENTFERNT = "entfernt"
 STATUS_NAEHERT_SICH = "naehert_sich"
 STATUS_IM_BEREICH = "im_bereich"
 STATUS_DARUEBER = "darueber"
+# Mehrere alternative Kilometerwerte in EINER Angabe ("120.000 km (PD) / 180.000 km (CR)", "je nach Motorcode") ohne
+# belegte Auswahl: keine Variante wird gewählt, ein früherer Wert ist keine sichere Ersatzwahl, es entsteht kein
+# "erreicht"-Status.
+STATUS_UNBEWERTET = "unbewertet"
 
 # Das Toleranzfenster um einen Wartungspunkt ist bewusst PROPORTIONAL statt fest:
 # bei einem 20.000-km-Punkt (Ventilspiel) sind 12.000 km Abstand eine andere
@@ -459,6 +463,51 @@ def _wiederholung_am_wert(erst: str, hat_km: bool, zeit_treffer) -> bool:
     return bool(_WIEDERHOLUNG_VOR_WERT.search(erst[:start]))
 
 
+# Zwischentext zweier Kilometerangaben, der sie als PARALLELE Alternativen ausweist: Trenner ("/", ",", ";", "oder", "bzw."),
+# optional davor eine Kennzeichnung in Klammern ohne Ziffern ("(PD)", "(je nach Motorcode)") und ein Wiederholungswort.
+# Jedes andere Wort dazwischen ("(Sichtprüfung alle 15.000 km)", "spätestens bei") macht die zweite Angabe zu einer
+# eigenen Aussage derselben Fundstelle -- dann bleibt es beim bisherigen Verfahren (erste Angabe der Tätigkeit).
+_PARALLEL_KLAMMER = re.compile(r"\s*\([^()\d]{1,80}\)")
+_PARALLEL_LUECKE = re.compile(r"^[\s,;/]*(?:(?:oder|bzw\.?|beziehungsweise|sowie)[\s,;/]*)?(?:(?:alle|nach|ca\.?|etwa)\s*)?$",
+                              re.IGNORECASE)
+
+
+def _km_alternativen(text: str | None) -> tuple[tuple[int, int | None], ...]:
+    """Alternative Kilometerangaben (Punkt oder Spanne) EINER Fundstelle in Textreihenfolge -- oder leer.
+
+    Zwei oder mehr verschiedene Angaben, die sich als PARALLELE Alternativen lesen ("120.000 km (PD) / 180.000 km (CR)",
+    "120.000 km / 180.000 km (je nach Motorcode)"), sind Alternativen ohne belegte Auswahl: `parse_wartungspunkt` würde
+    still den ersten Wert wählen. Eine Spanne ist EINE Angabe; dieselbe Zahl zweimal zählt einmal. Steht zwischen den
+    Angaben anderer Text, sind es keine parallelen Alternativen (leer)."""
+    t = text or ""
+    gefunden: list[tuple[int, int, tuple[int, int | None]]] = []
+    for m in _SPANNE.finditer(t):
+        von, bis = _zu_km(m.group(1), m.group(3)), _zu_km(m.group(2), m.group(3))
+        if von > bis:
+            von, bis = bis, von
+        if _plausibel(von):
+            gefunden.append((m.start(), m.end(), (von, bis)))
+    spannen = [(a, b) for a, b, _ in gefunden]
+    for m in _EINZELN.finditer(t):
+        if any(a <= m.start() < b for a, b in spannen):
+            continue
+        von = _zu_km(m.group(1), m.group(2))
+        if _plausibel(von):
+            gefunden.append((m.start(), m.end(), (von, None)))
+    gefunden.sort()
+    if len(gefunden) < 2:
+        return ()
+    for (_, ende, _w), (start, _e, _w2) in zip(gefunden, gefunden[1:]):
+        luecke = _PARALLEL_KLAMMER.sub(" ", t[ende:start])
+        if not _PARALLEL_LUECKE.match(luecke):
+            return ()
+    verschieden: list[tuple[int, int | None]] = []
+    for _, _, wert in gefunden:
+        if wert not in verschieden:
+            verschieden.append(wert)
+    return tuple(verschieden) if len(verschieden) >= 2 else ()
+
+
 class WartungsRegel:
     """EINE Fundstelle einer Wartungsaussage mit ihrer eigenen Bedingung und ihrem ERSTintervall.
 
@@ -473,7 +522,7 @@ class WartungsRegel:
     Regel auswertet, oder durch eine Zeitangabe "jährlich" als erstem Wert -- ein "alle" im Modell-, Bedingungs- oder
     Tätigkeitstext an anderer Stelle zählt nicht. Daraus folgt nie eine nächste Fälligkeit (die letzte Durchführung
     ist unbekannt)."""
-    __slots__ = ("text", "erst", "bedingt", "einsatz", "km", "zeit", "verbinder", "wiederkehrend")
+    __slots__ = ("text", "erst", "bedingt", "einsatz", "km", "zeit", "verbinder", "wiederkehrend", "km_alternativen")
 
     def __init__(self, text: str):
         self.text = text
@@ -486,6 +535,15 @@ class WartungsRegel:
                         else "normal" if normal else None)
         self.bedingt = bool(_BEDINGT.search(self.erst)) or self.einsatz in ("erschwert", "gemischt")
         self.km = parse_wartungspunkt(self.erst)
+        # Mehrere verschiedene Kilometerangaben in EINER Fundstelle sind Alternativen ohne belegte Auswahl: kein
+        # Kilometerpunkt wird gewählt. Ausgenommen sind Fundstellen mit ausdrücklicher Einsatzbedingung (normal/
+        # erschwert): deren Trennung der Regime-Pfad bereits bedingt auswertet.
+        self.km_alternativen = ()
+        if self.einsatz is None:
+            alternativen = _km_alternativen(self.erst)
+            if len(alternativen) >= 2:
+                self.km_alternativen = alternativen
+                self.km = None
         z = _zeit_treffer(self.erst)
         self.zeit = (z[0], z[1]) if z else None
         self.verbinder = None
@@ -502,7 +560,7 @@ class WartungsRegel:
                               and _wiederholung_am_wert(self.erst, bool(self.km), z))
 
     def signatur(self) -> tuple:
-        return (self.bedingt, self.km, self.zeit, self.verbinder)
+        return (self.bedingt, self.km, self.zeit, self.verbinder, self.km_alternativen)
 
     def zeit_alternative(self) -> tuple[int, str] | None:
         """Zeitliche ALTERNATIVE zum Kilometerpunkt (ODER). Eine UND-Zeit ist keine Alternative."""
@@ -560,8 +618,9 @@ def _regel_erreicht(r: WartungsRegel, kilometerstand: int | None, alter_jahre: i
 
 def ist_nur_bedingt(text: str | None) -> bool:
     """Hat die Aussage Intervalle, aber ausschließlich BEDINGTE (keine Grundregel ohne Voraussetzung)?"""
-    mit_schwelle = [r for r in zerlege_regeln(text) if r.km or r.zeit]
-    return bool(mit_schwelle) and all(r.bedingt for r in mit_schwelle)
+    mit_schwelle = [r for r in zerlege_regeln(text) if r.km or r.zeit or r.km_alternativen]
+    # Alternativen ohne belegte Auswahl sind keine Grundregel: sie machen nichts "erreicht".
+    return bool(mit_schwelle) and all(r.bedingt or r.km_alternativen for r in mit_schwelle)
 
 
 def schwelle_belegbar_erreicht(text: str | None, kilometerstand: int | None, baujahr: int | None,
@@ -580,7 +639,8 @@ def schwelle_belegbar_erreicht_alter(text: str | None, kilometerstand: int | Non
     Grundregeln, muss jede erreicht sein (keine willkürliche Erstauswahl). Folgeintervalle ("Danach ...")
     zählen nicht. Behauptet keine Fälligkeit und keine unterlassene Wartung: gemeint ist nur "hier lohnt der
     Nachweis der Servicehistorie"."""
-    grund = eindeutige_regeln([r for r in zerlege_regeln(text) if not r.bedingt and (r.km or r.zeit)])
+    grund = eindeutige_regeln([r for r in zerlege_regeln(text)
+                               if not r.bedingt and not r.km_alternativen and (r.km or r.zeit)])
     return bool(grund) and all(_regel_erreicht(r, kilometerstand, alter_jahre) for r in grund)
 
 
@@ -846,6 +906,13 @@ def _formuliere_regeln(bauteil: str, ausw: "_Auswertung", kilometerstand: int, h
     einsatz = (" Die Angabe gilt laut Quelle für normale Einsatzbedingungen; welche Einsatzbedingungen beim "
                "Fahrzeug vorlagen, ist unbekannt.") if any(r.einsatz == "normal" for r in regeln) else ""
     bedingte = _zusatz_satz(ausw.zusatz) if ausw.modus == "grund" else ""
+    if ausw.modus == "alternativen":
+        aufzaehlung = "; ".join(f"„{_kurz(' '.join(r.erst.split()), 200)}“" for r in regeln[:4])
+        return (f"Für „{bauteil}“ nennt die Angabe mehrere alternative Kilometerwerte: {aufzaehlung}. Welche davon "
+                f"für dieses Fahrzeug gilt, geht aus den vorliegenden Daten nicht hervor; keine wird ausgewählt, auch "
+                f"nicht der frühere Wert, und es wird nicht ausgegeben, ob ein Punkt erreicht ist. Nachweis über die "
+                f"Durchführung zeigen lassen: ob die Arbeit bereits erledigt ist, geht aus den vorliegenden Daten "
+                f"nicht hervor.") + einsatz + zusatz
     if ausw.modus == "grund" and not ausw.mehrdeutig:
         r = regeln[0]
         alt = r.zeit_alternative()
@@ -917,7 +984,19 @@ def _auswerte_regeln(roh: str | None, kilometerstand: int, alter_jahre: int | No
     "darueber" = jede Zeitgrenze belegbar erreicht, sonst "entfernt" (nur die Zeitfrage ist offen). Ist die Grenze auch
     im ältesten Fall nicht erreicht, entsteht kein Hinweis (kein Anlass)."""
     rs = zerlege_regeln(roh)
-    schwelle = [r for r in rs if r.km or r.zeit]
+    schwelle = [r for r in rs if r.km or r.zeit or r.km_alternativen]
+    if any(r.km_alternativen for r in schwelle):
+        # `modus` "alternativen": eine Fundstelle nennt mehrere verschiedene Kilometerwerte ohne belegte Auswahl.
+        # Keine Variante wird gewählt (auch nicht der frühere Wert), also weder Punkt noch "erreicht"-Status.
+        a = _Auswertung()
+        a.modus = "alternativen"
+        a.regeln = eindeutige_regeln(schwelle)
+        a.zusatz = []
+        a.mehrdeutig = len(a.regeln) > 1
+        a.von_km = a.bis_km = None
+        a.status = STATUS_UNBEWERTET
+        a.zeit_offen_trotz_entfernt = False
+        return a
     grund_alle = eindeutige_regeln([r for r in schwelle if not r.bedingt])
     if grund_alle and not any(r.km for r in grund_alle):
         if not zeit_erlaubt:
@@ -1048,9 +1127,15 @@ def _intervall_text(i: Insight, herkunft: str) -> str | None:
     ohne Quelle gar nicht erst aufgenommen.
     """
     text = (i.beschreibung or "").strip()
-    if not text:
+    if not text and not (herkunft == "db_wartung" and (getattr(i, "wartung_intervall", None) or "").strip()):
         return None
     if herkunft == "db_wartung":
+        # Strukturierter Träger zuerst: der Intervalltext der DB-Zeile, unabhängig vom Formulierungstext der
+        # Beschreibung (der bei ungeprüften Einträgen "Hinterlegter Wartungshinweis:" statt "Vorgesehenes Intervall:"
+        # lautet). Nur ohne Träger (ältere Antworten) gilt der Rückgriff auf den Satz.
+        traeger = (getattr(i, "wartung_intervall", None) or "").strip()
+        if traeger:
+            return traeger
         m = _INTERVALL_SATZ.search(text)
         return m.group("wert").strip() if m else None
     return text
@@ -1120,7 +1205,9 @@ def _folge_info(r: WartungsRegel) -> tuple[bool, str | None]:
 def _regel_info(r: WartungsRegel) -> WartungsRegelInfo:
     genannt, folge = _folge_info(r)
     return WartungsRegelInfo(
-        art="bedingt" if r.bedingt else "grund", erstintervall=_intervall_kurz(r.zeit, r.km, r.verbinder),
+        art="bedingt" if r.bedingt else "grund",
+        erstintervall=(("alternative Angaben: " + "; ".join(_punkt_text(*a) for a in r.km_alternativen))
+                       if r.km_alternativen else _intervall_kurz(r.zeit, r.km, r.verbinder)),
         folgeintervall=folge, folge_genannt=genannt, verknuepfung=r.verbinder, einsatz=r.einsatz,
         wortlaut=" ".join(r.text.split()), wiederkehrend=r.wiederkehrend)
 
@@ -1136,6 +1223,8 @@ def regel_intervall_text(info) -> str | None:
 
 def _km_status_kurz(ausw: "_Auswertung", kilometerstand: int,
                     wiederkehrend: bool = False) -> tuple[str, str | None]:
+    if ausw.modus == "alternativen":
+        return "alternativen", "Mehrere alternative Kilometerangaben; Auswahl nicht belegt, deshalb nicht bewertet"
     if ausw.von_km is None:
         return "keine_kmregel", None
     punkt = _punkt_text(ausw.von_km, ausw.bis_km)
@@ -1173,6 +1262,8 @@ def _zeit_status_kurz(ausw: "_Auswertung", alter_jahre: int | None, technik: str
     art = {"oder": "zeitliche Alternative (oder {})", "und": "zusätzliche Zeitbedingung (und {})"}.get(
         zeiten[0].verbinder, "Zeitschwelle ({})" if not zeiten[0].km else "Zeitangabe ({})")
     angabe = art.format(zeit_anzeige(zeit[0], zeit[1]))
+    if ausw.modus == "alternativen":
+        return "bedingt", f"{angabe} gilt nur zusammen mit der ungeklärten Auswahl der Kilometerangabe; nicht bewertet"
     if ausw.modus == "nur_bedingt":
         return "bedingt", f"{angabe} gilt nur unter ungeklärter Voraussetzung; nicht bewertet"
     if technik:
@@ -1188,11 +1279,64 @@ def _zeit_status_kurz(ausw: "_Auswertung", alter_jahre: int | None, technik: str
     return "nicht_erreicht", f"{angabe} rechnerisch noch nicht erreicht"
 
 
+# DB-Wartungsregeln: Prüfstatus und Einordnung bleiben bis in die Ausgabe sichtbar. Die Präfixe sind die stabilen
+# Schlüssel, nach denen die Aktionen (`kaufaktionen._wartung_vorbehalte`) die Grenzen erkennen.
+_GRENZE_UNGEPRUEFT = "Ungeprüfte Datenbankangabe: nur Orientierung, nicht als Herstellervorgabe belegt"
+_GRENZE_ALTERNATIVEN = "Mehrere alternative Kilometerangaben ohne belegte Auswahl"
+_GRENZE_EINORDNUNG = "Hinterlegter Wortlaut mit Einordnung"
+# Einordnungen, die ein Intervall als Herstellerangabe, Empfehlung, Lifetime-Füllung oder Abhängigkeit kennzeichnen.
+_EINORDNUNG = re.compile(
+    r"lifetime|lebensdauer|wartungsfrei|empfohlen|empfehlenswert|empfehlung|ratsam|herstellerangabe|herstellerempfehlung"
+    r"|je\s+nach|abh(?:ä|ae)ngig|nach\s+bedarf|bei\s+bedarf|\(", re.IGNORECASE)
+_UNGEPRUEFT_SATZ = ("Ungeprüfte Datenbankangabe: sie dient nur der Orientierung und ist nicht als Herstellervorgabe "
+                    "belegt; daraus folgt keine bestätigte Anwendbarkeit auf dieses Fahrzeug und keine Aussage zur "
+                    "Durchführung der Arbeit.")
+
+
+def _grenzen_zusatz(roh: str | None, herkunft: str | None, ungeprueft: bool, alternativen: str | None = None) -> list[str]:
+    """Zusätzliche Grenzen einer DB-Wartungsregel: ungeprüfter Status, alternative Angaben, Einordnung des Wortlauts
+    (Herstellerangabe/Lifetime gegen bloße Empfehlung, Abhängigkeiten). Für Web-Regeln unverändert leer."""
+    if herkunft != "db_wartung":
+        return []
+    out: list[str] = []
+    if ungeprueft:
+        out.append(_GRENZE_UNGEPRUEFT)
+    if alternativen:
+        out.append(f"{_GRENZE_ALTERNATIVEN}: {alternativen}")
+    elif roh and _EINORDNUNG.search(roh):
+        out.append(f"{_GRENZE_EINORDNUNG}: „{_kurz(' '.join(roh.split()), 260)}“")
+    return out
+
+
+def _db_zusatzsatz(roh: str | None, herkunft: str | None, ungeprueft: bool, ausw: "_Auswertung") -> str:
+    """Satz am Ende des Hinweistextes (Prompt-Eingabe und Karte) für DB-Regeln: ungeprüfter Status und, bei
+    Einordnung im Wortlaut (Herkunft/Empfehlung/Abhängigkeit), der Wortlaut selbst. Web-Regeln: leer."""
+    if herkunft != "db_wartung":
+        return ""
+    teile = [_UNGEPRUEFT_SATZ] if ungeprueft else []
+    if ausw.modus != "alternativen" and roh and _EINORDNUNG.search(roh):
+        teile.append(f"Der hinterlegte Wortlaut enthält eine Einordnung oder einen Vorbehalt: „{_kurz(' '.join(roh.split()), 260)}“.")
+    return (" " + " ".join(teile)) if teile else ""
+
+
 def _kurzfelder(bauteil: str, ausw: "_Auswertung", roh: str | None, kilometerstand: int,
                 alter_jahre: int | None, technik: str | None, taetigkeit: str | None,
-                marktvorbehalt: bool, herkunft: str | None = None) -> dict:
+                marktvorbehalt: bool, herkunft: str | None = None, ungeprueft: bool = False) -> dict:
     """Die N21-Felder eines Wartungshinweises (`Wartungshinweis.km_status` ... `regeln`)."""
-    infos = [_regel_info(r) for r in eindeutige_regeln([r for r in zerlege_regeln(roh) if r.km or r.zeit])]
+    infos = [_regel_info(r) for r in eindeutige_regeln(
+        [r for r in zerlege_regeln(roh) if r.km or r.zeit or r.km_alternativen])]
+    if ausw.modus == "alternativen":
+        taet_alt = _TAETIGKEIT_KURZ.get(taetigkeit, "Tätigkeit nicht belegt")
+        wortlaut = "; ".join(f"„{_kurz(' '.join(r.erst.split()), 200)}“" for r in ausw.regeln)
+        kopf_alt = f"{taet_alt}: alternative Angaben {wortlaut}."
+        zeit_status_alt, zeit_text_alt = _zeit_status_kurz(ausw, alter_jahre, technik)
+        km_status_alt, km_text_alt = _km_status_kurz(ausw, kilometerstand)
+        grenzen_alt = _grenzen_zusatz(roh, herkunft, ungeprueft, alternativen=wortlaut)
+        satz_alt = [kopf_alt, f"Kilometer: {km_text_alt}."] + ([f"Zeit: {zeit_text_alt}."] if zeit_text_alt else [])
+        satz_alt += [g.split(":", 1)[0] + "." for g in grenzen_alt if g.startswith(_GRENZE_UNGEPRUEFT[:25])]
+        return dict(km_status=km_status_alt, km_text=km_text_alt, zeit_status=zeit_status_alt, zeit_text=zeit_text_alt,
+                    intervall_kurz=kopf_alt, kurz=" ".join(satz_alt), handlung=_HANDLUNG_NACHWEIS,
+                    grenzen=grenzen_alt, regeln=infos, wiederkehrend=False)
     basis = [i for i in infos if i.art == ("bedingt" if ausw.modus == "nur_bedingt" else "grund")]
     # N22: die Kurzform folgt der EINEN maßgeblichen Regel; bei mehreren verschiedenen Angaben wird keine ausgewählt.
     i0 = basis[0] if (basis and not ausw.mehrdeutig) else None
@@ -1233,6 +1377,10 @@ def _kurzfelder(bauteil: str, ausw: "_Auswertung", roh: str | None, kilometersta
         grenzen.append("Angabe gilt laut Quelle für normale Einsatzbedingungen")
     if herkunft == "web_wartung":      # letzter Eintrag: der Satz endet in der Ausgabe mit Punkt (wie im vollen Hinweis)
         grenzen.append(_HERKUNFT_ZUSATZ["web_wartung"].strip().rstrip("."))
+    zusatz_grenzen = _grenzen_zusatz(roh, herkunft, ungeprueft)
+    grenzen += zusatz_grenzen
+    satz += [g.split(":", 1)[0] + "." for g in zusatz_grenzen if g.startswith(_GRENZE_UNGEPRUEFT[:25])]
+    satz += [g for g in zusatz_grenzen if g.startswith(_GRENZE_EINORDNUNG)]     # Herstellerangabe/Lifetime/Empfehlung im Kurztext
     return dict(km_status=km_status, km_text=km_text, zeit_status=zeit_status, zeit_text=zeit_text,
                 intervall_kurz=kopf, kurz=" ".join(satz), handlung=_HANDLUNG_NACHWEIS, grenzen=grenzen, regeln=infos,
                 wiederkehrend=wiederkehrend)
@@ -1283,7 +1431,9 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
         schluessel = norm_bauteil(bauteil)
         # Eine NUR bedingte Regel (Voraussetzung ungeklärt, z. B. erschwerte Einsatzbedingungen) verbraucht den
         # Bauteilplatz nicht gegen eine spätere GRUNDREGEL desselben Bauteils: sonst ginge die Grundregel verloren.
-        nur_bedingt = ausw.modus == "nur_bedingt"
+        # "alternativen" (mehrere Kilometerwerte ohne belegte Auswahl) verbraucht den Platz einer Grundregel nicht:
+        # eine spätere eindeutige Regel desselben Bauteils darf nicht verdrängt werden.
+        nur_bedingt = ausw.modus in ("nur_bedingt", "alternativen")
         if schluessel in gesehen_grund or (nur_bedingt and schluessel in gesehen):
             continue
         gesehen.add(schluessel)
@@ -1296,7 +1446,9 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             bedingung_praefix = i.titel.split(": ", 1)[0] + ": "
         technik = (getattr(i, "technische_bedingung", None)
                    if getattr(i, "technische_bedingung_status", None) == "unresolved" else None)
-        out.append((ausw.modus == "nur_bedingt", Wartungshinweis(
+        # DB-Regel ohne verifizierten Prüfstatus: sichtbar als ungeprüfte Orientierung, `trust` bleibt unverändert.
+        ungeprueft = herkunft == "db_wartung" and getattr(i, "trust", None) != "verified"
+        out.append((nur_bedingt, Wartungshinweis(
             bauteil=bauteil,
             status=status,
             punkt_km=ausw.von_km,
@@ -1308,6 +1460,7 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
                 _formuliere_zeit(bauteil, ausw.regeln, alter_jahre, technik, herkunft, ausw.zusatz)
                 if ausw.modus == "zeit" else
                 _formuliere_regeln(bauteil, ausw, kilometerstand, herkunft, alter_jahre, technik))
+            + _db_zusatzsatz(roh, herkunft, ungeprueft, ausw)
             # F3: der Marktvorbehalt der Quelle macht das Intervall nicht "bedingt" (s. `erstintervall_text`),
             # bleibt aber SICHTBAR: erreichte Schwelle und bestätigte Geltung für Deutschland sind getrennte Fragen.
             + (" Die Quelle schränkt die Angabe selbst ein; ob sie für dieses Fahrzeug in Deutschland gilt, ist "
@@ -1321,14 +1474,14 @@ def _wartungshinweise(insights: list[Insight], kilometerstand: int,
             technische_bedingung=getattr(i, "technische_bedingung", None),
             technische_bedingung_status=getattr(i, "technische_bedingung_status", None),
             **_kurzfelder(bauteil, ausw, roh, kilometerstand, alter_jahre, technik,
-                          getattr(i, "taetigkeit", None), hat_quellenvorbehalt(roh), herkunft),
+                          getattr(i, "taetigkeit", None), hat_quellenvorbehalt(roh), herkunft, ungeprueft),
         )))
 
     # STATUS_ENTFERNT taucht hier nur noch in genau einem Fall auf: km-seitig
     # entfernt, aber mit relevanter/ungeklärter Zeitalternative (s. oben) --
     # rangiert bewusst zuletzt, denn der km-Anteil ist nachweislich nicht
     # einschlägig und nur die Zeitfrage bleibt offen.
-    rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1, STATUS_ENTFERNT: 0}
+    rang = {STATUS_DARUEBER: 3, STATUS_IM_BEREICH: 2, STATUS_NAEHERT_SICH: 1, STATUS_ENTFERNT: 0, STATUS_UNBEWERTET: 0}
     # Eine NUR bedingte Regel (Voraussetzung ungeklärt) rangiert höchstens wie ein nahender Punkt: sie ist keine
     # belegte Grundregel und darf eine solche nicht verdrängen.
     out.sort(key=lambda p: (-(min(rang[p[1].status], 1) if p[0] else rang[p[1].status]),
