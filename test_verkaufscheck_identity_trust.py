@@ -25,6 +25,7 @@ from app.car_lookup import (
     MATCH_EXACT, MATCH_MOTOR_ALIAS, MATCH_VERTRAUENSWUERDIG,
 )
 from app.evidence import build_insights
+from app.verkaufscheck import _fuer_llm_evidence
 from app.fakt_verifikation import sichtbare_fakten
 from app.inserat import build_listing_analyse
 from app.key_findings import build_key_findings_verkauf
@@ -43,12 +44,14 @@ def gate(marke, modell, baujahr, motor=None, **kw):
     """Exakt der Identity-Trust-Vorlauf aus run_verkaufscheck (P1 #1)."""
     req = VerkaufsCheckRequest(marke=marke, modell=modell, baujahr=baujahr, motor=motor, **kw)
     br_markt, info = find_baureihe_mit_vertrauen(marke, modell, baujahr)
-    mo_markt = find_motor(br_markt, motor) if br_markt else None
+    # Produktive Motorwahl wie in `run_verkaufscheck` (VK-01: früher ohne req=, der abweichende Legacy-Pfad).
+    mo_markt = find_motor(br_markt, motor, modell, req=req) if br_markt else None
     br, mo = (br_markt, mo_markt) if info["belastbar"] else (None, None)
     ins = build_insights(br, mo, [], req, check_typ="verkauf")
     kf = build_key_findings_verkauf(req, br, mo, ins)
     la = build_listing_analyse(req, br, mo, ins)
-    dbctx = build_db_context(br, mo, baujahr)
+    # Produktiver Aufruf (VK-01): evidenzgebunden, dieselbe Auswahl wie der Evidence-Block.
+    dbctx = build_db_context(br, mo, baujahr, risiken=_fuer_llm_evidence(ins))
     return dict(req=req, info=info, br_markt=br_markt, br=br, mo=mo,
                 ins=ins, kf=kf, la=la, dbctx=dbctx)
 
@@ -69,6 +72,9 @@ check("1.3 fahrzeugspezifische Insights vorhanden", len(p_ok["ins"]) > 0)
 check("1.4 technische Insight-Kategorien vorhanden",
       spez_insight_kategorien(p_ok["ins"]) & {"schwachstelle", "rueckruf", "motorproblem"})
 check("1.5 DB-Profil erreicht den Prompt", "DB-Profil:" in p_ok["dbctx"])
+check("1.5b Specs/Neupreis bleiben, aber keine ungeprüften technischen Rohlisten im Prompt (VK-01)",
+      "Neupreis ca.:" in p_ok["dbctx"]
+      and not any(m in p_ok["dbctx"] for m in ("Kritische Wartung:", "Motorprobleme:", "### Schwachstellen Baureihe:")))
 
 _g20 = gate("BMW", "320d", 2020, motor="320d", kilometerstand=80_000, kraftstoff="Diesel")
 check("1.6 BMW 320d 2020 über Motor-Alias belastbar",

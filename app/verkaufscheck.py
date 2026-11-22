@@ -75,7 +75,7 @@ Du bist ein erfahrener KFZ-Verkaufsberater. Du hilfst dem Nutzer, seinen Wagen o
 
 Du erhältst:
 1. FAHRZEUG-DATEN — Angaben des Eigentümers über sein Fahrzeug und dessen Zustand
-2. DB-PROFIL — geprüfte Fakten (Neupreis, Specs, Ausstattungslinien) — zuverlässig
+2. DB-PROFIL — Neupreis, Specs und Ausstattungslinien aus der Fahrzeugdatenbank. Technische Hinweise (Schwachstellen, Motorprobleme, Wartung) stehen nur im Abschnitt "Technische Hinweise" mit ihrer Beleglage; fehlt dieser Abschnitt, liegen keine zugelassenen technischen Hinweise vor
 3. WEB-ERGEBNISSE — aktuelle Marktpreise vergleichbarer Fahrzeuge aus Tavily — Orientierung
 
 AUSGABE: Ausschließlich gültiges JSON. WICHTIG: Zuerst die Zahlfelder, dann "bericht".
@@ -370,9 +370,6 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
                  identitaet["match_art"])
         baureihe, motor_match = None, None
 
-    # 2. DB-Kontext (gegatete Sicht)
-    db_ctx = build_db_context(baureihe, motor_match, req.baujahr)
-
     web_results_roh: list[dict] = await web_results_task if web_results_task else []
 
     # Marktvergleich 2.0 + adaptive Recherche (harte Modelltreue via baue_ziel; die
@@ -455,7 +452,12 @@ async def run_verkaufscheck(req: VerkaufsCheckRequest, retry: bool = False) -> d
     # Referenzieren mitgeben (stabile IDs -> anschließend backend-validierbar).
     insights = build_insights(baureihe, motor_match, belege, req, check_typ="verkauf",
                               marktanalyse=marktanalyse)
-    evidence_block = format_evidence_for_prompt(_fuer_llm_evidence(insights))
+    llm_evidence = _fuer_llm_evidence(insights)
+    evidence_block = format_evidence_for_prompt(llm_evidence)
+    # 2. DB-Kontext (gegatete Sicht), evidenzgebunden (VK-01): technische Hinweise (Schwachstellen, Motorprobleme,
+    # Wartung) erreichen den Prompt NUR über dieselbe zugelassene Auswahl wie der Evidence-Block, mit Beleglage.
+    # `llm_evidence` wird immer als Liste übergeben, auch leer: eine leere Auswahl unterdrückt die Rohlisten.
+    db_ctx = build_db_context(baureihe, motor_match, req.baujahr, risiken=llm_evidence)
     # PFAD A: verbindliche Markt-/Preis-/Strategie-Blöcke wie bisher.
     # PFAD B: EIN expliziter No-Market-Block statt aller drei. Ohne ihn würde das
     # Modell die Preisregeln aus _SYSTEM ("leite eine grobe Spanne ab") weiter
