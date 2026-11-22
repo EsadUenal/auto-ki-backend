@@ -277,8 +277,26 @@ check("6: OUT_OF_BUDGET -> begrenzter Malus == -1.5",
 check("6: Malus bleibt UNTER einem einzelnen starken Foundation-Kriterium "
       "(z.B. 'Hohe Leistung' = 2 Punkte) — kein Dominieren des Foundation-Scores",
       abs(af_budget.BUDGET_MALUS_OUT) < 2.0)
-check("6: kein Kandidat wurde durch den Malus aus der Antwort entfernt "
-      "(gleiche Anzahl wie bei IN_BUDGET-Lauf)", len(data_out["kandidaten"]) == len(data_in["kandidaten"]))
+# AF-01 (Mindestpassung): OUT_OF_BUDGET allein schliesst nie aus. Eine Karte entfaellt NUR, wenn ihr endgueltiger,
+# budgetkorrigierter user_fit unter FIT_SCHWELLE liegt (Zuordnung ueber stabile candidate_id; ohne Abzug im
+# IN-Lauf ist user_fit == Roh-Fit). Bei diesem Request (ein gewichtetes Kriterium, Fit auf 90 gedeckelt) liegt
+# keine Karte nach -12 mehr bei 80; die zulaessige Gegenrichtung (Karte bleibt trotz OUT) prueft das kontrollierte
+# Fixture in §11-D unten mit konkreten Werten.
+_roh_je_id = {k["candidate_id"]: k["user_fit"] for k in data_in["kandidaten"]}
+_out_je_id = {k["candidate_id"]: k for k in data_out["kandidaten"]}
+_abzug_out = 12
+_entfallen = [i for i in _roh_je_id if i not in _out_je_id]
+check("6: der IN-Lauf liefert Karten als Vergleichsbasis (keine leere Liste)", len(_roh_je_id) > 0)
+check("6: jede entfallene Karte liegt nach dem OUT-Abzug unter FIT_SCHWELLE",
+      len(_entfallen) > 0 and all(_roh_je_id[i] - _abzug_out < af_router.FIT_SCHWELLE for i in _entfallen))
+check("6: keine zulaessige Karte fehlt allein wegen OUT (Roh-Fit - 12 >= FIT_SCHWELLE -> bleibt)",
+      all(i in _out_je_id for i, f in _roh_je_id.items() if f - _abzug_out >= af_router.FIT_SCHWELLE))
+check("6: der OUT-Lauf enthaelt keine Karte, die der IN-Lauf nicht kennt",
+      all(i in _roh_je_id for i in _out_je_id))
+check("6: jede verbleibende OUT-Karte hat user_fit == Roh-Fit - 12 und >= FIT_SCHWELLE",
+      all(k["user_fit"] == _roh_je_id[i] - _abzug_out >= af_router.FIT_SCHWELLE for i, k in _out_je_id.items()))
+check("6: wenn alle entfallen, lautet der Status no_strong_match (nicht no_internal_match)",
+      bool(_out_je_id) or data_out["status"] == "no_strong_match")
 
 _reset_limiters()
 af_budget.call_gemini_json = _gemini_leer   # -> alle UNKNOWN (leere Kandidatenliste)
@@ -541,8 +559,10 @@ class _FakeKandidat:
 
 
 _bester = _FakeKandidat(baureihe_id="b1", variante_id="v1", match_score=10.0)   # klar staerkster Kandidat
-_schwaecher1 = _FakeKandidat(baureihe_id="b2", variante_id="v2", match_score=3.0)
-_schwaecher2 = _FakeKandidat(baureihe_id="b3", variante_id="v3", match_score=2.0)
+# AF-01: eigene Modellnamen, damit der semantische Dedupe (gleiche Marke/Modell/Generation) v2/v3 nicht mit v1 zusammenfaellt;
+# sonst bliebe nach dem Ausschluss von v1 eine leere Liste und die Pruefung der Verbleibenden waere vakuos.
+_schwaecher1 = _FakeKandidat(baureihe_id="b2", variante_id="v2", modell="Y", match_score=3.0)
+_schwaecher2 = _FakeKandidat(baureihe_id="b3", variante_id="v3", modell="Z", match_score=2.0)
 
 
 @_dc
@@ -578,10 +598,41 @@ _fin_d = _asyncio.run(af_router._finalisiere(
     [_bester, _schwaecher1, _schwaecher2], _FakeReq(), _FakeReq(),
     bevorzugte_karosserie=None))
 _out_d = _fin_d.outs
-check("§11-D: der technisch stärkste Kandidat (v1) bleibt trotz OUT_OF_BUDGET "
-      "IN der Ergebnisliste (kein Hard-Delete)",
-      any(k.variante_id == "v1" for k in _out_d))
+# AF-01: v1 hat Roh-Fit 85 (ohne gewichtetes Kriterium auf 85 gedeckelt); OUT_OF_BUDGET zieht 12 ab -> final 73.
+# Der Ausschluss kommt vom FINALEN Fit unter FIT_SCHWELLE, nicht vom Budgetstatus. v2/v3 sind UNKNOWN: kein Abzug.
+_roh_v1 = af_router.berechne_fit(_bester, _FakeReq()).score
+check("§11-D: Ausgangswerte: Roh-Fit 85, OUT-Abzug 12, final 73 < FIT_SCHWELLE",
+      _roh_v1 == 85 and af_router._fit_nach_budget(_roh_v1, "OUT_OF_BUDGET") == 73 < af_router.FIT_SCHWELLE)
+check("§11-D: v1 (Roh-Fit 85, OUT, final 73) wird wegen des finalen Fits unter der Schwelle ausgeschlossen",
+      not any(k.variante_id == "v1" for k in _out_d))
+print("   §11-D Ausgabe:", [(k.variante_id, k.user_fit, k.budget_status) for k in _out_d])
+check("§11-D: v2 und v3 (UNKNOWN, kein Abzug, Fit 85) bleiben, Reihenfolge nach internem Score unveraendert",
+      [(k.variante_id, k.user_fit, k.budget_status) for k in _out_d]
+      == [("v2", 85, "UNKNOWN"), ("v3", 85, "UNKNOWN")])
+
+# Gegenfall (tatsaechlicher finaler Fit >= FIT_SCHWELLE): gleiche Kandidaten, Request mit drei gewichteten Kriterien.
+# Kein Fit wird angehoben: der Roh-Fit kommt aus der echten Berechnung, user_fit ist Roh-Fit - 12.
+@_dc
+class _FakeReqStark(_FakeReq):
+    nutzung: str | None = "stadt"
+    km_pro_jahr: int | None = 5000
+    sparsam: bool = True
+
+
+_roh_stark = af_router.berechne_fit(_bester, _FakeReqStark()).score
+check(f"§11-D Gegenfall: Roh-Fit {_roh_stark} - 12 = {_roh_stark - 12} bleibt >= FIT_SCHWELLE",
+      _roh_stark - 12 >= af_router.FIT_SCHWELLE)
+_fin_g = _asyncio.run(af_router._finalisiere(
+    [_bester, _schwaecher1, _schwaecher2], _FakeReqStark(), _FakeReqStark(),
+    bevorzugte_karosserie=None))
+_out_g = _fin_g.outs
+check("§11-D Gegenfall: der technisch stärkste Kandidat (v1) bleibt trotz OUT_OF_BUDGET IN der Ergebnisliste "
+      "(finaler Fit >= FIT_SCHWELLE)",
+      any(k.variante_id == "v1" for k in _out_g))
+_out_d = _out_g
 _v1_out = next(k for k in _out_d if k.variante_id == "v1")
+check("§11-D Gegenfall: user_fit ist der Roh-Fit minus 12, nicht angehoben",
+      _v1_out.user_fit == _roh_stark - 12)
 check("§11-D: v1 behält seinen Foundation-Score MINUS dem begrenzten Malus "
       "(10.0 - 1.5 = 8.5)",
       _v1_out.match_score == 10.0 + af_budget.BUDGET_MALUS_OUT == 8.5)

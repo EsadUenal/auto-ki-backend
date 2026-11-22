@@ -728,11 +728,22 @@ async def _finalisiere(
             budget_min=body.budget_min, budget_max=body.budget_max,
         )
 
+        # §Mindestpassung (AF-01): die Schwelle gilt für den tatsächlich AUSGEGEBENEN, budgetkorrigierten
+        # Wert. Das Gate oben prüft nur den Roh-Fit; der Budgetabzug kam danach und konnte eine Karte
+        # unter FIT_SCHWELLE senken. Genau FIT_SCHWELLE bleibt zulässig. Es wird nichts angehoben und
+        # nichts nachgesucht: der Pool ist bereits budgetbewertet, ein Auffüllen bräuchte neue Provider-Calls.
+        fit_final = _fit_nach_budget(score, b_status)
+        if fit_final < FIT_SCHWELLE:
+            log.info("AutoFinder: Kandidat %s nach Budgetkorrektur unter Mindestpassung "
+                     "(roh=%s, final=%s, budget=%s) — nicht ausgegeben",
+                     kandidat_id(kand), score, fit_final, b_status)
+            continue
+
         outs.append(_zu_kandidat_out(
             kand, _konkrete_variante(kand, body),
             budget_status=b_status, budget_confidence=b_conf,
             budget_adjustment=b_anp, bevorzugte_karosserie=bevorzugte_karosserie,
-            user_fit=_fit_nach_budget(score, b_status), user_fit_gruende=gruende,
+            user_fit=fit_final, user_fit_gruende=gruende,
             enrichment=enr, enrichment_status=e_status,
             known_points=_bekannte_punkte(kand),
         ))
