@@ -1790,6 +1790,9 @@ class AutoFinderKandidatOut(BaseModel):
     why_fits: list[str] = Field(default_factory=list)
     known_points: list[str] = Field(default_factory=list)
     enrichment_status: str = "unavailable"   # ok | fallback | unavailable
+    # Eintraege aus `trade_offs`, die NICHT vom Modell stammen (regelbasiert, z. B. der
+    # Einsteiger-Hinweis). Reine Kennzeichnungshilfe fuer die Anzeige, ohne Wirkung auf die Auswahl.
+    trade_offs_regelbasiert: list[str] = Field(default_factory=list)
 
     # -- Preisorientierung (§Punkt 3) — KI-Schätzung, KEIN Marktpreis. Breite
     # Spanne oder None; nie eine Einzelzahl, nie als "Marktpreis" bezeichnet. --

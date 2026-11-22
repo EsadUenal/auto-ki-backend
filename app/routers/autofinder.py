@@ -224,8 +224,8 @@ def _budget_ergebnis_hinweis(body: AutoFinderRequest, *, gemini_aufgerufen: bool
         return "Budget konnte diesmal nicht zusätzlich berücksichtigt werden."
     if gemini_aufgerufen:
         return (
-            "Das Budget wird als grobe Orientierung für die Reihenfolge genutzt. "
-            "Es ist keine konkrete Marktpreisangabe und keine Garantie."
+            "Das Budget wird als grobe KI-Einschätzung für Reihenfolge und angezeigte "
+            "Passung genutzt. Es ist keine Live-Marktpreisprüfung und keine Garantie."
         )
     return None
 
@@ -326,7 +326,8 @@ def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
                       user_fit: int = 0, user_fit_gruende: list[str] | None = None,
                       enrichment: Enrichment | None = None,
                       enrichment_status: str = "unavailable",
-                      known_points: list[str] | None = None) -> AutoFinderKandidatOut:
+                      known_points: list[str] | None = None,
+                      trade_offs_regelbasiert: list[str] | None = None) -> AutoFinderKandidatOut:
     """Übersetzung des Engine-Kandidaten inkl. Fit-Score (deterministisch) und
     Gemini-Enrichment (why_fits / trade_offs / Preisorientierung).
     `k.match_score` bleibt der INTERNE Ranking-Score (`base_match_score`);
@@ -380,6 +381,7 @@ def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
         why_fits=list(enr.why_fits),
         known_points=list(known_points or []),
         enrichment_status=enrichment_status,
+        trade_offs_regelbasiert=list(trade_offs_regelbasiert or []),
         estimated_price_min=enr.estimated_price_min,
         estimated_price_max=enr.estimated_price_max,
         price_confidence=enr.price_confidence,
@@ -709,8 +711,10 @@ async def _finalisiere(
         enr.why_fits = _bereinige_einsteigeraussagen(list(enr.why_fits), ps)
         enr.trade_offs = _bereinige_einsteigeraussagen(list(enr.trade_offs), ps)
         einsteiger = _einsteiger_hinweis(kand, body)
+        regelbasiert: list[str] = []
         if einsteiger and einsteiger not in enr.trade_offs:
             enr.trade_offs = [einsteiger] + list(enr.trade_offs)
+            regelbasiert = [einsteiger]
 
         # §Budget/Preis-Konsistenz: Budget-Kategorie und Preisorientierung
         # kommen aus zwei getrennten Gemini-Calls und konnten sich bisher
@@ -746,6 +750,7 @@ async def _finalisiere(
             user_fit=fit_final, user_fit_gruende=gruende,
             enrichment=enr, enrichment_status=e_status,
             known_points=_bekannte_punkte(kand),
+            trade_offs_regelbasiert=regelbasiert,
         ))
 
     # §Finale Validierung: die fertige Antwort noch einmal gegen die harten
