@@ -291,8 +291,31 @@ def _unterscheidet_in_baureihe(kuerzel: str, baureihe: dict | None,
     )
 
 
+# Motorcode-Form: Familienkennung aus Buchstaben + Ziffern ("N20", "B47"). Rein
+# FORMBASIERT wie `_KUERZEL_FORM`: dieses Modul führt keine Tabelle bekannter Motoren.
+_MOTORFAMILIE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,2}\d{2,3})(?=[A-Z0-9]|(?![A-Za-z0-9]))")
+_CODE_KUERZEL = re.compile(r"^[A-Z]{1,2}\d{2,3}$")
+
+
+def _motorcode_widerspruch(kuerzel: list[str], motorcode: str | None) -> bool:
+    """Nennt der Scope AUSSCHLIESSLICH Motorcodes, und trägt das Fahrzeug einen
+    ausdrücklich ANDEREN Motorcode?
+
+    Beispiel: Scope "N20", Fahrzeug-Motorcode "N13B16" (Familie N13). Weder ein
+    fehlender noch ein andersartiger (nicht code-förmiger) Motorcode löst das aus:
+    ein Ausschluss braucht den positiven Widerspruch, nie fehlende Daten.
+    """
+    if not kuerzel or not all(_CODE_KUERZEL.match(k) for k in kuerzel):
+        return False
+    familien = set(_MOTORFAMILIE.findall((motorcode or "").upper()))
+    if not familien:
+        return False
+    return not (set(kuerzel) & familien)
+
+
 def schwachstelle_applicability(s: dict, motor_match: dict | None,
-                                baureihe: dict | None) -> tuple[str, str]:
+                                baureihe: dict | None, *,
+                                motorcode_widerspruch: bool = False) -> tuple[str, str]:
     """Betrifft diese Baureihen-Schwachstelle die erkannte Motorisierung?
 
     Rückgabe: (applicability, grund) mit applicability aus
@@ -303,6 +326,11 @@ def schwachstelle_applicability(s: dict, motor_match: dict | None,
     schlicht nicht bestimmbar ("unklar"), genau wie bei Rückrufen ohne erkannten
     Motor. Ein Ausschluss braucht einen positiven Widerspruchsbeweis, nie das
     bloße Fehlen von Daten.
+
+    `motorcode_widerspruch` (Vorgabe False = bisheriges Verhalten aller Aufrufer,
+    KaufCheck/VerkaufCheck): True lässt einen AUSDRÜCKLICH anderen Motorcode
+    (Scope "N20", Fahrzeug "N13B16") auch dann ausschließen, wenn der Kraftstoff
+    übereinstimmt. Nur die AutoFinder-Ausgabe schaltet das ein.
     """
     scope = _scope_text(s)
     if not scope:
@@ -338,6 +366,9 @@ def schwachstelle_applicability(s: dict, motor_match: dict | None,
     if scope_zylinder and isinstance(fahrzeug_zylinder, int) and fahrzeug_zylinder > 0:
         if fahrzeug_zylinder not in scope_zylinder:
             return INKOMPATIBEL, "zylinder_widerspruch"
+
+    if motorcode_widerspruch and _motorcode_widerspruch(kuerzel, motor_match.get("motorcode")):
+        return INKOMPATIBEL, "motorcode_widerspruch"
 
     # ── 2) Positive Zugehörigkeit — schlägt den Kontrast-Test ────────────────
     # Reihenfolge ist bewusst so (siehe Modulkopf): ein explizit passender

@@ -257,3 +257,22 @@ def normalisiere_segment(segment: str | None) -> str:
         if any(m in s for m in muster):
             return klasse
     return UNBEKANNT
+
+
+def groessenklasse_anwenden(karosserie_klassen: frozenset[str], segment: str) -> frozenset[str]:
+    """Trennt GRÖSSENKLASSE (Kleinwagen) von KAROSSERIEFORM (Schrägheck).
+
+    Die Karosserie-Rohwerte nennen die Form ("Schrägheck", "5-Türer"). Beides
+    wird oben als `kompakt` klassifiziert, das Formular verwendet `kleinwagen`
+    und `kompakt` aber als GRÖSSENklassen. Ein Polo ("Schrägheck", Segment
+    Kleinwagen) war damit "Kompakt".
+
+    Hier wird ausschließlich dieser eine Fall korrigiert: ist das Segment der
+    Baureihe belegt Kleinst-/Kleinwagen, steht die formabgeleitete Klasse
+    `kompakt` für `kleinwagen`. Alle anderen Klassen (SUV, Kombi, Van, Coupé,
+    Cabrio ...) bleiben unangetastet, ebenso Baureihen mit unbekanntem oder
+    anderem Segment: dann gilt weiter die bisherige Klassifikation.
+    """
+    if segment in (SEG_KLEINWAGEN, SEG_KLEINSTWAGEN) and KOMPAKT in karosserie_klassen:
+        return frozenset((karosserie_klassen - {KOMPAKT}) | {KLEINWAGEN})
+    return karosserie_klassen

@@ -70,6 +70,9 @@ MARKER_SEED_V1 = "fahrzeug_seed_v1"
 FAHRZEUGTABELLEN = (
     "baureihe", "motorvariante", "ausstattungslinie", "quelle",
     "rueckruf", "schwachstelle_baureihe", "schwachstelle_motor", "kritische_wartung",
+    # Optionaler Geltungsbereich je Motorvariante (belegte Bauzeit-Grenzen,
+    # nicht bestaetigte Getriebe) — siehe app/motor_geltung_daten.py.
+    "motorvariante_geltung",
     # Die kuratierten Einzelfakt-Verifikationen sind ebenfalls produktneutrale
     # Fahrzeugdaten und muessen einen frischen Server mit erreichen — sonst haette
     # der dort dieselben Fakten, aber keine Vertrauensstufen.

@@ -184,7 +184,9 @@ br1, _ = find_baureihe_mit_vertrauen("BMW", "1er", 2014)
 check("G3 die Aufloesung ist kanonisch", br1["id"] == "bmw-1er-f20-f21", br1["id"])
 m1 = [x["bezeichnung"] for x in q("select bezeichnung from motorvariante"
                                   " where baureihe_id='bmw-1er-f20-f21' order by bezeichnung")]
-check("G4 die Motorlisten sind zusammengefuehrt", len(m1) == 7, str(m1))
+# 8 statt 7 (AF-03): die belegte 116i der Modellpflege ab 2015 (zweite Zeile "116i",
+# BMW Medieninformation 01/2015 und 5/2017), siehe app/motor_geltung_daten.py.
+check("G4 die Motorlisten sind zusammengefuehrt", len(m1) == 8, str(m1))
 for bez in ("118d", "120i", "116i"):
     check(f"G4.{bez} vorhanden", bez in m1)
 kar = q("select karosserie from baureihe where id='bmw-1er-f20-f21'")[0]["karosserie"]

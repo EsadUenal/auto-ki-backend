@@ -1062,9 +1062,23 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
                     annotiere_fakten(conn, "kritische_wartung", wartung_roh)):
                 wartung_by_variante.setdefault(d["variante_id"], []).append(d)
 
+        # Belegte Bauzeit-Grenzen je Variante (motorvariante_geltung, optional). Ohne Zeile
+        # oder ohne Tabelle: keine Angabe (None), also keinerlei neue Annahme.
+        geltung_by_variante: dict[str, tuple] = {}
+        if variante_ids:
+            try:
+                for r in conn.execute(
+                        f"SELECT variante_id, bauzeit_von, bauzeit_bis FROM motorvariante_geltung "
+                        f"WHERE variante_id IN ({platzhalter})", variante_ids).fetchall():
+                    geltung_by_variante[r[0]] = (r[1], r[2])
+            except sqlite3.OperationalError:
+                pass
+
         motoren = []
         for m in motoren_rows:
             motor = dict(m)
+            motor["motor_bauzeit_von"], motor["motor_bauzeit_bis"] = geltung_by_variante.get(
+                motor["variante_id"], (None, None))
             motor["getriebe"] = _parse_json_field(motor.get("getriebe"))
             motor["schwachstellen_motor"] = schwachstellen_by_variante.get(motor["variante_id"], [])
             motor["kritische_wartung"] = wartung_by_variante.get(motor["variante_id"], [])

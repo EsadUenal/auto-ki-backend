@@ -58,6 +58,7 @@ FK_REIHENFOLGE = [
     "schwachstelle_baureihe",
     "schwachstelle_motor",
     "kritische_wartung",
+    "motorvariante_geltung",
     # Zuletzt: verweist per (fakt_art, fakt_id) auf die Faktentabellen oben. Kein
     # echter Fremdschluessel, aber fachlich abhaengig — deshalb ans Ende.
     "fakt_verifikation",
@@ -67,6 +68,7 @@ FK_REIHENFOLGE = [
 SORTIERUNG = {
     "baureihe": "id",
     "motorvariante": "variante_id",
+    "motorvariante_geltung": "variante_id",
     # Stabile fachliche Ordnung statt der AUTOINCREMENT-Reihenfolge: so bleibt der
     # Seed-Diff auch dann klein, wenn Verifikationen in anderer Reihenfolge
     # eingetragen wurden.

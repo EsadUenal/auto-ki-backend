@@ -1793,6 +1793,11 @@ class AutoFinderKandidatOut(BaseModel):
     # Eintraege aus `trade_offs`, die NICHT vom Modell stammen (regelbasiert, z. B. der
     # Einsteiger-Hinweis). Reine Kennzeichnungshilfe fuer die Anzeige, ohne Wirkung auf die Auswahl.
     trade_offs_regelbasiert: list[str] = Field(default_factory=list)
+    # Belegte Grenzen der MOTORbauzeit aus motorvariante_geltung (None = nicht hinterlegt)
+    # und Getriebeklassen, die der Datensatz fuehrt, die aber NICHT bestaetigt sind.
+    motor_bauzeit_von: int | None = None
+    motor_bauzeit_bis: int | None = None
+    getriebe_unbestaetigt: list[str] = Field(default_factory=list)
 
     # -- Preisorientierung (§Punkt 3) — KI-Schätzung, KEIN Marktpreis. Breite
     # Spanne oder None; nie eine Einzelzahl, nie als "Marktpreis" bezeichnet. --

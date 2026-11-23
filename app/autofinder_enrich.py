@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.car_lookup import call_gemini_json
+from app.autofinder_variante import baujahr_kontext
 from app.gemini_retry import GeminiFehlgeschlagen
 from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
@@ -93,6 +94,10 @@ STRIKTE REGELN:
 - Jeder Kandidat ist EINE konkrete Variante. Die angegebene Karosserie, das angegebene Getriebe und der angegebene Baujahrbereich sind verbindlich: schreibe nichts, was dem widerspricht, und nenne keine andere Karosserie oder Getriebeart derselben Baureihe.
 - Du erfindest KEINE Zuverlässigkeits-Behauptungen und KEINE modelltypischen Defekte. Schreibe NICHT über Schwachstellen, Motorschäden, Rückrufe oder typische Reparaturfälle dieses Modells — diese Angaben pflegt ENFAL selbst und gibt sie getrennt aus. Ein Defekt, den du nicht dieser Generation UND dieser Motorisierung zuordnen kannst, gehört nirgendwohin.
 - Kein Wort wie "(ungeprüft)" oder "(geprüft)" in deinen Texten.
+- Technische Eigenschaften, Ausstattung und Zahlen nennst du NUR, wenn sie in den Angaben des Kandidaten stehen. "Getriebe automatik" ist nur eine Klasse: sie sagt NICHTS über Bauart (Wandler, Doppelkupplung), Gangzahl oder Serienausstattung. Schreibe nie "serienmäßig", "Serie" oder "Standard" zu Ausstattung, Getriebe oder Assistenzsystemen.
+- KEINE Absolutaussagen zu Wetter, Fahrdynamik oder Fahrsicherheit (nicht "in allen Wettersituationen", nicht "immer sicher", keine Aussage zum Eigenlenkverhalten): dafür liegen keine Daten vor.
+- Verbrauch: nenne höchstens die angegebene Zahl und ihre angegebene Basis (WLTP-Wert laut Datensatz oder geschätzter Realwert). Keine andere Verbrauchszahl, und nie "gemessen", "belegt" oder "tatsächlich".
+- Baujahre: Der Motorzeitraum ist NICHT hinterlegt. Schreibe nichts über Baujahre, Modellpflege oder Verfügbarkeit dieser Motorisierung in bestimmten Jahren, und behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs.
 - FAHRANFÄNGER: Wenn der Nutzer "fahranfaenger" angegeben hat, formuliere differenziert statt absolut. Erlaubt sind konkrete, überprüfbare Aussagen (übersichtliche Abmessungen, gute Bedienbarkeit, verbreitete Assistenzsysteme, Werkstattdichte). VERBOTEN sind pauschale Eignungsurteile wie "ideal für Fahranfänger", "ohne Überforderung" oder "fahrsicher für Einsteiger", sobald das Fahrzeug spürbar Leistung hat (ab etwa 150 PS). Ordne dann Leistung, Versicherungseinstufung und Fahrverhalten ausdrücklich als Anforderung ein, nicht als Vorteil. Widersprich dir nicht: nenne nicht im selben Atemzug "ideal für Einsteiger" und "verlangt Disziplin".
 - Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe, angegebener Baujahrbereich), nicht für die Baureihe allgemein. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
 
@@ -117,20 +122,27 @@ def _kandidat_block(k: Any, req: Any) -> str:
     gebaut — etwa "als elegante Limousine verfügbar" unter einer Karte, die
     Cabrio auswies. Aufgelöste Werte zuerst, Sammelangaben gar nicht.
     """
-    z = f"{k.baujahr_von or '?'}–{k.baujahr_bis or 'heute'}"
+    z = baujahr_kontext(k)
     karo = getattr(k, "karosserie_konkret", None) \
         or "/".join(k.karosserie_klassen or []) or "unbekannt"
     getr = getattr(k, "getriebe_konkret", None) \
         or "/".join(k.getriebe_klassen or []) or "unbekannt"
+    if len(k.getriebe_klassen or []) > 1 and getattr(k, "getriebe_konkret", None):
+        getr += f" (Datensatz führt mehrere: {'/'.join(k.getriebe_klassen)})"
+    getr += " (nur die Klasse, Bauart, Gangzahl und Serienausstattung sind nicht angegeben)"
     zeilen = [
         f"candidate_id={_kandidat_id(k)}",
         f"  {k.marke} {k.modell} {getattr(k, 'generation_label', None) or k.generation or ''} "
         f"— {k.motor_bezeichnung}",
-        f"  Relevante Baujahre {z} | {k.kraftstoff} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
+        f"  {z} | {k.kraftstoff} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
         f"Antrieb {k.antrieb or '?'} | Karosserie {karo}",
     ]
     if getattr(k, "verbrauch_l_100km", None) is not None:
-        zeilen.append(f"  Verbrauch ~{k.verbrauch_l_100km:.1f} l/100km")
+        basis = getattr(k, "verbrauch_basis", None)
+        basis_text = ("hinterlegter WLTP-Wert laut ENFAL-Datensatz" if basis == "wltp"
+                      else "hinterlegter geschätzter Realwert (kein WLTP)" if basis == "real"
+                      else "Basis unbekannt")
+        zeilen.append(f"  Verbrauch ~{k.verbrauch_l_100km:.1f} l/100km ({basis_text}; nicht extern geprüft)")
     if getattr(k, "drehmoment_nm", None):
         zeilen.append(f"  Drehmoment {k.drehmoment_nm} Nm")
     if getattr(k, "beschleunigung_0_100_s", None):
@@ -240,6 +252,86 @@ def _validiere(roh: Any, erlaubte_ids: set[str]) -> dict[str, Enrichment]:
     return ergebnis
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ABSICHERUNG: technische Aussagen nur aus gelieferten Angaben
+# ══════════════════════════════════════════════════════════════════════════
+# Der Prompt verbietet Zusatzdaten; eine Prompt-Regel ist keine Garantie. Dieser
+# gezielte Filter (wie `_bereinige_einsteigeraussagen` im Router) entfernt
+# einzelne SÄTZE, nicht ganze Antworten, und nur für drei Klassen unbelegter
+# technischer Aussagen. Preisspannen (`estimated_price_*`) und alle übrigen
+# Texte bleiben unberührt.
+#
+#   1. Serienausstattung: gelieferte Daten kennen keine Serie/Aufpreis-Unterscheidung.
+#   2. Getriebebauart/Gangzahl: geliefert wird nur die Klasse automatik/manuell.
+#      Ein Begriff darf nur stehen, wenn ihn die Motorbezeichnung selbst trägt.
+#   3. Wetter-/Fahrdynamik-Absolutaussagen: dafür gibt es keine Daten.
+#   4. Verbrauchszahlen: nur die gelieferte Zahl, nur mit ihrer tatsächlichen
+#      Basis, nie als "belegt/gemessen/geprüft".
+
+_SERIE_RE = re.compile(
+    r"serienm[äa]ß?ig|serienmaessig|in serie\b|serienausstattung|standardm[äa]ß?ig|serienmäßige",
+    re.IGNORECASE)
+_GETRIEBE_BAUART_RE = re.compile(
+    r"wandler|doppelkupplung|\bdsg\b|\bdct\b|\bcvt\b|steptronic|tiptronic|s[ -]?tronic"
+    r"|schaltwippe|\b\d{1,2}[- ]?(?:stufen|stufig|gang|g[äa]nge)\b",
+    re.IGNORECASE)
+_WETTER_FAHRDYNAMIK_RE = re.compile(
+    r"wettersituation|wetterlage|allen? wetter|jedem wetter|jeder witterung|allen witterungs"
+    r"|bei jedem wetter|eigenlenkverhalten|stets beherrschbar|immer beherrschbar"
+    r"|jederzeit (?:sicher|beherrschbar)|immer sicher|stets sicher",
+    re.IGNORECASE)
+_VERBRAUCH_ZAHL_RE = re.compile(
+    r"(\d{1,2}(?:[.,]\d{1,2})?)\s*(?:l|liter)\s*(?:/|pro|je)\s*100\s*km", re.IGNORECASE)
+_VERBRAUCH_BEHAUPTUNG_RE = re.compile(
+    r"gemessen|verifiziert|nachweislich|offiziell|laut adac|ecotest|spritmonitor|tats[äa]chlich",
+    re.IGNORECASE)
+_WLTP_VERNEINT_RE = re.compile(r"(?:kein|nicht|ohne)e?[nrms]?\s+wltp", re.IGNORECASE)
+_SATZ_TRENNER = re.compile(r"(?<=[.!?])\s+")
+
+
+def _verbrauch_zahl(wert: str) -> float | None:
+    try:
+        return float(wert.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _satz_unbelegt(satz: str, k: Any) -> bool:
+    """True, wenn der Satz eine technische Aussage macht, die die gelieferten
+    Angaben dieses Kandidaten nicht tragen."""
+    if _SERIE_RE.search(satz) or _WETTER_FAHRDYNAMIK_RE.search(satz):
+        return True
+    motor = (getattr(k, "motor_bezeichnung", "") or "").lower()
+    for m in _GETRIEBE_BAUART_RE.finditer(satz):
+        if m.group(0).lower() not in motor:
+            return True
+    zahlen = _VERBRAUCH_ZAHL_RE.findall(satz)
+    if zahlen:
+        geliefert = getattr(k, "verbrauch_l_100km", None)
+        basis = getattr(k, "verbrauch_basis", None)
+        for z in zahlen:
+            wert = _verbrauch_zahl(z)
+            if geliefert is None or wert is None or abs(wert - geliefert) > 0.05:
+                return True   # Verbrauchszahl, die nicht geliefert wurde
+        if _VERBRAUCH_BEHAUPTUNG_RE.search(satz):
+            return True       # "belegt/gemessen/..." trägt keine unserer Angaben
+        # "kein WLTP" ist die korrekte Bezeichnung eines Schätzwerts, kein Verstoß.
+        ohne_verneinung = _WLTP_VERNEINT_RE.sub(" ", satz)
+        if re.search(r"wltp", ohne_verneinung, re.IGNORECASE) and basis != "wltp":
+            return True       # falsch bezeichnete Basis
+    return False
+
+
+def bereinige_unbelegte_aussagen(texte: list[str], k: Any) -> list[str]:
+    """Entfernt unbelegte technische SÄTZE; übrige Sätze eines Eintrags bleiben."""
+    ergebnis: list[str] = []
+    for text in texte:
+        behalten = [s for s in _SATZ_TRENNER.split(text) if s and not _satz_unbelegt(s, k)]
+        if behalten:
+            ergebnis.append(" ".join(behalten))
+    return ergebnis
+
+
 async def enrich_kandidaten(kandidaten: list[Any], req: Any) -> tuple[dict[str, Enrichment], bool]:
     """EIN Gemini-Call für alle finalen Kandidaten. Rückgabe
     `(zuordnung, ausgefallen)`. Fehlende IDs -> Aufrufer nutzt Fallback."""
@@ -255,7 +347,19 @@ async def enrich_kandidaten(kandidaten: list[Any], req: Any) -> tuple[dict[str, 
     except Exception:
         log.exception("AutoFinder-Enrich: unerwarteter Fehler — deterministischer Fallback")
         return {}, True
-    return _validiere(roh, erlaubte), False
+    ergebnis = _validiere(roh, erlaubte)
+    nach_id = {_kandidat_id(k): k for k in kandidaten}
+    for cid, enr in ergebnis.items():
+        k = nach_id.get(cid)
+        if k is None:
+            continue
+        # Nur Texte werden bereinigt; die KI-Preisspanne und der Status bleiben.
+        vorher = len(enr.why_fits) + len(enr.trade_offs)
+        enr.why_fits = bereinige_unbelegte_aussagen(enr.why_fits, k)
+        enr.trade_offs = bereinige_unbelegte_aussagen(enr.trade_offs, k)
+        if len(enr.why_fits) + len(enr.trade_offs) != vorher:
+            log.info("AutoFinder-Enrich: unbelegte technische Aussage(n) bei %s entfernt", cid)
+    return ergebnis, False
 
 
 def deterministischer_fallback(k: Any) -> Enrichment:

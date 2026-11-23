@@ -45,6 +45,7 @@ sichtbar dokumentiert statt still weggelassen, damit spätere Runden die
 Architektur erweitern statt umbauen müssen.
 """
 
+import json
 import logging
 import sqlite3
 import time
@@ -52,6 +53,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.autofinder_norm import (
+    groessenklasse_anwenden,
     normalisiere_getriebe,
     normalisiere_karosserie,
     normalisiere_segment,
@@ -67,6 +69,8 @@ from app.autofinder_variante import (
     variantenseitig_kodierte_klassen,
 )
 from app.database import get_baureihe, get_conn
+from app.motor_applicability import INKOMPATIBEL, UNKLAR, schwachstelle_applicability
+from app.recall_filter import _baujahr_passt, _jahre
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +176,11 @@ class AutoFinderKandidat:
     # Ausschnitt; die Bauzeit der Generation bleibt hier sichtbar.
     generation_baujahr_von: int | None = None
     generation_baujahr_bis: int | None = None
+    # Belegte Grenzen der MOTORbauzeit (motorvariante_geltung). None = nicht hinterlegt.
+    motor_bauzeit_von: int | None = None
+    motor_bauzeit_bis: int | None = None
+    # Getriebeklassen, die der Datensatz fuehrt, die aber NICHT bestaetigt sind.
+    getriebe_unbestaetigt: list[str] = field(default_factory=list)
     # Werkscode passend zur aufgelösten Karosserie, sofern geprüft hinterlegt.
     generation_label: str | None = None
     # True = die gepflegte Bezeichnung sagte nichts aus (nur eine
@@ -184,12 +193,16 @@ class AutoFinderKandidat:
     datenqualitaet: float = 0.0
 
     trade_offs: list[str] = field(default_factory=list)
+    # Strukturierte Fassung der DB-Fakten mit Prüfstatus, Motorbezug und
+    # Zeitbezug (siehe `_bekannte_punkte_fuer`). Leer bei Web-Kandidaten.
+    bekannte_punkte: list[dict] = field(default_factory=list)
 
     # Quality-Enrichment-Runde: rein informative Kennzahlen für den
     # nutzer-verständlichen Fit-Score (app/autofinder_fit.py) und das
     # Gemini-Enrichment. Kommen aus derselben DB-Zeile wie alles andere,
     # verändern WEDER Hard-Filter NOCH Ranking-Score.
     verbrauch_l_100km: float | None = None
+    verbrauch_basis: str | None = None   # "wltp" | "real" (hinterlegter Schätzwert) | None
     beschleunigung_0_100_s: float | None = None
     drehmoment_nm: int | None = None
 
@@ -229,11 +242,24 @@ def _lade_rohkandidaten(conn: sqlite3.Connection) -> list[dict]:
             b.euro_ncap_sterne, b.chassis_codes,
             m.variante_id, m.bezeichnung, m.motorcode, m.kraftstoff, m.hubraum_ccm,
             m.leistung_ps, m.drehmoment_nm, m.getriebe, m.antrieb,
-            m.beschleunigung_0_100, m.verbrauch_wltp, m.verbrauch_real
+            m.beschleunigung_0_100, m.verbrauch_wltp, m.verbrauch_real,
+            {geltung}
         FROM motorvariante m
         JOIN baureihe b ON b.id = m.baureihe_id
+        {join}
     """
-    return [dict(r) for r in conn.execute(sql).fetchall()]
+    # Optionaler Geltungsbereich je Variante (belegte Bauzeit-Grenzen, nicht bestaetigte
+    # Getriebe). Fehlt die Tabelle (aeltere/Teil-Schemata), gilt "keine Angabe" fuer alle.
+    try:
+        zeilen = conn.execute(sql.format(
+            geltung="g.bauzeit_von AS motor_bauzeit_von, g.bauzeit_bis AS motor_bauzeit_bis, "
+                    "g.getriebe_unbestaetigt AS getriebe_unbestaetigt",
+            join="LEFT JOIN motorvariante_geltung g ON g.variante_id = m.variante_id")).fetchall()
+    except sqlite3.OperationalError:
+        zeilen = conn.execute(sql.format(
+            geltung="NULL AS motor_bauzeit_von, NULL AS motor_bauzeit_bis, NULL AS getriebe_unbestaetigt",
+            join="")).fetchall()
+    return [dict(r) for r in zeilen]
 
 
 # Kurzlebiger In-Memory-Cache für die normalisierte Kandidatenbasis — dasselbe
@@ -266,6 +292,20 @@ def invalidate_kandidatenbasis_cache() -> None:
     _kandidatenbasis_cache = None
 
 
+def _bestaetigte_getriebe(roh: dict) -> str | None:
+    """`motorvariante.getriebe` OHNE die in `motorvariante_geltung` als nicht bestaetigt
+    gefuehrten Eintraege (JSON-Array in, JSON-Array out). Ohne Eintrag unveraendert."""
+    unbest = roh.get("getriebe_unbestaetigt")
+    if not unbest:
+        return roh.get("getriebe")
+    try:
+        gesperrt = set(json.loads(unbest))
+        liste = json.loads(roh.get("getriebe") or "[]")
+    except (ValueError, TypeError):
+        return roh.get("getriebe")
+    return json.dumps([g for g in liste if g not in gesperrt], ensure_ascii=False)
+
+
 def _annotiere_normalisierung(roh: dict) -> dict:
     """Hängt die einmalig berechneten Normalisierungs-Sets an — wird
     NICHT persistiert, nur für die Dauer einer Suche im Speicher gehalten.
@@ -274,13 +314,24 @@ def _annotiere_normalisierung(roh: dict) -> dict:
     belegen lässt. Ohne die Schwestervarianten der Baureihe kann nichts
     abgezogen werden — `_annotiere_basis` schärft den Wert danach nach.
     """
-    roh["_karo_baureihe"] = normalisiere_karosserie(roh.get("karosserie"))
     roh["_segment"] = normalisiere_segment(roh.get("segment"))
-    roh["_getriebe"] = normalisiere_getriebe(roh.get("getriebe"))
+    # Größenklasse (Segment) statt Form: Kleinwagen vs. Kompakt, siehe
+    # `groessenklasse_anwenden`. Filter, Endvalidierung und Karte lesen alle
+    # diese eine Menge und meinen damit dasselbe.
+    roh["_karo_baureihe"] = groessenklasse_anwenden(
+        normalisiere_karosserie(roh.get("karosserie")), roh["_segment"])
+    roh["_getriebe"] = normalisiere_getriebe(_bestaetigte_getriebe(roh))
+    alle = normalisiere_getriebe(roh.get("getriebe"))
+    roh["_getriebe_unbestaetigt"] = frozenset(alle - roh["_getriebe"])
     roh["_karo"] = belegbare_karosserien(
         roh["_karo_baureihe"], roh.get("bezeichnung"), frozenset())
     v = roh.get("verbrauch_wltp")
     roh["_verbrauch"] = v if v is not None else roh.get("verbrauch_real")
+    # Basis des Werts: hinterlegter WLTP-Wert oder hinterlegter Real-/Schätzwert
+    # ("ca., aus Spritmonitor"). Beides sind Datenbankfelder, keine extern
+    # geprüften Angaben.
+    roh["_verbrauch_basis"] = ("wltp" if v is not None
+                               else "real" if roh.get("verbrauch_real") is not None else None)
     return roh
 
 
@@ -323,6 +374,11 @@ def _baujahr_ueberschneidet(roh: dict, req: AutoFinderRequest) -> bool:
         return False  # kein Baujahr bekannt -> kein belastbarer Treffer
     cand_bis = roh.get("bauzeitraum_bis")
     cand_bis = cand_bis if cand_bis is not None else 9999  # None = noch aktuell
+    # Belegte Motor-Grenzen engen die Generationsbauzeit ein (nie aus).
+    if roh.get("motor_bauzeit_von") is not None:
+        cand_von = max(cand_von, roh["motor_bauzeit_von"])
+    if roh.get("motor_bauzeit_bis") is not None:
+        cand_bis = min(cand_bis, roh["motor_bauzeit_bis"])
     req_von = req.baujahr_von if req.baujahr_von is not None else -9999
     req_bis = req.baujahr_bis if req.baujahr_bis is not None else 9999
     return cand_von <= req_bis and cand_bis >= req_von
@@ -447,6 +503,14 @@ def _datenqualitaet(roh: dict) -> float:
 # MATCH-SCORE — §7 (additiv, nur aus vorhandenen Fakten, "Missing != gut")
 # ══════════════════════════════════════════════════════════════════════════
 
+def _verbrauch_text(roh: dict) -> str:
+    """Verbrauch MIT seiner tatsächlichen Basis. Ein Datenbankfeld ist keine
+    externe Verifikation: weder WLTP-Wert noch Schätzwert gelten als "belegt"."""
+    basis = ("WLTP-Wert" if roh.get("_verbrauch_basis") == "wltp"
+             else "geschätzter Realwert, kein WLTP")
+    return f"{roh['_verbrauch']:.1f} l/100km, {basis}"
+
+
 def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]]:
     score = 0.0
     gruende: list[str] = []
@@ -461,7 +525,7 @@ def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]
             gruende.append(f"{drehmoment} Nm Drehmoment, souverän auf der Langstrecke")
         if roh["_verbrauch"] is not None:
             score += 1
-            gruende.append(f"Verbrauch belegt ({roh['_verbrauch']:.1f} l/100km)")
+            gruende.append(f"Verbrauch laut Datensatz ({_verbrauch_text(roh)})")
     elif req.nutzung == "stadt":
         if roh["_karo"] & {"kleinwagen", "kompakt"}:
             score += 2
@@ -501,10 +565,10 @@ def _score_kandidat(roh: dict, req: AutoFinderRequest) -> tuple[float, list[str]
         if roh["_verbrauch"] is not None:
             if roh["_verbrauch"] <= 5.5:
                 score += 3
-                gruende.append(f"Niedriger Verbrauch ({roh['_verbrauch']:.1f} l/100km)")
+                gruende.append(f"Niedriger Verbrauch laut Datensatz ({_verbrauch_text(roh)})")
             elif roh["_verbrauch"] <= 7.0:
                 score += 1
-                gruende.append(f"Moderater Verbrauch ({roh['_verbrauch']:.1f} l/100km)")
+                gruende.append(f"Moderater Verbrauch laut Datensatz ({_verbrauch_text(roh)})")
 
     if req.fahranfaenger:
         if roh["_karo"] & {"kleinwagen", "kompakt"}:
@@ -560,12 +624,51 @@ def diversifiziere(sortiert: list[dict], *, max_pro_marke: int = 2,
 _MAX_TRADE_OFFS = 3
 
 
-def _trade_offs_fuer(roh: dict) -> list[str]:
-    """Nur ECHTE, über `get_baureihe()` gelesene Fakten (rejected bereits
-    entfernt). KEIN Zuverlässigkeits-Urteil (§8) — reine Transparenz, welche
-    hoch eingestuften Schwachstellen bzw. verifizierten Rückrufe bekannt
-    sind. Fehlt die Baureihe unerwartet (defensiv), bleibt die Liste leer
-    statt den Kandidaten zu verwerfen."""
+# Zeitliche Geltung eines Fakts gegenüber dem Baujahrfenster der Karte.
+Z_OK = "ok"                  # mindestens ein Jahr des Fensters liegt im Geltungsbereich
+Z_AUSSERHALB = "ausserhalb"  # KEIN Jahr des Fensters liegt im Geltungsbereich
+Z_UNKLAR = "unklar"          # Zeitangabe vorhanden, aber nicht eindeutig zuordenbar
+Z_OHNE = "ohne_angabe"       # der Fakt macht keine Zeitangabe
+
+
+def _zeit_status(baujahre_text: str | None, von: int | None, bis: int | None) -> str:
+    """Gilt ein Fakt für das Baujahrfenster dieser Karte?
+
+    Wiederverwendet die KaufCheck-Regel `_baujahr_passt` (app/recall_filter.py),
+    JAHR FÜR JAHR über das Fenster: nur wenn jedes Jahr nachweislich außerhalb
+    liegt, gilt der Fakt als außerhalb. Ein offenes Fensterende zählt bis zum
+    laufenden Jahr. Fehlt das Fenster oder ist die Angabe unscharf, bleibt es
+    ausdrücklich unklar, nie stillschweigend passend.
+    """
+    if not _jahre(baujahre_text):
+        return Z_OHNE
+    if von is None:
+        return Z_UNKLAR
+    ende = bis if bis is not None else max(von, time.gmtime().tm_year)
+    ergebnisse = {_baujahr_passt(baujahre_text, y) for y in range(von, max(von, ende) + 1)}
+    if True in ergebnisse:
+        return Z_OK
+    if ergebnisse == {False}:
+        return Z_AUSSERHALB
+    return Z_UNKLAR
+
+
+def _bekannte_punkte_fuer(roh: dict, fenster: tuple[int | None, int | None] = (None, None)) -> list[dict]:
+    """Strukturierte DB-Fakten (Schwachstellen/Rückrufe) dieser Variante.
+
+    Nur ECHTE, über `get_baureihe()` gelesene Fakten (rejected bereits
+    entfernt). Zusätzlich gelten dieselben Gates wie im KaufCheck:
+
+      * Motor-Anwendbarkeit (`schwachstelle_applicability`): ein Baureihenfakt, der
+        nachweislich eine ANDERE Motorisierung meint (Diesel-Hinweis am Benziner),
+        entfällt. Unklare Anwendbarkeit bleibt und wird als unklar ausgewiesen.
+      * Zeitliche Geltung (`_zeit_status`): liegt das gesamte Baujahrfenster der
+        Karte außerhalb des Geltungszeitraums, entfällt der Fakt; ist der Bezug
+        unklar, bleibt er mit entsprechendem Vorbehalt.
+
+    Der Prüfstatus (`_trust`) bleibt am Fakt erhalten. KEIN Zuverlässigkeits-Urteil
+    (§8) — reine Transparenz. Fehlt die Baureihe unerwartet, bleibt die Liste
+    leer statt den Kandidaten zu verwerfen."""
     try:
         baureihe = get_baureihe(roh["marke"], roh["modell"], roh["generation"])
     except Exception:
@@ -575,27 +678,73 @@ def _trade_offs_fuer(roh: dict) -> list[str]:
     if not baureihe:
         return []
 
-    ausgabe: list[str] = []
-    for sb in baureihe.get("schwachstellen_baureihe", []):
-        if sb.get("schweregrad") == "hoch":
-            label = "(geprüft)" if sb.get("_trust") == "verified" else "(ungeprüft)"
-            ausgabe.append(f"Bekannte Schwachstelle {label}: {sb.get('bauteil')}")
+    von, bis = fenster
+    motor = next((m for m in baureihe.get("motoren", [])
+                  if m.get("variante_id") == roh["variante_id"]), None)
 
-    for m in baureihe.get("motoren", []):
-        if m.get("variante_id") != roh["variante_id"]:
+    punkte: list[dict] = []
+    for sb in baureihe.get("schwachstellen_baureihe", []):
+        if sb.get("schweregrad") != "hoch":
             continue
-        for sm in m.get("schwachstellen_motor", []):
-            label = "(geprüft)" if sm.get("_trust") == "verified" else "(ungeprüft)"
-            ausgabe.append(f"Bekanntes Motorproblem {label}: {sm.get('bauteil')}")
+        appl, _grund = schwachstelle_applicability(sb, motor, baureihe, motorcode_widerspruch=True)
+        if appl == INKOMPATIBEL:
+            continue
+        zeit = _zeit_status(sb.get("betroffene_baujahre"), von, bis)
+        if zeit == Z_AUSSERHALB:
+            continue
+        punkte.append({"art": "baureihe", "bauteil": sb.get("bauteil"),
+                       "trust": sb.get("_trust") or "unverified_db",
+                       "motor_unklar": appl == UNKLAR,
+                       "zeit_unklar": zeit == Z_UNKLAR,
+                       "zeitraum": sb.get("betroffene_baujahre")})
+
+    for sm in (motor or {}).get("schwachstellen_motor", []):
+        zeit = _zeit_status(sm.get("baujahre"), von, bis)
+        if zeit == Z_AUSSERHALB:
+            continue
+        punkte.append({"art": "motor", "bauteil": sm.get("bauteil"),
+                       "trust": sm.get("_trust") or "unverified_db",
+                       "motor_unklar": False,
+                       "zeit_unklar": zeit == Z_UNKLAR,
+                       "zeitraum": sm.get("baujahre")})
 
     verifizierte_rueckrufe = sum(
         1 for r in baureihe.get("rueckrufe", []) if r.get("_trust") == "verified"
     )
     if verifizierte_rueckrufe:
-        plural = "e" if verifizierte_rueckrufe > 1 else ""
-        ausgabe.append(f"{verifizierte_rueckrufe} verifizierte(r) KBA-Rückruf{plural} bekannt")
+        punkte.append({"art": "rueckruf", "anzahl": verifizierte_rueckrufe,
+                       "trust": "verified"})
 
-    return ausgabe[:_MAX_TRADE_OFFS]
+    return punkte[:_MAX_TRADE_OFFS]
+
+
+def rueckruf_text(anzahl: int) -> str:
+    """Die Rückrufanzahl gehört zur gesamten BAUREIHE. Daraus folgt nichts zu Motor,
+    Zeitraum, FIN-Betroffenheit oder Durchführung dieses Fahrzeugs."""
+    plural = "e" if anzahl > 1 else ""
+    return (f"Zur Baureihe sind {anzahl} verifizierte KBA-Rückruf{plural} dokumentiert. "
+            "Ob dieses Fahrzeug betroffen ist und ob ein Rückruf durchgeführt wurde, ist damit nicht gesagt "
+            "(Motor, Zeitraum und FIN nicht geprüft)")
+
+
+def _trade_offs_aus_punkten(punkte: list[dict]) -> list[str]:
+    """Interne Textform der strukturierten Punkte (Prüf-Label in Klammern).
+
+    Fit (`autofinder_fit`) und Fallback lesen daran nur, OB ein Fakt geprüft ist;
+    die Nutzertexte entstehen aus den strukturierten Punkten (Router)."""
+    ausgabe: list[str] = []
+    for p in punkte:
+        if p["art"] == "rueckruf":
+            ausgabe.append(rueckruf_text(p["anzahl"]))
+            continue
+        label = "(geprüft)" if p["trust"] == "verified" else "(ungeprüft)"
+        kopf = "Bekannte Schwachstelle" if p["art"] == "baureihe" else "Bekanntes Motorproblem"
+        ausgabe.append(f"{kopf} {label}: {p['bauteil']}")
+    return ausgabe
+
+
+def _trade_offs_fuer(roh: dict, fenster: tuple[int | None, int | None] = (None, None)) -> list[str]:
+    return _trade_offs_aus_punkten(_bekannte_punkte_fuer(roh, fenster))
 
 
 def _visual_key(roh: dict) -> str:
@@ -614,9 +763,11 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
                             gewuenscht=list(req.karosserie))
     getr = loese_getriebe(sorted(roh["_getriebe"]), gewuenscht=list(req.getriebe))
     bj = loese_baujahre(roh.get("bauzeitraum_von"), roh.get("bauzeitraum_bis"),
-                        req.baujahr_von, req.baujahr_bis)
+                        req.baujahr_von, req.baujahr_bis,
+                        motor_von=roh.get("motor_bauzeit_von"), motor_bis=roh.get("motor_bauzeit_bis"))
     motor_name, motor_hergeleitet = loese_motorbezeichnung(
         roh.get("bezeichnung"), roh.get("hubraum_ccm"), roh.get("kraftstoff"))
+    punkte = _bekannte_punkte_fuer(roh, (bj.von, bj.bis))
     return AutoFinderKandidat(
         baureihe_id=roh["baureihe_id"],
         variante_id=roh["variante_id"],
@@ -638,14 +789,19 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
         getriebe_quelle=getr.quelle,
         generation_baujahr_von=bj.generation_von,
         generation_baujahr_bis=bj.generation_bis,
+        motor_bauzeit_von=roh.get("motor_bauzeit_von"),
+        motor_bauzeit_bis=roh.get("motor_bauzeit_bis"),
+        getriebe_unbestaetigt=sorted(roh["_getriebe_unbestaetigt"]),
         generation_label=loese_generationslabel(
             roh["generation"], roh.get("chassis_codes"), karo.konkret),
         motor_hergeleitet=motor_hergeleitet,
         match_score=score,
         match_gruende=gruende,
         datenqualitaet=dq,
-        trade_offs=_trade_offs_fuer(roh),
+        trade_offs=_trade_offs_aus_punkten(punkte),
+        bekannte_punkte=punkte,
         verbrauch_l_100km=roh.get("_verbrauch"),
+        verbrauch_basis=roh.get("_verbrauch_basis"),
         beschleunigung_0_100_s=roh.get("beschleunigung_0_100"),
         drehmoment_nm=roh.get("drehmoment_nm"),
         visual_key=_visual_key(roh),

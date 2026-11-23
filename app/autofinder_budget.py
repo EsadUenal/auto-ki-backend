@@ -51,6 +51,7 @@ unverändert wiederverwendet.
 import logging
 from typing import Any
 
+from app.autofinder_variante import baujahr_kontext
 from app.car_lookup import call_gemini_json
 from app.gemini_retry import GeminiFehlgeschlagen
 
@@ -133,7 +134,7 @@ def _formatiere_kandidat_zeile(k: Any) -> str:
     """Beschreibt die KONKRETE empfohlene Variante, nicht die Sammelangaben
     der Baureihe: eine Preiseinschätzung für "Kompakt/Kombi, Automatik oder
     Schaltgetriebe, 2012–2020" wäre eine Einschätzung für kein Fahrzeug."""
-    zeitraum = f"{k.baujahr_von or '?'}–{k.baujahr_bis or 'heute'}"
+    zeitraum = baujahr_kontext(k)
     karo_konkret = getattr(k, "karosserie_konkret", None)
     getr_konkret = getattr(k, "getriebe_konkret", None)
     karosserie = karo_konkret or (
@@ -142,7 +143,7 @@ def _formatiere_kandidat_zeile(k: Any) -> str:
         "/".join(k.getriebe_klassen) if k.getriebe_klassen else "unbekannt")
     return (
         f"- candidate_id={_kandidat_id(k)} | {k.marke} {k.modell} {k.generation or ''} "
-        f"{k.motor_bezeichnung} | Baujahre {zeitraum} | {k.kraftstoff} | "
+        f"{k.motor_bezeichnung} | {zeitraum} | {k.kraftstoff} | "
         f"Getriebe {getriebe} | {k.leistung_ps or '?'} PS | Karosserie {karosserie}"
     )
 

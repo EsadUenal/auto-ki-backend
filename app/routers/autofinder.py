@@ -60,7 +60,7 @@ from app.auth import verify_api_key
 from app.usage_limit import require_autofinder_kontingent
 from app.provider_control import provider_action
 from app.autofinder import AutoFinderRequest as _EngineRequest
-from app.autofinder import finde_fahrzeuge
+from app.autofinder import finde_fahrzeuge, rueckruf_text
 from app.autofinder_budget import (
     BUDGET_UNKNOWN,
     CONF_UNKNOWN,
@@ -382,6 +382,9 @@ def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
         known_points=list(known_points or []),
         enrichment_status=enrichment_status,
         trade_offs_regelbasiert=list(trade_offs_regelbasiert or []),
+        motor_bauzeit_von=getattr(k, "motor_bauzeit_von", None),
+        motor_bauzeit_bis=getattr(k, "motor_bauzeit_bis", None),
+        getriebe_unbestaetigt=list(getattr(k, "getriebe_unbestaetigt", None) or []),
         estimated_price_min=enr.estimated_price_min,
         estimated_price_max=enr.estimated_price_max,
         price_confidence=enr.price_confidence,
@@ -513,16 +516,56 @@ _KANDIDATEN_POOL = _MAX_AUSGABE
 # an der BAUREIHE hängt, wird auch als solcher gekennzeichnet — er ist nicht
 # automatisch eine Eigenschaft genau dieser Motorisierung.
 _BAUREIHE_PRAEFIX = "Bekannte Schwachstelle"
+_BAUREIHE_HINWEIS = "für die Baureihe dokumentiert, nicht zwingend für genau diese Motorisierung"
+
+
+def _pruefstatus_text(trust: str | None) -> str:
+    """Der Prüfstatus eines DB-Fakts in Worten. Ungeprüftes wird NIE wie
+    Geprüftes dargestellt, weder im Haupt- noch im Fallback-Pfad."""
+    t = (trust or "").strip().lower()
+    if t == "verified":
+        return "von ENFAL geprüft"
+    if t == "partially_verified":
+        return "nur teilweise von ENFAL geprüft"
+    return "noch nicht von ENFAL geprüft"
+
+
+def _punkt_text(art: str, bauteil: str, trust: str | None, *, motor_unklar: bool = False,
+                zeit_unklar: bool = False, zeitraum: str | None = None) -> str:
+    kopf = "Bekannte Schwachstelle" if art == "baureihe" else "Bekanntes Motorproblem"
+    teile = [_pruefstatus_text(trust)]
+    if art == "baureihe":
+        teile.append(_BAUREIHE_HINWEIS)
+        if motor_unklar:
+            teile.append("ob sie diese Motorisierung betrifft, ist unklar")
+    if zeit_unklar:
+        teile.append(f"Zeitraum laut Datensatz: {zeitraum}; passt nicht eindeutig zum gesuchten Baujahr")
+    return f"{kopf}: {bauteil} — " + "; ".join(teile)
 
 
 def _bekannte_punkte(k) -> list[str]:
-    punkte: list[str] = []
+    strukturiert = getattr(k, "bekannte_punkte", None)
+    if strukturiert:
+        punkte: list[str] = []
+        for p in strukturiert:
+            if p.get("art") == "rueckruf":
+                punkte.append(rueckruf_text(p.get("anzahl", 0)))
+            else:
+                punkte.append(_punkt_text(
+                    p["art"], p.get("bauteil") or "", p.get("trust"),
+                    motor_unklar=bool(p.get("motor_unklar")),
+                    zeit_unklar=bool(p.get("zeit_unklar")), zeitraum=p.get("zeitraum")))
+        return punkte
+    # Ältere/Web-Kandidaten ohne strukturierte Punkte: Textform mit Prüf-Label.
+    punkte = []
     for roh in (getattr(k, "trade_offs", None) or []):
         text = strip_pruef_label(roh)
         if not text:
             continue
-        if roh.startswith(_BAUREIHE_PRAEFIX):
-            text += " — für die Baureihe dokumentiert, nicht zwingend für genau diese Motorisierung"
+        if "(geprüft)" in roh or "(ungeprüft)" in roh:
+            art = "baureihe" if roh.startswith(_BAUREIHE_PRAEFIX) else "motor"
+            bauteil = text.split(":", 1)[1].strip() if ":" in text else text
+            text = _punkt_text(art, bauteil, "verified" if "(geprüft)" in roh else None)
         punkte.append(text)
     return punkte
 

@@ -225,7 +225,9 @@ def loese_getriebe(verfuegbar, gewuenscht: list[str] | None = None) -> GetriebeA
 # ══════════════════════════════════════════════════════════════════════════
 
 def loese_baujahre(gen_von: int | None, gen_bis: int | None,
-                   req_von: int | None, req_bis: int | None) -> BaujahrAufloesung:
+                   req_von: int | None, req_bis: int | None, *,
+                   motor_von: int | None = None,
+                   motor_bis: int | None = None) -> BaujahrAufloesung:
     """Der für die Anfrage relevante Ausschnitt der Generationsbauzeit.
 
     Sucht jemand 2016–2022 und die Generation lief 2012–2020, ist "2012–2020"
@@ -236,6 +238,11 @@ def loese_baujahre(gen_von: int | None, gen_bis: int | None,
         return BaujahrAufloesung(None, None, None, None)
     von = gen_von
     bis = gen_bis
+    # Belegte Motorgrenzen (motorvariante_geltung) engen die Generationsbauzeit ein.
+    if motor_von is not None and von is not None:
+        von = max(von, motor_von)
+    if motor_bis is not None:
+        bis = motor_bis if bis is None else min(bis, motor_bis)
     if req_von is not None and von is not None:
         von = max(von, req_von)
     if req_bis is not None:
@@ -245,6 +252,32 @@ def loese_baujahre(gen_von: int | None, gen_bis: int | None,
         # hätte den Kandidaten ohnehin verworfen).
         von, bis = gen_von, gen_bis
     return BaujahrAufloesung(von, bis, gen_von, gen_bis)
+
+
+def baujahr_kontext(k) -> str:
+    """Baujahrangabe für Modell-Prompts, ehrlich über das, was bekannt ist.
+
+    Die Datenbank kennt nur die Bauzeit der GENERATION. Die Bauzeit der einzelnen
+    Motorisierung ist nicht hinterlegt, und das Jahresfenster der Suche ist ein
+    Wunsch des Nutzers, keine Fahrzeugeigenschaft. Web-Kandidaten tragen dagegen
+    eine belegte Bauzeit (kein Generationsbezug).
+    """
+    von, bis = getattr(k, "baujahr_von", None), getattr(k, "baujahr_bis", None)
+    gv, gb = getattr(k, "generation_baujahr_von", None), getattr(k, "generation_baujahr_bis", None)
+    if gv is None and gb is None:
+        return f"Baujahre {von or '?'}–{bis or 'heute'}"
+    mv, mb = getattr(k, "motor_bauzeit_von", None), getattr(k, "motor_bauzeit_bis", None)
+    eff_von = max(gv, mv) if (gv is not None and mv is not None) else gv
+    eff_bis = (mb if gb is None else min(gb, mb)) if mb is not None else gb
+    if mv is None and mb is None:
+        text = f"Baureihe gebaut {gv or '?'}–{gb or 'heute'}, Motorzeitraum nicht hinterlegt"
+    else:
+        grenzen = " ".join(t for t in (f"ab {mv}" if mv is not None else "", f"bis {mb}" if mb is not None else "") if t)
+        text = (f"Baureihe gebaut {gv or '?'}–{gb or 'heute'}, Motorzeitraum laut Datensatz {grenzen} "
+                "(nur diese Grenze ist belegt)")
+    if (von, bis) != (eff_von, eff_bis):
+        text += f"; Wunschfenster des Nutzers {von or '?'}–{bis or '?'} (keine Fahrzeugeigenschaft)"
+    return text
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -310,8 +343,11 @@ def loese_generationslabel(generation: str | None, chassis_codes_json: str | Non
         return generation
     if not isinstance(mapping, dict):
         return generation
+    # `kleinwagen`/`kompakt` sind hier dieselbe FORM (Schrägheck): die Größenklasse
+    # kommt aus dem Segment und steht in den Werkscode-Zuordnungen nicht.
+    gesucht = {karosserie} | ({"kompakt", "kleinwagen"} if karosserie in ("kompakt", "kleinwagen") else set())
     treffer = [code for code, karo in mapping.items()
-               if karosserie in normalisiere_karosserie_text(str(karo))]
+               if gesucht & normalisiere_karosserie_text(str(karo))]
     if len(treffer) == 1:
         return treffer[0]
     return generation

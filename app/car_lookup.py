@@ -783,6 +783,14 @@ def _motor_mit_request(baureihe: dict, hint: str | None, modell: str | None, req
     candidates = list(baureihe.get("motoren") or [])
     if fuel is not None:
         candidates = [m for m in candidates if _motor_kraftstoff_kompatibel(m, fuel)]
+    # Belegte Bauzeit-Grenzen (motorvariante_geltung): eine Variante, die ausserhalb ihrer
+    # belegten Grenzen liegt, ist fuer dieses Baujahr ausgeschlossen. Ohne Grenzen oder ohne
+    # Baujahr gilt keine Annahme; verbleibende Mehrdeutigkeit endet unten in None.
+    year = getattr(req, "baujahr", None)
+    if isinstance(year, int):
+        candidates = [m for m in candidates
+                      if (m.get("motor_bauzeit_von") is None or year >= m["motor_bauzeit_von"])
+                      and (m.get("motor_bauzeit_bis") is None or year <= m["motor_bauzeit_bis"])]
     for field, value, normalizer in (
         ("leistung_ps", power, lambda x: x),
         ("antrieb", drive, lambda x: x),

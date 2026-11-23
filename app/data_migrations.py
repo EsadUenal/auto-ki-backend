@@ -2413,6 +2413,54 @@ MARKER_TEXTKORREKTUREN = "fahrzeugtexte_korrekturen_v1"
 SCHRITTE_TEXTKORREKTUREN = (schritt_textkorrekturen,)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# AF-03: GELTUNGSBEREICH EINZELNER MOTORVARIANTEN
+# ══════════════════════════════════════════════════════════════════════════
+# Belege und Grenzen: app/motor_geltung_daten.py. Additiv und idempotent: es wird
+# keine bestehende Motorzeile veraendert, nur (1) die belegte 116i-Variante der
+# Modellpflege ergaenzt und (2) je Variante ein Geltungsbereich eingetragen.
+MARKER_MOTOR_GELTUNG = "motor_geltung_af03_v1"
+
+
+def schritt_motor_geltung(conn, apply_):
+    from app import motor_geltung_daten as d
+    if "motorvariante_geltung" not in {r[0] for r in conn.execute(
+            "select name from sqlite_master where type='table'")}:
+        raise RuntimeError("[GELTUNG] ABBRUCH: Tabelle motorvariante_geltung fehlt")
+    for v in d.NEUE_VARIANTEN:
+        if conn.execute("select 1 from baureihe where id=?", (v["baureihe_id"],)).fetchone() is None:
+            log(f"  [GELTUNG] {v['variante_id']}: Baureihe {v['baureihe_id']} fehlt — uebersprungen")
+            continue
+        if conn.execute("select 1 from motorvariante where variante_id=?",
+                        (v["variante_id"],)).fetchone() is not None:
+            log(f"  [GELTUNG] {v['variante_id']}: bereits vorhanden (idempotent)")
+            continue
+        spalten = list(v)
+        log(f"  [GELTUNG] {v['variante_id']}: neue belegte Variante ({v['leistung_ps']} PS)")
+        if apply_:
+            conn.execute(
+                f"insert into motorvariante ({','.join(spalten)}) values ({','.join('?' * len(spalten))})",
+                [v[s] for s in spalten])
+    for vid, (von, bis, unbest, quelle, notiz) in d.GELTUNG.items():
+        if conn.execute("select 1 from motorvariante where variante_id=?", (vid,)).fetchone() is None:
+            log(f"  [GELTUNG] {vid}: Variante nicht im Bestand — uebersprungen")
+            continue
+        wert = (von, bis, json.dumps(unbest, ensure_ascii=False) if unbest else None, quelle, notiz)
+        ist = conn.execute("select bauzeit_von, bauzeit_bis, getriebe_unbestaetigt, quelle, notiz "
+                           "from motorvariante_geltung where variante_id=?", (vid,)).fetchone()
+        if ist is not None and tuple(ist) == wert:
+            log(f"  [GELTUNG] {vid}: bereits eingetragen (idempotent)")
+            continue
+        log(f"  [GELTUNG] {vid}: Geltung von={von} bis={bis} unbestaetigt={unbest}")
+        if apply_:
+            conn.execute("insert or replace into motorvariante_geltung "
+                         "(variante_id, bauzeit_von, bauzeit_bis, getriebe_unbestaetigt, quelle, notiz) "
+                         "values (?,?,?,?,?,?)", (vid, *wert))
+
+
+SCHRITTE_MOTOR_GELTUNG = (schritt_motor_geltung,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2478,6 +2526,9 @@ MIGRATIONEN = (
     # (F82-LCI "OLED-Rückleuchten", rhetorischer Gedankenstrich) — siehe
     # TEXTKORREKTUREN.
     (MARKER_TEXTKORREKTUREN, SCHRITTE_TEXTKORREKTUREN),
+    # AutoFinder AF-03: belegte Bauzeit-Grenzen und nicht bestaetigte Getriebe je
+    # Motorvariante (116i-Modellpflege, 1.0 TSI) — siehe app/motor_geltung_daten.py.
+    (MARKER_MOTOR_GELTUNG, SCHRITTE_MOTOR_GELTUNG),
 )
 
 

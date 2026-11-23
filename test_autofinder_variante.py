@@ -539,8 +539,16 @@ _mit_fakten = _K(trade_offs=["Bekannte Schwachstelle (geprüft): Steuerkette",
 _punkte = af_router._bekannte_punkte(_mit_fakten)
 check("M: bekannte Punkte stammen aus den DB-Fakten des Kandidaten",
       len(_punkte) == 2 and "Steuerkette" in _punkte[0])
-check("M: das Prüf-Label erscheint nicht im Consumer-Text",
-      not any("geprüft" in p for p in _punkte))
+# AF-05: der Prüfstatus gehört in den Consumer-Text (in Worten). Ein Fakt ohne
+# sichtbaren Status liest sich wie eine geprüfte Tatsache. Das rohe Klammer-Label
+# bleibt intern.
+check("M: der Prüfstatus steht in Worten im Text, das rohe Klammer-Label nicht",
+      not any("(geprüft)" in p or "(ungeprüft)" in p for p in _punkte)
+      and all("von ENFAL geprüft" in p for p in _punkte))
+_ungeprueft = af_router._bekannte_punkte(_K(trade_offs=["Bekanntes Motorproblem (ungeprüft): Steuerkette"]))
+check("M: ein ungeprüfter Fakt wird nicht als geprüft dargestellt",
+      len(_ungeprueft) == 1 and "noch nicht von ENFAL geprüft" in _ungeprueft[0]
+      and "von ENFAL geprüft" not in _ungeprueft[0].replace("noch nicht von ENFAL geprüft", ""))
 check("M: ein reiner Baureihen-Fakt wird als solcher gekennzeichnet",
       "nicht zwingend für genau diese Motorisierung" in _punkte[0])
 check("M: ein Motorfakt bekommt diesen Zusatz nicht",

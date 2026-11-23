@@ -42,7 +42,7 @@ SCHEMA = os.path.join(BASE, "db", "schema.sql")
 
 FAHRZEUG = ("baureihe", "motorvariante", "schwachstelle_baureihe", "schwachstelle_motor",
             "kritische_wartung", "rueckruf", "ausstattungslinie", "quelle",
-            "fakt_verifikation")
+            "fakt_verifikation", "motorvariante_geltung")
 NUTZER = ("users", "checks", "check_frage", "conversations", "messages", "einwilligung",
           "gespeicherte_adresse", "dealer_vehicle", "ebook_bestellung", "poster_bestellung")
 

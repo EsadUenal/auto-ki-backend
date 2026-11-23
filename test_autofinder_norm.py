@@ -63,7 +63,8 @@ check("Kanonischer Bestand geladen: 416 Baureihen", NB == 416)
 # audi-a4-b9 war eine Dublette der eigenen Baureihe audi-rs-4-avant-b9
 # (identischer Motorcode DECA, 450 PS) und wurde in Quelle + Datenmigration
 # entfernt — siehe app/data_migrations.py::schritt_a4_b9_rs4_dublette.
-check("Kanonischer Bestand geladen: 3230 Motorvarianten", NM == 3230)
+# +1 (AF-03): die belegte 116i-Variante der Modellpflege, siehe app/motor_geltung_daten.py.
+check("Kanonischer Bestand geladen: 3231 Motorvarianten", NM == 3231)
 
 # ── §18: vollständiger Klassifizierungsbericht ──────────────────────────────
 karo_bad = [(b["id"], b["karosserie"]) for b in baureihen

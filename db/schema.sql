@@ -167,6 +167,18 @@ CREATE TABLE IF NOT EXISTS schwachstelle_motor (
     kosten_ca       TEXT
 );
 
+-- Geltungsbereich einzelner Motorvarianten (optional, 0..1 je Variante). Siehe
+-- app/motor_geltung_daten.py. Eine Variante ohne Zeile verhaelt sich wie bisher:
+-- Generationsjahre, Getriebe wie hinterlegt, Motorzeitraum "nicht hinterlegt".
+CREATE TABLE IF NOT EXISTS motorvariante_geltung (
+    variante_id           TEXT PRIMARY KEY REFERENCES motorvariante(variante_id) ON DELETE CASCADE,
+    bauzeit_von           INTEGER,   -- belegte Untergrenze, NULL = nicht hinterlegt
+    bauzeit_bis           INTEGER,   -- belegte Obergrenze,  NULL = nicht hinterlegt
+    getriebe_unbestaetigt TEXT,      -- JSON-Array: Eintraege aus motorvariante.getriebe, die NICHT bestaetigt sind
+    quelle                TEXT NOT NULL,
+    notiz                 TEXT
+);
+
 -- Kritische Wartung (1:n)
 CREATE TABLE IF NOT EXISTS kritische_wartung (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
