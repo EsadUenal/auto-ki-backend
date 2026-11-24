@@ -557,6 +557,11 @@ def schritt67_duplikate(conn, apply_):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def _hat_canonical_spalten(conn) -> bool:
+    cols = {r[1] for r in conn.execute("pragma table_info(rueckruf)")}
+    return {"canonical_make", "canonical_nameplate"} <= cols
+
+
 def pruefe_integritaet(conn):
     """integrity_check + foreign_key_check + Waisenzaehlung.
 
@@ -584,8 +589,21 @@ def pruefe_integritaet(conn):
             "where not exists(select 1 from baureihe b where b.id=m.baureihe_id)",
         "schwachstelle_baureihe ohne baureihe": "select count(*) from schwachstelle_baureihe s "
             "where not exists(select 1 from baureihe b where b.id=s.baureihe_id)",
-        "rueckruf ohne baureihe": "select count(*) from rueckruf r "
-            "where not exists(select 1 from baureihe b where b.id=r.baureihe_id)",
+        # RC-W6: `rueckruf.baureihe_id` ist nullable. Eine canonical-only Zeile (amtlicher
+        # KBA-Rueckruf fuer eine Marke ohne ENFAL-Baureihe) hat baureihe_id NULL und
+        # canonical_make + canonical_nameplate gesetzt (CHECK in db/schema.sql). Geprueft wird:
+        #   1) eine GESETZTE baureihe_id muss auf eine vorhandene Baureihe zeigen;
+        #   2) eine fehlende baureihe_id ist nur MIT vollstaendiger canonical-Zuordnung zulaessig.
+        # Keine pauschale Ausnahme fuer NULL-Zeilen. Aeltere Schemata ohne die canonical-Spalten
+        # behalten die alte Regel (jede Zeile braucht eine Baureihe).
+        "rueckruf mit unbekannter baureihe": "select count(*) from rueckruf r "
+            "where r.baureihe_id is not null "
+            "and not exists(select 1 from baureihe b where b.id=r.baureihe_id)",
+        "rueckruf ohne baureihe und ohne vollstaendige canonical-Zuordnung": (
+            "select count(*) from rueckruf r where r.baureihe_id is null "
+            "and (coalesce(trim(r.canonical_make),'')='' or coalesce(trim(r.canonical_nameplate),'')='')"
+            if _hat_canonical_spalten(conn) else
+            "select count(*) from rueckruf r where r.baureihe_id is null"),
         "ausstattungslinie ohne baureihe": "select count(*) from ausstattungslinie a "
             "where not exists(select 1 from baureihe b where b.id=a.baureihe_id)",
         "schwachstelle_motor ohne motorvariante": "select count(*) from schwachstelle_motor s "
