@@ -588,6 +588,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     _migriere_chassis_codes(conn)
     _migriere_verification(conn)
+    _migriere_geltung_spalten(conn)
     conn.commit()
 
     # Eigene, von der obigen Transaktion getrennte Commit-Grenze (Tabellen-
@@ -624,6 +625,17 @@ def _migriere_rueckruf_abgleich(conn: sqlite3.Connection) -> None:
         if name not in vorhanden:
             conn.execute(f"ALTER TABLE rueckruf ADD COLUMN {name} {typ}")
     conn.commit()
+
+
+def _migriere_geltung_spalten(conn: sqlite3.Connection) -> None:
+    """AF-10/12: ergaenzt die optionalen Spalten von `motorvariante_geltung` auf einer bereits
+    angelegten Tabelle (additiv, idempotent, keine Zeile wird veraendert)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='motorvariante_geltung'").fetchone():
+        return
+    vorhanden = {r[1] for r in conn.execute("PRAGMA table_info(motorvariante_geltung)")}
+    for name in ("antriebsgas", "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis"):
+        if name not in vorhanden:
+            conn.execute(f"ALTER TABLE motorvariante_geltung ADD COLUMN {name} TEXT")
 
 
 def _migriere_verification(conn: sqlite3.Connection) -> None:

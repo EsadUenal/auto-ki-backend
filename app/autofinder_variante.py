@@ -445,7 +445,12 @@ def pruefe_hardfilter_einhaltung(kandidat, req) -> list[Verstoss]:
     kraft_wunsch = {k.strip().lower() for k in (getattr(req, "kraftstoff", None) or [])}
     if kraft_wunsch:
         ist = (getattr(kandidat, "kraftstoff", "") or "").strip().lower()
-        if ist and ist not in kraft_wunsch:
+        gas = (getattr(kandidat, "antriebsgas", None) or "").strip()
+        if gas:
+            # Gasfahrzeug (AF-10): "Benzin" in der Datensatzklasse reicht nicht; es passt nur zu einer Gaswahl.
+            if not (kraft_wunsch & {"cng", "erdgas", "gas", "lpg", "autogas"}):
+                verstoesse.append(Verstoss(kid, "kraftstoff", "/".join(sorted(kraft_wunsch)), f"gas:{gas}"))
+        elif ist and ist not in kraft_wunsch:
             verstoesse.append(Verstoss(kid, "kraftstoff", "/".join(sorted(kraft_wunsch)), ist))
 
     antr_wunsch = {a.strip().lower() for a in (getattr(req, "antrieb", None) or [])}

@@ -1798,6 +1798,12 @@ class AutoFinderKandidatOut(BaseModel):
     motor_bauzeit_von: int | None = None
     motor_bauzeit_bis: int | None = None
     getriebe_unbestaetigt: list[str] = Field(default_factory=list)
+    # AF-10/12: Gasantrieb und Verbrauchseinheit/-zyklus (alle optional). `kraftstoff` bleibt die
+    # Datensatzklasse (z. B. "Benzin"); `kraftstoff_hinweis` sagt, was das Fahrzeug tatsaechlich antreibt.
+    antriebsgas: str | None = None
+    verbrauch_einheit: str = "l"             # "l" | "kg" | "unbekannt"
+    verbrauch_zyklus: str | None = None      # "WLTP" nur bei belegtem Zyklus
+    kraftstoff_hinweis: str | None = None
 
     # -- Preisorientierung (§Punkt 3) — KI-Schätzung, KEIN Marktpreis. Breite
     # Spanne oder None; nie eine Einzelzahl, nie als "Marktpreis" bezeichnet. --

@@ -638,9 +638,11 @@ check("§11-D: v1 behält seinen Foundation-Score MINUS dem begrenzten Malus "
       _v1_out.match_score == 10.0 + af_budget.BUDGET_MALUS_OUT == 8.5)
 check("§11-D: v1 trägt OUT_OF_BUDGET, base_match_score bleibt 10.0",
       _v1_out.budget_status == "OUT_OF_BUDGET" and _v1_out.base_match_score == 10.0)
-check("§11-D: trotz Malus bleibt v1 auf Platz 1 (Fit gleich, aber der "
-      "interne Score dominiert im Tie-Break — Budget kippt das Ranking nicht)",
-      _out_d[0].variante_id == "v1")
+# AF-11: Die Ausgabe ist nach der ANGEZEIGTEN Passung sortiert (nach Budgetkorrektur). v1 zeigt mit dem
+# Malus 84 und steht damit hinter v2/v3 (UNKNOWN, 85), nicht mehr wegen seines internen Scores davor.
+check("§11-D (AF-11): die Ausgabe ist nach der angezeigten Passung absteigend sortiert; v1 (84) steht hinter v2/v3 (85)",
+      [k.user_fit for k in _out_d] == sorted((k.user_fit for k in _out_d), reverse=True)
+      and _out_d[-1].variante_id == "v1" and {k.variante_id for k in _out_d[:2]} == {"v2", "v3"})
 
 
 # ══════════════════════════════════════════════════════════════════════════

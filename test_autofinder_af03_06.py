@@ -306,9 +306,13 @@ check("D6 die KI-Preisspanne bleibt vollständig erhalten",
 check("D7 Satzweise: ein Satz mit Mangel fällt, die übrigen Sätze desselben Eintrags bleiben",
       afe.bereinige_unbelegte_aussagen(["Schaltet serienmäßig sanft. Der Motor ist leise."], K_F20)
       == ["Der Motor ist leise."])
-K_WLTP = SimpleNamespace(**{**K_F20.__dict__, "verbrauch_l_100km": 5.4, "verbrauch_basis": "wltp"})
-check("D8 WLTP-Basis: gelieferte Zahl mit Basis bleibt; 'tatsächlich/belegt' fällt; falsche Basis (WLTP bei Schätzwert) fällt",
+K_WLTP = SimpleNamespace(**{**K_F20.__dict__, "verbrauch_l_100km": 5.4, "verbrauch_wert": 5.4, "verbrauch_basis": "wltp",
+                            "verbrauch_zyklus": "WLTP"})
+K_SPALTE = SimpleNamespace(**{**K_WLTP.__dict__, "verbrauch_zyklus": None})   # Spalte verbrauch_wltp, Zyklus nicht belegt
+check("D8 belegter WLTP-Zyklus: Zahl mit Basis bleibt; 'tatsächlich/belegt' fällt; WLTP bei Schätzwert oder ohne belegten Zyklus fällt",
       afe.bereinige_unbelegte_aussagen(["Der WLTP-Wert laut Datensatz liegt bei 5,4 l/100 km."], K_WLTP)
+      and not afe.bereinige_unbelegte_aussagen(["Der WLTP-Wert laut Datensatz liegt bei 5,4 l/100 km."], K_SPALTE)
+      and afe.bereinige_unbelegte_aussagen(["Der Verbrauch laut Datensatz liegt bei 5,4 l/100 km."], K_SPALTE)
       and not afe.bereinige_unbelegte_aussagen(["Der tatsächliche Verbrauch liegt bei 5,4 l/100 km."], K_WLTP)
       and not afe.bereinige_unbelegte_aussagen(["Der WLTP-Verbrauch beträgt 7,0 l/100 km."], K_F20))
 check("D9 Preisaussagen im Text und andere Zahlen werden nicht angefasst",
@@ -326,8 +330,10 @@ vg = roh_variante("bmw-1er-f20-f21-116i")
 check("D11 'Verbrauch belegt' existiert nicht mehr; der Grund nennt Datensatz und Basis",
       "belegt" not in gr_text and "laut Datensatz" in gr_text and "geschätzter Realwert, kein WLTP" in gr_text, gr_text)
 V_WLTP = next(r for r in BASIS if r["_verbrauch_basis"] == "wltp")
-check("D12 bei hinterlegtem WLTP-Wert steht 'WLTP-Wert', ohne 'belegt'",
-      "WLTP-Wert" in af._verbrauch_text(V_WLTP) and "belegt" not in af._verbrauch_text(V_WLTP))
+check("D12 die Spalte verbrauch_wltp allein belegt keinen Zyklus: kein 'WLTP', kein 'belegt'; mit belegtem Zyklus 'WLTP'",
+      "WLTP" not in af._verbrauch_text(V_WLTP) and "Zyklus nicht geprüft" in af._verbrauch_text(V_WLTP)
+      and "belegt" not in af._verbrauch_text(V_WLTP)
+      and "WLTP" in af._verbrauch_text({**V_WLTP, "verbrauch_zyklus": "WLTP"}))
 
 # ════════════════════════════════════════════════════════════════════════
 print("\n=== Unverändertes Such-/Bewertungsverhalten und Providerzahl ===")
@@ -376,6 +382,7 @@ check("G9 echter Datensatz: der 120i (N20B20) behält den N20-Hinweis", any("N20
 
 # ════════════════════════════════════════════════════════════════════════
 print("\n=== AF-03b) Belegte Motorvarianten: 116i vor/nach der Modellpflege, Golf TSI gegenüber eTSI ===")
+AF03_IDS = {"bmw-1er-f20-f21-116i", "bmw-1er-f20-f21-116i-lci", "bmw-1er-f20-f21-118i", "volkswagen-golf-viii-1.0-tsi-81-kw"}
 with get_conn() as _c2:
     _g = {r[0]: r for r in _c2.execute("select variante_id, bauzeit_von, bauzeit_bis, getriebe_unbestaetigt, quelle, notiz "
                                        "from motorvariante_geltung")}
@@ -383,8 +390,9 @@ with get_conn() as _c2:
                        "from motorvariante where variante_id='bmw-1er-f20-f21-116i-lci'").fetchone()
 check("F1 die belegte 116i der Modellpflege ist da: 109 PS/80 kW, 1499 cm³, 3 Zylinder, 180 Nm, nur 6-Gang manuell, Motorcode nicht geraten",
       tuple(_lci) == (109, 80, 1499, 3, 180, '["6-Gang manuell"]', None), str(tuple(_lci) if _lci else None))
-check("F2 jede Geltungszeile trägt Beleg und Notiz",
-      all(r[4] and "2026-11-23" in r[4] and r[5] for r in _g.values()) and len(_g) == 4)
+check("F2 jede Geltungszeile trägt Beleg und Notiz; die vier AF-03-Zeilen sind da",
+      all(r[4] and "2026-11-2" in r[4] and r[5] for r in _g.values() if r[0] in AF03_IDS)
+      and all(r[4] and r[5] for r in _g.values()) and AF03_IDS <= set(_g))
 check("F3 der ältere 116i (136 PS, Automatik) bleibt als eigene Zeile erhalten, nur nach oben begrenzt",
       roh_variante("bmw-1er-f20-f21-116i")["leistung_ps"] == 136 and _g["bmw-1er-f20-f21-116i"][1:3] == (None, 2015))
 check("F4 der 116i der Modellpflege beginnt 2015, ohne belegtes Ende", _g["bmw-1er-f20-f21-116i-lci"][1:3] == (2015, None))

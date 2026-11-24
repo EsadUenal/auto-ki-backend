@@ -2479,6 +2479,39 @@ def schritt_motor_geltung(conn, apply_):
 SCHRITTE_MOTOR_GELTUNG = (schritt_motor_geltung,)
 
 
+# AF-10/12/07: Gasantrieb, Verbrauchseinheit/-zyklus, Golf-VII-1.2-TSI-Bauzeiten (additive Spalten,
+# siehe app/motor_geltung_daten.py). Ueberschreibt nur Zeilen, die nicht schon eine abweichende
+# Geltung tragen.
+MARKER_MOTOR_GELTUNG_AF10 = "motor_geltung_af10_v1"
+
+
+def schritt_motor_geltung_af10(conn, apply_):
+    from app import motor_geltung_daten as d
+    cols = {r[1] for r in conn.execute("pragma table_info(motorvariante_geltung)")}
+    if not set(d.GELTUNG_AF10_SPALTEN) <= cols:
+        raise RuntimeError("[GELTUNG-AF10] ABBRUCH: Spalten von motorvariante_geltung fehlen")
+    for vid, felder in d.GELTUNG_AF10.items():
+        if conn.execute("select 1 from motorvariante where variante_id=?", (vid,)).fetchone() is None:
+            log(f"  [GELTUNG-AF10] {vid}: Variante nicht im Bestand — uebersprungen")
+            continue
+        wert = tuple(felder.get(c) for c in d.GELTUNG_AF10_SPALTEN)
+        ist = conn.execute(f"select {','.join(d.GELTUNG_AF10_SPALTEN)} from motorvariante_geltung "
+                           "where variante_id=?", (vid,)).fetchone()
+        if ist is not None and tuple(ist) == wert:
+            log(f"  [GELTUNG-AF10] {vid}: bereits eingetragen (idempotent)")
+            continue
+        if ist is not None:
+            # Eine bestehende, abweichende Geltung (z. B. aus AF-03) wird nicht ueberschrieben.
+            raise RuntimeError(f"[GELTUNG-AF10] ABBRUCH: {vid} traegt bereits eine abweichende Geltung")
+        log(f"  [GELTUNG-AF10] {vid}: {', '.join(k for k in felder if k not in ('quelle', 'notiz'))}")
+        if apply_:
+            conn.execute(f"insert into motorvariante_geltung (variante_id,{','.join(d.GELTUNG_AF10_SPALTEN)}) "
+                         f"values (?,{','.join('?' * len(d.GELTUNG_AF10_SPALTEN))})", (vid, *wert))
+
+
+SCHRITTE_MOTOR_GELTUNG_AF10 = (schritt_motor_geltung_af10,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2547,6 +2580,8 @@ MIGRATIONEN = (
     # AutoFinder AF-03: belegte Bauzeit-Grenzen und nicht bestaetigte Getriebe je
     # Motorvariante (116i-Modellpflege, 1.0 TSI) — siehe app/motor_geltung_daten.py.
     (MARKER_MOTOR_GELTUNG, SCHRITTE_MOTOR_GELTUNG),
+    # AutoFinder AF-10/12/07: Gasantrieb, Verbrauchseinheit/-zyklus, Golf VII 1.2 TSI.
+    (MARKER_MOTOR_GELTUNG_AF10, SCHRITTE_MOTOR_GELTUNG_AF10),
 )
 
 

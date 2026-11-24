@@ -96,10 +96,11 @@ STRIKTE REGELN:
 - Kein Wort wie "(ungeprüft)" oder "(geprüft)" in deinen Texten.
 - Technische Eigenschaften, Ausstattung und Zahlen nennst du NUR, wenn sie in den Angaben des Kandidaten stehen. "Getriebe automatik" ist nur eine Klasse: sie sagt NICHTS über Bauart (Wandler, Doppelkupplung), Gangzahl oder Serienausstattung. Schreibe nie "serienmäßig", "Serie" oder "Standard" zu Ausstattung, Getriebe oder Assistenzsystemen.
 - KEINE Absolutaussagen zu Wetter, Fahrdynamik oder Fahrsicherheit (nicht "in allen Wettersituationen", nicht "immer sicher", keine Aussage zum Eigenlenkverhalten): dafür liegen keine Daten vor.
-- Verbrauch: nenne höchstens die angegebene Zahl und ihre angegebene Basis (WLTP-Wert laut Datensatz oder geschätzter Realwert). Keine andere Verbrauchszahl, und nie "gemessen", "belegt" oder "tatsächlich".
+- Verbrauch: nenne höchstens die angegebene Zahl mit ihrer angegebenen EINHEIT und Basis (bei Gas kg/100 km, nie Liter; ist die Einheit unbekannt, nenne keine Verbrauchszahl). "WLTP" nur, wenn die Angabe den Zyklus WLTP nennt. Keine andere Verbrauchszahl, und nie "gemessen", "belegt" oder "tatsächlich".
+- Kraftstoff: Nenne den Kraftstoff genau wie angegeben. Ein Gasfahrzeug mit Benzin-Reserve ist kein gewöhnlicher Benziner.
 - Baujahre: Der Motorzeitraum ist NICHT hinterlegt. Schreibe nichts über Baujahre, Modellpflege oder Verfügbarkeit dieser Motorisierung in bestimmten Jahren, und behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs.
 - FAHRANFÄNGER: Wenn der Nutzer "fahranfaenger" angegeben hat, formuliere differenziert statt absolut. Erlaubt sind konkrete, überprüfbare Aussagen (übersichtliche Abmessungen, gute Bedienbarkeit, verbreitete Assistenzsysteme, Werkstattdichte). VERBOTEN sind pauschale Eignungsurteile wie "ideal für Fahranfänger", "ohne Überforderung" oder "fahrsicher für Einsteiger", sobald das Fahrzeug spürbar Leistung hat (ab etwa 150 PS). Ordne dann Leistung, Versicherungseinstufung und Fahrverhalten ausdrücklich als Anforderung ein, nicht als Vorteil. Widersprich dir nicht: nenne nicht im selben Atemzug "ideal für Einsteiger" und "verlangt Disziplin".
-- Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe, angegebener Baujahrbereich), nicht für die Baureihe allgemein. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
+- Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe), nicht für die Baureihe allgemein. Maßgeblich ist die in den Angaben genannte Bauzeit der Baureihe bzw. der belegte Motorzeitraum; das Wunschfenster des Nutzers ist nur ein Suchwunsch und KEIN Baujahr des Fahrzeugs. Die Jahresfahrleistung beschreibt die Nutzung des Nutzers und ist NICHT der Kilometerstand eines Fahrzeugs; Kilometerstand und Zustand sind unbekannt, die Spanne bleibt deshalb breit. Ist der Motorzeitraum nicht hinterlegt: noch breiter und price_confidence LOW. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
 
 Für jeden Kandidaten:
 - why_fits: 3 bis 5 konkrete, an die Nutzeranfrage (Budget, Nutzung, Jahreskilometer, Prioritäten, gewünschte Karosserie/Kraftstoff/Getriebe/Leistung) gebundene Gründe. Konkret, keine Floskeln.
@@ -111,6 +112,39 @@ Für jeden Kandidaten:
 
 Antworte AUSSCHLIESSLICH mit diesem JSON, ohne Markdown, ohne Erklärtext:
 {"candidates":[{"candidate_id":"<wie Eingabe>","why_fits":["..."],"trade_offs":["..."],"estimated_price_min":12000,"estimated_price_max":16000,"price_confidence":"MEDIUM"}]}"""
+
+
+def _kraftstoff_text(k: Any) -> str:
+    """Kraftstoff so, wie das Fahrzeug tatsaechlich angetrieben wird: ein Gasfahrzeug nennt seinen
+    Hinweis (z. B. "primaer Erdgas (CNG), Benzin nur als Reserve"), nicht nur die Datensatzklasse."""
+    hinweis = getattr(k, "kraftstoff_hinweis", None)
+    return hinweis if hinweis else k.kraftstoff
+
+
+def _verbrauch_zeile(k: Any) -> str | None:
+    """Verbrauch MIT Einheit und Basis. kg wird nie als Liter ausgegeben, eine unbekannte Einheit
+    nie als Liter gelesen; 'WLTP' steht nur, wo der Zyklus belegt ist."""
+    einheit = getattr(k, "verbrauch_einheit", "l") or "l"
+    wert = getattr(k, "verbrauch_wert", None)
+    if wert is None and einheit == "l":
+        wert = getattr(k, "verbrauch_l_100km", None)
+    if wert is None:
+        return None
+    basis = getattr(k, "verbrauch_basis", None)
+    zyklus = getattr(k, "verbrauch_zyklus", None)
+    if basis == "wltp":
+        basis_text = ("WLTP laut ENFAL-Datensatz" if zyklus == "WLTP"
+                      else "Angabe laut ENFAL-Datensatz, Zyklus nicht geprüft")
+    elif basis == "real":
+        basis_text = "hinterlegter geschätzter Realwert (kein WLTP)"
+    else:
+        basis_text = "Basis unbekannt"
+    if einheit == "l":
+        return f"  Verbrauch ~{wert:.1f} l/100km ({basis_text}; nicht extern geprüft)"
+    if einheit == "kg":
+        return f"  Verbrauch ~{wert:.1f} kg/100km Gas, NICHT Liter ({basis_text}; nicht extern geprüft)"
+    return (f"  Verbrauchswert {wert:.1f} mit UNBEKANNTER Einheit (Gasfahrzeug): nicht als Liter lesen, "
+            "keine Verbrauchszahl nennen")
 
 
 def _kandidat_block(k: Any, req: Any) -> str:
@@ -134,15 +168,12 @@ def _kandidat_block(k: Any, req: Any) -> str:
         f"candidate_id={_kandidat_id(k)}",
         f"  {k.marke} {k.modell} {getattr(k, 'generation_label', None) or k.generation or ''} "
         f"— {k.motor_bezeichnung}",
-        f"  {z} | {k.kraftstoff} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
+        f"  {z} | {_kraftstoff_text(k)} | Getriebe {getr} | {k.leistung_ps or '?'} PS | "
         f"Antrieb {k.antrieb or '?'} | Karosserie {karo}",
     ]
-    if getattr(k, "verbrauch_l_100km", None) is not None:
-        basis = getattr(k, "verbrauch_basis", None)
-        basis_text = ("hinterlegter WLTP-Wert laut ENFAL-Datensatz" if basis == "wltp"
-                      else "hinterlegter geschätzter Realwert (kein WLTP)" if basis == "real"
-                      else "Basis unbekannt")
-        zeilen.append(f"  Verbrauch ~{k.verbrauch_l_100km:.1f} l/100km ({basis_text}; nicht extern geprüft)")
+    verbrauch_zeile = _verbrauch_zeile(k)
+    if verbrauch_zeile:
+        zeilen.append(verbrauch_zeile)
     if getattr(k, "drehmoment_nm", None):
         zeilen.append(f"  Drehmoment {k.drehmoment_nm} Nm")
     if getattr(k, "beschleunigung_0_100_s", None):
@@ -171,7 +202,8 @@ def _baue_user_message(kandidaten: list[Any], req: Any) -> str:
     if getattr(req, "nutzung", None):
         zeilen.append(f"  Nutzung: {req.nutzung}")
     if getattr(req, "km_pro_jahr", None):
-        zeilen.append(f"  Jahresfahrleistung: ~{req.km_pro_jahr} km")
+        zeilen.append(f"  Jahresfahrleistung des Nutzers: ~{req.km_pro_jahr} km pro Jahr "
+                      "(seine Nutzung, KEIN Kilometerstand eines Fahrzeugs)")
     prios = [p for p in ("sportlich", "sparsam", "fahranfaenger", "praktisch", "komfortabel", "familie")
              if getattr(req, p, False)]
     if prios:
@@ -281,7 +313,7 @@ _WETTER_FAHRDYNAMIK_RE = re.compile(
     r"|jederzeit (?:sicher|beherrschbar)|immer sicher|stets sicher",
     re.IGNORECASE)
 _VERBRAUCH_ZAHL_RE = re.compile(
-    r"(\d{1,2}(?:[.,]\d{1,2})?)\s*(?:l|liter)\s*(?:/|pro|je)\s*100\s*km", re.IGNORECASE)
+    r"(\d{1,2}(?:[.,]\d{1,2})?)\s*(l|liter|kg)\s*(?:/|pro|je)\s*100\s*km", re.IGNORECASE)
 _VERBRAUCH_BEHAUPTUNG_RE = re.compile(
     r"gemessen|verifiziert|nachweislich|offiziell|laut adac|ecotest|spritmonitor|tats[äa]chlich",
     re.IGNORECASE)
@@ -307,18 +339,25 @@ def _satz_unbelegt(satz: str, k: Any) -> bool:
             return True
     zahlen = _VERBRAUCH_ZAHL_RE.findall(satz)
     if zahlen:
-        geliefert = getattr(k, "verbrauch_l_100km", None)
+        einheit = getattr(k, "verbrauch_einheit", "l") or "l"
+        geliefert = getattr(k, "verbrauch_wert", None)
+        if geliefert is None and einheit == "l":
+            geliefert = getattr(k, "verbrauch_l_100km", None)
         basis = getattr(k, "verbrauch_basis", None)
-        for z in zahlen:
+        for z, e in zahlen:
             wert = _verbrauch_zahl(z)
+            satz_einheit = "kg" if e.lower() == "kg" else "l"
+            if einheit == "unbekannt" or satz_einheit != einheit:
+                return True   # Zahl in einer Einheit, die der Kandidat nicht traegt (kg/l-Vermischung)
             if geliefert is None or wert is None or abs(wert - geliefert) > 0.05:
                 return True   # Verbrauchszahl, die nicht geliefert wurde
         if _VERBRAUCH_BEHAUPTUNG_RE.search(satz):
             return True       # "belegt/gemessen/..." trägt keine unserer Angaben
         # "kein WLTP" ist die korrekte Bezeichnung eines Schätzwerts, kein Verstoß.
         ohne_verneinung = _WLTP_VERNEINT_RE.sub(" ", satz)
-        if re.search(r"wltp", ohne_verneinung, re.IGNORECASE) and basis != "wltp":
-            return True       # falsch bezeichnete Basis
+        zyklus_belegt = basis == "wltp" and getattr(k, "verbrauch_zyklus", None) == "WLTP"
+        if re.search(r"wltp", ohne_verneinung, re.IGNORECASE) and not zyklus_belegt:
+            return True       # Zyklus nicht belegt (die Spalte verbrauch_wltp allein belegt ihn nicht)
     return False
 
 
@@ -330,6 +369,29 @@ def bereinige_unbelegte_aussagen(texte: list[str], k: Any) -> list[str]:
         if behalten:
             ergebnis.append(" ".join(behalten))
     return ergebnis
+
+
+def preis_verlaesslichkeit(enr: Any, k: Any, req: Any) -> None:
+    """Begrenzt die Verlaesslichkeit der KI-Preisspanne im BACKEND (nicht allein per Prompt).
+
+    Spanne, Min und Max bleiben unveraendert (keine Abschlaege). Es wird nur die Zuversicht begrenzt:
+      * ohne Kilometerstand und Zustand ist HIGH nie gerechtfertigt -> hoechstens MEDIUM;
+      * ist der Motorzeitraum nicht belegt, ist ein Wunschfenster des Nutzers KEINE Fahrzeugzeit,
+        die Schaetzung bezieht sich dann nicht belastbar auf Jahre -> LOW.
+    """
+    conf = getattr(enr, "price_confidence", "UNKNOWN")
+    if getattr(enr, "estimated_price_min", None) is None or conf == "UNKNOWN":
+        return
+    if conf == "HIGH":
+        conf = "MEDIUM"
+    hat_fenster = (getattr(req, "baujahr_von", None) is not None
+                   or getattr(req, "baujahr_bis", None) is not None)
+    motor_belegt = (getattr(k, "motor_bauzeit_von", None) is not None
+                    or getattr(k, "motor_bauzeit_bis", None) is not None)
+    intern = getattr(k, "generation_baujahr_von", None) is not None   # Web-Kandidaten tragen belegte Bauzeit
+    if hat_fenster and intern and not motor_belegt and conf in ("HIGH", "MEDIUM"):
+        conf = "LOW"
+    enr.price_confidence = conf
 
 
 async def enrich_kandidaten(kandidaten: list[Any], req: Any) -> tuple[dict[str, Enrichment], bool]:
@@ -357,6 +419,7 @@ async def enrich_kandidaten(kandidaten: list[Any], req: Any) -> tuple[dict[str, 
         vorher = len(enr.why_fits) + len(enr.trade_offs)
         enr.why_fits = bereinige_unbelegte_aussagen(enr.why_fits, k)
         enr.trade_offs = bereinige_unbelegte_aussagen(enr.trade_offs, k)
+        preis_verlaesslichkeit(enr, k, req)
         if len(enr.why_fits) + len(enr.trade_offs) != vorher:
             log.info("AutoFinder-Enrich: unbelegte technische Aussage(n) bei %s entfernt", cid)
     return ergebnis, False

@@ -96,3 +96,71 @@ GELTUNG = {
         "ist damit nicht belegt und zählt nicht als bestätigte Auswahl. Ein Motorzeitraum "
         "wird aus den beiden Einzelausführungen nicht abgeleitet."),
 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AF-10/12/07: Gasantrieb, Verbrauchseinheit/-zyklus und Golf-VII-1.2-TSI-Bauzeiten
+# ═══════════════════════════════════════════════════════════════════════════
+# Belege (gelesen, abgerufen 2026-11-24):
+#   VW Sverige, Pressemitteilung 23.10.2020 "Gasdrivna Volkswagen Golf TGI öppen för beställning":
+#     Golf TGI = 1,5 l Benzinmotor angepasst für Gasbetrieb, 130 PS, 200 Nm, "drivs främst med
+#     fordonsgas (CNG), men kan också köras på bensin"; Verbrauch "från 4,1 kg/100 km" (WLTP),
+#     Gastank 115 l bzw. 17,3 kg, Benzintank 9 l, der Benzintank ist im Wesentlichen eine Reserve.
+#   VW Newsroom "Motorversionen Golf 7 Steckbrief" (Motorübersicht der Generation, keine
+#     Ausstattungslinie): 1.2 TSI 63 kW/85 PS (2013–2015), 1.2 TSI BlueMotion 77 kW/105 PS (2013–2015),
+#     1.2 TSI EVO 81 kW/110 PS (2015–2016). Die Seite führt die 105-PS-Ausführung als "BlueMotion".
+#
+# Die übrigen Gasfahrzeuge des Bestands tragen nur die Kennzeichnung "Gasfahrzeug laut
+# Variantenbezeichnung" (TGI, CNG, LPG, g-tron, EcoFuel, BiFuel). Gasart, Primärkraftstoff,
+# Verbrauchseinheit und Zyklus sind dort NICHT geprüft und bleiben unbekannt (keine kg-Vergabe).
+
+VW_TGI_QUELLE = ("VW Sverige, Pressemitteilung 23.10.2020 (Golf TGI), vwgroup.se, abgerufen 2026-11-24")
+VW_GOLF7_QUELLE = ("VW Newsroom, Motorversionen Golf 7 Steckbrief (volkswagen-newsroom.com/de/"
+                   "motorversionen-golf-7-steckbrief-20040), abgerufen 2026-11-24")
+GAS_UNGEPRUEFT_QUELLE = "Variantenbezeichnung im ENFAL-Datensatz (Gasantrieb laut Bezeichnung)"
+GAS_UNGEPRUEFT_HINWEIS = "Gasfahrzeug laut Variantenbezeichnung (Gasart, Primärkraftstoff und Verbrauchseinheit nicht geprüft)"
+
+GAS_UNGEPRUEFT = (
+    "audi-a3-typ-8v-g-tron",
+    "opel-astra-k-1.4-turbo-lpg-140-ps",
+    "opel-karl-a-1.0-lpg",
+    "opel-zafira-b-1.6-cng-turbo-a16xnt",
+    "opel-zafira-b-1.6-cng-z16yng",
+    "opel-zafira-c-1.6-cng-turbo-150ps",
+    "seat-arona-erste-generation-1.0-tgi-90-ps",
+    "seat-leon-dritte-generation-1.4-tgi-110ps",
+    "volkswagen-caddy-iii-1.4-tgi-110ps",
+    "volkswagen-caddy-iii-2.0-ecofuel-109ps",
+    "volkswagen-golf-vi-1.6-bi-fuel",
+    "volkswagen-passat-b7-1.4-tsi-ecofuel",
+    "volkswagen-polo-vi-1.0-tgi-90-ps",
+    "volkswagen-touran-i-2.0-ecofuel",
+    "volkswagen-up-up-(facelift)-1.0-tgi-(68-ps)",
+)
+
+# variante_id -> Felder (nur gesetzte Schlüssel gelten, der Rest bleibt NULL)
+GELTUNG_AF10 = {
+    "volkswagen-golf-viii-1.5-tgi": dict(
+        antriebsgas="CNG", verbrauch_einheit="kg", verbrauch_zyklus="WLTP",
+        kraftstoff_hinweis="primär Erdgas (CNG), Benzin nur als Reserve",
+        quelle=VW_TGI_QUELLE,
+        notiz="Der Verbrauch 4,1 ist die VW-Angabe 4,1 kg/100 km (CNG, WLTP), keine Liter. Ein "
+              "Benzinverbrauch in l/100 km ist in der Quelle nicht angegeben. Der Benzintank (9 l) ist "
+              "eine Reserve und macht den Wagen nicht zum gewöhnlichen Benziner."),
+    "volkswagen-golf-vii-1.2-tsi-77kw": dict(
+        bauzeit_von=2013, bauzeit_bis=2015, quelle=VW_GOLF7_QUELLE,
+        notiz="Motorübersicht der Generation: 1.2 TSI BlueMotion 77 kW/105 PS, Bauzeit 2013–2015. "
+              "Die Seite führt die Ausführung als BlueMotion; die Zuordnung zur Datensatzzeile "
+              "ergibt sich über Hubraum und Leistung. Eine spätere Erstzulassung ist nicht belegt."),
+    "volkswagen-golf-vii-1.2-tsi-63kw": dict(
+        bauzeit_von=2013, bauzeit_bis=2015, quelle=VW_GOLF7_QUELLE,
+        notiz="Motorübersicht der Generation: 1.2 TSI 63 kW/85 PS, Bauzeit 2013–2015. Eine spätere "
+              "Erstzulassung ist nicht belegt."),
+}
+for _vid in GAS_UNGEPRUEFT:
+    GELTUNG_AF10[_vid] = dict(antriebsgas="Gas", kraftstoff_hinweis=GAS_UNGEPRUEFT_HINWEIS,
+                              quelle=GAS_UNGEPRUEFT_QUELLE,
+                              notiz="Nur die Kennzeichnung als Gasfahrzeug. Verbrauchseinheit und -zyklus unbekannt.")
+
+GELTUNG_AF10_SPALTEN = ("bauzeit_von", "bauzeit_bis", "getriebe_unbestaetigt", "antriebsgas",
+                        "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis", "quelle", "notiz")

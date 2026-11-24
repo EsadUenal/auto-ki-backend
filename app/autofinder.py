@@ -74,6 +74,9 @@ from app.recall_filter import _baujahr_passt, _jahre
 
 log = logging.getLogger(__name__)
 
+# Kraftstoffwerte, mit denen ein Nutzer Gasfahrzeuge ausdruecklich waehlt (AF-10).
+GAS_KRAFTSTOFFE = frozenset({"cng", "erdgas", "gas", "lpg", "autogas"})
+
 # Kraftstoff/Antrieb-Vokabular — spiegelt exakt die CHECK-Constraints von
 # `motorvariante.kraftstoff`/`motorvariante.antrieb` in db/schema.sql. Hier als
 # EINE Quelle der Wahrheit definiert (Runde 2, app/models.py importiert sie für
@@ -202,7 +205,13 @@ class AutoFinderKandidat:
     # Gemini-Enrichment. Kommen aus derselben DB-Zeile wie alles andere,
     # verändern WEDER Hard-Filter NOCH Ranking-Score.
     verbrauch_l_100km: float | None = None
-    verbrauch_basis: str | None = None   # "wltp" | "real" (hinterlegter Schätzwert) | None
+    verbrauch_basis: str | None = None   # "wltp" (Spalte verbrauch_wltp) | "real" (Schaetzwert) | None
+    # AF-10/12: Einheit/Zyklus/Gasantrieb. `verbrauch_l_100km` gilt NUR bei Einheit "l".
+    verbrauch_wert: float | None = None      # der Wert wie hinterlegt (kann kg oder unbekannte Einheit sein)
+    verbrauch_einheit: str = "l"             # "l" | "kg" | "unbekannt"
+    verbrauch_zyklus: str | None = None      # "WLTP" nur wenn belegt
+    antriebsgas: str | None = None           # None | "CNG" | "Gas"
+    kraftstoff_hinweis: str | None = None
     beschleunigung_0_100_s: float | None = None
     drehmoment_nm: int | None = None
 
@@ -253,11 +262,15 @@ def _lade_rohkandidaten(conn: sqlite3.Connection) -> list[dict]:
     try:
         zeilen = conn.execute(sql.format(
             geltung="g.bauzeit_von AS motor_bauzeit_von, g.bauzeit_bis AS motor_bauzeit_bis, "
-                    "g.getriebe_unbestaetigt AS getriebe_unbestaetigt",
+                    "g.getriebe_unbestaetigt AS getriebe_unbestaetigt, g.antriebsgas AS antriebsgas, "
+                    "g.verbrauch_einheit AS verbrauch_einheit, g.verbrauch_zyklus AS verbrauch_zyklus, "
+                    "g.kraftstoff_hinweis AS kraftstoff_hinweis",
             join="LEFT JOIN motorvariante_geltung g ON g.variante_id = m.variante_id")).fetchall()
     except sqlite3.OperationalError:
         zeilen = conn.execute(sql.format(
-            geltung="NULL AS motor_bauzeit_von, NULL AS motor_bauzeit_bis, NULL AS getriebe_unbestaetigt",
+            geltung="NULL AS motor_bauzeit_von, NULL AS motor_bauzeit_bis, NULL AS getriebe_unbestaetigt, "
+                    "NULL AS antriebsgas, NULL AS verbrauch_einheit, NULL AS verbrauch_zyklus, "
+                    "NULL AS kraftstoff_hinweis",
             join="")).fetchall()
     return [dict(r) for r in zeilen]
 
@@ -326,12 +339,21 @@ def _annotiere_normalisierung(roh: dict) -> dict:
     roh["_karo"] = belegbare_karosserien(
         roh["_karo_baureihe"], roh.get("bezeichnung"), frozenset())
     v = roh.get("verbrauch_wltp")
-    roh["_verbrauch"] = v if v is not None else roh.get("verbrauch_real")
-    # Basis des Werts: hinterlegter WLTP-Wert oder hinterlegter Real-/Schätzwert
-    # ("ca., aus Spritmonitor"). Beides sind Datenbankfelder, keine extern
-    # geprüften Angaben.
+    wert = v if v is not None else roh.get("verbrauch_real")
+    # Basis des Werts: Spalte `verbrauch_wltp` oder hinterlegter Real-/Schaetzwert
+    # ("ca., aus Spritmonitor"). Beides sind Datenbankfelder, keine extern geprueften
+    # Angaben; der ZYKLUS (WLTP) gilt nur, wo `verbrauch_zyklus` ihn belegt (siehe unten).
     roh["_verbrauch_basis"] = ("wltp" if v is not None
                                else "real" if roh.get("verbrauch_real") is not None else None)
+    # Verbrauchseinheit (AF-10): Gasfahrzeuge fuehren ihren Verbrauch in der Regel in kg/100 km.
+    # Ohne Gasmarkierung gelten Liter. Bei einem Gasfahrzeug mit unbekannter Einheit bleibt sie
+    # UNBEKANNT; weder wird kg in Liter umgedeutet noch gegen Liter-Schwellen bewertet.
+    if roh.get("antriebsgas"):
+        roh["_verbrauch_einheit"] = roh.get("verbrauch_einheit") or "unbekannt"
+    else:
+        roh["_verbrauch_einheit"] = "l"
+    roh["_verbrauch_anzeige"] = wert                       # der Wert, wie hinterlegt (Anzeige/Kontext)
+    roh["_verbrauch"] = wert if roh["_verbrauch_einheit"] == "l" else None   # nur Liter sind bewertbar
     return roh
 
 
@@ -399,7 +421,12 @@ def erfuellt_harte_filter(roh: dict, req: AutoFinderRequest) -> bool:
 
     if req.kraftstoff:
         gewuenscht = {k.strip().lower() for k in req.kraftstoff}
-        if (roh.get("kraftstoff") or "").strip().lower() not in gewuenscht:
+        if roh.get("antriebsgas"):
+            # Ein Gasfahrzeug (primaer CNG/LPG) ist kein Treffer einer reinen Benzinauswahl, auch wenn
+            # die Spalte `kraftstoff` "Benzin" fuehrt. Es passt nur, wenn Gas gewaehlt wurde.
+            if not (gewuenscht & GAS_KRAFTSTOFFE):
+                return False
+        elif (roh.get("kraftstoff") or "").strip().lower() not in gewuenscht:
             return False
 
     if req.getriebe:
@@ -489,7 +516,7 @@ def _datenqualitaet(roh: dict) -> float:
         roh.get("antrieb"),
         roh.get("bauzeitraum_von"),
         roh.get("kraftstoff"),
-        roh["_verbrauch"],
+        roh.get("_verbrauch_anzeige"),
         roh.get("beschleunigung_0_100"),
         roh.get("getriebe") if roh["_getriebe"] else None,
         next(iter(roh["_karo"]), None),
@@ -504,10 +531,13 @@ def _datenqualitaet(roh: dict) -> float:
 # ══════════════════════════════════════════════════════════════════════════
 
 def _verbrauch_text(roh: dict) -> str:
-    """Verbrauch MIT seiner tatsächlichen Basis. Ein Datenbankfeld ist keine
-    externe Verifikation: weder WLTP-Wert noch Schätzwert gelten als "belegt"."""
-    basis = ("WLTP-Wert" if roh.get("_verbrauch_basis") == "wltp"
-             else "geschätzter Realwert, kein WLTP")
+    """Verbrauch MIT seiner tatsaechlichen Basis. Ein Datenbankfeld ist keine externe
+    Verifikation. Der Zyklus (WLTP) wird nur genannt, wo er belegt ist (`verbrauch_zyklus`);
+    die Spalte `verbrauch_wltp` allein belegt ihn nicht (Zeilen aus der NEFZ-Aera)."""
+    if roh.get("_verbrauch_basis") == "wltp":
+        basis = "WLTP" if roh.get("verbrauch_zyklus") == "WLTP" else "Angabe der Verbrauchsspalte, Zyklus nicht geprüft"
+    else:
+        basis = "geschätzter Realwert, kein WLTP"
     return f"{roh['_verbrauch']:.1f} l/100km, {basis}"
 
 
@@ -802,6 +832,11 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
         bekannte_punkte=punkte,
         verbrauch_l_100km=roh.get("_verbrauch"),
         verbrauch_basis=roh.get("_verbrauch_basis"),
+        verbrauch_wert=roh.get("_verbrauch_anzeige"),
+        verbrauch_einheit=roh["_verbrauch_einheit"],
+        verbrauch_zyklus=roh.get("verbrauch_zyklus"),
+        antriebsgas=roh.get("antriebsgas"),
+        kraftstoff_hinweis=roh.get("kraftstoff_hinweis"),
         beschleunigung_0_100_s=roh.get("beschleunigung_0_100"),
         drehmoment_nm=roh.get("drehmoment_nm"),
         visual_key=_visual_key(roh),

@@ -385,6 +385,10 @@ def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
         motor_bauzeit_von=getattr(k, "motor_bauzeit_von", None),
         motor_bauzeit_bis=getattr(k, "motor_bauzeit_bis", None),
         getriebe_unbestaetigt=list(getattr(k, "getriebe_unbestaetigt", None) or []),
+        antriebsgas=getattr(k, "antriebsgas", None),
+        verbrauch_einheit=getattr(k, "verbrauch_einheit", "l") or "l",
+        verbrauch_zyklus=getattr(k, "verbrauch_zyklus", None),
+        kraftstoff_hinweis=getattr(k, "kraftstoff_hinweis", None),
         estimated_price_min=enr.estimated_price_min,
         estimated_price_max=enr.estimated_price_max,
         price_confidence=enr.price_confidence,
@@ -795,6 +799,11 @@ async def _finalisiere(
             known_points=_bekannte_punkte(kand),
             trade_offs_regelbasiert=regelbasiert,
         ))
+
+    # AF-11: Die Passung wird erst im Kartenbau budgetkorrigiert. Die Ausgabe wird daher NACH der
+    # Korrektur und dem Ausschluss unter der Schwelle stabil nach der ANGEZEIGTEN Passung absteigend
+    # sortiert (Gleichstand: bisherige Reihenfolge). Pool, Anzahl und Werte bleiben unveraendert.
+    outs.sort(key=lambda o: -o.user_fit)
 
     # §Finale Validierung: die fertige Antwort noch einmal gegen die harten
     # Filter halten. Zwischen Hard-Filter und hier liegen Merge, Dedupe,

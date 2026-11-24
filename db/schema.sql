@@ -176,7 +176,12 @@ CREATE TABLE IF NOT EXISTS motorvariante_geltung (
     bauzeit_bis           INTEGER,   -- belegte Obergrenze,  NULL = nicht hinterlegt
     getriebe_unbestaetigt TEXT,      -- JSON-Array: Eintraege aus motorvariante.getriebe, die NICHT bestaetigt sind
     quelle                TEXT NOT NULL,
-    notiz                 TEXT
+    notiz                 TEXT,
+    -- AF-10/12 (optional, additiv): Gasantrieb, Verbrauchseinheit/-zyklus und Anzeigetext.
+    antriebsgas           TEXT,      -- NULL = kein Gasfahrzeug bekannt; 'CNG' = belegt, 'Gas' = Gasart nicht geprueft
+    verbrauch_einheit     TEXT,      -- 'kg' = kg/100 km (Gas); NULL = bei Gasfahrzeugen UNBEKANNT, sonst Liter
+    verbrauch_zyklus      TEXT,      -- 'WLTP' nur bei belegtem Zyklus; NULL = nicht geprueft
+    kraftstoff_hinweis    TEXT       -- Anzeigetext, z. B. "primaer Erdgas (CNG), Benzin als Reserve"
 );
 
 -- Kritische Wartung (1:n)
