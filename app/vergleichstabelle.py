@@ -281,6 +281,29 @@ def baue_zeilen(req, baureihe: dict | None, motor_match: dict | None, *,
                                           ohne_referenz=("Kraftstoffart in ENFAL-Daten nicht "
                                                          "getrennt erfasst") if db_roh else KEINE_REFERENZ))
 
+    # GAS-1: Gasantrieb — eigene Achse (nur wenn der KaufCheck sie bewertet hat und ein Gasbezug
+    # besteht). Angabe und Datensatz bleiben getrennt; eine mögliche Nachrüstung ist kein Widerspruch,
+    # aber auch keine Bestätigung.
+    from app import gasantrieb as _gas
+    gas = _gas.aus_identitaet(identity)
+    if gas is not None:
+        angabe_g = (_gas.ANZEIGE[gas.angabe] if gas.angabe else
+                    "Benzin (kein Gas angegeben)" if gas.status == _gas.ST_ANGABE_BENZIN else "nicht angegeben")
+        ref_g = _gas.ANZEIGE[gas.datensatz] if gas.datensatz else None
+        if gas.status == _gas.ST_BESTAETIGT:
+            einordnung_g = PASST
+        elif gas.status in (_gas.ST_WIDERSPRUCH_GASART, _gas.ST_SONDERKONFIGURATION):
+            einordnung_g = WIDERSPRUCH
+        elif gas.status == _gas.ST_ANGABE_BENZIN:
+            einordnung_g = WEICHT_AB
+        else:
+            einordnung_g = NICHT_BEWERTBAR
+        ohne_ref_g = ("erkannte Variante ab Werk nicht als Gasfahrzeug gekennzeichnet (Nachrüstung möglich)"
+                      if gas.status == _gas.ST_NACHRUESTUNG else KEINE_REFERENZ)
+        zeilen.append(Vergleichszeile("Gasantrieb", angabe_g, ref_g,
+                                      HERKUNFT_DB if ref_g else HERKUNFT_KEINE, einordnung_g,
+                                      ohne_referenz=ohne_ref_g))
+
     # Antriebsart / Elektrifizierung — eigene Dimension, nie mit dem
     # Kraftstoff verglichen.
     #

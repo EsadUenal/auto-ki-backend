@@ -164,3 +164,42 @@ for _vid in GAS_UNGEPRUEFT:
 
 GELTUNG_AF10_SPALTEN = ("bauzeit_von", "bauzeit_bis", "getriebe_unbestaetigt", "antriebsgas",
                         "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis", "quelle", "notiz")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GAS-1: fünf Gasfahrzeuge, die AF-10 nicht gekennzeichnet hat
+# ═══════════════════════════════════════════════════════════════════════════
+# Grundlage ist jeweils ein Bezug auf GENAU DIESE Variante im ENFAL-Datensatz (Bezeichnung, Emblem,
+# Unterscheidungsmerkmal oder ein an diese Variante gebundener Fakt), nie ein allgemeiner Baureihentext.
+# Gasart, Primärkraftstoff, Verbrauchseinheit und Zyklus sind NICHT geprüft und bleiben unbekannt:
+# Kennzeichnung "Gas" (Gasart unbekannt), keine Einheit, kein Zyklus. Auch der Wert 3,5/4,5 des Kamiq
+# wird damit nicht mehr als Liter bewertet.
+GAS1_BEZEICHNUNG_QUELLE = ("Variantenbezeichnung und Emblem im ENFAL-Datensatz "
+                           "(\"G-TEC\", Gasantrieb laut Bezeichnung)")
+GAS1_FAKT_QUELLE = ("ENFAL-Datensatz: variantengebundener Eintrag \"Gasanlage\" (schwachstelle_motor) "
+                    "an genau dieser Variante")
+GAS1_FAKT_HINWEIS = ("Gasfahrzeug laut ENFAL-Datensatz (Gasanlage an dieser Variante hinterlegt; Gasart, "
+                     "Primärkraftstoff und Verbrauchseinheit nicht geprüft)")
+
+GELTUNG_GAS1 = {
+    "skoda-citigo-erste-generation-1.0-g-tec-50kw": dict(
+        antriebsgas="Gas", kraftstoff_hinweis=GAS_UNGEPRUEFT_HINWEIS, quelle=GAS1_BEZEICHNUNG_QUELLE,
+        notiz="Bezeichnung und Emblem \"G-TEC\"; das Unterscheidungsmerkmal nennt einen Erdgastank. Die Gasart "
+              "ist damit nicht geprüft, Verbrauchseinheit (Wert 6,0) und Zyklus bleiben unbekannt."),
+    "skoda-kamiq-erste-generation-1.0-g-tec-90-ps": dict(
+        antriebsgas="Gas", kraftstoff_hinweis=GAS_UNGEPRUEFT_HINWEIS, quelle=GAS1_BEZEICHNUNG_QUELLE,
+        notiz="Bezeichnung und Emblem \"G-TEC\"; das Unterscheidungsmerkmal nennt einen CNG-Tankstutzen. Die "
+              "Gasart ist damit nicht geprüft. Die Werte 3,5 und 4,5 haben keine belegte Einheit und gelten "
+              "nicht als Liter."),
+    "skoda-octavia-dritte-generation-1.4-tsi-g-tec-81kw": dict(
+        antriebsgas="Gas", kraftstoff_hinweis=GAS_UNGEPRUEFT_HINWEIS, quelle=GAS1_BEZEICHNUNG_QUELLE,
+        notiz="Bezeichnung und Emblem \"G-TEC\". Gasart, Verbrauchseinheit und Zyklus unbekannt."),
+    "skoda-octavia-dritte-generation-1.5-tsi-g-tec-96kw": dict(
+        antriebsgas="Gas", kraftstoff_hinweis=GAS_UNGEPRUEFT_HINWEIS, quelle=GAS1_BEZEICHNUNG_QUELLE,
+        notiz="Bezeichnung und Emblem \"G-TEC\". Gasart, Verbrauchseinheit und Zyklus unbekannt."),
+    "bmw-3er-e36-316g": dict(
+        antriebsgas="Gas", kraftstoff_hinweis=GAS1_FAKT_HINWEIS, quelle=GAS1_FAKT_QUELLE,
+        notiz="Die Bezeichnung \"316g\" allein belegt keinen Gasantrieb; maßgeblich ist der an diese Variante "
+              "gebundene Eintrag \"Gasanlage\". Gasart, Verbrauchseinheit und Zyklus unbekannt."),
+}
+GELTUNG_GAS1_SPALTEN = GELTUNG_AF10_SPALTEN

@@ -179,9 +179,11 @@ CREATE TABLE IF NOT EXISTS motorvariante_geltung (
     notiz                 TEXT,
     -- AF-10/12 (optional, additiv): Gasantrieb, Verbrauchseinheit/-zyklus und Anzeigetext.
     antriebsgas           TEXT,      -- NULL = kein Gasfahrzeug bekannt; 'CNG' = belegt, 'Gas' = Gasart nicht geprueft
-    verbrauch_einheit     TEXT,      -- 'kg' = kg/100 km (Gas); NULL = bei Gasfahrzeugen UNBEKANNT, sonst Liter
+    verbrauch_einheit     TEXT,      -- 'kg' = kg/100 km (Gas), 'l' = Liter; NULL = bei Gasfahrzeugen UNBEKANNT, sonst Liter
     verbrauch_zyklus      TEXT,      -- 'WLTP' nur bei belegtem Zyklus; NULL = nicht geprueft
-    kraftstoff_hinweis    TEXT       -- Anzeigetext, z. B. "primaer Erdgas (CNG), Benzin als Reserve"
+    kraftstoff_hinweis    TEXT,      -- Anzeigetext, z. B. "primaer Erdgas (CNG), Benzin als Reserve"
+    -- GAS-1 (optional, additiv): worauf sich der hinterlegte Verbrauch bei einem Gasfahrzeug bezieht
+    verbrauch_bezug       TEXT       -- 'CNG' | 'LPG' | 'Benzin'; NULL = nicht belegt (dann kein Literwert als Benzinbetrieb)
 );
 
 -- Kritische Wartung (1:n)

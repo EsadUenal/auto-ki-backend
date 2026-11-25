@@ -212,6 +212,7 @@ class AutoFinderKandidat:
     verbrauch_zyklus: str | None = None      # "WLTP" nur wenn belegt
     antriebsgas: str | None = None           # None | "CNG" | "Gas"
     kraftstoff_hinweis: str | None = None
+    verbrauch_bezug: str | None = None       # GAS-1: "CNG" | "LPG" | "Benzin" | None (Bezug eines Gas-Verbrauchswerts)
     beschleunigung_0_100_s: float | None = None
     drehmoment_nm: int | None = None
 
@@ -264,13 +265,13 @@ def _lade_rohkandidaten(conn: sqlite3.Connection) -> list[dict]:
             geltung="g.bauzeit_von AS motor_bauzeit_von, g.bauzeit_bis AS motor_bauzeit_bis, "
                     "g.getriebe_unbestaetigt AS getriebe_unbestaetigt, g.antriebsgas AS antriebsgas, "
                     "g.verbrauch_einheit AS verbrauch_einheit, g.verbrauch_zyklus AS verbrauch_zyklus, "
-                    "g.kraftstoff_hinweis AS kraftstoff_hinweis",
+                    "g.kraftstoff_hinweis AS kraftstoff_hinweis, g.verbrauch_bezug AS verbrauch_bezug",
             join="LEFT JOIN motorvariante_geltung g ON g.variante_id = m.variante_id")).fetchall()
     except sqlite3.OperationalError:
         zeilen = conn.execute(sql.format(
             geltung="NULL AS motor_bauzeit_von, NULL AS motor_bauzeit_bis, NULL AS getriebe_unbestaetigt, "
                     "NULL AS antriebsgas, NULL AS verbrauch_einheit, NULL AS verbrauch_zyklus, "
-                    "NULL AS kraftstoff_hinweis",
+                    "NULL AS kraftstoff_hinweis, NULL AS verbrauch_bezug",
             join="")).fetchall()
     return [dict(r) for r in zeilen]
 
@@ -353,7 +354,9 @@ def _annotiere_normalisierung(roh: dict) -> dict:
     else:
         roh["_verbrauch_einheit"] = "l"
     roh["_verbrauch_anzeige"] = wert                       # der Wert, wie hinterlegt (Anzeige/Kontext)
-    roh["_verbrauch"] = wert if roh["_verbrauch_einheit"] == "l" else None   # nur Liter sind bewertbar
+    # Nur Liter eines Nicht-Gasfahrzeugs sind gegen die Liter-Schwellen bewertbar. GAS-1: auch ein belegter
+    # Literwert eines Gasfahrzeugs (z. B. Benzinbetrieb) bewertet nicht dessen Sparsamkeit im Gasbetrieb.
+    roh["_verbrauch"] = wert if roh["_verbrauch_einheit"] == "l" and not roh.get("antriebsgas") else None
     return roh
 
 
@@ -837,6 +840,7 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
         verbrauch_zyklus=roh.get("verbrauch_zyklus"),
         antriebsgas=roh.get("antriebsgas"),
         kraftstoff_hinweis=roh.get("kraftstoff_hinweis"),
+        verbrauch_bezug=roh.get("verbrauch_bezug"),
         beschleunigung_0_100_s=roh.get("beschleunigung_0_100"),
         drehmoment_nm=roh.get("drehmoment_nm"),
         visual_key=_visual_key(roh),

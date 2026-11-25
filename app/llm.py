@@ -37,6 +37,7 @@ from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
 from app.recall_filter import gefilterte_rueckrufe
 from app.motor_applicability import gefilterte_schwachstellen, _norm_kraftstoff
+from app.gasantrieb import ANZEIGE as GAS_ANZEIGE, gasart_der_variante, verbrauch_kontextzeilen
 from app.web_search import (
     tavily_search, results_to_context, results_to_belege, curate_results,
     US_QUELLEN_AUSSCHLUSS as _US_QUELLEN_AUSSCHLUSS,
@@ -233,15 +234,21 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
         ]
 
         for m in data["motoren"]:
+            # GAS-1: ein Gasfahrzeug steht in der Kraftstoffspalte als "Benzin" (Motorklasse). Kontext
+            # nennt den Gasantrieb mit Herkunft; der Verbrauch trägt Einheit, Zyklus und Bezug — kein
+            # kg-Wert als Liter, kein Literwert ohne belegten Bezug, "WLTP" nur bei belegtem Zyklus.
+            gasart, gas_herkunft = gasart_der_variante(m)
+            kraftstoff_text = (f"{m['kraftstoff']} (Motorklasse); Gasfahrzeug: {GAS_ANZEIGE[gasart]}, "
+                               f"{gas_herkunft}" + (f"; {m['kraftstoff_hinweis']}" if m.get("kraftstoff_hinweis") else "")
+                               if gasart else m['kraftstoff'])
             motor_lines = [
                 f"  Variante: {m['bezeichnung']} ({m['variante_id']})",
-                f"    Motorcode: {m['motorcode']}  |  Kraftstoff: {m['kraftstoff']}",
+                f"    Motorcode: {m['motorcode']}  |  Kraftstoff: {kraftstoff_text}",
                 f"    Leistung: {m['leistung_ps']} PS / {m['leistung_kw']} kW",
                 f"    Drehmoment: {m['drehmoment_nm']} Nm",
                 f"    Getriebe: {', '.join(m['getriebe'])}  |  Antrieb: {m['antrieb']}",
                 f"    0-100: {m['beschleunigung_0_100']} s  |  Vmax: {m['vmax_kmh']} km/h",
-                f"    Verbrauch WLTP: {m['verbrauch_wltp'] or 'kein WLTP-Wert (NEFZ-Ära)'} l/100km",
-                f"    Verbrauch real (Spritmonitor): {m['verbrauch_real'] or 'nicht erfasst'} l/100km",
+                *[f"    {z}" for z in verbrauch_kontextzeilen(m)],
                 f"    CO2: {m['co2_g_km'] or 'nicht erfasst'} g/km",
                 f"    Neupreis ca.: {m['neupreis_ca_eur'] or 'nicht erfasst'} EUR",
                 f"    Tankgröße: {m.get('tankgroesse_liter') or 'nicht erfasst'} Liter"

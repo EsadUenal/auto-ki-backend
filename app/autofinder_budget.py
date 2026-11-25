@@ -141,9 +141,13 @@ def _formatiere_kandidat_zeile(k: Any) -> str:
         "/".join(k.karosserie_klassen) if k.karosserie_klassen else "unbekannt")
     getriebe = getr_konkret or (
         "/".join(k.getriebe_klassen) if k.getriebe_klassen else "unbekannt")
+    # F3 (GAS-1): ein Gasfahrzeug wird mit seinem Kraftstoff-Hinweis beschrieben ("primär Erdgas (CNG),
+    # Benzin nur als Reserve" bzw. "Gasfahrzeug …"), nicht mit der Datensatzklasse "Benzin" — dieselbe
+    # Darstellung wie im Enrichment-Prompt (app/autofinder_enrich._kraftstoff_text).
+    kraftstoff = getattr(k, "kraftstoff_hinweis", None) or k.kraftstoff
     return (
         f"- candidate_id={_kandidat_id(k)} | {k.marke} {k.modell} {k.generation or ''} "
-        f"{k.motor_bezeichnung} | {zeitraum} | {k.kraftstoff} | "
+        f"{k.motor_bezeichnung} | {zeitraum} | {kraftstoff} | "
         f"Getriebe {getriebe} | {k.leistung_ps or '?'} PS | Karosserie {karosserie}"
     )
 

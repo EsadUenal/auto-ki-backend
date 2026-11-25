@@ -2512,6 +2512,38 @@ def schritt_motor_geltung_af10(conn, apply_):
 SCHRITTE_MOTOR_GELTUNG_AF10 = (schritt_motor_geltung_af10,)
 
 
+# GAS-1: fuenf Gasfahrzeuge, die AF-10 nicht gekennzeichnet hat (eigener Marker; AF-10 bleibt
+# unveraendert). Nur fehlende Zeilen werden eingetragen. Eine vorhandene, abweichende Geltung bricht
+# die ganze Migration ab (Rollback, kein Marker, keine Teilschreibung).
+MARKER_MOTOR_GELTUNG_GAS1 = "motor_geltung_gas1_v1"
+
+
+def schritt_motor_geltung_gas1(conn, apply_):
+    from app import motor_geltung_daten as d
+    cols = {r[1] for r in conn.execute("pragma table_info(motorvariante_geltung)")}
+    if not set(d.GELTUNG_GAS1_SPALTEN) <= cols:
+        raise RuntimeError("[GELTUNG-GAS1] ABBRUCH: Spalten von motorvariante_geltung fehlen")
+    for vid, felder in d.GELTUNG_GAS1.items():
+        if conn.execute("select 1 from motorvariante where variante_id=?", (vid,)).fetchone() is None:
+            log(f"  [GELTUNG-GAS1] {vid}: Variante nicht im Bestand — uebersprungen")
+            continue
+        wert = tuple(felder.get(c) for c in d.GELTUNG_GAS1_SPALTEN)
+        ist = conn.execute(f"select {','.join(d.GELTUNG_GAS1_SPALTEN)} from motorvariante_geltung "
+                           "where variante_id=?", (vid,)).fetchone()
+        if ist is not None and tuple(ist) == wert:
+            log(f"  [GELTUNG-GAS1] {vid}: bereits eingetragen (idempotent)")
+            continue
+        if ist is not None:
+            raise RuntimeError(f"[GELTUNG-GAS1] ABBRUCH: {vid} traegt bereits eine abweichende Geltung")
+        log(f"  [GELTUNG-GAS1] {vid}: Gasfahrzeug (Gasart unbekannt)")
+        if apply_:
+            conn.execute(f"insert into motorvariante_geltung (variante_id,{','.join(d.GELTUNG_GAS1_SPALTEN)}) "
+                         f"values (?,{','.join('?' * len(d.GELTUNG_GAS1_SPALTEN))})", (vid, *wert))
+
+
+SCHRITTE_MOTOR_GELTUNG_GAS1 = (schritt_motor_geltung_gas1,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2582,6 +2614,8 @@ MIGRATIONEN = (
     (MARKER_MOTOR_GELTUNG, SCHRITTE_MOTOR_GELTUNG),
     # AutoFinder AF-10/12/07: Gasantrieb, Verbrauchseinheit/-zyklus, Golf VII 1.2 TSI.
     (MARKER_MOTOR_GELTUNG_AF10, SCHRITTE_MOTOR_GELTUNG_AF10),
+    # GAS-1: fuenf weitere Gasfahrzeuge (Gasart unbekannt) — siehe GELTUNG_GAS1.
+    (MARKER_MOTOR_GELTUNG_GAS1, SCHRITTE_MOTOR_GELTUNG_GAS1),
 )
 
 

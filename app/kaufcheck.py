@@ -69,6 +69,7 @@ from app.postprocess import neutralisiere_preiszeile_ohne_markt
 from app.key_findings import build_key_findings_kauf
 from app.models import KaufCheckRequest
 from app.vehicle_identity import VehicleIdentity
+from app.gasantrieb import gas_identitaet, gasart_der_variante, setze_in_identitaet as setze_gas_in_identitaet
 from app.kaufcheck_bericht import (
     kontext as kanonischer_kontext, bericht as kanonischer_bericht,
     datenbasis_objekt,
@@ -199,6 +200,13 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # ohnehin "keine belastbare Marktpreisbewertung" (PFAD B weiter unten).
     # Wird später eine Quelle freigegeben, läuft der Pfad unverändert wieder an.
     markt_recherche = marktpreis_recherche_moeglich(req.marke, req.modell)
+    # GAS-1: Für Gasfahrzeuge gibt es keinen passenden Marktvergleich (Angebote gewöhnlicher Benziner
+    # wären kein Vergleich). Eine ausdrückliche Gasangabe verhindert die Recherche von vornherein; eine
+    # erst über die erkannte Variante bekannte Gasvariante verwirft sie unten. Ergebnis ist der
+    # bestehende Ohne-Marktdaten-Zustand (completed_no_market), kein technischer Fehler.
+    if req.antriebsgas and markt_recherche:
+        log.info("Kaufcheck: Gasantrieb laut Angabe, Marktrecherche entfaellt (kein passender Vergleich).")
+        markt_recherche = False
     if not markt_recherche:
         log.info("Kaufcheck: keine fuer die Preisbildung freigegebene Quelle, "
                  "Markt-Webrecherche entfaellt (0 Tavily-Calls).")
@@ -258,6 +266,17 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
                  "fahrzeugspezifische DB-Aussagen werden unterdrueckt",
                  identitaet["match_art"])
         baureihe, motor_match = None, None
+
+    # GAS-1: Gas-Identität aus Angabe und (gegateter) erkannter Variante — dieselbe Funktion speist
+    # Identität, Rückruf-/Faktachse, Bericht und Kaufaktionen.
+    gas = gas_identitaet(req, motor_match)
+    gas_markt_gesperrt = bool(req.antriebsgas or gas or gasart_der_variante(motor_markt)[0])
+    if gas_markt_gesperrt and markt_recherche:
+        log.info("Kaufcheck: Gasvariante erkannt, Marktrecherche wird verworfen (kein passender Vergleich).")
+        markt_recherche = False
+        if web_results_task is not None:
+            web_results_task.cancel()
+            web_results_task = None
 
     # ── Technischer Web-Fallback ("DB FIRST, aber niemals DB ONLY") ───────────
     # Laeuft NUR bei einem Trigger: DB-Miss, gegatete Identitaet, fehlender Motor
@@ -326,6 +345,7 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
     # Marke+Modell vorliegen (§0: populäre, aber DB-unbekannte Fahrzeuge sollen die
     # Qualitätsschwelle trotzdem erreichen können).
     identity = VehicleIdentity.from_check_context(baureihe, motor_match, req)
+    setze_gas_in_identitaet(identity, gas)
     # §5.6: eine belegte Web-Identität (technischer Fallback, s.o.) ergänzt NUR
     # echte Lücken der kanonischen Identität — DB/Nutzerangabe bleiben Guardrail.
     identity.apply_web_evidence(web_recherche)
@@ -344,7 +364,8 @@ async def run_kaufcheck(req: KaufCheckRequest, retry: bool = False) -> dict:
             count=20, zweck="kaufcheck-markt", rare_queries=rare_queries, bypass_cache=retry)
     else:
         marktanalyse = analysiere_markt(web_results_roh, ziel, req.preis_eur)
-        diag = {"research_failure_grund": "technical_failure" if not TAVILY_API_KEY else "data_exhausted"}
+        diag = {"research_failure_grund": ("gasantrieb_kein_vergleich" if gas_markt_gesperrt
+                                           else "technical_failure" if not TAVILY_API_KEY else "data_exhausted")}
 
     # ── Quality-Gate (§0/§17/§21) + Marktpreis-Entkopplung (KaufCheck-P0-1) ──────
     # `markt_status` bewertet AUSSCHLIESSLICH die Marktrecherche (unveraendert:

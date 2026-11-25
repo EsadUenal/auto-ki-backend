@@ -249,8 +249,15 @@ check("C4 der Enrichment-Prompt nennt Generationsjahre, fehlenden Motorzeitraum 
       and "Wunschfenster des Nutzers 2016–2019" in msg and "Relevante Baujahre" not in msg)
 check("C5 der Budget-Prompt nutzt dieselbe ehrliche Angabe",
       "Motorzeitraum nicht hinterlegt" in afb._formatiere_kandidat_zeile(k116))
-check("C6 der Prompt verbietet Aussagen über Motorzeiträume und Wunschfenster als Fahrzeugmerkmal",
-      "Der Motorzeitraum ist NICHT hinterlegt" in afe._SYSTEM_PROMPT)
+# GAS-1/F4: die fruehere Pruefung verlangte den PAUSCHALEN Satz "Der Motorzeitraum ist NICHT hinterlegt" —
+# er widersprach dem Kandidatenkontext, sobald ein Motorzeitraum belegt ist (Golf VII 1.2 TSI 2013–2015).
+# Gesichert wird jetzt die richtige Aussage: belegt nur, wo der Kandidat ihn nennt; keine eigenen Jahresaussagen.
+check("C6 der Prompt verbietet eigene Aussagen über Motorzeiträume und Wunschfenster als Fahrzeugmerkmal; "
+      "ein Motorzeitraum gilt nur, wo der Kandidat ihn nennt (kein pauschales 'nicht hinterlegt')",
+      "Ein Motorzeitraum ist NUR dort belegt, wo die Angaben des Kandidaten ihn ausdrücklich nennen" in afe._SYSTEM_PROMPT
+      and "Schreibe keine eigenen Aussagen über Baujahre" in afe._SYSTEM_PROMPT
+      and "behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs" in afe._SYSTEM_PROMPT
+      and "Der Motorzeitraum ist NICHT hinterlegt" not in afe._SYSTEM_PROMPT)
 
 # Das Jahresfenster wirkt weiter (Generationsüberlappung): AF-03 ändert keinen Filter
 check("C7 der Jahresfilter wirkt unverändert auf die Generationsbauzeit (120i 2011-2019 passt zu 2016-2019, nicht zu 2021+)",

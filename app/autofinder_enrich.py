@@ -47,6 +47,7 @@ from typing import Any
 
 from app.car_lookup import call_gemini_json
 from app.autofinder_variante import baujahr_kontext
+from app.gasantrieb import literwert_belegt
 from app.gemini_retry import GeminiFehlgeschlagen
 from app.schreibstil import STILREGEL_GEDANKENSTRICHE
 
@@ -96,9 +97,9 @@ STRIKTE REGELN:
 - Kein Wort wie "(ungeprüft)" oder "(geprüft)" in deinen Texten.
 - Technische Eigenschaften, Ausstattung und Zahlen nennst du NUR, wenn sie in den Angaben des Kandidaten stehen. "Getriebe automatik" ist nur eine Klasse: sie sagt NICHTS über Bauart (Wandler, Doppelkupplung), Gangzahl oder Serienausstattung. Schreibe nie "serienmäßig", "Serie" oder "Standard" zu Ausstattung, Getriebe oder Assistenzsystemen.
 - KEINE Absolutaussagen zu Wetter, Fahrdynamik oder Fahrsicherheit (nicht "in allen Wettersituationen", nicht "immer sicher", keine Aussage zum Eigenlenkverhalten): dafür liegen keine Daten vor.
-- Verbrauch: nenne höchstens die angegebene Zahl mit ihrer angegebenen EINHEIT und Basis (bei Gas kg/100 km, nie Liter; ist die Einheit unbekannt, nenne keine Verbrauchszahl). "WLTP" nur, wenn die Angabe den Zyklus WLTP nennt. Keine andere Verbrauchszahl, und nie "gemessen", "belegt" oder "tatsächlich".
+- Verbrauch: nenne höchstens die angegebene Zahl mit ihrer angegebenen EINHEIT und Basis (bei Gas kg/100 km, nie Liter; ist die Einheit unbekannt, nenne keine Verbrauchszahl). Bei einem Gasfahrzeug nennst du eine Literangabe nur, wenn die Angabe ihren Bezug nennt (z. B. "NUR im Benzinbetrieb"), und dann genau mit diesem Bezug; Erdgas (CNG) und Autogas (LPG) sind verschieden. "WLTP" nur, wenn die Angabe den Zyklus WLTP nennt. Keine andere Verbrauchszahl, und nie "gemessen", "belegt" oder "tatsächlich".
 - Kraftstoff: Nenne den Kraftstoff genau wie angegeben. Ein Gasfahrzeug mit Benzin-Reserve ist kein gewöhnlicher Benziner.
-- Baujahre: Der Motorzeitraum ist NICHT hinterlegt. Schreibe nichts über Baujahre, Modellpflege oder Verfügbarkeit dieser Motorisierung in bestimmten Jahren, und behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs.
+- Baujahre: Ein Motorzeitraum ist NUR dort belegt, wo die Angaben des Kandidaten ihn ausdrücklich nennen ("Motorzeitraum laut Datensatz …"); sonst ist er nicht hinterlegt. Schreibe keine eigenen Aussagen über Baujahre, Modellpflege oder Verfügbarkeit dieser Motorisierung in bestimmten Jahren, und behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs.
 - FAHRANFÄNGER: Wenn der Nutzer "fahranfaenger" angegeben hat, formuliere differenziert statt absolut. Erlaubt sind konkrete, überprüfbare Aussagen (übersichtliche Abmessungen, gute Bedienbarkeit, verbreitete Assistenzsysteme, Werkstattdichte). VERBOTEN sind pauschale Eignungsurteile wie "ideal für Fahranfänger", "ohne Überforderung" oder "fahrsicher für Einsteiger", sobald das Fahrzeug spürbar Leistung hat (ab etwa 150 PS). Ordne dann Leistung, Versicherungseinstufung und Fahrverhalten ausdrücklich als Anforderung ein, nicht als Vorteil. Widersprich dir nicht: nenne nicht im selben Atemzug "ideal für Einsteiger" und "verlangt Disziplin".
 - Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe), nicht für die Baureihe allgemein. Maßgeblich ist die in den Angaben genannte Bauzeit der Baureihe bzw. der belegte Motorzeitraum; das Wunschfenster des Nutzers ist nur ein Suchwunsch und KEIN Baujahr des Fahrzeugs. Die Jahresfahrleistung beschreibt die Nutzung des Nutzers und ist NICHT der Kilometerstand eines Fahrzeugs; Kilometerstand und Zustand sind unbekannt, die Spanne bleibt deshalb breit. Ist der Motorzeitraum nicht hinterlegt: noch breiter und price_confidence LOW. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
 
@@ -139,6 +140,16 @@ def _verbrauch_zeile(k: Any) -> str | None:
         basis_text = "hinterlegter geschätzter Realwert (kein WLTP)"
     else:
         basis_text = "Basis unbekannt"
+    if einheit == "l" and getattr(k, "antriebsgas", None):
+        # GAS-1: ein Literwert eines Gasfahrzeugs gilt nur mit belegtem Bezug (Benzinbetrieb oder Autogas).
+        bezug = getattr(k, "verbrauch_bezug", None)
+        if bezug == "Benzin":
+            return (f"  Verbrauch ~{wert:.1f} l/100km NUR im Benzinbetrieb ({basis_text}; nicht extern geprüft; "
+                    "nicht der Verbrauch im Gasbetrieb)")
+        if bezug == "LPG":
+            return f"  Verbrauch ~{wert:.1f} l/100km im Autogasbetrieb (LPG) ({basis_text}; nicht extern geprüft)"
+        return (f"  Verbrauchswert {wert:.1f} l/100km OHNE belegten Bezug (Gasfahrzeug, Gas oder Benzin): "
+                "keine Verbrauchszahl nennen")
     if einheit == "l":
         return f"  Verbrauch ~{wert:.1f} l/100km ({basis_text}; nicht extern geprüft)"
     if einheit == "kg":
@@ -347,6 +358,9 @@ def _satz_unbelegt(satz: str, k: Any) -> bool:
         for z, e in zahlen:
             wert = _verbrauch_zahl(z)
             satz_einheit = "kg" if e.lower() == "kg" else "l"
+            if satz_einheit == "l" and getattr(k, "antriebsgas", None) and not literwert_belegt(
+                    satz, gas=True, einheit=einheit, bezug=getattr(k, "verbrauch_bezug", None)):
+                return True   # GAS-1: Literwert eines Gasfahrzeugs ohne belegten, im Satz genannten Bezug
             if einheit == "unbekannt" or satz_einheit != einheit:
                 return True   # Zahl in einer Einheit, die der Kandidat nicht traegt (kg/l-Vermischung)
             if geliefert is None or wert is None or abs(wert - geliefert) > 0.05:

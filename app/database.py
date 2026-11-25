@@ -633,7 +633,9 @@ def _migriere_geltung_spalten(conn: sqlite3.Connection) -> None:
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='motorvariante_geltung'").fetchone():
         return
     vorhanden = {r[1] for r in conn.execute("PRAGMA table_info(motorvariante_geltung)")}
-    for name in ("antriebsgas", "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis"):
+    # GAS-1: `verbrauch_bezug` (worauf sich ein Verbrauchswert eines Gasfahrzeugs bezieht).
+    for name in ("antriebsgas", "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis",
+                 "verbrauch_bezug"):
         if name not in vorhanden:
             conn.execute(f"ALTER TABLE motorvariante_geltung ADD COLUMN {name} TEXT")
 
@@ -1077,6 +1079,11 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
         # Belegte Bauzeit-Grenzen je Variante (motorvariante_geltung, optional). Ohne Zeile
         # oder ohne Tabelle: keine Angabe (None), also keinerlei neue Annahme.
         geltung_by_variante: dict[str, tuple] = {}
+        # GAS-1: dieselbe Zeile traegt Gasantrieb, Verbrauchseinheit/-zyklus/-bezug und den Anzeigetext.
+        # Fehlen die additiven Spalten (aelterer Stand), bleiben sie None — keine Annahme.
+        gas_by_variante: dict[str, dict] = {}
+        gas_spalten = ("antriebsgas", "verbrauch_einheit", "verbrauch_zyklus", "kraftstoff_hinweis",
+                       "verbrauch_bezug")
         if variante_ids:
             try:
                 for r in conn.execute(
@@ -1085,12 +1092,25 @@ def get_baureihe(marke: str, modell: str, generation: str) -> dict | None:
                     geltung_by_variante[r[0]] = (r[1], r[2])
             except sqlite3.OperationalError:
                 pass
+            try:
+                vorhanden = {r[1] for r in conn.execute("PRAGMA table_info(motorvariante_geltung)")}
+                spalten = [s for s in gas_spalten if s in vorhanden]
+                if spalten:
+                    for r in conn.execute(
+                            f"SELECT variante_id, {', '.join(spalten)} FROM motorvariante_geltung "
+                            f"WHERE variante_id IN ({platzhalter})", variante_ids).fetchall():
+                        gas_by_variante[r[0]] = dict(zip(spalten, r[1:]))
+            except sqlite3.OperationalError:
+                pass
 
         motoren = []
         for m in motoren_rows:
             motor = dict(m)
             motor["motor_bauzeit_von"], motor["motor_bauzeit_bis"] = geltung_by_variante.get(
                 motor["variante_id"], (None, None))
+            gas = gas_by_variante.get(motor["variante_id"], {})
+            for s in gas_spalten:
+                motor[s] = gas.get(s)
             motor["getriebe"] = _parse_json_field(motor.get("getriebe"))
             motor["schwachstellen_motor"] = schwachstellen_by_variante.get(motor["variante_id"], [])
             motor["kritische_wartung"] = wartung_by_variante.get(motor["variante_id"], [])

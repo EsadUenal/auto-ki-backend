@@ -817,6 +817,21 @@ def _motor_mit_request(baureihe: dict, hint: str | None, modell: str | None, req
         if exact:
             candidates = exact
             break
+    # GAS-1: eine Gasangabe grenzt NUR noch verbleibende Mehrdeutigkeit auf gekennzeichnete
+    # Gasvarianten verträglicher Gasart ein. Sie ist kein harter Filter: gibt es keine solche Variante
+    # (z. B. nachgerüstete LPG-Anlage), bleibt die Auswahl unverändert, und die Gas-Identität weist die
+    # mögliche Nachrüstung aus (app/gasantrieb.py).
+    if len(candidates) > 1:
+        from app.gasantrieb import GAS_UNBEKANNT, gasart_der_variante, normalisiere_angabe
+        gas = (normalisiere_angabe(getattr(req, "antriebsgas", None))
+               or normalisiere_angabe(getattr(req, "kraftstoff", None)))
+        if gas:
+            def _gas_vertraeglich(motor: dict) -> bool:
+                art = gasart_der_variante(motor)[0]
+                return art is not None and (gas == GAS_UNBEKANNT or art in (gas, GAS_UNBEKANNT))
+            gas_kandidaten = [m for m in candidates if _gas_vertraeglich(m)]
+            if gas_kandidaten:
+                candidates = gas_kandidaten
     # Free text can help distinguish a variant but may not override constraints.
     if len(candidates) > 1 and hint:
         matching = [m for m in candidates if find_motor({"motoren": [m]}, hint, modell)]

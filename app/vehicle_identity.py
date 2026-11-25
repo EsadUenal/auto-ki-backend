@@ -232,6 +232,10 @@ class VehicleIdentity:
     rohtext: str = ""                      # ursprünglicher Freitext (nur Diagnose)
     powertrain: str | None = None
     field_evidence: dict[str, dict] = field(default_factory=dict)
+    # GAS-1: Gasantrieb ("CNG" | "LPG" | "GAS_UNBEKANNT"), nur vom KaufCheck gesetzt
+    # (app/gasantrieb.setze_in_identitaet). `gas_bewertet` sagt, dass die Achse bewertet wurde.
+    gas: str | None = None
+    gas_bewertet: bool = False
 
     # ── Abgeleitete Sichten ───────────────────────────────────────────────────
 
@@ -302,7 +306,7 @@ class VehicleIdentity:
     def as_diagnose(self) -> dict:
         return {
             n: (sorted(v) if isinstance(v, set) else v)
-            for n, v in self.__dict__.items() if v and n != "rohtext"
+            for n, v in self.__dict__.items() if v and n not in ("rohtext", "gas_bewertet")
         }
 
     def apply_web_evidence(self, web_recherche) -> None:

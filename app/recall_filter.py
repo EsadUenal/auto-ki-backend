@@ -986,6 +986,30 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
     # RECALL-PILOT (§9): und eine bloß FORMATPLAUSIBLE zählt ebenfalls wie keine.
     kba_ok = bool(kba_referenz_anzeige(kba, marke)) and referenz_ist_belegt(r)
 
+    # GAS-1: Gasanlage als zusätzliche Anwendbarkeitsachse (nur wo der KaufCheck sie bewertet hat).
+    # Ein Rückruf zu CNG-Tank/-Druckflasche, LPG-Anlage o. ä. (Mangel/Abhilfe, nicht Gasdruckfeder)
+    # entfällt bei Diesel/Elektro ohne Gasangabe und bei der anderen Gasart; ohne bekannten
+    # Gasantrieb oder bei unbekannter Gasart ist die Betroffenheit unklar. Eine passende Gasart
+    # allein begründet KEIN variant_match: dafür müssen zusätzlich Datensatzbezug der Gasart,
+    # Baujahr-Deckung, belegte KBA-Referenz und alle übrigen Scope-Regeln unten passen.
+    from app import gasantrieb as _gas
+    gas_scope = _gas.gas_bauteil_scope(" ".join(filter(None, [r.get("mangel"), r.get("abhilfe")])))
+    gas_stuetzt, gas_label = False, ""
+    if gas_scope and _gas.gas_bewertet(identity):
+        fz_gas = _gas.aus_identitaet(identity)
+        gas_label = _gas.scope_label(gas_scope)
+        gas_passt = _gas.scope_passt(gas_scope, fz_gas, fuel, powertrains)
+        if gas_passt is False:
+            return ("incompatible", "hoch",
+                    f"Betrifft laut Datenlage {gas_label}: die erkannte Motorisierung gehört nicht dazu.",
+                    f"Dieser Rückruf betrifft {gas_label}; die erkannte Motorisierung passt eindeutig nicht dazu.")
+        if gas_passt is None:
+            return ("unclear", "niedrig",
+                    f"Betroffenheit unklar: der Rückruf betrifft {gas_label}. {_HINWEIS_FIN}",
+                    f"Für {baureihen_bezug} hinterlegt; er betrifft {gas_label}. Ob dieses Fahrzeug eine "
+                    "solche Gasanlage hat, ist nicht belegt.")
+        gas_stuetzt = _gas.stuetzt_variante(fz_gas)
+
     # Der Rückruf grenzt sich auf einen bestimmten Antrieb ein (Klammer-Qualifier
     # ODER klarer Hochvolt-/Hybrid-Bezug).
     # N17-Folgefix: Klassenscope aus allen drei Eingaengen (amtliche Eingrenzung,
@@ -1075,6 +1099,14 @@ def rueckruf_applicability(r: dict, passt: bool | None, kba: str, motor_match: d
             if passt is True and kba_ok:
                 return ("variant_match", "hoch", f"Sicherheitsrelevant. {_HINWEIS_FIN}", f"{grund}.")
             return ("series_only", "mittel", f"Sicherheitsrelevant. {_HINWEIS_FIN}", f"{grund}.")
+    if gas_stuetzt:
+        # GAS-1: die Gasanlage ist eine echte Variantenbedingung, die Gasart dieser Variante stammt aus
+        # dem Datensatz. Ohne Baujahr-Deckung oder belegte Referenz bleibt es beim Baureihen-Rückruf.
+        hinweis_g = (f"Betrifft {gas_label}; die erkannte Variante ist laut ENFAL-Datensatz eine solche "
+                     "Ausführung. Ob dieses Fahrzeug betroffen ist, klärt erst die FIN.")
+        if passt is True and kba_ok:
+            return ("variant_match", "hoch", f"Sicherheitsrelevant. {_HINWEIS_FIN}", hinweis_g)
+        return ("series_only", "mittel", f"Sicherheitsrelevant. {_HINWEIS_FIN}", hinweis_g)
     if passt is True:
         if kba_ok:
             return ("series_only", "hoch",

@@ -1512,11 +1512,15 @@ def build_kaufaktionen(req, baureihe: dict | None, motor_match: dict | None,
              if tuning == "unknown" else "Welche Tuningänderungen und Rückrüstungen wurden durchgeführt?"),
             "Art und Umfang der Änderungen sowie Rückrüstungen klären. Rechnungen, Gutachten "
             "und Eintragungen zeigen lassen.", None, ()),)
+    # GAS-1: neutrale Gasfragen und Unterlagenanforderung (Gasart, Werks-/Nachrüstung, Nachweise) —
+    # ohne Fristen, Intervalle oder Prüfpflichten. Nur bei Gasbezug; dieselbe Gas-Identität wie im Bericht.
+    from app.gasantrieb import basis_dokumente as gas_dokumente, basis_fragen as gas_fragen, gas_identitaet
+    gas = gas_identitaet(req, motor_match)
     kataloge = {
         BESICHTIGUNG:     BASIS_BESICHTIGUNG,
         PROBEFAHRT:       BASIS_PROBEFAHRT,
-        VERKAEUFERFRAGEN: BASIS_VERKAEUFERFRAGEN + tuning_frage,
-        DOKUMENTE:        BASIS_DOKUMENTE,
+        VERKAEUFERFRAGEN: BASIS_VERKAEUFERFRAGEN + tuning_frage + gas_fragen(gas),
+        DOKUMENTE:        BASIS_DOKUMENTE + gas_dokumente(gas),
     }
     listen = {}
     # N7-Wartungsauswahl: fehlt eine Inserat-Angabe (Servicehistorie, Vorbesitzer) und

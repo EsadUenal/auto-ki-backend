@@ -118,6 +118,19 @@ def varianten_applicability(fakt: dict, identity) -> tuple[str, str]:
     if re.search(r"\b(?:nur|bei|für)\s+(?:fahrzeugen mit\s+)?automatik", text, re.I):
         rules.setdefault("transmission", ["automatik"])
     unknown = False
+    # GAS-1: Gasanlagen-Bauteil (CNG-Tank, LPG-Anlage, Gasanlage …) als eigene Achse — nur wo der
+    # KaufCheck den Gasantrieb bewertet hat (app/gasantrieb.py). Widerspruch schließt aus, Unbekanntes
+    # bleibt unklar; eine passende Gasart ist hier nur "kein Widerspruch".
+    from app import gasantrieb as _gas
+    if _gas.gas_bewertet(identity):
+        gas_scope = _gas.gas_bauteil_scope(text)
+        if gas_scope:
+            from app.kraftstoff_powertrain import fahrzeug_achsen
+            fuel_g, pts_g = fahrzeug_achsen(identity=identity)
+            gas_passt = _gas.scope_passt(gas_scope, _gas.aus_identitaet(identity), fuel_g, pts_g)
+            if gas_passt is False:
+                return INKOMPATIBEL, "gas_widerspruch"
+            unknown |= gas_passt is None
     for name, values in rules.items():
         value = getattr(identity, name, None)
         if name not in ("fuel", "powertrain", "transmission", "drivetrain", "engine_code", "generation", "year"):

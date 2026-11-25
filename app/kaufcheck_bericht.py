@@ -18,6 +18,8 @@ import re
 from app.anzeige import fahrzeug_titel, feldzeile
 from app.bekannte_fakten import aus_request, tuning_status
 from app.fin_hinweis import recall_handlung
+from app.gasantrieb import (MARKT_HINWEIS as GAS_MARKT_HINWEIS, aus_identitaet as gas_aus_identitaet,
+                            berichtszeilen as gas_berichtszeilen)
 from app.risikothemen import RISIKO_KATEGORIEN
 from app.vergleichstabelle import als_markdown, baue_zeilen
 from app.web_search import registrable_domain
@@ -364,6 +366,9 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
                 continue
         if domain_namen:
             lines.append("  Quellen: " + ", ".join(domain_namen) + ".")
+    # GAS-1: Gasart, Herkunft und Unsicherheit (Nachrüstung möglich, Widerspruch) — nur bei Gasbezug.
+    gas = gas_aus_identitaet(identity)
+    lines += gas_berichtszeilen(gas, getattr(identity, "fuel", None))
     if req.ausstattung:
         lines += ["", "Ausstattung laut Inserat: " + ", ".join(req.ausstattung) + ". Vor Ort prüfen."]
     else:
@@ -421,7 +426,7 @@ def bericht(req, identity, baureihe, motor, insights, actions, reasons, recommen
         lines += ["", f"Rechnerisch {mileage.km_pro_jahr:,} km pro Jahr. "
                   "Keine qualitative Laufleistungsbewertung ohne definierte Vergleichsbasis.".replace(",", ".")]
     lines += ["", "## Preis-Einschätzung", "", price_assessment.label if market_available else
-              "Keine belastbare Marktpreisbewertung verfügbar."]
+              (GAS_MARKT_HINWEIS if gas else "Keine belastbare Marktpreisbewertung verfügbar.")]
     for section, title in (("verkaeuferfragen", "Verkäuferfragen"), ("besichtigung", "Besichtigung"),
                            ("probefahrt", "Probefahrt"), ("dokumente", "Dokumente und finale Checkliste")):
         plan = getattr(actions, section)

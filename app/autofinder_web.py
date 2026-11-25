@@ -149,6 +149,13 @@ class WebKandidat:
     web_verified_fields: list[str] = field(default_factory=list)
     visual_key: str = ""
 
+    # ---- GAS-1: Gasantrieb laut Motorbezeichnung (Variantenbezug) ----
+    # "CNG"/"LPG" nur bei ausdruecklichem Wortlaut, sonst "Gas" (Gasart unbekannt) — dieselben Werte wie
+    # die DB-Kennzeichnung (motorvariante_geltung.antriebsgas). Einheit unbekannt, kein Verbrauch.
+    antriebsgas: str | None = None
+    kraftstoff_hinweis: str | None = None
+    verbrauch_einheit: str = "l"
+
     # ---- Bewusst leer: es gibt keine DB-Zeile (§8) ----
     baureihe_id: None = None
     variante_id: None = None
@@ -613,6 +620,17 @@ def _pruefe_kandidat(roh: dict, evidenzen: list[dict]) -> tuple[WebKandidat | No
         web_verified_fields=verifiziert,
         visual_key=_slug(f"{marke}--{modell}--{generation or ''}"),
     )
+    # GAS-1: nennt die Motorbezeichnung DIESES Kandidaten einen Gasantrieb (Herstellerkuerzel oder Gasbegriff,
+    # Vokabular in app/gasantrieb.py), ist
+    # er kein gewoehnlicher Benziner — auch wenn die Quelle "Benzin" belegt (Ottomotor/Reserve).
+    # Wie bei den nur per Bezeichnung gekennzeichneten DB-Zeilen: "Gas" (Gasart nicht geprueft); "CNG"
+    # steht im AutoFinder nur fuer eine belegte Gasart.
+    from app.gasantrieb import gas_laut_bezeichnung
+    if gas_laut_bezeichnung(motor) is not None:
+        kandidat.antriebsgas = "Gas"
+        kandidat.kraftstoff_hinweis = ("Gasfahrzeug laut Motorbezeichnung (Gasart, Primärkraftstoff und "
+                                       "Verbrauchseinheit nicht geprüft)")
+        kandidat.verbrauch_einheit = "unbekannt"
     return kandidat, ""
 
 
@@ -678,6 +696,9 @@ def _als_engine_roh(k: WebKandidat) -> dict:
         "_karo": frozenset(k.karosserie_klassen),
         "_getriebe": frozenset(k.getriebe_klassen),
         "_verbrauch": None,
+        # GAS-1: derselbe Hardfilter wie fuer DB-Kandidaten (eine reine Benzinauswahl schliesst ein
+        # Gasfahrzeug aus) — die Kennzeichnung stammt aus der Motorbezeichnung dieses Kandidaten.
+        "antriebsgas": getattr(k, "antriebsgas", None),
     }
 
 

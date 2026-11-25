@@ -647,6 +647,21 @@ def _widerspruch_findings(req, baureihe: dict | None, motor_match: dict | None) 
             aktion="Den tatsächlichen Termin im HU-Bericht und auf der Plakette klären.",
             prioritaet=_P_WIDERSPRUCH + 5))
 
+    # GAS-1: widersprüchliche Angaben zum Gasantrieb (CNG gegen LPG, Gas gegen Diesel/Elektro,
+    # ausdrücklich Benzin bei einer Gasvariante). Keine Technikdiagnose: nur der Widerspruch und
+    # die Klärung vor Ort. Eine mögliche Nachrüstung ist KEIN Widerspruch.
+    from app.gasantrieb import ANZEIGE as _GAS_ANZEIGE, gas_identitaet
+    gas = gas_identitaet(req, motor_match)
+    if gas is not None and gas.ungeklaert:
+        out.append(KeyFinding(
+            id="", kategorie="widerspruch", stufe=STUFE_WARNUNG, icon="❗",
+            titel="Angaben zum Gasantrieb passen nicht zusammen",
+            beschreibung=gas.hinweis,
+            wert=(f"Angabe: {_GAS_ANZEIGE[gas.angabe] if gas.angabe else (getattr(req, 'kraftstoff', None) or 'kein Gas')}"
+                  f" · Daten: {_GAS_ANZEIGE[gas.datensatz] if gas.datensatz else ((motor_match or {}).get('kraftstoff') or 'keine Zuordnung')}"),
+            aktion="Vor Ort klären, ob und welche Gasanlage verbaut ist; Fahrzeugpapiere abgleichen.",
+            prioritaet=_P_WIDERSPRUCH + 3))
+
     # Kraftstoff-Widerspruch: Inserat-Kraftstoff vs. erkannte Motorisierung.
     # Kraftstoffart (Benzin/Diesel/Elektro) und Antriebsart (ICE/MHEV/PHEV/BEV)
     # sind getrennte Dimensionen (app/kraftstoff_powertrain.py) — ein Benzin-

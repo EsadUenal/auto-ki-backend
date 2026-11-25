@@ -139,6 +139,33 @@ class KaufCheckRequest(BaseModel):
     # Zustände. Immer eine ANGABE des Inserats, nie ein geprüfter Befund
     # (siehe app/servicehistorie.py).
     servicehistorie: str | None = Field(default=None, max_length=40)
+    # GAS-1: Gasantrieb als eigene Angabe ("CNG" | "LPG" | "GAS_UNBEKANNT"). Additiv mit Default None:
+    # aeltere Clients und gespeicherte Formulare laden unveraendert. Ein Gaswert im Feld `kraftstoff`
+    # ("CNG", "Erdgas", "LPG", "Autogas", "Gas") wird an der Eingabegrenze hierher uebernommen, statt in
+    # den Kraftstoff-Normalisierungen zu verpuffen. Ein unbekannter Wert wird None (wie `getriebe`).
+    # Eine Angabe bleibt Angabe: sie belegt weder Gasart noch Werksausfuehrung (app/gasantrieb.py).
+    antriebsgas: str | None = Field(default=None, max_length=40)
+
+    @field_validator("antriebsgas")
+    @classmethod
+    def _antriebsgas_normalisieren(cls, v):
+        from app.gasantrieb import normalisiere_angabe
+        return normalisiere_angabe(v)
+
+    @model_validator(mode="after")
+    def _gas_aus_kraftstoff(self) -> "KaufCheckRequest":
+        from app.gasantrieb import normalisiere_angabe
+        gas = normalisiere_angabe(self.kraftstoff)
+        if gas is not None:
+            # Der Gaswert ist keine Kraftstoffart der bestehenden Achse (Benzin/Diesel/Elektro): er wandert
+            # vollstaendig in `antriebsgas`. Nennen beide Felder VERSCHIEDENE Gasarten, wird keine
+            # gewaehlt: die Gasart bleibt unbekannt (GAS_UNBEKANNT).
+            if self.antriebsgas is None or self.antriebsgas == "GAS_UNBEKANNT":
+                self.antriebsgas = gas if self.antriebsgas is None or gas != "GAS_UNBEKANNT" else self.antriebsgas
+            elif gas not in ("GAS_UNBEKANNT", self.antriebsgas):
+                self.antriebsgas = "GAS_UNBEKANNT"
+            self.kraftstoff = None
+        return self
 
     @field_validator("tuev_bis")
     @classmethod

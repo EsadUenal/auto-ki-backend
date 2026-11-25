@@ -120,8 +120,14 @@ check("A4 Gasfahrzeug ohne belegte Einheit: Einheit 'unbekannt', nicht als Liter
       u["antriebsgas"] == "Gas" and u["_verbrauch_einheit"] == "unbekannt" and u["_verbrauch"] is None
       and u["_verbrauch_anzeige"] is not None)
 gas_ids = [r["variante_id"] for r in BASIS if r["antriebsgas"]]
-check("A5 es sind 16 Gasfahrzeuge gekennzeichnet; nur der Golf VIII TGI trägt eine belegte Einheit",
-      len(gas_ids) == 16 and [r["variante_id"] for r in BASIS if r["antriebsgas"] and r["verbrauch_einheit"]] == [TGI])
+# GAS-1: frueher "genau 16" — vier Skoda G-TEC und der BMW 316g fehlten (Analysebericht F1). Geprueft wird
+# jetzt die tatsaechliche Zuordnung (welche Varianten), nicht nur ein Zaehler.
+from app import motor_geltung_daten as _gd
+_erwartet_gas = set(_gd.GAS_UNGEPRUEFT) | {TGI} | set(_gd.GELTUNG_GAS1)
+check("A5 genau die belegten Gasvarianten (AF-10 + GAS-1) sind gekennzeichnet; nur der Golf VIII TGI trägt eine belegte Einheit",
+      set(gas_ids) == _erwartet_gas and len(gas_ids) == len(_erwartet_gas)
+      and [r["variante_id"] for r in BASIS if r["antriebsgas"] and r["verbrauch_einheit"]] == [TGI],
+      str(sorted(set(gas_ids) ^ _erwartet_gas)))
 
 check("B1 reine Benzinauswahl: das primär mit CNG betriebene Fahrzeug ist kein Treffer, der reguläre Benziner schon",
       TGI not in treffer(marken_bevorzugt=["Volkswagen"], kraftstoff=["Benzin"])
@@ -289,9 +295,10 @@ def hash_t(t):
 
 
 M10 = dm.MARKER_MOTOR_GELTUNG_AF10
-check("K1 Bootstrap: Marker und alle 22 Geltungszeilen sind da (Seed + Migrationen)",
+# GAS-1: 22 Zeilen aus AF-03/AF-10 plus 5 Zeilen GAS-1 (eigener Marker) = 27.
+check("K1 Bootstrap: Marker und alle 27 Geltungszeilen sind da (Seed + Migrationen, inkl. GAS-1)",
       c.execute("select count(*) from schema_migrations where name=?", (M10,)).fetchone()[0] == 1
-      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 22)
+      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 27)
 for i in range(5):
     c.execute("insert into rueckruf (baureihe_id, mangel, kba_referenz, canonical_make, canonical_nameplate) "
               "values (NULL, 'Testmangel', ?, 'MAZDA', 'CX-5')", (f"AF10-{i}",))
@@ -331,10 +338,15 @@ check("K7 die Integritätsprüfung (inkl. canonical-only-Regel) bleibt sauber", 
 c.execute("delete from rueckruf where kba_referenz like 'AF10-%'")
 
 import glob as _glob
+# GAS-1: app/gasantrieb.py ist das EINE Gasvokabular (Herstellerbezeichnungen TGI, G-TEC, … wie
+# "tsi"/"tdi" in app/kraftstoff_powertrain.py) und deshalb vom Wort-Test ausgenommen. Auch dort ist
+# keine Fahrzeug-ID erlaubt (zweite Pruefung).
 code = "".join(open(f, encoding="utf-8").read() for f in _glob.glob("app/**/*.py", recursive=True)
-               if not f.replace("\\", "/").endswith(("motor_geltung_daten.py", "data_migrations.py")))
-check("L1 keine Fahrzeug-ID- oder Namenssonderregel im Anwendungscode",
-      "golf-viii-1.5-tgi" not in code and "golf-vii-1.2" not in code and "tgi" not in code.lower().replace("antriebsgas", ""))
+               if not f.replace("\\", "/").endswith(("motor_geltung_daten.py", "data_migrations.py", "gasantrieb.py")))
+gas_vokabular = open("app/gasantrieb.py", encoding="utf-8").read()
+check("L1 keine Fahrzeug-ID- oder Namenssonderregel im Anwendungscode; das Gasvokabular enthält keine Fahrzeug-ID",
+      "golf-viii-1.5-tgi" not in code and "golf-vii-1.2" not in code and "tgi" not in code.lower().replace("antriebsgas", "")
+      and not any(v in gas_vokabular for v in list(_gd.GELTUNG_AF10) + list(_gd.GELTUNG_GAS1)))
 
 print()
 if FEHLER:
