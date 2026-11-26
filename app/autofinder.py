@@ -66,6 +66,7 @@ from app.autofinder_variante import (
     loese_getriebe,
     loese_karosserie,
     loese_motorbezeichnung,
+    motorzeit_status,
     variantenseitig_kodierte_klassen,
 )
 from app.database import get_baureihe, get_conn
@@ -182,6 +183,12 @@ class AutoFinderKandidat:
     # Belegte Grenzen der MOTORbauzeit (motorvariante_geltung). None = nicht hinterlegt.
     motor_bauzeit_von: int | None = None
     motor_bauzeit_bis: int | None = None
+    # AF-13: wie weit die Motorzeit belegt ist ("belegt" | "teilweise" | "unbekannt") und das
+    # Erstzulassungsfenster, das der Nutzer EINGEGEBEN hat. `baujahr_von/bis` ist dagegen nur die
+    # Ueberschneidung von Baureihe, belegter Motorgrenze und Wunsch, nie der Nutzerwunsch selbst.
+    motorzeit_status: str = "unbekannt"
+    wunsch_baujahr_von: int | None = None
+    wunsch_baujahr_bis: int | None = None
     # Getriebeklassen, die der Datensatz fuehrt, die aber NICHT bestaetigt sind.
     getriebe_unbestaetigt: list[str] = field(default_factory=list)
     # Werkscode passend zur aufgelösten Karosserie, sofern geprüft hinterlegt.
@@ -824,6 +831,9 @@ def _zu_kandidat(roh: dict, score: float, gruende: list[str], dq: float,
         generation_baujahr_bis=bj.generation_bis,
         motor_bauzeit_von=roh.get("motor_bauzeit_von"),
         motor_bauzeit_bis=roh.get("motor_bauzeit_bis"),
+        motorzeit_status=motorzeit_status(roh.get("motor_bauzeit_von"), roh.get("motor_bauzeit_bis")),
+        wunsch_baujahr_von=req.baujahr_von,
+        wunsch_baujahr_bis=req.baujahr_bis,
         getriebe_unbestaetigt=sorted(roh["_getriebe_unbestaetigt"]),
         generation_label=loese_generationslabel(
             roh["generation"], roh.get("chassis_codes"), karo.konkret),

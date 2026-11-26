@@ -33,6 +33,8 @@ bewusst konservativ gewichtet.
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.autofinder_variante import MZ_BELEGT, motorzeit_status
+
 # Schwelle: nur Fahrzeuge mit diesem Fit oder besser werden ausgegeben (§Punkt 2).
 FIT_SCHWELLE = 80
 
@@ -221,6 +223,23 @@ def _leistung_position(k: Any, lo: int | None, hi: int | None) -> float:
     return 1.0 - 0.3 * abs(rel - 0.5) * 2      # Mitte 1.0, Rand 0.7
 
 
+def _baujahr_bewertbar(k: Any) -> bool:
+    """Kann die Baujahr-Passung ueberhaupt BESTAETIGT werden? (AF-13)
+
+    Ein Datensatz-Kandidat kennt die Bauzeit seiner BAUREIHE, die der Motorisierung nur
+    ausnahmsweise. Ueberschneidet das Wunschfenster die Baureihe, ist das eine Ueberschneidung der
+    Baureihe, keine Baujahr-Passung dieser Motorisierung. Bestaetigt werden darf sie nur, wenn die
+    Motorzeit belegt ist (Beginn und Ende). Sonst gilt dieselbe UNKNOWN-Behandlung wie bei nicht
+    bewertbaren Prioritaeten: die Komponente fliesst GAR NICHT ein (kein Bonus, kein Abzug); eine
+    belegte Motorgrenze schliesst weiterhin in der Auswahl aus. Web-Kandidaten (keine Generation)
+    tragen eine belegte Bauzeit und bleiben unveraendert."""
+    if (getattr(k, "generation_baujahr_von", None) is None
+            and getattr(k, "generation_baujahr_bis", None) is None):
+        return True
+    return motorzeit_status(getattr(k, "motor_bauzeit_von", None),
+                            getattr(k, "motor_bauzeit_bis", None)) == MZ_BELEGT
+
+
 def _baujahr_ueberlappung(k: Any, req_von: int | None, req_bis: int | None) -> float:
     cv, cb = k.baujahr_von, k.baujahr_bis
     if cv is None:
@@ -297,7 +316,7 @@ def berechne_fit(k: Any, req: Any) -> FitBewertung:
     if getattr(req, "leistung_min_ps", None) is not None or getattr(req, "leistung_max_ps", None) is not None:
         e = _leistung_position(k, req.leistung_min_ps, req.leistung_max_ps)
         komp.append(FitKomponente("Leistung im Wunschbereich", 1.0, e, e >= 0.8))
-    if getattr(req, "baujahr_von", None) is not None or getattr(req, "baujahr_bis", None) is not None:
+    if (getattr(req, "baujahr_von", None) is not None or getattr(req, "baujahr_bis", None) is not None)             and _baujahr_bewertbar(k):
         e = _baujahr_ueberlappung(k, req.baujahr_von, req.baujahr_bis)
         komp.append(FitKomponente("Baujahr im Wunschfenster", 0.7, e, e >= 0.85))
 

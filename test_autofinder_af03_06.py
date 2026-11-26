@@ -233,9 +233,13 @@ K_INTERN_OHNE = SimpleNamespace(baujahr_von=2011, baujahr_bis=2019, generation_b
 K_WEB = SimpleNamespace(baujahr_von=2018, baujahr_bis=2022, generation_baujahr_von=None, generation_baujahr_bis=None)
 c1, c2, c3 = baujahr_kontext(K_INTERN), baujahr_kontext(K_INTERN_OHNE), baujahr_kontext(K_WEB)
 print("  ", c1, "|", c2, "|", c3)
-check("C1 Datensatz-Kandidat: Generationsjahre + 'Motorzeitraum nicht hinterlegt', Wunschfenster als solches",
+# AF-13: die Zeile trug bisher die ÜBERSCHNEIDUNG (baujahr_von/bis = 2016–2019) als "Wunschfenster des
+# Nutzers". Das war eine falsche Aussage (der Wunsch kann 2014–2022 lauten). Das Wunschfenster steht jetzt
+# im Anfragekopf beider Prompts (siehe C4/C5 und test_autofinder_af13_14); der Kandidatenkontext trägt nur
+# Fahrzeugfakten.
+check("C1 Datensatz-Kandidat: Generationsjahre + 'Motorzeitraum nicht hinterlegt', KEIN Wunschfenster aus der Überschneidung",
       "Baureihe gebaut 2011–2019" in c1 and "Motorzeitraum nicht hinterlegt" in c1
-      and "Wunschfenster des Nutzers 2016–2019" in c1 and "keine Fahrzeugeigenschaft" in c1)
+      and "Wunschfenster" not in c1 and "2016" not in c1)
 check("C2 ohne Wunschfenster keine Fenster-Aussage", "Wunschfenster" not in c2 and "nicht hinterlegt" in c2)
 check("C3 Web-Kandidat mit belegter Bauzeit bleibt unverändert", c3 == "Baujahre 2018–2022")
 

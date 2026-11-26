@@ -1764,7 +1764,7 @@ class AutoFinderKandidatOut(BaseModel):
     # -- Budget-Plausibilität (Runde 3, additiv — Gemini urteilt, KEIN Marktpreis) --
     # Default "UNKNOWN": ohne Budgetangabe oder bei Gemini-Ausfall bleibt jeder
     # Kandidat neutral UNKNOWN, niemals ein geratener Ersatzwert (§7/§8).
-    budget_status: str = "UNKNOWN"        # IN_BUDGET | NEAR_BUDGET | OUT_OF_BUDGET | UNKNOWN
+    budget_status: str = "UNKNOWN"        # IN_BUDGET | NEAR_BUDGET | OUT_OF_BUDGET | BELOW_BUDGET | UNKNOWN
     budget_confidence: str = "UNKNOWN"    # HIGH | MEDIUM | LOW | UNKNOWN
     # Nachvollziehbarkeit (§12): Foundation-Score VOR der Budget-Anpassung, und
     # die tatsächlich angewendete (streng begrenzte) Anpassung selbst.
@@ -1824,6 +1824,12 @@ class AutoFinderKandidatOut(BaseModel):
     # und Getriebeklassen, die der Datensatz fuehrt, die aber NICHT bestaetigt sind.
     motor_bauzeit_von: int | None = None
     motor_bauzeit_bis: int | None = None
+    # AF-13: wie weit die Motorzeit belegt ist ("belegt" | "teilweise" | "unbekannt"; None = Web-
+    # Kandidat mit belegter Bauzeit) und das Erstzulassungsfenster, das der Nutzer EINGEGEBEN hat.
+    # `baujahr_von/bis` bleibt der Verschnitt aus Baureihe, Motorgrenze und Wunsch, nie der Wunsch selbst.
+    motorzeit_status: str | None = None
+    wunsch_baujahr_von: int | None = None
+    wunsch_baujahr_bis: int | None = None
     getriebe_unbestaetigt: list[str] = Field(default_factory=list)
     # AF-10/12: Gasantrieb und Verbrauchseinheit/-zyklus (alle optional). `kraftstoff` bleibt die
     # Datensatzklasse (z. B. "Benzin"); `kraftstoff_hinweis` sagt, was das Fahrzeug tatsaechlich antreibt.

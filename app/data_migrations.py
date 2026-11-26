@@ -2544,6 +2544,52 @@ def schritt_motor_geltung_gas1(conn, apply_):
 SCHRITTE_MOTOR_GELTUNG_GAS1 = (schritt_motor_geltung_gas1,)
 
 
+# AF-13: Audi A3 8V 1.2 TFSI (105/110 PS) — belegte Bauzeit-Grenzen und falscher "(Facelift)"-Zusatz,
+# siehe app/motor_geltung_daten.py (GELTUNG_AF13). Eine vorhandene, abweichende Geltung oder eine
+# unerwartete Bezeichnung bricht die ganze Migration ab (Rollback, kein Marker, keine Teilschreibung).
+MARKER_MOTOR_GELTUNG_AF13 = "motor_geltung_af13_v1"
+
+
+def schritt_motor_geltung_af13(conn, apply_):
+    from app import motor_geltung_daten as d
+    cols = {r[1] for r in conn.execute("pragma table_info(motorvariante_geltung)")}
+    if not set(d.GELTUNG_AF13_SPALTEN) <= cols:
+        raise RuntimeError("[GELTUNG-AF13] ABBRUCH: Spalten von motorvariante_geltung fehlen")
+    for vid, (erwartet, korrigiert) in d.BEZEICHNUNG_AF13.items():
+        zeile = conn.execute("select bezeichnung from motorvariante where variante_id=?", (vid,)).fetchone()
+        if zeile is None:
+            log(f"  [GELTUNG-AF13] {vid}: Variante nicht im Bestand — uebersprungen")
+            continue
+        if zeile[0] == korrigiert:
+            log(f"  [GELTUNG-AF13] {vid}: Bezeichnung bereits korrigiert (idempotent)")
+            continue
+        if zeile[0] != erwartet:
+            raise RuntimeError(f"[GELTUNG-AF13] ABBRUCH: {vid} traegt Bezeichnung {zeile[0]!r}, erwartet war "
+                               f"{erwartet!r} — Datensatz wurde zwischenzeitlich geaendert")
+        log(f"  [GELTUNG-AF13] {vid}: Bezeichnung {erwartet!r} -> {korrigiert!r}")
+        if apply_:
+            conn.execute("update motorvariante set bezeichnung=? where variante_id=?", (korrigiert, vid))
+    for vid, felder in d.GELTUNG_AF13.items():
+        if conn.execute("select 1 from motorvariante where variante_id=?", (vid,)).fetchone() is None:
+            log(f"  [GELTUNG-AF13] {vid}: Variante nicht im Bestand — uebersprungen")
+            continue
+        wert = tuple(felder.get(c) for c in d.GELTUNG_AF13_SPALTEN)
+        ist = conn.execute(f"select {','.join(d.GELTUNG_AF13_SPALTEN)} from motorvariante_geltung "
+                           "where variante_id=?", (vid,)).fetchone()
+        if ist is not None and tuple(ist) == wert:
+            log(f"  [GELTUNG-AF13] {vid}: bereits eingetragen (idempotent)")
+            continue
+        if ist is not None:
+            raise RuntimeError(f"[GELTUNG-AF13] ABBRUCH: {vid} traegt bereits eine abweichende Geltung")
+        log(f"  [GELTUNG-AF13] {vid}: Geltung von={felder.get('bauzeit_von')} bis={felder.get('bauzeit_bis')}")
+        if apply_:
+            conn.execute(f"insert into motorvariante_geltung (variante_id,{','.join(d.GELTUNG_AF13_SPALTEN)}) "
+                         f"values (?,{','.join('?' * len(d.GELTUNG_AF13_SPALTEN))})", (vid, *wert))
+
+
+SCHRITTE_MOTOR_GELTUNG_AF13 = (schritt_motor_geltung_af13,)
+
+
 # Der Marker traegt eine Version im Namen. Kommen spaeter weitere Datenkorrekturen
 # hinzu, bekommen sie einen EIGENEN Marker und eine eigene Funktion — dieser hier
 # wird nie nachtraeglich veraendert, sonst liefe er auf bereits migrierten
@@ -2616,6 +2662,8 @@ MIGRATIONEN = (
     (MARKER_MOTOR_GELTUNG_AF10, SCHRITTE_MOTOR_GELTUNG_AF10),
     # GAS-1: fuenf weitere Gasfahrzeuge (Gasart unbekannt) — siehe GELTUNG_GAS1.
     (MARKER_MOTOR_GELTUNG_GAS1, SCHRITTE_MOTOR_GELTUNG_GAS1),
+    # AutoFinder AF-13: belegte Bauzeit und Bezeichnung des Audi A3 8V 1.2 TFSI (105/110 PS).
+    (MARKER_MOTOR_GELTUNG_AF13, SCHRITTE_MOTOR_GELTUNG_AF13),
 )
 
 

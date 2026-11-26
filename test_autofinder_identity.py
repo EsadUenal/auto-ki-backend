@@ -293,8 +293,10 @@ check("M: ohne Budget-Obergrenze bleibt der Status UNKNOWN",
 _s, _c = konsolidiere_budget_status(
     IN_BUDGET, CONF_HIGH, preis_min=4000, preis_max=7000,
     preis_confidence=CONF_MEDIUM, budget_min=20000, budget_max=30000)
-check("M: Spanne komplett unter dem Mindestbudget -> nicht 'Im Budget'",
-      _s == NEAR_BUDGET)
+# AF-14: die Aussage "nicht 'Im Budget'" bleibt; die frühere Erwartung NEAR_BUDGET (samt −4-Malus) war eine
+# Überschreitungsaussage für eine Spanne, die nichts überschreitet. Jetzt eigener Zustand BELOW_BUDGET.
+check("M: Spanne komplett unter dem Mindestbudget -> nicht 'Im Budget', keine Überschreitung (BELOW_BUDGET)",
+      _s != IN_BUDGET and _s != NEAR_BUDGET and _s == "BELOW_BUDGET")
 
 
 # ══════════════════════════════════════════════════════════════════════════

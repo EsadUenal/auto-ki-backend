@@ -244,8 +244,9 @@ check("H5 Karte: Fenster auf die belegte Bauzeit begrenzt (2013–2015), Generat
 
 k105w = af._zu_kandidat(roh(G105), 0.0, [], 1.0, af.AutoFinderRequest(baujahr_von=2014, baujahr_bis=2019))
 um = afe._baue_user_message([k105w], af.AutoFinderRequest(km_pro_jahr=15000, baujahr_von=2014, baujahr_bis=2019))
+# AF-13: der Anfragekopf nennt das EINGEGEBENE Fenster (2014–2019), nicht den Verschnitt mit der Motorzeit (2014–2015).
 check("I1 Prompt: Wunschfenster = Suchwunsch, belegte Motorzeit statt Wunschfenster als Fahrzeugzeit",
-      "Motorzeitraum laut Datensatz ab 2013 bis 2015" in um and "Wunschfenster des Nutzers 2014–2015" in um
+      "Motorzeitraum laut Datensatz ab 2013 bis 2015" in um and "Wunschfenster des Nutzers 2014–2019" in um
       and "KEIN Baujahr des Fahrzeugs" in afe._SYSTEM_PROMPT)
 check("I2 Jahresfahrleistung steht ausdrücklich als Nutzung, nicht als Kilometerstand (Nutzer-Kontext und Preisregel)",
       "KEIN Kilometerstand eines Fahrzeugs" in um and "NICHT der Kilometerstand eines Fahrzeugs" in afe._SYSTEM_PROMPT
@@ -295,10 +296,11 @@ def hash_t(t):
 
 
 M10 = dm.MARKER_MOTOR_GELTUNG_AF10
-# GAS-1: 22 Zeilen aus AF-03/AF-10 plus 5 Zeilen GAS-1 (eigener Marker) = 27.
-check("K1 Bootstrap: Marker und alle 27 Geltungszeilen sind da (Seed + Migrationen, inkl. GAS-1)",
+# GAS-1: 22 Zeilen aus AF-03/AF-10 plus 5 Zeilen GAS-1 (eigener Marker) = 27; AF-13 ergänzt len(GELTUNG_AF13) Zeilen
+# (Audi A3 8V 1.2 TFSI). Die Zahl bleibt eine Prüfung, gebunden an die tatsächlich ergänzten Zeilen.
+check("K1 Bootstrap: Marker und alle 27 + AF-13-Geltungszeilen sind da (Seed + Migrationen, inkl. GAS-1)",
       c.execute("select count(*) from schema_migrations where name=?", (M10,)).fetchone()[0] == 1
-      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 27)
+      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 27 + len(_gd.GELTUNG_AF13))
 for i in range(5):
     c.execute("insert into rueckruf (baureihe_id, mangel, kba_referenz, canonical_make, canonical_nameplate) "
               "values (NULL, 'Testmangel', ?, 'MAZDA', 'CX-5')", (f"AF10-{i}",))

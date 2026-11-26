@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.car_lookup import call_gemini_json
-from app.autofinder_variante import baujahr_kontext
+from app.autofinder_variante import baujahr_kontext, wunschfenster_text
 from app.gasantrieb import literwert_belegt
 from app.gemini_retry import GeminiFehlgeschlagen
 from app.schreibstil import STILREGEL_GEDANKENSTRICHE
@@ -101,6 +101,8 @@ STRIKTE REGELN:
 - Kraftstoff: Nenne den Kraftstoff genau wie angegeben. Ein Gasfahrzeug mit Benzin-Reserve ist kein gewöhnlicher Benziner.
 - Baujahre: Ein Motorzeitraum ist NUR dort belegt, wo die Angaben des Kandidaten ihn ausdrücklich nennen ("Motorzeitraum laut Datensatz …"); sonst ist er nicht hinterlegt. Schreibe keine eigenen Aussagen über Baujahre, Modellpflege oder Verfügbarkeit dieser Motorisierung in bestimmten Jahren, und behandle ein Wunschfenster nicht als Eigenschaft des Fahrzeugs.
 - FAHRANFÄNGER: Wenn der Nutzer "fahranfaenger" angegeben hat, formuliere differenziert statt absolut. Erlaubt sind konkrete, überprüfbare Aussagen (übersichtliche Abmessungen, gute Bedienbarkeit, verbreitete Assistenzsysteme, Werkstattdichte). VERBOTEN sind pauschale Eignungsurteile wie "ideal für Fahranfänger", "ohne Überforderung" oder "fahrsicher für Einsteiger", sobald das Fahrzeug spürbar Leistung hat (ab etwa 150 PS). Ordne dann Leistung, Versicherungseinstufung und Fahrverhalten ausdrücklich als Anforderung ein, nicht als Vorteil. Widersprich dir nicht: nenne nicht im selben Atemzug "ideal für Einsteiger" und "verlangt Disziplin".
+- Budget: Das Budget ist ein Wunsch des Nutzers. Du darfst es nennen, aber NICHT beurteilen, ob ein Fahrzeug "im Budget" liegt, "zum Budgetrahmen passt" oder es "überschreitet": die Budgetpassung zeigt ENFAL getrennt an, und dieses Urteil entsteht erst nach deiner Preisspanne.
+- Kilometerstand: Über den Kilometerstand oder die Laufleistung eines angebotenen Fahrzeugs ist nichts bekannt. Behaupte keine "höheren Laufleistungen", keine typischen Kilometerstände und keine für das Budget nötige hohe Laufleistung. Die Jahresfahrleistung des Nutzers darfst du als seine Nutzung nennen.
 - Preis: Du gibst NUR eine grobe, konservative Gebrauchtwagen-Preisorientierung als BREITE Spanne (min/max in EUR) für den deutschen Markt — für GENAU DIESE Variante (Karosserie, Motorisierung, Getriebe), nicht für die Baureihe allgemein. Maßgeblich ist die in den Angaben genannte Bauzeit der Baureihe bzw. der belegte Motorzeitraum; das Wunschfenster des Nutzers ist nur ein Suchwunsch und KEIN Baujahr des Fahrzeugs. Die Jahresfahrleistung beschreibt die Nutzung des Nutzers und ist NICHT der Kilometerstand eines Fahrzeugs; Kilometerstand und Zustand sind unbekannt, die Spanne bleibt deshalb breit. Ist der Motorzeitraum nicht hinterlegt: noch breiter und price_confidence LOW. NIEMALS eine Einzelzahl, NIEMALS "Marktpreis"/"Marktwert"/"aktueller Preis". Wenn du unsicher bist: breitere Spanne und price_confidence LOW.
 
 Für jeden Kandidaten:
@@ -197,9 +199,9 @@ def _kandidat_block(k: Any, req: Any) -> str:
     # der Antwort (siehe app/routers/autofinder._bekannte_punkte). Gäbe man
     # sie hier mit, lädt das zum Umformulieren und Ausschmücken ein — genau
     # der Pfad, über den ein nicht zuordenbarer Defekt in den Text kam.
-    bs = getattr(k, "budget_status", None)
-    if bs and bs != "UNKNOWN":
-        zeilen.append(f"  Budget-Einschätzung: {bs}")
+    # AF-14: der Budgetstatus wird NICHT uebergeben. Der Rohstatus stammt aus einem getrennten Call und
+    # wird erst nach der Preisspanne konsolidiert; als "Einschaetzung" im Prompt waere er ein fertiges
+    # Urteil, das der sichtbare Chip danach widerlegen kann. Die Budgetpassung zeigt der Status selbst.
     if getattr(k, "source_type", "") == "web_discovered":
         zeilen.append("  Herkunft: Web-Recherche (Angaben belegt, nicht ENFAL-geprüft)")
     return "\n".join(zeilen)
@@ -210,6 +212,9 @@ def _baue_user_message(kandidaten: list[Any], req: Any) -> str:
     if getattr(req, "budget_min", None) or getattr(req, "budget_max", None):
         lo, hi = getattr(req, "budget_min", None), getattr(req, "budget_max", None)
         zeilen.append(f"  Budget: {lo or 'ab 0'}{'–' if lo and hi else ''}{hi or ''} EUR")
+    fenster = wunschfenster_text(getattr(req, "baujahr_von", None), getattr(req, "baujahr_bis", None))
+    if fenster:
+        zeilen.append(f"  {fenster}")
     if getattr(req, "nutzung", None):
         zeilen.append(f"  Nutzung: {req.nutzung}")
     if getattr(req, "km_pro_jahr", None):
@@ -339,10 +344,34 @@ def _verbrauch_zahl(wert: str) -> float | None:
         return None
 
 
+# AF-14: Kilometerstand/Laufleistung eines ANGEBOTENEN Fahrzeugs ist nirgends bekannt. Entfernt wird eine
+# Behauptung darueber ("eher hoehere Laufleistungen"), nicht jeder Satz mit dem Wort: die
+# Jahresfahrleistung des Nutzers ist seine Nutzung, und "Kilometerstand ist unbekannt" bzw. der Rat,
+# ihn zu pruefen, behaupten nichts.
+_KM_NUTZUNG_RE = re.compile(
+    r"jahres(?:fahr|lauf)leistung|j[äa]hrliche[nrms]?\s+(?:fahr|lauf)leistung|fahrleistung"
+    r"|pro\s+jahr|im\s+jahr|je\s+jahr|j[äa]hrlich|\bp\.\s?a\.", re.IGNORECASE)
+_KM_BEHAUPTUNG_RE = re.compile(
+    r"laufleistung|kilometerst[äa]nd|km-?stand|tachostand|gelaufene\s+kilometer|gefahrene\s+kilometer"
+    r"|\bkm\s+gelaufen", re.IGNORECASE)
+_KM_NEUTRAL_RE = re.compile(
+    r"unbekannt|nicht\s+(?:bekannt|angegeben|hinterlegt|belegt|gepr[üu]ft)|unklar|\boffen\b|keine\s+angabe"
+    r"|pr[üu]f|achte|achten|nachfrag|erfrag|beim\s+(?:angebot|kauf)|verk[äa]ufer", re.IGNORECASE)
+
+
+def _km_behauptung(satz: str) -> bool:
+    rest = _KM_NUTZUNG_RE.sub(" ", satz)
+    if not _KM_BEHAUPTUNG_RE.search(rest):
+        return False
+    return not _KM_NEUTRAL_RE.search(satz)
+
+
 def _satz_unbelegt(satz: str, k: Any) -> bool:
     """True, wenn der Satz eine technische Aussage macht, die die gelieferten
     Angaben dieses Kandidaten nicht tragen."""
     if _SERIE_RE.search(satz) or _WETTER_FAHRDYNAMIK_RE.search(satz):
+        return True
+    if _km_behauptung(satz):
         return True
     motor = (getattr(k, "motor_bezeichnung", "") or "").lower()
     for m in _GETRIEBE_BAUART_RE.finditer(satz):
@@ -373,6 +402,40 @@ def _satz_unbelegt(satz: str, k: Any) -> bool:
         if re.search(r"wltp", ohne_verneinung, re.IGNORECASE) and not zyklus_belegt:
             return True       # Zyklus nicht belegt (die Spalte verbrauch_wltp allein belegt ihn nicht)
     return False
+
+
+# AF-14: Budgetaussagen im Text gegen das FINALE Budgeturteil. Positive Passung ("passt zum
+# Budgetrahmen", "im Budget") darf nur bei IN_BUDGET stehen, eine Ueberschreitung ("ueber Budget",
+# "sprengt das Budget") nur bei NEAR_BUDGET/OUT_OF_BUDGET. Alle uebrigen Saetze, auch solche, die das
+# Budget des Nutzers bloss nennen, bleiben.
+_BUDGET_POSITIV_RE = re.compile(
+    r"\bim\s+budget\b|innerhalb\s+(?:des|deines|dein\w*|ihres)\s+(?:\w+\s+)?budget\w*"
+    r"|budgetfreundlich|budgetgerecht|budgetkonform"
+    r"|(?:pass(?:t|en|end)|lieg(?:t|en)|bleib(?:t|en)|bewegt\s+sich|befindet\s+sich)\b[^.]{0,40}?"
+    r"\b(?:im|innerhalb|zum|zur|zu\s+(?:deinem|dem|ihrem)|in\s+(?:dein\w*|das|den)|ins)\b[^.]{0,25}?budget",
+    re.IGNORECASE)
+_BUDGET_UEBERSCHREITUNG_RE = re.compile(
+    r"[üu]ber(?:schreitet|steigt|schreiten)\b[^.]{0,40}?budget|sprengt\b[^.]{0,30}?budget"
+    r"|[üu]ber\s+(?:dem|deinem|dein|ihrem)\s+(?:\w+\s+)?budget|[üu]ber\s+budget\b"
+    r"|teurer\s+als\s+(?:dein|das|ihr)\w*\s+budget|au(?:ß|ss)erhalb\s+(?:des|deines|ihres)\s+budget"
+    r"|oberhalb\s+(?:des|deines|ihres)\s+budget|budget\w*\s+(?:wird\s+)?[üu]berschritten",
+    re.IGNORECASE)
+
+
+def bereinige_budgetaussagen(texte: list[str], finaler_status: str) -> list[str]:
+    """Entfernt SAETZE, deren Budgetaussage dem finalen Status widerspricht; sonst bleibt alles."""
+    ergebnis: list[str] = []
+    for text in texte:
+        behalten = []
+        for satz in (x for x in _SATZ_TRENNER.split(text) if x):
+            if finaler_status != "IN_BUDGET" and _BUDGET_POSITIV_RE.search(satz):
+                continue
+            if finaler_status not in ("NEAR_BUDGET", "OUT_OF_BUDGET") and _BUDGET_UEBERSCHREITUNG_RE.search(satz):
+                continue
+            behalten.append(satz)
+        if behalten:
+            ergebnis.append(" ".join(behalten))
+    return ergebnis
 
 
 def bereinige_unbelegte_aussagen(texte: list[str], k: Any) -> list[str]:

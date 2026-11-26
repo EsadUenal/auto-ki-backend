@@ -254,30 +254,65 @@ def loese_baujahre(gen_von: int | None, gen_bis: int | None,
     return BaujahrAufloesung(von, bis, gen_von, gen_bis)
 
 
-def baujahr_kontext(k) -> str:
-    """Baujahrangabe für Modell-Prompts, ehrlich über das, was bekannt ist.
+# Wie weit ist die Bauzeit der MOTORISIERUNG belegt? Die Datenbank kennt sie nur ausnahmsweise
+# (motorvariante_geltung). "belegt" = Beginn UND Ende, "teilweise" = nur eine Grenze,
+# "unbekannt" = keine. Nur "belegt" kann eine Baujahr-Passung bestaetigen; eine einzelne Grenze
+# darf ausschliessen (Auswahl), bestaetigt aber nicht, dass die andere Seite passt.
+MZ_BELEGT = "belegt"
+MZ_TEILWEISE = "teilweise"
+MZ_UNBEKANNT = "unbekannt"
 
-    Die Datenbank kennt nur die Bauzeit der GENERATION. Die Bauzeit der einzelnen
-    Motorisierung ist nicht hinterlegt, und das Jahresfenster der Suche ist ein
-    Wunsch des Nutzers, keine Fahrzeugeigenschaft. Web-Kandidaten tragen dagegen
-    eine belegte Bauzeit (kein Generationsbezug).
+
+def motorzeit_status(von: int | None, bis: int | None) -> str:
+    if von is not None and bis is not None:
+        return MZ_BELEGT
+    if von is not None or bis is not None:
+        return MZ_TEILWEISE
+    return MZ_UNBEKANNT
+
+
+def _jahre_text(von: int | None, bis: int | None) -> str:
+    """Zeitraum als Text. Ein fehlendes Ende heisst "Ende nicht hinterlegt", nie "heute"."""
+    if von is None and bis is None:
+        return "nicht hinterlegt"
+    if von is not None and bis is not None:
+        return f"{von}–{bis}"
+    if von is not None:
+        return f"ab {von}, Ende nicht hinterlegt"
+    return f"bis {bis}, Beginn nicht hinterlegt"
+
+
+def wunschfenster_text(von: int | None, bis: int | None) -> str | None:
+    """Das Erstzulassungsfenster, das der NUTZER eingegeben hat (unveraendert, ohne Verschnitt mit
+    der Baureihe). Es ist ein Suchwunsch, keine Eigenschaft eines Fahrzeugs."""
+    if von is None and bis is None:
+        return None
+    return (f"Wunschfenster des Nutzers {von or '?'}–{bis or '?'} "
+            "(Suchwunsch zur Erstzulassung, keine Fahrzeugeigenschaft)")
+
+
+def baujahr_kontext(k) -> str:
+    """Zeitangabe eines Kandidaten fuer Modell-Prompts: NUR Fahrzeugfakten, ehrlich ueber das, was
+    bekannt ist. Baureihenzeit, Motorzeit und Erstzulassung des einzelnen Fahrzeugs werden getrennt
+    genannt; das Wunschfenster des Nutzers steht NICHT hier, sondern im Anfragekopf beider Prompts
+    (`wunschfenster_text`), damit der Verschnitt mit der Baureihe nie als Nutzerwunsch erscheint.
+
+    Die Datenbank kennt die Bauzeit der GENERATION; die der einzelnen Motorisierung nur
+    ausnahmsweise. Web-Kandidaten tragen dagegen eine belegte Bauzeit (kein Generationsbezug).
     """
     von, bis = getattr(k, "baujahr_von", None), getattr(k, "baujahr_bis", None)
     gv, gb = getattr(k, "generation_baujahr_von", None), getattr(k, "generation_baujahr_bis", None)
     if gv is None and gb is None:
-        return f"Baujahre {von or '?'}–{bis or 'heute'}"
+        return f"Baujahre {von or '?'}–{bis if bis is not None else 'Ende nicht hinterlegt'}"
     mv, mb = getattr(k, "motor_bauzeit_von", None), getattr(k, "motor_bauzeit_bis", None)
-    eff_von = max(gv, mv) if (gv is not None and mv is not None) else gv
-    eff_bis = (mb if gb is None else min(gb, mb)) if mb is not None else gb
+    baureihe = (f"{gv or '?'}–{gb}" if gb is not None else f"ab {gv or '?'}, Ende nicht hinterlegt")
     if mv is None and mb is None:
-        text = f"Baureihe gebaut {gv or '?'}–{gb or 'heute'}, Motorzeitraum nicht hinterlegt"
-    else:
-        grenzen = " ".join(t for t in (f"ab {mv}" if mv is not None else "", f"bis {mb}" if mb is not None else "") if t)
-        text = (f"Baureihe gebaut {gv or '?'}–{gb or 'heute'}, Motorzeitraum laut Datensatz {grenzen} "
-                "(nur diese Grenze ist belegt)")
-    if (von, bis) != (eff_von, eff_bis):
-        text += f"; Wunschfenster des Nutzers {von or '?'}–{bis or '?'} (keine Fahrzeugeigenschaft)"
-    return text
+        return (f"Baureihe gebaut {baureihe}, Motorzeitraum nicht hinterlegt "
+                "(Erstzulassung des einzelnen Fahrzeugs unbekannt)")
+    grenzen = " ".join(t for t in (f"ab {mv}" if mv is not None else "",
+                                   f"bis {mb}" if mb is not None else "") if t)
+    rest = "" if motorzeit_status(mv, mb) == MZ_BELEGT else " (nur diese Grenze ist belegt)"
+    return f"Baureihe gebaut {baureihe}, Motorzeitraum laut Datensatz {grenzen}{rest}"
 
 
 # ══════════════════════════════════════════════════════════════════════════

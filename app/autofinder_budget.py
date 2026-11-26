@@ -51,7 +51,7 @@ unverändert wiederverwendet.
 import logging
 from typing import Any
 
-from app.autofinder_variante import baujahr_kontext
+from app.autofinder_variante import baujahr_kontext, wunschfenster_text
 from app.car_lookup import call_gemini_json
 from app.gemini_retry import GeminiFehlgeschlagen
 
@@ -62,6 +62,9 @@ IN_BUDGET = "IN_BUDGET"
 NEAR_BUDGET = "NEAR_BUDGET"
 OUT_OF_BUDGET = "OUT_OF_BUDGET"
 BUDGET_UNKNOWN = "UNKNOWN"
+# AF-14: nur ABGELEITET (Preisspanne ganz unter budget_min), nie ein gueltiger Gemini-Wert: bewusst nicht in
+# BUDGET_STATUS_WERTE, damit die Validierung der Modellantwort unveraendert bleibt.
+BELOW_BUDGET = "BELOW_BUDGET"
 BUDGET_STATUS_WERTE = (IN_BUDGET, NEAR_BUDGET, OUT_OF_BUDGET, BUDGET_UNKNOWN)
 
 # ── Confidence ───────────────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ BUDGET_ADJUSTMENT: dict[str, float] = {
     NEAR_BUDGET: BUDGET_BONUS_NEAR,
     OUT_OF_BUDGET: BUDGET_MALUS_OUT,
     BUDGET_UNKNOWN: 0.0,
+    BELOW_BUDGET: 0.0,   # keine Ueberschreitung -> kein Malus
 }
 
 
@@ -164,8 +168,9 @@ def _baue_user_message(kandidaten: list[Any], *, budget_min: int | None,
         zeilen.append(f"  bis {budget_max} EUR")
     else:
         zeilen.append(f"  ab {budget_min} EUR")
-    if baujahr_von is not None or baujahr_bis is not None:
-        zeilen.append(f"  gewünschtes Baujahrfenster: {baujahr_von or '?'}–{baujahr_bis or '?'}")
+    fenster = wunschfenster_text(baujahr_von, baujahr_bis)
+    if fenster:
+        zeilen.append(f"  {fenster}")
     zeilen.append("")
     zeilen.append("Kandidaten (NUR diese candidate_id-Werte sind gültig):")
     zeilen.extend(_formatiere_kandidat_zeile(k) for k in kandidaten)
@@ -276,6 +281,29 @@ NEAR_BUDGET_TOLERANZ = 0.15
 _CONF_RANG = {CONF_HIGH: 3, CONF_MEDIUM: 2, CONF_LOW: 1, CONF_UNKNOWN: 0}
 
 
+# AF-14: Lage der Preisspanne zum Budgetfenster. Fuenf Faelle, bewusst getrennt:
+LAGE_UNTERHALB = "unterhalb"            # ganze Spanne unter der Budgetuntergrenze
+LAGE_UNTEN = "ueberlappt_unten"         # Spanne beginnt unter der Untergrenze, endet im Budget
+LAGE_INNERHALB = "innerhalb"            # ganze Spanne im Budgetfenster
+LAGE_OBEN = "ueberlappt_oben"           # Spanne reicht ueber die Obergrenze, beginnt aber im Budget
+LAGE_OBERHALB = "oberhalb"              # ganze Spanne ueber der Obergrenze
+
+
+def budget_lage(preis_min: int, preis_max: int, budget_min: int | None, budget_max: int) -> str:
+    """Ordnet die Preisspanne dem Budgetfenster zu. Spannt sie das ganze Fenster auf (beginnt darunter,
+    endet darueber), zaehlt sie als "ueberlappt_oben": ein Teil liegt ueber der Obergrenze."""
+    if preis_min > budget_max:
+        return LAGE_OBERHALB
+    if preis_max > budget_max:
+        return LAGE_OBEN
+    untergrenze = budget_min if budget_min is not None else 0
+    if preis_max < untergrenze:
+        return LAGE_UNTERHALB
+    if preis_min < untergrenze:
+        return LAGE_UNTEN
+    return LAGE_INNERHALB
+
+
 def konsolidiere_budget_status(
     budget_status: str,
     budget_confidence: str,
@@ -289,16 +317,22 @@ def konsolidiere_budget_status(
     """Leitet den WIDERSPRUCHSFREIEN Consumer-Budgetstatus ab.
 
     Regeln (deterministisch, konservativ):
-      - kein Budgetfenster mit Obergrenze  -> Status unverändert
-      - keine Preisspanne vorhanden        -> Status unverändert
+      - kein Budgetfenster mit Obergrenze  -> Status unveraendert
+      - keine Preisspanne vorhanden        -> Status unveraendert
         (kein erfundener Status aus einer Spanne, die es nicht gibt)
-      - Spanne komplett im Budget          -> IN_BUDGET
-      - Spanne reicht ins Budget hinein     -> NEAR_BUDGET
-      - Spanne startet knapp darüber        -> NEAR_BUDGET
-      - Spanne startet deutlich darüber     -> OUT_OF_BUDGET
+      - Spanne innerhalb des Fensters oder NACH UNTEN ueberlappend (beginnt unter der Untergrenze,
+        endet im Budget)                   -> IN_BUDGET: es liegt keine Ueberschreitung vor. Die
+        Untergrenze bleibt ein Nutzerwunsch (sie geht weiter in beide Prompts und `budget_lage`),
+        ein Teil der Spanne unter ihr macht daraus keine "Naehe"- oder Ueberschreitungsaussage.
+      - Spanne GANZ unter der Untergrenze -> BELOW_BUDGET ("Unter deinem Budgetrahmen"): nicht
+        "Im Budget", keine Ueberschreitung, kein Malus. Beruehrt die Spanne die Untergrenze
+        (preis_max == budget_min) oder fehlt budget_min, gilt sie als innerhalb.
+      - Spanne reicht ueber die Obergrenze, beginnt im Budget (`ueberlappt_oben`) -> NEAR_BUDGET
+      - Spanne startet knapp darueber      -> NEAR_BUDGET
+      - Spanne startet deutlich darueber   -> OUT_OF_BUDGET
 
-    Die Confidence des abgeleiteten Status ist höchstens so hoch wie die der
-    Preisspanne, auf der er beruht — eine LOW-Schätzung darf keinen
+    Die Confidence des abgeleiteten Status ist hoechstens so hoch wie die der
+    Preisspanne, auf der er beruht — eine LOW-Schaetzung darf keinen
     HIGH-sicheren Budgetstatus erzeugen.
     """
     if budget_max is None:
@@ -306,12 +340,15 @@ def konsolidiere_budget_status(
     if preis_min is None or preis_max is None:
         return budget_status, budget_confidence
 
-    untergrenze = budget_min if budget_min is not None else 0
-    if preis_max <= budget_max and preis_min >= untergrenze:
+    lage = budget_lage(preis_min, preis_max, budget_min, budget_max)
+    if lage in (LAGE_INNERHALB, LAGE_UNTEN):
         neuer = IN_BUDGET
-    elif preis_min <= budget_max:
-        # Die Spanne überlappt das Budgetfenster: die günstigsten Angebote
-        # liegen drin, das typische Angebot aber nicht mehr sicher.
+    elif lage == LAGE_UNTERHALB:
+        # Ganz unter dem Mindestbudget: nicht "Im Budget" (die Abweichung vom Wunschfenster bleibt
+        # sichtbar) und keine Ueberschreitung -> eigener Zustand ohne Malus.
+        neuer = BELOW_BUDGET
+    elif lage == LAGE_OBEN:
+        # Die guenstigsten Angebote liegen im Budget, das typische Angebot aber nicht mehr sicher.
         neuer = NEAR_BUDGET
     elif preis_min <= budget_max * (1 + NEAR_BUDGET_TOLERANZ):
         neuer = NEAR_BUDGET

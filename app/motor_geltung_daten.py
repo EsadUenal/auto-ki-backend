@@ -203,3 +203,35 @@ GELTUNG_GAS1 = {
               "gebundene Eintrag \"Gasanlage\". Gasart, Verbrauchseinheit und Zyklus unbekannt."),
 }
 GELTUNG_GAS1_SPALTEN = GELTUNG_AF10_SPALTEN
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AF-13: Audi A3 8V 1.2 TFSI (105 PS / 110 PS)
+# ═══════════════════════════════════════════════════════════════════════════
+# Beleg (laut Analysebericht AF-13; in dieser Sitzung nicht erneut abgerufen): ADAC Autokatalog, Audi A3
+# (8V) 1.2 TFSI: 105 PS (77 kW) ab 02/2013, ersetzt durch die Ausführung mit 110 PS (81 kW) ab 05/2014.
+# Die Jahresauflösung bleibt grob: 2014 ist das Übergangsjahr und gehört zu BEIDEN Ausführungen. Die
+# 110-PS-Ausführung kam damit vor der Modellpflege (07/2016); der Zusatz "(Facelift)" in der Bezeichnung
+# ist nicht belegt und wird entfernt. Ein Ende der 110-PS-Ausführung ist nicht belegt (offen). Die
+# frühere Lesart "2013–2016" für die 105-PS-Ausführung ist NICHT belegt: 2016 ist das Jahr der
+# Modellpflege, nicht das Ende dieser Ausführung.
+ADAC_A3_8V_QUELLE = ("ADAC Autokatalog, Audi A3 (8V) 1.2 TFSI: 105 PS ab 02/2013, ersetzt durch 110 PS ab "
+                     "05/2014 (laut Analysebericht AF-13)")
+A3_8V_105 = "audi-a3-typ-8v-1.2-tfsi"
+A3_8V_110 = "audi-a3-typ-8v-1.2-tfsi-facelift"
+
+GELTUNG_AF13 = {
+    A3_8V_105: dict(
+        bauzeit_von=2013, bauzeit_bis=2014, quelle=ADAC_A3_8V_QUELLE,
+        notiz="105 PS (77 kW) ab 02/2013; im 05/2014 durch die 110-PS-Ausführung ersetzt. 2014 ist das "
+              "Übergangsjahr. Der Zeitraum gilt für diese Leistungsstufe, nicht für 1.2 TFSI insgesamt."),
+    A3_8V_110: dict(
+        bauzeit_von=2014, quelle=ADAC_A3_8V_QUELLE,
+        notiz="110 PS (81 kW) ab 05/2014 als Ersatz der 105-PS-Ausführung, damit vor der Modellpflege 07/2016. "
+              "Ein Ende dieser Ausführung ist nicht belegt."),
+}
+GELTUNG_AF13_SPALTEN = GELTUNG_AF10_SPALTEN
+
+# Bezeichnung der 110-PS-Zeile: "(Facelift)" war nicht belegt (siehe oben). Nur der exakt bekannte
+# Ausgangstext wird angefasst.
+BEZEICHNUNG_AF13 = {A3_8V_110: ("1.2 TFSI (Facelift)", "1.2 TFSI (110 PS)")}

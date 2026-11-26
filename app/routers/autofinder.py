@@ -72,6 +72,7 @@ from app.autofinder_budget import (
 from app.autofinder_identity import consumer_modellname, dedupe_semantisch
 from app.autofinder_enrich import (
     Enrichment,
+    bereinige_budgetaussagen,
     deterministischer_fallback,
     enrich_kandidaten,
     strip_pruef_label,
@@ -277,6 +278,8 @@ class _Variante:
     baujahr_bis: int | None
     generation_baujahr_von: int | None
     generation_baujahr_bis: int | None
+    wunsch_baujahr_von: int | None = None
+    wunsch_baujahr_bis: int | None = None
 
 
 def _konkrete_variante(k, body: AutoFinderRequest) -> _Variante:
@@ -316,6 +319,7 @@ def _konkrete_variante(k, body: AutoFinderRequest) -> _Variante:
         generation=getattr(k, "generation_label", None) or k.generation,
         baujahr_von=bj_von, baujahr_bis=bj_bis,
         generation_baujahr_von=gen_von, generation_baujahr_bis=gen_bis,
+        wunsch_baujahr_von=body.baujahr_von, wunsch_baujahr_bis=body.baujahr_bis,
     )
 
 
@@ -384,6 +388,9 @@ def _zu_kandidat_out(k, var: _Variante, *, budget_status: str = BUDGET_UNKNOWN,
         trade_offs_regelbasiert=list(trade_offs_regelbasiert or []),
         motor_bauzeit_von=getattr(k, "motor_bauzeit_von", None),
         motor_bauzeit_bis=getattr(k, "motor_bauzeit_bis", None),
+        motorzeit_status=getattr(k, "motorzeit_status", None),
+        wunsch_baujahr_von=var.wunsch_baujahr_von,
+        wunsch_baujahr_bis=var.wunsch_baujahr_bis,
         getriebe_unbestaetigt=list(getattr(k, "getriebe_unbestaetigt", None) or []),
         antriebsgas=getattr(k, "antriebsgas", None),
         verbrauch_einheit=getattr(k, "verbrauch_einheit", "l") or "l",
@@ -721,11 +728,8 @@ async def _finalisiere(
         -(t[2].baujahr_von or 0), kandidat_id(t[2]),
     ))
     final_kands = [t[2] for t in final]
-    for kand in final_kands:
-        try:
-            kand.budget_status = _b(kand)[0]   # nur Kontext fürs Enrichment-Prompt
-        except Exception:
-            pass
+    # AF-14: der Rohstatus geht NICHT mehr ins Enrichment (siehe `_kandidat_block`): er wird erst nach
+    # der Preisspanne konsolidiert und waere vorher ein ungeprueftes "fertiges Urteil".
 
     budget_hinweis = _budget_ergebnis_hinweis(
         body, gemini_aufgerufen=budget_aufgerufen, gemini_ausgefallen=budget_ausgefallen)
@@ -778,6 +782,11 @@ async def _finalisiere(
             preis_confidence=enr.price_confidence,
             budget_min=body.budget_min, budget_max=body.budget_max,
         )
+        # AF-14: sichtbare Texte duerfen dem FINALEN Budgeturteil nicht widersprechen. Der Text entstand
+        # vor der Konsolidierung; einzelne Saetze mit Budgetaussage, die zum Endstatus nicht passen,
+        # entfallen (Satzebene, Spanne und uebrige Saetze bleiben).
+        enr.why_fits = bereinige_budgetaussagen(enr.why_fits, b_status)
+        enr.trade_offs = bereinige_budgetaussagen(enr.trade_offs, b_status)
 
         # §Mindestpassung (AF-01): die Schwelle gilt für den tatsächlich AUSGEGEBENEN, budgetkorrigierten
         # Wert. Das Gate oben prüft nur den Roh-Fit; der Budgetabzug kam danach und konnte eine Karte

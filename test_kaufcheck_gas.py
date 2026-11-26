@@ -433,9 +433,11 @@ def hash_t(t):
 
 
 MG = dm.MARKER_MOTOR_GELTUNG_GAS1
-check("H1 frische DB (Seed + Bootstrap): Marker gesetzt, 27 Geltungszeilen, alle fünf GAS-1-Zeilen da",
+# AF-13 trägt zwei weitere Geltungszeilen (Audi A3 8V 1.2 TFSI) nach: 27 (Stand GAS-1) + len(GELTUNG_AF13).
+# Die Zahl wird hier nicht abgeschwächt, sondern an die tatsächlich ergänzten Zeilen gebunden.
+check("H1 frische DB (Seed + Bootstrap): Marker gesetzt, 27 + AF-13-Geltungszeilen, alle fünf GAS-1-Zeilen da",
       c.execute("select count(*) from schema_migrations where name=?", (MG,)).fetchone()[0] == 1
-      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 27
+      and c.execute("select count(*) from motorvariante_geltung").fetchone()[0] == 27 + len(gd.GELTUNG_AF13)
       and c.execute("select count(*) from motorvariante_geltung where variante_id in (%s)" % ",".join("?" * 5),
                     list(gd.GELTUNG_GAS1)).fetchone()[0] == 5)
 for i in range(3):
