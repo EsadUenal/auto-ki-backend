@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.car_lookup import call_gemini_json, find_baureihe_mit_vertrauen, find_motor
@@ -377,11 +377,32 @@ def _bewerte_kompatibilitaet(
     return sichtbar, confirmed[0][0]
 
 
+def ersatzteilsuche_stillgelegt() -> None:
+    """Die Ersatzteilsuche gehoert derzeit nicht zum Consumer-Angebot.
+
+    Diese Sperre gilt fuer ALLE Tarife einschliesslich MAX und fuer jeden Aufrufer. Sie steht als ERSTE
+    Dependency vor Anmeldung und Kontingentbuchung (`require_ersatzteil_access`) und damit vor jeder
+    Such- und Providerarbeit: ein gesperrter Aufruf bucht nichts und ruft weder Tavily noch Gemini auf.
+    Der Suchcode, die Konto-Felder und gespeicherte Zaehler bleiben unveraendert erhalten. Es gibt bewusst
+    keinen Umgebungs- oder Freischaltschalter.
+
+    503 (voruebergehend nicht verfuegbar) statt 404/410: die Funktion existiert, ist aber derzeit nicht
+    angeboten; der Status ist fuer Clients und Monitoring eindeutig und aendert nichts an Konten."""
+    raise HTTPException(
+        status_code=503,
+        detail={"fehler": {
+            "code": "ersatzteilsuche_nicht_verfuegbar",
+            "nachricht": "Die Ersatzteilsuche ist derzeit nicht verfügbar.",
+        }},
+    )
+
+
 @router.post("/suche")
 @provider_action("ersatzteile")
 async def ersatzteil_suche(
     body: SucheBody,
     request: Request,
+    _gesperrt: None = Depends(ersatzteilsuche_stillgelegt),   # MUSS vor dem Kontingent-Gate stehen
     _user_id: int = Depends(require_ersatzteil_access),
 ):
     identity_context = await asyncio.to_thread(_parts_identity_context, body.fahrzeug)
