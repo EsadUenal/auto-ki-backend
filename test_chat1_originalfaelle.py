@@ -151,7 +151,7 @@ for name, bericht in (("kurzer Bericht", kurz), ("langer Bericht", lang)):
     check(f"Lexus/{name}: Builder ergänzt keine Beträge", not re.search(r"\d+\s*[–-]\s*\d+\s*(€|Euro)", ctx))
     if name == "langer Bericht":
         check("Lexus/lang: Kürzung wird benannt (NICHT IM KONTEXT)", "NICHT IM KONTEXT" in ctx)
-        check("Lexus/lang: Zeilenauszug ist als solcher markiert", "auf Zeilen mit Vorbehalten gekürzt" in ctx)
+        check("Lexus/lang: Zeilenauszug ist als solcher markiert", "auf ganze Einträge mit Vorbehalten, Intervallen oder Herkunftsangaben gekürzt" in ctx)
         check("Lexus/lang: Füllzeilen sind nicht vollständig übernommen", ctx.count(FILL[:40]) < lang.count(FILL[:40]))
     # Router liefert denselben Kontext
     check(f"Lexus/{name}: Router = Builder",

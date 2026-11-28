@@ -309,6 +309,75 @@ def _leistung_hinweis(motoren: list[dict], text: str) -> str | None:
             f"nicht hinterlegt ist.")
 
 
+# ---------- Ausfuehrung: Karosserie und Getriebe getrennt als angegeben/unbekannt (CHAT-1b) ----------
+
+_KAROSSERIE_GRUPPEN = {
+    "Schrägheck": r"schrägheck|fließheck|hatchback",
+    "Kombi/Variant": r"variant|kombi|avant|touring|sportstourer|estate",
+    "Limousine": r"limousine|stufenheck|sedan",
+    "Cabrio": r"cabrio|cabriolet|roadster",
+    "Coupé": r"coup[ée]",
+    "SUV": r"suv|crossover",
+}
+_GETRIEBE_GRUPPEN = {
+    "DSG/Doppelkupplung": r"dsg|doppelkupplung|s[- ]?tronic|pdk",
+    "Automatik": r"automatik|wandlerautomat|tiptronic|steptronic|cvt",
+    "Schaltgetriebe": r"schaltgetriebe|handschalt\w*|manuell\w*|schalter",
+}
+_NEGATION_RE = re.compile(r"\b(kein|keine|keinen|keiner|keinem|nicht|ohne|außer|statt|anstelle)\b", re.IGNORECASE)
+_VERGLEICH_RE = re.compile(r"\b(oder|vs\.?|versus|besser als|im vergleich|unterschied|beziehungsweise|bzw)\b", re.IGNORECASE)
+
+
+def _angaben(text: str, gruppen: dict[str, str]) -> set[str]:
+    """Positiv genannte Werte einer Dimension. Negierte Nennungen ('kein DSG'), Vergleiche
+    ('Variant oder Schraegheck') und Nennungen in Satzteilen mit Vergleichswort zaehlen NICHT."""
+    werte: set[str] = set()
+    for satz in re.split(r"[.;!?\n]+", text or ""):
+        if not satz.strip() or _VERGLEICH_RE.search(satz):
+            continue
+        for name, muster in gruppen.items():
+            for m in re.finditer(rf"\b(?:{muster})\b", satz, re.IGNORECASE):
+                davor = re.findall(r"[\wäöüß-]+", satz[: m.start()])[-3:]
+                if any(_NEGATION_RE.fullmatch(w) for w in davor):
+                    continue
+                werte.add(name)
+    return werte
+
+
+def _ausfuehrung_zeilen(data: dict, nutzertext: str) -> list[str]:
+    """Karosserie und Getriebe getrennt: angegeben, unbekannt oder mehrdeutig. 'Variant' klaert das
+    Getriebe nicht, 'DSG' nicht die Karosserie. Unbekanntes wird nicht durch eine in der Datenbank
+    verfuegbare Variante ersetzt."""
+    z: list[str] = []
+    for label, gruppen, db_werte in (
+        ("Karosserie", _KAROSSERIE_GRUPPEN, ", ".join(data.get("karosserie") or []) or "keine Angabe"),
+        ("Getriebe", _GETRIEBE_GRUPPEN,
+         ", ".join(sorted({g for m in data.get("motoren", []) for g in (m.get("getriebe") or [])})) or "keine Angabe"),
+    ):
+        werte = _angaben(nutzertext, gruppen)
+        if len(werte) == 1:
+            z.append(f"{label} laut Angabe des Nutzers: {next(iter(werte))} (Angabe, kein Beleg).")
+        elif len(werte) > 1:
+            z.append(f"{label}: Angaben des Nutzers mehrdeutig ({', '.join(sorted(werte))}), nicht festgelegt. "
+                     f"Nicht eine davon als gegeben annehmen.")
+        else:
+            z.append(f"{label}: vom Nutzer NICHT angegeben (unbekannt). Nicht annehmen. Die Datenbank nennt für die "
+                     f"Baureihe: {db_werte}. Das ist eine Auswahl möglicher Ausführungen, keine Angabe zu diesem Fahrzeug.")
+    return z
+
+
+# Kennzeichnung frueherer Assistant-Antworten im Verlauf: Gespraechsverlauf, keine Quelle (CHAT-1b).
+VERLAUF_KI_PRAEFIX = "[Frühere Antwort im Gespräch, keine Quelle und kein Berichtsinhalt] "
+
+
+def _verlauf_eintrag(msg: dict, text: str) -> dict:
+    """Ein Verlaufseintrag fuer das Modell. Nur Antworten des Assistenten werden gekennzeichnet; der
+    Wortlaut bleibt erhalten (nichts wird maskiert oder geloescht)."""
+    if msg.get("rolle") == "user":
+        return {"role": "user", "parts": [{"text": text}]}
+    return {"role": "model", "parts": [{"text": VERLAUF_KI_PRAEFIX + text}]}
+
+
 def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None,
                  baujahr: int | None = None, leistung_text: str | None = None) -> str:
     """Liest alle harten Fakten aus SQLite und baut einen strukturierten Kontext-String.
@@ -358,10 +427,14 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None,
         if baujahr is not None:
             lines.insert(1, f"Baujahr laut Angabe des Nutzers: {baujahr} (Angabe, kein Beleg). "
                             f"Nachweislich nicht passende Baujahr-Einträge wurden ausgelassen.")
-        if leistung_text:
+        if leistung_text is not None:
             _hinweis = _leistung_hinweis(data["motoren"], leistung_text)
             if _hinweis:
                 lines.insert(1, _hinweis)
+            # CHAT-1b: Karosserie und Getriebe getrennt als angegeben/unbekannt (nur bei genau einem
+            # aktiven Fahrzeug; `leistung_text` ist dessen Nutzertext, sonst None).
+            for _zeile in reversed(_ausfuehrung_zeilen(data, leistung_text)):
+                lines.insert(1, _zeile)
 
         for m in data["motoren"]:
             # GAS-1: ein Gasfahrzeug steht in der Kraftstoffspalte als "Benzin" (Motorklasse). Kontext
@@ -977,6 +1050,17 @@ WARTUNG
 - Ein Eintrag mit Beleglage "gemeldeter Hinweis, nicht geprüft" oder eine Angabe mit unbestätigter Geltung (z. B. Markt nicht bestätigt) ist keine Herstellervorgabe. Sag das, statt es als offizielle Vorgabe darzustellen.
 - Fehlende Wartungshistorie beweist keine Fälligkeit und kein Versäumnis. Sag höchstens, dass ein Nachweis fehlt und geprüft werden sollte.
 - Eine pauschale Faustregel (z. B. "nach 6–8 Jahren") ist allgemeines Wissen, kein Intervall dieses Fahrzeugs: kennzeichne sie so und leite daraus keine Fälligkeit ab.
+- Eine rechnerisch erreichte Schwelle (Kilometer oder Alter) ist ohne passende Vorgabe UND bekannte Historie kein Beweis für aktuelle Fälligkeit, Überfälligkeit oder ein Versäumnis. Sag: "Schwelle überschritten, ob die Arbeit gemacht wurde, ist unbekannt, Nachweis prüfen". Nie "war bereits fällig" oder "wurde versäumt".
+- Gib Erst- und Folgeintervall getrennt wieder (z. B. Erstprüfung nach X, danach alle Y) und fasse sie nie zu einem Wert zusammen.
+- Nenne keine konkrete Hersteller- oder Werkschwelle aus deinem Modellwissen als belegt. Steht keine Vorgabe im Kontext, sag "keine Vorgabe liegt vor"; Erfahrungswerte nennst du als solche und nutzt sie nicht als Maßstab für Fälligkeit.
+- Schließe keine Nachweisform aus: Servicenachweise können auch digital vorliegen (Online-Servicehistorie, digitale Rechnungen, Händlerportal). Keine absoluten Aussagen wie "nur Rechnungen" oder "nur ein physisches Dokument".
+QUELLEN UND AUSFÜHRUNG
+- "Im Rechercheauszug nicht gefunden" ist nicht "in der Quelle nicht vorhanden" und nicht "im Web nicht vorhanden": du siehst nur wenige gekürzte Treffer. Formuliere entsprechend.
+- Karosserie (z. B. Schrägheck, Variant) und Getriebe (Schaltung, Automatik, DSG) sind getrennte Angaben. Ist eine nicht genannt (Kontext: "NICHT angegeben"), ist sie unbekannt: ersetze sie nicht durch eine in den Daten oder Quellen verfügbare Variante. "Variant" klärt das Getriebe nicht, "DSG" nicht die Karosserie.
+VERLAUF UND BERICHTSTREUE
+- Frühere Antworten des Assistenten im Gesprächsverlauf sind Gesprächsverlauf, keine Quelle und kein Berichtsinhalt. Der aktuelle Kontext hat Vorrang; widerspricht ihm eine frühere Antwort (auch eine eigene), korrigiere sie ausdrücklich.
+- Trenne bei Geldbeträgen: Wunsch oder Angabe des Nutzers, allgemeine Schätzung (als solche kennzeichnen, nicht im Bericht) und Aussage der Analyse. Ein Betrag im Kontext ist nicht automatisch belegt; sag, woher er stammt.
+- Schließe nicht über das Gesagte hinaus: "Wartungsnachweise teilweise vorhanden" beweist nicht "nicht scheckheftgepflegt" und umgekehrt. Benenne Unbekanntes und Widersprüche offen, statt sie aufzulösen.
 RÜCKRUF
 - Trenne drei Aussagen und leite nie eine aus der anderen ab: (1) Es gibt einen Rückruf für die Baureihe oder einen Teilbereich. (2) Ein bestimmtes Fahrzeug ist betroffen — das entscheidet nur die FIN beim Hersteller oder KBA. (3) Die Maßnahme wurde durchgeführt — das belegt nur ein Werkstattnachweis. Ein unbekannter Produktionszeitraum wird nicht als passend vorausgesetzt.
 ALTER UND DATUM
@@ -1406,8 +1490,7 @@ async def chat_stream(
         ausgewaehlt.append((msg, text))
         rest -= len(text)
     for msg, text in reversed(ausgewaehlt):
-        role = "user" if msg.get("rolle") == "user" else "model"
-        history.append({"role": role, "parts": [{"text": text}]})
+        history.append(_verlauf_eintrag(msg, text))
     print(f"[TIMING] verlauf: {len(verlauf)} Nachrichten -> {len(history)} im Prompt", flush=True)
 
     client = _get_client()
@@ -1609,8 +1692,7 @@ async def analyse_frage_stream(
         ausgewaehlt.append((msg, text))
         rest -= len(text)
     for msg, text in reversed(ausgewaehlt):
-        role = "user" if msg.get("rolle") == "user" else "model"
-        history.append({"role": role, "parts": [{"text": text}]})
+        history.append(_verlauf_eintrag(msg, text))
 
     client = _get_client()
     contents = history + [{"role": "user", "parts": [{"text": frage}]}]

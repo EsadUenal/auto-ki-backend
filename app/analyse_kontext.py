@@ -50,12 +50,24 @@ _KURZFASSUNG = (
 )
 
 _NUTZER_KEYS_LANG = {"inserat_text", "beschreibung", "inserat_titel", "tuning", "vorschaeden"}
+# Geldbetraege der Eingabe sind Wunsch oder Inseratsangabe des Nutzers, kein Marktpreis und kein Beleg.
+_NUTZER_PREIS_KEYS = {
+    "preis_vorstellung": "Preisvorstellung des Nutzers, kein Marktpreis",
+    "preis_untergrenze": "Preisuntergrenze des Nutzers, kein Marktpreis",
+    "preis": "Preis laut Inserat/Nutzer, kein Marktpreis",
+}
 _NUTZER_KEYS_SKIP = {"lauf_id", "bild_base64"}
 
 
 def _kurz(text: Any, n: int) -> str:
     t = " ".join(str(text).split())
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def _kurz_markiert(text: Any, n: int) -> str:
+    """Wie `_kurz`, aber eine Kuerzung ist ausdruecklich benannt (keine scheinbar vollstaendige Teilregel)."""
+    t = " ".join(str(text).split())
+    return t if len(t) <= n else t[: n - 14].rstrip() + " […gekürzt]"
 
 
 def _skalar(v: Any) -> bool:
@@ -136,7 +148,8 @@ def _nutzerangaben(eingabe: dict | None) -> list[str]:
         if k in _NUTZER_KEYS_SKIP or v in (None, "", [], {}):
             continue
         if _skalar(v):
-            z.append(f"{k}: {_kurz(v, 300 if k in _NUTZER_KEYS_LANG else 120)}")
+            zusatz = f" ({_NUTZER_PREIS_KEYS[k]})" if k in _NUTZER_PREIS_KEYS else ""
+            z.append(f"{k}: {_kurz(v, 300 if k in _NUTZER_KEYS_LANG else 120)}{zusatz}")
         elif isinstance(v, list) and all(_skalar(x) for x in v):
             z.append(f"{k}: {_kurz(', '.join(map(str, v)), 200)}")
     return z
@@ -156,7 +169,7 @@ def _hinweise_kauf(e: dict) -> list[str]:
                                          "web": "Webquelle"}.get(i["trust"], str(i["trust"])))
         if i.get("applicability"):
             meta.append(f"Anwendbarkeit {i['applicability']} (kein Nachweis für dieses einzelne Fahrzeug)")
-        z.append(f"[{i['kategorie']}] {i.get('titel')}: {_kurz(i.get('beschreibung', ''), 260)} ({'; '.join(meta)})"
+        z.append(f"[{i['kategorie']}] {i.get('titel')}: {_kurz_markiert(i.get('beschreibung', ''), 700 if i['kategorie'] == 'wartung' else 300)} ({'; '.join(meta)})"
                  + (f" Einfluss: {_kurz(i['einfluss'], 140)}" if i.get("einfluss") else ""))
     return z
 
@@ -227,28 +240,68 @@ def _prio(titel: str) -> int:
     return len(_PRIO) - 1
 
 
-# Zeilen, die einen Vorbehalt, eine Bedingung oder die Herkunft einer Angabe tragen. Sie sind der Grund,
-# warum ein Abschnitt vor Fuellmaterial bleibt und warum eine Zeile einen zu langen Abschnitt ueberlebt.
+# Relevanz eines Eintrags fuer die Auswahl bei Platzmangel: Vorbehalte, Herkunftsangaben, Intervalle.
+# ACHTUNG: Das entscheidet nur, WELCHE Eintraege bei Platzmangel Vorrang haben. Dass ein Eintrag vollstaendig
+# bleibt (Taetigkeit, Erst-/Folgeregel, Bedingungen, Vorbehalte), garantiert die BLOCKSTRUKTUR, nicht die Liste.
 _VORBEHALT_RE = re.compile(
     r"vorbehalt|nicht bestätigt|ungeklärt|unbekannt|voraussetzung|geltung|laut quelle|einsatzbedingung|"
     r"deine angabe|laut inserat|laut verkäufer|kein beleg|nicht belegt|ungeprüft|nicht geprüft|"
-    r"intervall|prüfung:|bedingung|nur teilweise|teilweise vorhanden|nicht gemacht|unklar",
+    r"intervall|prüfung|wechsel|bedingung|nur teilweise|teilweise vorhanden|unklar|danach|erstprüfung|folge|"
+    r"\d[\d.]*\s*(?:km|jahr|monat)",
     re.IGNORECASE,
 )
+# Ein Eintrag (Gruppe) beginnt mit einem Listenpunkt mit fettem Titel ("- **Antriebsriemen** ...") oder einem
+# fetten Absatzanfang. Alles danach bis zur Leerzeile (Folgezeilen, eingerueckte Zeilen, schlichte Unterpunkte)
+# gehoert zum selben Eintrag: Erst-/Folgeregel und Vorbehalt duerfen nicht auf Zeilen verteilt werden.
+_EINTRAG_START = re.compile(r"^\s*(?:[-*•]\s+|\d+\.\s+)?\*\*")
 
 
-def _vorbehalts_auszug(text: str, platz: int) -> str | None:
-    """Ueberschrift plus die Zeilen eines Abschnitts, die einen Vorbehalt tragen (je Zeile ganz,
-    damit Taetigkeit, Intervall und Vorbehalt zusammenbleiben). None, wenn nichts passt."""
+def _eintraege(zeilen: list[str]) -> list[list[str]]:
+    bloecke: list[list[str]] = []
+    cur: list[str] = []
+    for z in zeilen:
+        if not z.strip():
+            if cur:
+                bloecke.append(cur)
+                cur = []
+            continue
+        if cur and _EINTRAG_START.match(z):
+            bloecke.append(cur)
+            cur = [z]
+        else:
+            cur.append(z)
+    if cur:
+        bloecke.append(cur)
+    return bloecke
+
+
+def _eintrag_titel(block: list[str]) -> str:
+    m = re.search(r"\*\*(.+?)\*\*", block[0])
+    return (m.group(1) if m else block[0].strip())[:50]
+
+
+def _vorbehalts_auszug(text: str, platz: int, titel_abschnitt: str, nicht: list[str]) -> str | None:
+    """Bei Platzmangel: Ueberschrift plus GANZE Eintraege mit Relevanz. Passt ein relevanter Eintrag nicht
+    mehr vollstaendig hinein, wird er NICHT teilweise uebernommen, sondern als ausgelassen benannt — eine
+    scheinbar vollstaendige Teilregel gibt es nicht."""
     zeilen = text.splitlines()
     kopf = zeilen[0]
-    marke = "[… Abschnitt hier auf Zeilen mit Vorbehalten gekürzt]"
+    marke = "[… Abschnitt hier auf ganze Einträge mit Vorbehalten, Intervallen oder Herkunftsangaben gekürzt]"
     rest = platz - len(kopf) - len(marke) - 4
     gew: list[str] = []
-    for z in zeilen[1:]:
-        if _VORBEHALT_RE.search(z) and len(z) + 1 <= rest:
-            gew.append(z)
-            rest -= len(z) + 1
+    uebrig = 0
+    for blk in _eintraege(zeilen[1:]):
+        txt = "\n".join(blk)
+        if not _VORBEHALT_RE.search(txt):
+            uebrig += 1
+            continue
+        if len(txt) + 1 <= rest:
+            gew.append(txt)
+            rest -= len(txt) + 1
+        else:
+            nicht.append(f"Eintrag „{_eintrag_titel(blk)}“ in „{titel_abschnitt}“ (zu lang für den Rest, nicht teilweise übernommen)")
+    if uebrig:
+        nicht.append(f"{uebrig} Einträge ohne Vorbehalt/Intervall in „{titel_abschnitt}“")
     if not gew:
         return None
     return "\n".join([kopf, *gew, marke])
@@ -259,14 +312,23 @@ def _bericht_auswahl(bericht: str, platz: int, nicht: list[str]) -> list[str]:
     out: list[str] = []
     rest = platz
     if vorspann:
-        v = vorspann if len(vorspann) <= 900 else vorspann[:899].rstrip() + "…"
-        out.append(v)
-        rest -= len(v) + 2
-        if len(vorspann) > 900:
-            nicht.append("Rest des Berichtskopfes (Titel, Datenbasis, Identitätszeilen)")
+        # Absatzweise, nie mitten in einem Eintrag.
+        absaetze = [a for a in re.split(r"\n\s*\n", vorspann) if a.strip()]
+        gew: list[str] = []
+        used = 0
+        for ab in absaetze:
+            if used + len(ab) + 2 > 900:
+                nicht.append("Rest des Berichtskopfes (Titel, Datenbasis, Identitätszeilen)")
+                break
+            gew.append(ab)
+            used += len(ab) + 2
+        v = "\n\n".join(gew)
+        if v:
+            out.append(v)
+            rest -= len(v) + 2
     gewaehlt: dict[int, str] = {}
     teilweise: set[int] = set()
-    # Abschnitte mit Vorbehalten zuerst, dann nach Titelrang, dann in Berichtsreihenfolge.
+    # Abschnitte mit Relevanz zuerst, dann nach Titelrang, dann in Berichtsreihenfolge.
     reihenfolge = sorted(range(len(abschnitte)),
                          key=lambda i: (0 if _VORBEHALT_RE.search(abschnitte[i][1]) else 1,
                                         _prio(abschnitte[i][0]), i))
@@ -276,7 +338,7 @@ def _bericht_auswahl(bericht: str, platz: int, nicht: list[str]) -> list[str]:
             gewaehlt[idx] = text
             rest -= len(text) + 2
         elif rest > 300:
-            auszug = _vorbehalts_auszug(text, rest)
+            auszug = _vorbehalts_auszug(text, rest, titel, nicht)
             if auszug:
                 gewaehlt[idx] = auszug
                 teilweise.add(idx)
@@ -288,7 +350,7 @@ def _bericht_auswahl(bericht: str, platz: int, nicht: list[str]) -> list[str]:
         if idx not in gewaehlt:
             nicht.append(f"Berichtsabschnitt „{titel}“")
         elif idx in teilweise:
-            nicht.append(f"übrige Zeilen des Berichtsabschnitts „{titel}“")
+            nicht.append(f"übrige Einträge des Berichtsabschnitts „{titel}“")
     return out
 
 
