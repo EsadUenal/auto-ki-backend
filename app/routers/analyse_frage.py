@@ -42,36 +42,19 @@ from app.database import get_conn
 from app.routers.user_auth import get_current_user_id
 from app.usage_limit import require_analyse_frage_kontingent
 from app.provider_control import ProviderCapacityExceeded, provider_scope, request_cost_key
-from app.llm import analyse_frage_stream
+from app.llm import analyse_frage_stream, ANALYSE_KONTEXT_MAX
+from app.analyse_kontext import baue_analyse_kontext
 from app.utf8 import UTF8JSONResponse
 
 router = APIRouter(default_response_class=UTF8JSONResponse)
 limiter = Limiter(key_func=limit_schluessel)
 log = logging.getLogger(__name__)
 
-# Felder aus dem gespeicherten Ergebnis, die als Kurzfassung vor den Bericht
-# gestellt werden. Bewusst eine feste Liste: es geht nur in den Kontext, was der
-# Server selbst erzeugt hat — nie beliebige Client-Schluessel.
-_KURZFASSUNG = (
-    ("empfehlung", "Empfehlung"),
-    ("preis_bewertung", "Preisbewertung"),
-    ("marktpreis_min", "Marktpreis von (EUR)"),
-    ("marktpreis_max", "Marktpreis bis (EUR)"),
-    ("empfohlener_preis", "Empfohlener Preis (EUR)"),
-    ("schnellverkaufs_preis", "Schnellverkaufspreis (EUR)"),
-    ("maximal_preis", "Maximalpreis (EUR)"),
-    ("research_status", "Recherchestatus"),
-    ("vertrauen", "Vertrauen"),
-)
-
-_MAX_KONTEXT = 60_000   # Sicherheitsnetz gegen einen aussergewoehnlich langen Bericht
-
-
-def _eigener_bezahlter_check(check_id: int, user_id: int) -> tuple[str, str]:
+def _eigener_bezahlter_check(check_id: int, user_id: int) -> tuple[str, str, str | None]:
     """Laedt Typ und Ergebnis eines eigenen, bezahlten Checks. Sonst 403/404."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_id, typ, ergebnis, lauf_id FROM checks WHERE id=?", (check_id,)
+            "SELECT user_id, typ, ergebnis, eingabe, lauf_id FROM checks WHERE id=?", (check_id,)
         ).fetchone()
     if row is None:
         raise HTTPException(
@@ -92,51 +75,53 @@ def _eigener_bezahlter_check(check_id: int, user_id: int) -> tuple[str, str]:
             detail={"fehler": {"code": "kein_echter_check",
                                "nachricht": "Rückfragen gibt es nur zu einem durchgeführten Check."}},
         )
-    return row["typ"], row["ergebnis"]
+    return row["typ"], row["ergebnis"], row["eingabe"]
 
 
-def _kontext_aus_check(typ: str, ergebnis_json: str) -> str:
-    """Baut den Analysetext aus dem GESPEICHERTEN Ergebnis — nie aus Client-Text."""
-    try:
-        ergebnis = json.loads(ergebnis_json) or {}
-    except (json.JSONDecodeError, TypeError):
-        ergebnis = {}
-    zeilen = [f"Art der Analyse: {'Kaufcheck' if typ == 'kauf' else 'Verkaufscheck'}"]
-    for schluessel, titel in _KURZFASSUNG:
-        wert = ergebnis.get(schluessel)
-        if wert not in (None, "", []):
-            zeilen.append(f"{titel}: {wert}")
-    bericht = ergebnis.get("bericht")
-    if isinstance(bericht, str) and bericht.strip():
-        zeilen.append("")
-        zeilen.append(bericht)
-    kontext = "\n".join(zeilen)
+def _kontext_aus_check(typ: str, ergebnis_json: str, eingabe_json: str | None = None) -> str:
+    """Baut den Analysetext aus dem GESPEICHERTEN Ergebnis und den gespeicherten Angaben —
+    nie aus Client-Text. Die Auswahl (Vorbehalte vor Bericht, Auslassungen benannt) macht
+    `app.analyse_kontext`; die Grenze ist dieselbe wie im LLM-Aufruf."""
+    kontext = baue_analyse_kontext(typ, ergebnis_json, eingabe_json, ANALYSE_KONTEXT_MAX)
     if not kontext.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"fehler": {"code": "kein_analysetext",
                                "nachricht": "Zu diesem Check liegt kein Analysetext vor."}},
         )
-    return kontext[:_MAX_KONTEXT]
+    return kontext
+
+
+def _fehler_event(teilantwort: bool) -> str:
+    """Eigenes Fehlerereignis (CHAT-1): der Fehlertext ist KEIN Antworttext. `teilantwort` sagt dem
+    Client, dass bereits Text gesendet wurde, der unvollstaendig ist."""
+    data = json.dumps({"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT},
+                       "teilantwort": bool(teilantwort)}, ensure_ascii=False)
+    return f"data: {data}\n\n"
 
 
 async def _sse_generator(analyse_kontext: str, frage: str, verlauf: list[dict], check_typ: str,
                          cost_key: str = "anonymous"):
-    """SSE-Stream: reine Textfragmente + abschließendes [DONE]."""
+    """SSE-Stream: Textfragmente, optional Meta (abgeschnitten) bzw. Fehlerereignis, dann [DONE]."""
+    hat_text = False
     try:
         async with provider_scope("analyse_frage", key=cost_key):
             async for event in analyse_frage_stream(analyse_kontext, frage, verlauf, check_typ):
                 if event["type"] == "text":
+                    hat_text = True
                     data = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
+                elif event["type"] == "meta":
+                    data = json.dumps({"meta": {"abgeschnitten": bool(event.get("abgeschnitten"))}})
+                    yield f"data: {data}\n\n"
+                elif event["type"] == "error":
+                    yield _fehler_event(event.get("teilantwort", hat_text))
     except ProviderCapacityExceeded:
-        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
-        yield f"data: {data}\n\n"
+        yield _fehler_event(hat_text)
     except Exception as exc:
         # Kein abgerissener Stream und keine internen Details im SSE-Text.
         log.error("Analyse-Frage-Stream error_class=%s", type(exc).__name__)
-        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
-        yield f"data: {data}\n\n"
+        yield _fehler_event(hat_text)
     yield "data: [DONE]\n\n"
 
 
@@ -158,8 +143,8 @@ async def analyse_frage_endpunkt(
     user_id: int = Depends(get_current_user_id),
 ):
     verify_api_key(request)
-    typ, ergebnis_json = _eigener_bezahlter_check(body.check_id, user_id)
-    kontext = _kontext_aus_check(typ, ergebnis_json)
+    typ, ergebnis_json, eingabe_json = _eigener_bezahlter_check(body.check_id, user_id)
+    kontext = _kontext_aus_check(typ, ergebnis_json, eingabe_json)
     require_analyse_frage_kontingent(request)
     verlauf = [m.model_dump() for m in body.verlauf]
     return StreamingResponse(

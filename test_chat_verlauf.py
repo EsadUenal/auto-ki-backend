@@ -209,7 +209,7 @@ async def test_grosser_kontext_verdraengt_verlauf_nicht():
     spy = _Spy().install()
     original = llm._sql_context
     # Exakt der Produktionsfall: 17 erkannte Baureihen ergaben 114k Zeichen.
-    llm._sql_context = lambda ids, fuel_hint_text=None: "X" * 200_000
+    llm._sql_context = lambda ids, fuel_hint_text=None, baujahr=None, leistung_text=None: "X" * 200_000
     try:
         verlauf = [{"rolle": "user", "text": TURN1_USER}, {"rolle": "ki", "text": TURN1_KI}]
         await _lauf(TURN2_USER, verlauf, spy)
@@ -238,7 +238,7 @@ async def test_retrieval_ersetzt_verlauf_nicht():
 
     check("Verlauf weiterhin vollstaendig", len(spy.contents) == 3, f"waren {len(spy.contents)}")
     check("Kontext ist trotzdem im System-Prompt gelandet",
-          "KONTEXT AUS GEPRÜFTER DATENBANK" in spy.system)
+          "KONTEXT (getrennt nach Herkunft" in spy.system)
     check("Belege wurden ermittelt", isinstance(meta.get("belege"), list))
 
 
@@ -401,7 +401,7 @@ async def test_bewertungsregeln_stehen_direkt_vor_dem_kontext():
                              {"rolle": "ki", "text": TURN1_KI}], spy)
     sp = spy.system
     pos_hinweis = sp.find("— VOR JEDER BEWERTUNG —")
-    pos_kontext = sp.find("KONTEXT AUS GEPRÜFTER DATENBANK")
+    pos_kontext = sp.find("KONTEXT (getrennt nach Herkunft")
     check("Bewertungshinweis ist im tatsächlich gesendeten System-Prompt", pos_hinweis >= 0)
     check("… und steht unmittelbar vor dem Kontext",
           0 <= pos_hinweis < pos_kontext and pos_kontext - pos_hinweis < 800,

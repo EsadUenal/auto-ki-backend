@@ -18,6 +18,7 @@ import re
 import sqlite3
 import threading
 import time
+import datetime as _dt
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -35,7 +36,7 @@ from app.config import (
 )
 from app.database import get_baureihe, search_baureihen, get_alle_baureihen_kurz, get_alle_motorvarianten_kurz
 from app.gemini_retry import with_retry, GeminiFehlgeschlagen, KI_UEBERLASTET_NACHRICHT
-from app.recall_filter import gefilterte_rueckrufe
+from app.recall_filter import gefilterte_rueckrufe, _baujahr_passt
 from app.motor_applicability import gefilterte_schwachstellen, _norm_kraftstoff
 from app.gasantrieb import ANZEIGE as GAS_ANZEIGE, gasart_der_variante, verbrauch_kontextzeilen
 from app.web_search import (
@@ -189,7 +190,127 @@ def _vector_search(query: str, baureihe_ids: list[str], n: int = 3) -> list[str]
 
 # ---------- DB-Kontext aufbauen ----------
 
-def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> str:
+
+# ---------- Beleglage, Baujahr und Variante im Chat-Kontext (CHAT-1) ----------
+
+def _heute() -> "_dt.date":
+    """Aktuelles Datum — eigene Funktion, damit Tests es festsetzen können."""
+    return _dt.date.today()
+
+
+def _heute_text() -> str:
+    d = _heute()
+    return f"{d.day:02d}.{d.month:02d}.{d.year}"
+
+
+def _beleglage(zeile: dict) -> str:
+    """Beleglage EINES Fakts aus dem vorhandenen Trust (`_trust`, app/fakt_verifikation.py).
+
+    Die Herkunft ist die Fahrzeugdatenbank — das heisst NICHT, dass jeder Eintrag
+    geprueft ist. Nur `verified` darf als geprueft erscheinen; fehlt der Trust,
+    wird nichts behauptet."""
+    trust = zeile.get("_trust")
+    if trust == "verified":
+        return " [Beleglage: geprüft]"
+    if trust:
+        return " [Beleglage: gemeldeter Hinweis, nicht geprüft]"
+    return ""
+
+
+_JAHR_RE = re.compile(r"(?<![\d.,])(19[5-9]\d|20[0-3]\d)(?![\d])(?!\s*(?:km|€|euro|ccm|kg|nm|ps|kw|u/min|mal)\b)",
+                      re.IGNORECASE)
+
+
+def _jahre_in(text: str) -> set[int]:
+    obergrenze = _heute().year + 1
+    return {int(j) for j in _JAHR_RE.findall(text or "") if 1950 <= int(j) <= obergrenze}
+
+
+def _baujahr_aus_gespraech(message: str, verlauf: list[dict], baureihe_ids: list[str]) -> int | None:
+    """Baujahr aus Nachricht und Verlauf — NUR bei eindeutiger Zuordnung zum aktiven Fahrzeug.
+
+    - Es gibt genau ein aktives Fahrzeug (sonst keine Zuordnung).
+    - Aktuelle Nachricht: genau ein Jahr und kein anderes Fahrzeug genannt.
+    - Sonst nur Nutzernachrichten des Verlaufs (nie KI-Texte, die selbst falsch sein
+      koennen), neueste zuerst. Nennt eine Nachricht ein ANDERES Fahrzeug, endet die Suche:
+      ein Fahrzeugwechsel uebertraegt kein altes Jahr.
+    - Mehrere verschiedene Jahre (auch Spannen wie 2012-2015) sind nicht eindeutig."""
+    if len(baureihe_ids) != 1:
+        return None
+    aktiv = baureihe_ids[0]
+
+    def _ids(text: str) -> list[str]:
+        return [bid for bid, _ in _erkenne_fahrzeuge(text, [])]
+
+    ids_msg = _ids(message)
+    if ids_msg and ids_msg != [aktiv]:
+        return None
+    jahre = _jahre_in(message)
+    if len(jahre) == 1:
+        return next(iter(jahre))
+    if len(jahre) > 1:
+        return None
+    for m in reversed(verlauf or []):
+        if m.get("rolle") != "user":
+            continue
+        text = m.get("text", "")
+        ids = _ids(text)
+        if ids and ids != [aktiv]:
+            return None                      # Fahrzeugwechsel: Suche beenden
+        if ids != [aktiv]:
+            continue                         # Jahr ohne erkennbaren Fahrzeugbezug: nicht zuordenbar
+        jahre = _jahre_in(text)
+        if len(jahre) == 1:
+            return next(iter(jahre))
+        if len(jahre) > 1:
+            return None
+    return None
+
+
+def _nutzertext_zum_fahrzeug(message: str, verlauf: list[dict], baureihe_ids: list[str]) -> str | None:
+    """Nachricht plus fruehere NUTZERnachrichten, die dasselbe (einzige) aktive Fahrzeug nennen.
+    Gleiche Zuordnungsregel wie beim Baujahr: nie KI-Text, bei Fahrzeugwechsel Ende."""
+    if len(baureihe_ids) != 1:
+        return None
+    aktiv = baureihe_ids[0]
+    teile = [message]
+    for m in reversed(verlauf or []):
+        if m.get("rolle") != "user":
+            continue
+        ids = [bid for bid, _ in _erkenne_fahrzeuge(m.get("text", ""), [])]
+        if ids and ids != [aktiv]:
+            break
+        if ids == [aktiv]:
+            teile.append(m.get("text", ""))
+    return " ".join(teile)
+
+
+_PS_RE = re.compile(r"(?<!\d)(\d{2,3})\s*ps\b", re.IGNORECASE)
+_KW_RE = re.compile(r"(?<!\d)(\d{2,3})\s*kw\b", re.IGNORECASE)
+
+
+def _leistung_hinweis(motoren: list[dict], text: str) -> str | None:
+    """Nennt der Nutzer eine Leistung, die in der Datenbank fuer diese Baureihe nicht
+    hinterlegt ist, heisst das: exakte Variante nicht hinterlegt — nicht 'mehrere passende
+    Motoren' und kein stillschweigendes Naechstliegendes."""
+    ps = {int(x) for x in _PS_RE.findall(text or "")}
+    kw = {int(x) for x in _KW_RE.findall(text or "")}
+    if not (ps or kw) or not motoren:
+        return None
+    hinterlegt_ps = {m.get("leistung_ps") for m in motoren}
+    hinterlegt_kw = {m.get("leistung_kw") for m in motoren}
+    if (ps & hinterlegt_ps) or (kw & hinterlegt_kw):
+        return None
+    angabe = ", ".join([f"{x} PS" for x in sorted(ps)] + [f"{x} kW" for x in sorted(kw)])
+    liste = ", ".join(sorted({f"{m['leistung_ps']} PS" for m in motoren if m.get("leistung_ps")}))
+    return (f"Hinweis zur Variante: Eine Variante mit {angabe} (Angabe des Nutzers) ist für diese Baureihe "
+            f"in der Fahrzeugdatenbank nicht hinterlegt. Hinterlegte Leistungen: {liste or 'keine'}. "
+            f"Nenne Motordaten nur als Daten der hinterlegten Varianten und sage, dass die exakte Variante "
+            f"nicht hinterlegt ist.")
+
+
+def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None,
+                 baujahr: int | None = None, leistung_text: str | None = None) -> str:
     """Liest alle harten Fakten aus SQLite und baut einen strukturierten Kontext-String.
 
     §Phase 7 (Reliability-Sprint 4): Rückrufe liefen hier bisher KOMPLETT ungefiltert
@@ -232,6 +353,15 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
             "",
             "### Motorvarianten (HARTE ZAHLEN — exakt verwenden, nicht runden/schätzen):",
         ]
+        # Angaben des Nutzers (Baujahr, Leistung) sind Angaben, keine Belege. Sie schraenken nur ein,
+        # was gezeigt wird bzw. benennen eine nicht hinterlegte Variante.
+        if baujahr is not None:
+            lines.insert(1, f"Baujahr laut Angabe des Nutzers: {baujahr} (Angabe, kein Beleg). "
+                            f"Nachweislich nicht passende Baujahr-Einträge wurden ausgelassen.")
+        if leistung_text:
+            _hinweis = _leistung_hinweis(data["motoren"], leistung_text)
+            if _hinweis:
+                lines.insert(1, _hinweis)
 
         for m in data["motoren"]:
             # GAS-1: ein Gasfahrzeug steht in der Kraftstoffspalte als "Benzin" (Motorklasse). Kontext
@@ -263,14 +393,19 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
             if m["schwachstellen_motor"]:
                 motor_lines.append("    Bekannte Motorprobleme:")
                 for s in m["schwachstellen_motor"]:
+                    # Ein Baujahr, das NACHWEISLICH nicht in die Spanne faellt, schliesst aus
+                    # (dieselbe Regel wie evidence.py/car_lookup.py); unklar bleibt stehen.
+                    if baujahr is not None and _baujahr_passt(s.get("baujahre"), baujahr) is False:
+                        continue
                     motor_lines.append(
                         f"      - {s['bauteil']}: {s['beschreibung']} "
                         f"(Baujahre: {s['baujahre']}, Kosten ca.: {s['kosten_ca']})"
+                        f"{_beleglage(s)}"
                     )
             if m["kritische_wartung"]:
-                motor_lines.append("    Kritische Wartung:")
+                motor_lines.append("    Kritische Wartung (Tätigkeit, Intervall und Bedingung unverändert übernehmen):")
                 for w in m["kritische_wartung"]:
-                    motor_lines.append(f"      - {w['bauteil']}: {w['intervall']} — {w['hinweis']}")
+                    motor_lines.append(f"      - {w['bauteil']}: {w['intervall']} — {w['hinweis']}{_beleglage(w)}")
             lines.extend(motor_lines)
 
         # DATA-SAFETY-RUNTIME-GATE: dieselbe Motor-Allowed-List wie im Kaufcheck
@@ -283,25 +418,28 @@ def _sql_context(baureihe_ids: list[str], fuel_hint_text: str | None = None) -> 
         if _schwachstellen_baureihe:
             lines.append("\n### Schwachstellen Baureihe:")
             for s in _schwachstellen_baureihe:
+                if baujahr is not None and _baujahr_passt(s.get("betroffene_baujahre"), baujahr) is False:
+                    continue
                 lines.append(
                     f"  [{s['schweregrad']}] {s['bauteil']}: {s['beschreibung']} "
-                    f"(Baujahre: {s['betroffene_baujahre']})"
+                    f"(Baujahre: {s['betroffene_baujahre']}){_beleglage(s)}"
                 )
 
         # §Phase 7: zentrale Allowed-List statt rohem DB-Dump (s.o.).
         # KBA-Trust-Gate: `kba_referenz_anzeige` ist None bei unplausibler/
         # kollidierender Referenz — dann kein "(Ref: …)" statt einer Falschangabe.
-        erlaubte_rueckrufe = gefilterte_rueckrufe(data["rueckrufe"], fuel_motor_match, None,
+        erlaubte_rueckrufe = gefilterte_rueckrufe(data["rueckrufe"], fuel_motor_match, baujahr,
                                                   marke=data["marke"])
         if erlaubte_rueckrufe:
-            lines.append("\n### KBA-Rückrufe (nur für dieses Fahrzeug relevante):")
+            lines.append("\n### KBA-Rückrufe der Baureihe (Betroffenheit eines einzelnen Fahrzeugs und "
+                         "Durchführung sind damit NICHT belegt; nur per FIN prüfbar):")
             for r in erlaubte_rueckrufe:
                 ref = r.get("kba_referenz_anzeige")
                 # Ein fehlendes Datum darf nicht als "None:" im Prompt landen —
                 # Batch A laesst es bewusst leer, wo der amtliche Datensatz nur
                 # den Sammelstempel des Erstbefuellungslaufs traegt.
                 praefix = f"  {r['datum']}: " if r.get("datum") else "  "
-                lines.append(praefix + r["text"] + (f" (Ref: {ref})" if ref else ""))
+                lines.append(praefix + r["text"] + (f" (Ref: {ref})" if ref else "") + _beleglage(r))
 
         parts.append("\n".join(lines))
 
@@ -347,7 +485,7 @@ def _scrub_jargon(text: str) -> str:
 
 _PREIS_KEYWORDS = frozenset({
     "preis", "kostet", "kaufen", "gebraucht", "marktpreis", "neupreis",
-    "wert", "angebot", "händler", "inseriert", "finanzierung", "budget",
+    "wert", "angebot", "händler", "inseriert", "budget",
     "euro", "€", "teur", "günstig", "teuer", "occasion", "jahreswagen",
 })
 _RECALL_KEYWORDS = frozenset({
@@ -393,6 +531,14 @@ _ALLGEMEINE_FAHRZEUGFRAGE_KEYWORDS = frozenset({
 })
 
 
+_FINANZIERUNG_RE = re.compile(
+    r"kredit|finanzier|leasing|darlehen|zinsen?\b|ratenkauf|ratenzahlung|tilgung|monatsrate|ballonfinanz")
+
+
+def _ist_finanzierungsfrage(msg_lower: str) -> bool:
+    return bool(_FINANZIERUNG_RE.search(msg_lower or ""))
+
+
 def _needs_web_search(
     message: str,
     baureihe_ids: list[str],
@@ -427,6 +573,11 @@ def _needs_web_search(
     gleich (IMMER Websuche), keine Änderung an der eigentlichen Trigger-Logik.
     """
     msg = message.lower()
+    # Produktregel: ENFAL empfiehlt keine Kredite/Finanzierung/Leasing. Eine reine Finanzierungsfrage
+    # hat keinen Websuche-Bedarf (die Antwort ist die Produktregel plus Alternativen) und holt sonst
+    # nur Kredit-/Leasingangebote in den Kontext.
+    if _ist_finanzierungsfrage(msg) and not any(kw in msg for kw in _RECALL_KEYWORDS):
+        return False
     if baureihe_ids:
         ist_preis_oder_rueckruf_frage = (
             any(kw in msg for kw in _PREIS_KEYWORDS) or any(kw in msg for kw in _RECALL_KEYWORDS)
@@ -817,22 +968,42 @@ def _kuerze_kontext(kontext: str, budget: int) -> str:
 
 # ---------- System-Prompt ----------
 
+# Fachregeln, die im Chat UND in den Rückfragen zu einem Check gelten (CHAT-1). Wartung, Rückruf,
+# Alter und Finanzierung sind die Stellen, an denen aus einer vorsichtigen Datenlage sonst eine
+# harte Behauptung wurde. `[[HEUTE]]` wird je Aufruf durch das aktuelle Datum ersetzt.
+FACHREGELN = """— FACHREGELN (gelten in jeder Antwort) —
+WARTUNG
+- Gib Tätigkeit, Erst- und Folgeintervall, Bedingungen (z. B. km ODER Zeit, Einsatzart) und Geltung (Markt, Variante) so wieder, wie sie in den Daten stehen. Eine Prüfung ist kein Wechsel; "nach Zustand" oder "bei Bedarf" ist kein fester Intervall.
+- Ein Eintrag mit Beleglage "gemeldeter Hinweis, nicht geprüft" oder eine Angabe mit unbestätigter Geltung (z. B. Markt nicht bestätigt) ist keine Herstellervorgabe. Sag das, statt es als offizielle Vorgabe darzustellen.
+- Fehlende Wartungshistorie beweist keine Fälligkeit und kein Versäumnis. Sag höchstens, dass ein Nachweis fehlt und geprüft werden sollte.
+- Eine pauschale Faustregel (z. B. "nach 6–8 Jahren") ist allgemeines Wissen, kein Intervall dieses Fahrzeugs: kennzeichne sie so und leite daraus keine Fälligkeit ab.
+RÜCKRUF
+- Trenne drei Aussagen und leite nie eine aus der anderen ab: (1) Es gibt einen Rückruf für die Baureihe oder einen Teilbereich. (2) Ein bestimmtes Fahrzeug ist betroffen — das entscheidet nur die FIN beim Hersteller oder KBA. (3) Die Maßnahme wurde durchgeführt — das belegt nur ein Werkstattnachweis. Ein unbekannter Produktionszeitraum wird nicht als passend vorausgesetzt.
+ALTER UND DATUM
+- Heutiges Datum: [[HEUTE]]. Berechne das Alter eines Fahrzeugs ausschließlich aus Baujahr bzw. Erstzulassung und diesem Datum. Ist nur das Baujahr bekannt, sage "Baujahr 2016, rund N Jahre alt" und erfinde keinen Monat. Altersangaben aus früheren Nachrichten (auch deinen eigenen) übernimmst du nicht, sondern rechnest neu.
+KREDIT, FINANZIERUNG, LEASING
+- ENFAL empfiehlt und vermittelt keine Kredite, Finanzierungen, Zinsmodelle oder Leasing. Empfiehl sie nicht, auch nicht als "kleinen, schnell tilgbaren Kredit", und rechne keine Kreditraten in eine Bewertung ein. Fragt der Nutzer danach, sag kurz, dass du dazu nichts empfiehlst, und nenne Alternativen: ein günstigeres Fahrzeug, Ansparen, den Kauf verschieben, laufende Kosten (Versicherung, Steuer, Kraftstoff, Wartung) ins Budget einrechnen.
+- Die sachliche Prüfung, ob ein Fahrzeug beim Verkäufer noch finanziert oder belastet ist und ihm gehört (Zulassungsbescheinigung Teil II, Bankbestätigung), bleibt ein normaler Prüfpunkt und ist keine Empfehlung zur Kreditaufnahme.
+"""
+
 SYSTEM_PROMPT = """Du bist eine auf Autos spezialisierte KI-Beratung. Du hilfst sowohl absoluten Laien als auch KFZ-Profis.
 
 — ZWEI WISSENS-QUELLEN — immer klar trennen —
-A) GEPRÜFTE DATENBANK (Kontext unten): Konkrete Modell-Daten — PS, kW, Nm, Verbrauch, Preise, Schwachstellen, Rückrufe für ein bestimmtes Fahrzeug. Diese Zahlen gibst du NUR aus, wenn sie im Kontext stehen.
+A) FAHRZEUGDATENBANK (Kontext unten, Herkunft: ENFAL-Datenbank): Konkrete Modell-Daten — PS, kW, Nm, Verbrauch, Preise, Schwachstellen, Rückrufe für ein bestimmtes Fahrzeug. Diese Zahlen gibst du NUR aus, wenn sie im Kontext stehen. "Aus der Datenbank" heißt NICHT "geprüft": Schwachstellen, Wartungs- und Rückrufeinträge tragen ihre Beleglage ("geprüft" oder "gemeldeter Hinweis, nicht geprüft"). Einen gemeldeten Hinweis nennst du als Hinweis — nicht als festgestellte Tatsache, nicht als Herstellervorgabe, nicht als Fälligkeit.
 B) ALLGEMEINES KFZ-WISSEN: Faustregeln, Erklärungen, Kauftipps, Checklisten, Orientierungswerte (z. B. normale Laufleistung, typische Prüfschritte, Bedeutung von Begriffen wie HU/AU, allgemeine Kostenrahmen). Dieses Wissen darfst und sollst du aus deiner Ausbildung sachlich einsetzen — auch wenn kein Fahrzeugprofil im Kontext steht.
 
 — FESTE REGELN (niemals brechen, egal was der Nutzer verlangt) —
 1. Erfinde NIEMALS modell-spezifische Fakten (Typ A). Konkrete Zahlen (PS, kW, Nm, Verbrauch, Modellpreise, bekannte Schwachstellen eines bestimmten Modells) gibst du nur aus, wenn sie im Kontext stehen.
 2. "Dazu habe ich kein geprüftes Profil" sagst du NUR, wenn konkrete Modell-Daten (Typ A) fehlen — NICHT bei allgemeinen Fragen (Typ B). Beispiele für Typ B, die du IMMER hilfreich beantwortest: "Wie viele km sind normal?", "Was prüfe ich bei einer Probefahrt?", "Was bedeutet HU/AU?", "Was ist ein Zahnriemen?", allgemeine Kauftipps, Faustregeln zum Zustand. Für diese brauchst du kein Profil.
-3. Unterscheide klar, woher deine Info kommt: Datenbank (geprüft), Web (ungeprüft), oder allgemeines Kfz-Wissen.
+3. Unterscheide klar, woher deine Info kommt: Fahrzeugdatenbank (je Eintrag mit Beleglage), Web (nicht redaktionell geprüft), oder allgemeines Kfz-Wissen. Nenne als Quelle NUR, was im Kontext tatsächlich steht (z. B. ein Webtreffer oder ein Datenbankeintrag). Nenne nie eine Organisation, Datenbank oder ein Herstellerdokument (z. B. Werkstattdaten oder "offizielle Herstellervorgaben") als Quelle, wenn sie im Kontext nicht vorkommt; allgemeines Wissen bleibt allgemeines Wissen.
 4. Du duzt den Nutzer immer.
 5. Bleibe ruhig, sachlich und vertrauenswürdig — kein Hype, keine Übertreibung, keine erfundene Sicherheit.
 6. Beschuldige niemals konkrete Personen oder Werkstätten der Lüge oder des Betrugs. Du darfst nur neutrale Kostenorientierung geben ("kostet üblicherweise ca. X–Y €; bei deutlich höheren Angeboten lohnt eine Zweitmeinung").
 7. Unterscheide bei jeder Antwort präzise zwischen allgemeinen (baureihenweiten) Aussagen und motorspezifischen Aussagen. Unterscheidet sich ein Wert zwischen Motorisierungen, Baujahren oder Ausstattungslinien, nenne die Werte je Variante statt einer Pauschalaussage. Ist die Frage mehrdeutig und der Unterschied dabei relevant (z. B. deutlich abweichende Anhängelast zwischen Front- und Allradversion), stelle eine kurze, gezielte Rückfrage statt zu raten oder willkürlich eine Variante auszuwählen.
-8. JEDES konkret angefragte Datenfeld (nicht nur Tankgröße/Kofferraum/Anhängelast — das gilt für JEDE Zahl oder Eigenschaft, z. B. auch 0–100-Zeit, Vmax, Ausstattungslinien, Getriebeoptionen, Rückrufe, Motorcodes): Nutze zuerst die harten Zahlen aus dem DB-Kontext. Steht dort "nicht erfasst" oder fehlt das Feld komplett, prüfe IMMER zuerst den Block "=== AKTUELLE WEB-ERGEBNISSE ===" (dieser ist bei jeder Kfz-Frage automatisch mitgeliefert, sobald ein Fahrzeug erkannt wurde) und übernimm den Web-Wert, klar als Web-Quelle gekennzeichnet.
-9. ABSOLUTES VERBOT: Beende eine Antwort NIEMALS mit "nicht erfasst", "kein geprüftes Profil" o. ä., ohne vorher den Web-Ergebnisse-Block im Kontext tatsächlich geprüft und genutzt zu haben. Ist ein Web-Block vorhanden und enthält irgendeinen brauchbaren Hinweis zum gefragten Wert, MUSST du ihn verwenden — auch wenn er nur ungefähr oder aus einer Quelle mit geringerer Sicherheit stammt. "Kein geprüftes Profil"/"nicht erfasst" ist NUR erlaubt, wenn WEDER die Datenbank NOCH der Web-Block (falls vorhanden) einen verwertbaren Hinweis zum konkret gefragten Feld liefern.
+8. JEDES konkret angefragte Datenfeld (nicht nur Tankgröße/Kofferraum/Anhängelast — das gilt für JEDE Zahl oder Eigenschaft, z. B. auch 0–100-Zeit, Vmax, Ausstattungslinien, Getriebeoptionen, Rückrufe, Motorcodes): Nutze zuerst die harten Zahlen aus dem DB-Kontext. Steht dort "nicht erfasst" oder fehlt das Feld komplett, prüfe zuerst den Block "=== AKTUELLE WEB-ERGEBNISSE ===" (sofern vorhanden) und übernimm einen passenden Web-Wert, klar als Web-Quelle gekennzeichnet.
+9. Beende eine Antwort nicht vorschnell mit "nicht erfasst" oder "kein geprüftes Profil", wenn der Web-Block einen passenden Hinweis enthält. PASSEND heißt je Aussage: Fahrzeug, Generation und — soweit erkennbar — Karosserie, Getriebe, Facelift/Modelljahr und Markt stimmen mit der Frage überein. Passt eine Quelle nur ungefähr (z. B. Variant statt Schrägheck, Facelift ab 2017, DSG statt Schaltgetriebe), nenne den Wert ausdrücklich mit dieser Abweichung ("laut einer Quelle zum Variant …") oder lass ihn weg — übernimm ihn nie stillschweigend. Die Abweichung betrifft nur Aussagen, die davon abhängen (z. B. Kofferraum bei anderer Karosserie), nicht automatisch alle Angaben der Quelle (z. B. ein Ölwechselintervall desselben Motors). Ist die exakte Variante des Nutzers in den Daten nicht hinterlegt, sage das, statt eine nächstliegende Variante als seine auszugeben. "Nicht erfasst" ist erlaubt, wenn weder Datenbank noch Web einen passenden Hinweis liefern.
+
+[[FACHREGELN]]
 
 — GESPRÄCHSGEDÄCHTNIS (wichtig) —
 - Du hast Zugriff auf den bisherigen Gesprächsverlauf. Nutze ihn aktiv.
@@ -907,13 +1078,13 @@ Wenn der Kontext einen Block "=== AKTUELLE WEB-ERGEBNISSE ===" enthält:
 - Verwende in der Antwort NIEMALS interne Fachbegriffe wie "ungeprüft", "Vertrauen", "niedriges/mittleres/hohes Vertrauen" oder "Quelle: Web" als wörtliches Label — das sind Entwicklerbegriffe, keine Nutzersprache.
 - Formuliere Unsicherheit stattdessen konkret und hilfreich, z. B. "Die genauen Werte für dein Modell solltest du beim Händler/in den Fahrzeugpapieren bestätigen."
 - Nenne konkrete Preisrahmen wenn sie aus mehreren Quellen übereinstimmen.
-- Kombiniere geprüfte DB-Daten (zuverlässig) mit Web-Daten (Orientierung) sinnvoll.
+- Kombiniere Datenbankdaten (je nach Beleglage) mit Web-Daten (Orientierung) sinnvoll und halte beide Herkünfte auseinander.
 - Bevorzuge europäische/deutsche Spezifikationen (WLTP, EU-Ausstattung, km/h, Liter) gegenüber US-Marktdaten (mph, US-Gallonen, US-Ausstattungslinien) — diese unterscheiden sich häufig vom hiesigen Modell. Wirkt ein Web-Ergebnis wie eine US-spezifische Angabe, kennzeichne das kurz oder nutze es nicht.
 - Prüfe, ob die Web-Quelle zur RICHTIGEN Modellgeneration passt (z.B. nicht Vorgänger- oder Nachfolgegeneration verwechseln) — steht die Generation im DB-Kontext, gleiche sie mit der Quelle ab, bevor du den Wert übernimmst.
 
 Antworte immer auf Deutsch. Steig direkt mit der wichtigsten Information oder — bei Rückfragen — direkt mit der ersten Frage ein. KEIN Einleitungssatz davor, egal welcher: nicht "Gerne", "Hier ist...", "Damit ich dir helfen kann", "Um das einzugrenzen" o.ä. Kein Floskel-Schluss.
 {web_hinweis}
-KONTEXT AUS GEPRÜFTER DATENBANK:
+KONTEXT (getrennt nach Herkunft: Fahrzeugdatenbank und Web; Beleglage je Eintrag beachten):
 {kontext}"""
 
 # Wird nur angehängt, wenn tatsächlich ein Web-Ergebnisblock im Kontext steht (hat_web=True).
@@ -926,9 +1097,11 @@ _WEB_HINWEIS = """
 — LETZTER UND WICHTIGSTER HINWEIS VOR DEM KONTEXT —
 Der Kontext unten enthält einen Block "=== AKTUELLE WEB-ERGEBNISSE ===". Prüfe ihn für JEDES
 angefragte Datenfeld, das im DB-Teil als "nicht erfasst" markiert ist oder dort ganz fehlt.
-Enthält der Web-Block einen verwertbaren Hinweis zu genau diesem Feld, MUSST du ihn in deiner
-Antwort verwenden (klar als Web-Quelle gekennzeichnet) — auch wenn er nur ungefähr ist.
-"Kein geprüftes Profil" oder "nicht erfasst" als Antwort ist in diesem Fall NICHT erlaubt.
+Enthält der Web-Block einen Hinweis zu genau diesem Feld, der zu Fahrzeug, Generation und — soweit
+erkennbar — Karosserie, Getriebe und Baujahr passt, verwende ihn (klar als Web-Quelle gekennzeichnet).
+Passt er nur ungefähr, nenne die Abweichung ausdrücklich oder lass den Wert weg; die Abweichung
+betrifft nur die Aussagen, die davon abhängen. Beantworte nichts als "im Web gefunden", was dort
+nicht steht.
 """
 
 
@@ -1034,8 +1207,12 @@ async def chat_stream(
         # §Phase 7: Freitext (Nutzer-Nachricht + Fahrzeug-Kontext) für die best-effort
         # Kraftstofferkennung im Rückruf-Filter — kein strukturierter Motor im Chat.
         _fuel_hint = f"{message} {fahrzeug_kontext or ''}"
+        # CHAT-1: Baujahr und Leistung nur bei eindeutiger Zuordnung zum aktiven Fahrzeug
+        # (genau ein erkanntes Fahrzeug; ein Fahrzeugwechsel im Verlauf uebertraegt kein altes Jahr).
+        _baujahr = _baujahr_aus_gespraech(message, verlauf, baureihe_ids)
+        _leistung_text = _nutzertext_zum_fahrzeug(message, verlauf, baureihe_ids)
         sql_ctx, vec_docs = await asyncio.gather(
-            asyncio.to_thread(_sql_context, baureihe_ids, _fuel_hint),
+            asyncio.to_thread(_sql_context, baureihe_ids, _fuel_hint, _baujahr, _leistung_text),
             asyncio.to_thread(_vector_search, message, baureihe_ids),
         )
     else:
@@ -1150,7 +1327,13 @@ async def chat_stream(
     hat_db  = bool(sql_ctx or vec_ctx)
     hat_web = bool(web_ctx)
 
-    kontext = "\n\n".join(filter(None, [sql_ctx, vec_ctx, web_ctx]))
+    # Herkunft getrennt halten: Datenbank und Web stehen unter eigenen Ueberschriften, nie unter
+    # einer gemeinsamen "geprueft"-Ueberschrift.
+    kontext = "\n\n".join(filter(None, [
+        ("=== FAHRZEUGDATENBANK (Herkunft: ENFAL-Datenbank; Beleglage je Eintrag) ===\n" + sql_ctx) if sql_ctx else "",
+        ("=== DATENBANK-TEXTAUSZÜGE ===\n" + vec_ctx) if vec_ctx else "",
+        web_ctx,
+    ]))
 
     if hat_db and hat_web:
         quelle    = "gemischt"
@@ -1191,7 +1374,7 @@ async def chat_stream(
     system = SYSTEM_PROMPT.format(
         kontext=kontext,
         web_hinweis=web_hinweis,
-    )
+    ).replace("[[HEUTE]]", _heute_text())
 
     # ── 4. Gemini-Aufruf (Streaming) ────────────────────────────────────────
     history = []
@@ -1246,9 +1429,8 @@ async def chat_stream(
         ))
     except GeminiFehlgeschlagen as exc:
         log.warning("Chat: Gemini-Totalausfall beim Start des Streams: %s", exc)
-        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
-        yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
-               "vertrauen": "niedrig", "belege": []}
+        # CHAT-1: eigenes Fehlerereignis statt Fehlertext als normale Antwort.
+        yield {"type": "error", "teilantwort": False}
         return
     except Exception as exc:
         # Sicherheitsnetz: JEDER sonst unerwartete Fehler (z.B. ein Bug in der
@@ -1256,9 +1438,7 @@ async def chat_stream(
         # der Nutzer soll immer eine verständliche Meldung statt eines
         # abgebrochenen Streams ohne jede Antwort sehen.
         log.exception("Chat: unerwarteter Fehler beim Start des Gemini-Streams")
-        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
-        yield {"type": "meta", "quelle": "fehler", "fahrzeug_referenz": [],
-               "vertrauen": "niedrig", "belege": []}
+        yield {"type": "error", "teilantwort": False}
         return
     print(f"[TIMING] gemini iterator erstellt: {_ms(t_gemini_init)}", flush=True)
 
@@ -1271,6 +1451,7 @@ async def chat_stream(
     _FLUSH_TAIL = 24
     scrub_buf = ""
     finish_reason = None
+    stream_fehler = False
     try:
         async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
             async for chunk in response:
@@ -1297,10 +1478,16 @@ async def chat_stream(
         # zu verwerfen), ergänzt um einen kurzen, verständlichen Hinweis statt
         # eines rohen Fehlertexts. Der Generator wird NIE ungefangen abgebrochen.
         log.warning("Chat: Fehler während des Streamens nach %s: %s", _ms(t0), exc)
-        scrub_buf += f"\n\n*{KI_UEBERLASTET_NACHRICHT}*"
+        stream_fehler = True
 
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
+    if stream_fehler:
+        # CHAT-1: Fehler und Teilantwort sind ein eigenes Ereignis, kein normaler Antworttext.
+        # Der Client kennzeichnet die Teilantwort als unvollstaendig und speichert sie nicht als
+        # vollstaendigen Austausch.
+        yield {"type": "error", "teilantwort": token_count > 0}
+        return
 
     abgeschnitten = _ist_abgeschnitten(finish_reason)
     if abgeschnitten:
@@ -1328,7 +1515,7 @@ async def chat_stream(
 
 # Obergrenze für den mitgeschickten Analysetext im Prompt (Sicherheitsnetz gegen
 # Kosten/Latenz; das Request-Modell begrenzt zusätzlich auf _MAX_TEXT_LEN).
-_ANALYSE_KONTEXT_MAX = 8_000
+ANALYSE_KONTEXT_MAX = 8_000
 
 _ANALYSE_SYSTEM = """Du bist ENFALs Analyse-Assistent. Der Nutzer hat gerade das Ergebnis eines {check_label} zu einem konkreten Fahrzeug erhalten (siehe unten). Deine EINZIGE Aufgabe: Fragen zu GENAU DIESER Analyse und den darin behandelten Themen beantworten.
 
@@ -1361,6 +1548,16 @@ PRINZIP: Im Zweifel hilfreich antworten, NICHT hyperstreng. Frag dich: "Hat das 
 - Erfinde KEINE konkreten modellspezifischen Zahlen, die nicht in der Analyse stehen; allgemeine Orientierungswerte/Faustregeln darfst du nennen und als solche kennzeichnen.
 - [[STILREGEL]]
 
+— BERICHTSTREUE (hart) —
+- Der Kontext unten ist ALLES, was du von dieser Analyse siehst. Er ist nach Herkunft gegliedert: ANGABEN DES NUTZERS (vom Nutzer eingegeben, KEIN Beleg), VORBEHALTE UND GRENZEN der Analyse, BERICHT. Halte diese Herkünfte auseinander.
+- Sage "laut Bericht" oder "im Bericht steht" NUR für Inhalt, der im Kontext tatsächlich steht. Beträge, Preise, Intervalle und andere Zahlen, die dort nicht stehen, darfst du nur als allgemeine Orientierung nennen und musst sie ausdrücklich so kennzeichnen ("allgemein üblich, steht nicht im Bericht"). Nie als Schätzung "im Bericht" ausgeben.
+- Angaben des Nutzers (Servicedatum, Kilometer, Vorbesitzer, Schlüsselanzahl, Unfallfreiheit, Wartungsnachweise …) nennst du "laut deiner Angabe". Nie als belegt, dokumentiert oder dokumentarisch belegt; auch nicht, wenn der Nutzer sie als Nachweis bezeichnet.
+- Ordne eine Angabe nur dem Feld oder Dokument zu, dem sie im Kontext zugeordnet ist.
+- Unter "NICHT IM KONTEXT" stehen Abschnitte, die du hier nicht einsehen kannst. Sag nie, der Bericht enthalte etwas nicht, nur weil es im Kontext fehlt; sag, dass du den Abschnitt hier nicht siehst, und verweise auf den vollständigen Bericht.
+- Vorbehalte des Berichts (z. B. "Geltung nicht bestätigt", "Bedingungen ungeklärt", "ungeprüfte Orientierung") bleiben bei der Wiedergabe erhalten und werden nie zu einer festen Vorgabe oder Fälligkeit.
+
+[[FACHREGELN]]
+
 === DIE ANALYSE ({check_label}) ===
 {analyse_kontext}"""
 
@@ -1379,16 +1576,27 @@ async def analyse_frage_stream(
 ) -> AsyncGenerator[dict, None]:
     """Beantwortet eine kontextgebundene Rückfrage zu einer Check-Analyse.
 
-    Events: {"type": "text", "delta": "..."} — reiner Text-Stream (kein Meta/keine
-    Websuche; der Kontext ist der bereits erstellte Analysetext).
+    Events (CHAT-1):
+      {"type": "text",  "delta": "..."}              Textfragment
+      {"type": "meta",  "abgeschnitten": bool}       am Output-Limit gestoppt (nur wenn True)
+      {"type": "error", "teilantwort": bool}         Fehler; Fehlertext ist NIE ein normales Textdelta
+
+    Keine Websuche; der Kontext ist der aus dem gespeicherten Check gebaute Analysetext
+    (app/analyse_kontext.py) mit EINER gemeinsamen Obergrenze `ANALYSE_KONTEXT_MAX`.
     """
     import asyncio
 
     check_label = _ANALYSE_CHECK_LABELS.get(check_typ, "Checks")
+    kontext = analyse_kontext or ""
+    if len(kontext) > ANALYSE_KONTEXT_MAX:
+        # Sicherheitsnetz. Der Kontextbuilder haelt die Grenze selbst ein und benennt Ausgelassenes;
+        # greift dieses Netz trotzdem, ist die Kuerzung wenigstens sichtbar und nicht still.
+        kontext = (kontext[:ANALYSE_KONTEXT_MAX]
+                   + "\n\n[NICHT IM KONTEXT: der Rest der Analyse wurde wegen der Längenbegrenzung abgeschnitten.]")
     system = _ANALYSE_SYSTEM.format(
         check_label=check_label,
-        analyse_kontext=(analyse_kontext or "")[:_ANALYSE_KONTEXT_MAX],
-    )
+        analyse_kontext=kontext,
+    ).replace("[[HEUTE]]", _heute_text())
 
     history = []
     rest = max(0, GEMINI_MAX_INPUT_CHARS - len(system) - len(frage))
@@ -1417,19 +1625,26 @@ async def analyse_frage_stream(
         ))
     except GeminiFehlgeschlagen as exc:
         log.warning("Analyse-Frage: Gemini-Totalausfall beim Start des Streams: %s", exc)
-        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
+        yield {"type": "error", "teilantwort": False}
         return
     except Exception:
         log.exception("Analyse-Frage: unerwarteter Fehler beim Start des Gemini-Streams")
-        yield {"type": "text", "delta": KI_UEBERLASTET_NACHRICHT}
+        yield {"type": "error", "teilantwort": False}
         return
 
     _FLUSH_TAIL = 24
     scrub_buf = ""
+    finish_reason = None
+    stream_fehler = False
+    token_count = 0
     try:
         async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
             async for chunk in response:
+                fr = _finish_reason(chunk)
+                if fr is not None:
+                    finish_reason = fr
                 if chunk.text:
+                    token_count += 1
                     scrub_buf += chunk.text
                     if len(scrub_buf) > _FLUSH_TAIL * 2:
                         safe, scrub_buf = scrub_buf[:-_FLUSH_TAIL], scrub_buf[-_FLUSH_TAIL:]
@@ -1437,15 +1652,23 @@ async def analyse_frage_stream(
                         await asyncio.sleep(0)
     except Exception as exc:
         log.warning("Analyse-Frage: Fehler während des Streamens: %s", exc)
-        scrub_buf += f"\n\n*{KI_UEBERLASTET_NACHRICHT}*"
+        stream_fehler = True
 
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
+    if stream_fehler:
+        yield {"type": "error", "teilantwort": token_count > 0}
+        return
+    if _ist_abgeschnitten(finish_reason):
+        # Wie im Chat: kein stilles Ende mitten im Satz (vorher wurde finish_reason hier nie gelesen).
+        log.info("Analyse-Frage: Antwort am Output-Limit abgeschnitten (finish_reason=%s)", finish_reason)
+        yield {"type": "text", "delta": _ABGESCHNITTEN_HINWEIS}
+        yield {"type": "meta", "abgeschnitten": True}
 
 # Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
 # .replace statt f-String: die Prompts enthalten JSON-Klammern.
-SYSTEM_PROMPT = SYSTEM_PROMPT.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("[[FACHREGELN]]", FACHREGELN).replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)
 
 # Gemeinsame Schreibstil-Regel (app/schreibstil.py) einsetzen.
 # .replace statt f-String: die Prompts enthalten JSON-Klammern.
-_ANALYSE_SYSTEM = _ANALYSE_SYSTEM.replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)
+_ANALYSE_SYSTEM = _ANALYSE_SYSTEM.replace("[[FACHREGELN]]", FACHREGELN).replace("[[STILREGEL]]", STILREGEL_GEDANKENSTRICHE)

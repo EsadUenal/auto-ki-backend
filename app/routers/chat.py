@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter
 from app.client_ip import limit_schluessel
@@ -21,11 +21,19 @@ limiter = Limiter(key_func=limit_schluessel)
 log = logging.getLogger(__name__)
 
 
+def _fehler_event(teilantwort: bool) -> str:
+    """Eigenes Fehlerereignis (CHAT-1): der Fehlertext ist KEIN Antworttext."""
+    data = json.dumps({"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT},
+                       "teilantwort": bool(teilantwort)}, ensure_ascii=False)
+    return f"data: {data}\n\n"
+
+
 async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: str | None = None,
                          cost_key: str = "anonymous"):
-    """SSE-Stream: Textfragmente + abschließendes Meta-Event."""
+    """SSE-Stream: Textfragmente + abschließendes Meta-Event; Fehler als eigenes Ereignis."""
     full_text = []
     meta = {}
+    hat_text = False
 
     try:
         async with provider_scope("chat", key=cost_key):
@@ -34,9 +42,12 @@ async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: st
                     data = json.dumps({"status": event["text"]}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
                 elif event["type"] == "text":
+                    hat_text = True
                     full_text.append(event["delta"])
                     data = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
+                elif event["type"] == "error":
+                    yield _fehler_event(event.get("teilantwort", hat_text))
                 elif event["type"] == "meta":
                     meta = event
                     payload = {
@@ -50,13 +61,11 @@ async def _sse_generator(message: str, verlauf: list[dict], fahrzeug_kontext: st
                     data = json.dumps({"meta": payload}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
     except ProviderCapacityExceeded:
-        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
-        yield f"data: {data}\n\n"
+        yield _fehler_event(hat_text)
     except Exception as exc:
         # Kein abgerissener Stream und keine internen Details im SSE-Text.
         log.error("Chat-Stream error_class=%s", type(exc).__name__)
-        data = json.dumps({"delta": KI_UEBERLASTET_NACHRICHT}, ensure_ascii=False)
-        yield f"data: {data}\n\n"
+        yield _fehler_event(hat_text)
 
     yield "data: [DONE]\n\n"
 
@@ -94,12 +103,23 @@ async def chat_endpunkt(body: ChatRequest, request: Request):
 
     full_text = []
     meta = {}
+    fehler = False
     async with provider_scope("chat", key=cost_key):
         async for event in chat_stream(body.message, verlauf, fahrzeug_kontext=body.fahrzeug_kontext):
             if event["type"] == "text":
                 full_text.append(event["delta"])
             elif event["type"] == "meta":
                 meta = event
+            elif event["type"] == "error":
+                fehler = True
+    if fehler:
+        # Kein Fehlertext als normale Antwort: ohne Text ein 503, mit Teiltext als gekuerzt markiert.
+        if not full_text:
+            raise HTTPException(
+                status_code=503,
+                detail={"fehler": {"code": "ki_ueberlastet", "nachricht": KI_UEBERLASTET_NACHRICHT}},
+            )
+        meta = {**meta, "abgeschnitten": True}
 
     return ChatResponse(
         answer=postprocess_answer("".join(full_text)),
