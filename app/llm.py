@@ -1201,6 +1201,80 @@ _ABGESCHNITTEN_HINWEIS = (
 )
 
 
+# ---------- Denkstufe und inhaltsfreie Diagnose je Aufruf (Chat und Rueckfragen) ----------
+
+# Denk-Token zaehlen gegen max_output_tokens: ohne Begrenzung kann das Denken das Ausgabebudget fast
+# aufbrauchen und die sichtbare Antwort nach kurzem Text mit MAX_TOKENS enden. thinking_level=LOW
+# (SDK: types.ThinkingConfig(thinking_level=ThinkingLevel.LOW)) wird NUR fuer ausdruecklich belegte
+# Modell-IDs gesetzt: gemini-3.7-flash, LOW in der Tabelle "Unterstuetzte Denkaufwaende nach Modell"
+# der Google-Dokumentation (docs.cloud.google.com/gemini-enterprise-agent-platform/models/thinking).
+# Keine Regex und keine kuenftigen Versionen: ein neues Modell wird erst nach Belegung eingetragen.
+# Kein thinking_budget (aeltere Projektpfade): Level und Budget werden nie zusammen gesendet. Alle anderen
+# Modelle bekommen KEINEN Thinking-Parameter und laufen mit dem Standard des Modells.
+_DENKSTUFE_MODELLE = frozenset({"gemini-3.7-flash"})
+
+
+def _thinking_config(model: str):
+    if model in _DENKSTUFE_MODELLE:
+        return genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.LOW)
+    return None
+
+
+def _denkstufe_text(model: str) -> str:
+    return "LOW" if _thinking_config(model) is not None else "Modellstandard"
+
+
+# Token-Zaehler aus usage_metadata. Streaming-Metadaten koennen kumulativ sein: es gilt der LETZTE
+# gemeldete Wert je Feld, nie eine Summe ueber Chunks. Fehlende Werte bleiben unbekannt (nicht 0).
+_USAGE_FELDER = (
+    ("prompt", ("prompt_token_count",)),
+    ("antwort", ("response_token_count", "candidates_token_count")),
+    ("thoughts", ("thoughts_token_count",)),
+    ("gesamt", ("total_token_count",)),
+)
+
+
+class _UsageSammler:
+    def __init__(self) -> None:
+        self.werte: dict[str, int] = {}
+
+    def aufnehmen(self, chunk) -> None:
+        u = getattr(chunk, "usage_metadata", None)
+        if u is None:
+            return
+        for name, attrs in _USAGE_FELDER:
+            for a in attrs:
+                v = getattr(u, a, None)
+                if isinstance(v, int) and not isinstance(v, bool):
+                    self.werte[name] = v
+                    break
+
+
+def _logge_diagnose(pfad: str, modell: str, limit: int, finish_reason, sammler: "_UsageSammler",
+                    status: str, text_chunks: int) -> None:
+    """EINE inhaltsfreie Zeile je Aufruf. Enthaelt nur Pfad, Modell, Denkstufe, Grenze, Abbruchgrund,
+    Status und Token-Zahlen. Keine Nachricht, kein Prompt, kein Antworttext, keine Nutzer-ID, kein Secret."""
+    fr = "unbekannt"
+    if finish_reason is not None:
+        fr = re.sub(r"[^A-Za-z_.]", "", str(getattr(finish_reason, "name", finish_reason)))[:40] or "unbekannt"
+    w = sammler.werte
+    log.info(
+        "LLM-Diagnose pfad=%s modell=%s denkstufe=%s max_output=%s finish_reason=%s status=%s text_chunks=%s "
+        "prompt_tokens=%s antwort_tokens=%s thoughts_tokens=%s gesamt_tokens=%s",
+        pfad, modell, _denkstufe_text(modell), limit, fr, status, text_chunks,
+        w.get("prompt", "unbekannt"), w.get("antwort", "unbekannt"),
+        w.get("thoughts", "unbekannt"), w.get("gesamt", "unbekannt"),
+    )
+
+
+def _diagnose_status(stream_fehler: bool, text_chunks: int, abgeschnitten: bool) -> str:
+    if stream_fehler:
+        return "fehler_nach_teiltext" if text_chunks > 0 else "fehler_ohne_text"
+    if text_chunks == 0:
+        return "leer"
+    return "abgeschnitten" if abgeschnitten else "ok"
+
+
 def _finish_reason(chunk) -> object | None:
     """Liest den Abbruchgrund aus einem Stream-Chunk, tolerant gegenüber SDK-Formen."""
     kandidaten = getattr(chunk, "candidates", None)
@@ -1498,6 +1572,7 @@ async def chat_stream(
     cfg = genai_types.GenerateContentConfig(
         system_instruction=system, temperature=0.3,
         max_output_tokens=GEMINI_CHAT_MAX_OUTPUT_TOKENS,
+        thinking_config=_thinking_config(LLM_MODEL),
     )
 
     t_gemini_init = time.perf_counter()
@@ -1513,6 +1588,7 @@ async def chat_stream(
     except GeminiFehlgeschlagen as exc:
         log.warning("Chat: Gemini-Totalausfall beim Start des Streams: %s", exc)
         # CHAT-1: eigenes Fehlerereignis statt Fehlertext als normale Antwort.
+        _logge_diagnose("chat", LLM_MODEL, GEMINI_CHAT_MAX_OUTPUT_TOKENS, None, _UsageSammler(), "start_fehler", 0)
         yield {"type": "error", "teilantwort": False}
         return
     except Exception as exc:
@@ -1521,6 +1597,7 @@ async def chat_stream(
         # der Nutzer soll immer eine verständliche Meldung statt eines
         # abgebrochenen Streams ohne jede Antwort sehen.
         log.exception("Chat: unerwarteter Fehler beim Start des Gemini-Streams")
+        _logge_diagnose("chat", LLM_MODEL, GEMINI_CHAT_MAX_OUTPUT_TOKENS, None, _UsageSammler(), "start_fehler", 0)
         yield {"type": "error", "teilantwort": False}
         return
     print(f"[TIMING] gemini iterator erstellt: {_ms(t_gemini_init)}", flush=True)
@@ -1535,6 +1612,7 @@ async def chat_stream(
     scrub_buf = ""
     finish_reason = None
     stream_fehler = False
+    usage = _UsageSammler()
     try:
         async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
             async for chunk in response:
@@ -1545,6 +1623,7 @@ async def chat_stream(
                 fr = _finish_reason(chunk)
                 if fr is not None:
                     finish_reason = fr
+                usage.aufnehmen(chunk)
                 if chunk.text:
                     if first_token:
                         print(f"[TIMING] erstes Token: {_ms(t_first_token)} (seit Start: {_ms(t0)})", flush=True)
@@ -1563,6 +1642,8 @@ async def chat_stream(
         log.warning("Chat: Fehler während des Streamens nach %s: %s", _ms(t0), exc)
         stream_fehler = True
 
+    _logge_diagnose("chat", LLM_MODEL, GEMINI_CHAT_MAX_OUTPUT_TOKENS, finish_reason, usage,
+                    _diagnose_status(stream_fehler, token_count, _ist_abgeschnitten(finish_reason)), token_count)
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
     if stream_fehler:
@@ -1699,6 +1780,7 @@ async def analyse_frage_stream(
     cfg = genai_types.GenerateContentConfig(
         system_instruction=system, temperature=0.3,
         max_output_tokens=GEMINI_ANALYSE_MAX_OUTPUT_TOKENS,
+        thinking_config=_thinking_config(LLM_MODEL),
     )
 
     try:
@@ -1707,10 +1789,12 @@ async def analyse_frage_stream(
         ))
     except GeminiFehlgeschlagen as exc:
         log.warning("Analyse-Frage: Gemini-Totalausfall beim Start des Streams: %s", exc)
+        _logge_diagnose("analyse", LLM_MODEL, GEMINI_ANALYSE_MAX_OUTPUT_TOKENS, None, _UsageSammler(), "start_fehler", 0)
         yield {"type": "error", "teilantwort": False}
         return
     except Exception:
         log.exception("Analyse-Frage: unerwarteter Fehler beim Start des Gemini-Streams")
+        _logge_diagnose("analyse", LLM_MODEL, GEMINI_ANALYSE_MAX_OUTPUT_TOKENS, None, _UsageSammler(), "start_fehler", 0)
         yield {"type": "error", "teilantwort": False}
         return
 
@@ -1719,12 +1803,14 @@ async def analyse_frage_stream(
     finish_reason = None
     stream_fehler = False
     token_count = 0
+    usage = _UsageSammler()
     try:
         async with asyncio.timeout(GEMINI_STREAM_TIMEOUT_SECONDS):
             async for chunk in response:
                 fr = _finish_reason(chunk)
                 if fr is not None:
                     finish_reason = fr
+                usage.aufnehmen(chunk)
                 if chunk.text:
                     token_count += 1
                     scrub_buf += chunk.text
@@ -1736,6 +1822,8 @@ async def analyse_frage_stream(
         log.warning("Analyse-Frage: Fehler während des Streamens: %s", exc)
         stream_fehler = True
 
+    _logge_diagnose("analyse", LLM_MODEL, GEMINI_ANALYSE_MAX_OUTPUT_TOKENS, finish_reason, usage,
+                    _diagnose_status(stream_fehler, token_count, _ist_abgeschnitten(finish_reason)), token_count)
     if scrub_buf:
         yield {"type": "text", "delta": _scrub_jargon(scrub_buf)}
     if stream_fehler:
